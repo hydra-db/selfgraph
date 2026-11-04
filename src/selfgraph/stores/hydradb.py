@@ -1,0 +1,329 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Mapping
+from typing import Any
+
+from ..errors import StoreError
+from ..ids import quote_label
+from ..models import CypherResult
+from ._cypher import AutoCommitStore, records_to_result
+
+__all__ = ["HydraDBStore"]
+
+_EDGE = "RELATES"
+_SCALARS = (str, int, float, bool)
+
+
+def _sk(ns: str, sid: str) -> int:
+    """Derive a stable non-negative integer surrogate key for a string node id.
+
+    @param ns (str): namespace.
+    @param sid (str): the string id.
+    @return (int): the surrogate integer id.
+    """
+    digest = hashlib.blake2b(f"{ns}\x00{sid}".encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") >> 1
+
+
+def _scalars(props: dict) -> dict:
+    return {k: v for k, v in props.items() if k not in ("id", "ns") and isinstance(v, _SCALARS)}
+
+
+class HydraDBStore(AutoCommitStore):
+    def __init__(
+        self,
+        uri: str,
+        *,
+        auth: tuple[str, str] | None = None,
+        database: str | None = None,
+        **driver_kwargs: Any,
+    ) -> None:
+        try:
+            from neo4j import AsyncGraphDatabase
+        except ImportError as exc:  # pragma: no cover
+            raise StoreError("the 'neo4j' package is required for HydraDBStore; install selfgraph[neo4j]") from exc
+        self._driver = AsyncGraphDatabase.driver(uri, auth=auth, **driver_kwargs)
+        self._database = database or "default"
+
+    def _session(self):
+        return self._driver.session(database=self._database)
+
+    async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
+        async with self._session() as session:
+            try:
+                result = await session.run(query, dict(params or {}))
+                return await records_to_result(result)
+            except Exception as exc:  # noqa: BLE001
+                raise StoreError(f"HydraDB query failed: {exc}") from exc
+
+    async def initialize(self) -> None:
+        """Set up the store. HydraDB manages identity natively, so nothing is created."""
+        return None
+
+    async def close(self) -> None:
+        """Close the driver and its connection pool."""
+        await self._driver.close()
+
+    async def get_node(self, ns: str, label: str, id: str) -> dict | None:
+        res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.doc AS doc", {"iid": _sk(ns, id)})
+        if not res.rows or res.rows[0]["doc"] is None:
+            return None
+        return json.loads(res.rows[0]["doc"])
+
+    async def node_exists(self, ns: str, label: str, id: str) -> bool:
+        res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.sid AS sid", {"iid": _sk(ns, id)})
+        return bool(res.rows)
+
+    async def upsert_node(self, ns: str, label: str, id: str, props: dict, *, extra_label: str | None = None) -> None:
+        if extra_label is not None:
+            quote_label(extra_label)
+        row: dict[str, Any] = {
+            "id": _sk(ns, id),
+            "sid": id,
+            "ns": ns,
+            "doc": json.dumps(props, default=str),
+        }
+        row.update(_scalars(props))
+        sets = ", ".join(f"n.{k} = row.{k}" for k in row if k != "id")
+        await self._run(f"UNWIND $rows AS row MERGE (n {{id: row.id}}) SET n:{label}, {sets}", {"rows": [row]})
+
+    async def remove_node_label(self, ns: str, label: str, id: str, drop_label: str) -> None:
+        await self._run(
+            f"MATCH (n:{label} {{id: $iid}}) REMOVE n:{quote_label(drop_label)}",
+            {"iid": _sk(ns, id)},
+        )
+
+    async def match_nodes(
+        self,
+        ns: str,
+        label: str,
+        *,
+        equals: dict | None = None,
+        order_by: str = "id",
+        skip: int = 0,
+        limit: int = 1000,
+    ) -> list[dict]:
+        where = ["n.ns = $ns"]
+        params: dict[str, Any] = {"ns": ns, "skip": skip, "limit": limit}
+        for i, (key, value) in enumerate(sorted((equals or {}).items())):
+            where.append(f"n.{key} = $eq{i}")
+            params[f"eq{i}"] = value
+        ob = "sid" if order_by == "id" else order_by
+        res = await self._run(
+            f"MATCH (n:{label}) WHERE {' AND '.join(where)} "
+            f"RETURN n.doc AS doc, n.{ob} AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
+            params,
+        )
+        return [json.loads(r["doc"]) for r in res.rows if r["doc"] is not None]
+
+    async def delete_node(self, ns: str, label: str, id: str) -> None:
+        await self._run(f"MATCH (n:{label} {{id: $iid}}) DETACH DELETE n", {"iid": _sk(ns, id)})
+
+    async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
+        where = ["n.ns = $ns"]
+        params: dict[str, Any] = {"ns": ns}
+        for i, (key, value) in enumerate(sorted(equals.items())):
+            where.append(f"n.{key} = $eq{i}")
+            params[f"eq{i}"] = value
+        res = await self._run(f"MATCH (n:{label}) WHERE {' AND '.join(where)} RETURN n.id AS iid", params)
+        ids = [r["iid"] for r in res.rows]
+        for iid in ids:
+            await self._run(f"MATCH (n:{label} {{id: $iid}}) DETACH DELETE n", {"iid": iid})
+        return len(ids)
+
+    async def create_edge(
+        self, ns: str, type: str, from_label: str, from_id: str, to_label: str, to_id: str, props: dict
+    ) -> bool:
+        if not await self.node_exists(ns, from_label, from_id):
+            return False
+        if not await self.node_exists(ns, to_label, to_id):
+            return False
+        sid = props.get("id")
+        rev = props.get("revision")
+        row: dict[str, Any] = {
+            "f": _sk(ns, from_id),
+            "t": _sk(ns, to_id),
+            "id": _sk(ns, f"{from_id}|{type}|{to_id}|{sid}|{rev}"),
+            "ns": ns,
+            "etype": type,
+            "doc": json.dumps(props, default=str),
+        }
+        if sid is not None:
+            row["sid"] = sid
+        row.update(_scalars(props))
+        inline = ", ".join(f"{k}: row.{k}" for k in row if k not in ("f", "t"))
+        await self._run(
+            f"UNWIND $rows AS row MATCH (a:{from_label} {{id: row.f}}), (b:{to_label} {{id: row.t}}) "
+            f"CREATE (a)-[:{_EDGE} {{{inline}}}]->(b)",
+            {"rows": [row]},
+        )
+        return True
+
+    def _edge_row(self, row) -> dict:
+        return {
+            "props": json.loads(row["doc"]) if row["doc"] is not None else {},
+            "from_id": row["fa"],
+            "to_id": row["tb"],
+            "type": row["et"],
+        }
+
+    async def get_current_edge(self, ns: str, id: str) -> dict | None:
+        res = await self._run(
+            f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid AND r.is_current = true "
+            "RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et",
+            {"ns": ns, "sid": id},
+        )
+        return self._edge_row(res.rows[0]) if res.rows else None
+
+    async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
+        res = await self._run(
+            f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid "
+            "RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.revision AS rev "
+            "ORDER BY rev",
+            {"ns": ns, "sid": id},
+        )
+        return [self._edge_row(r) for r in res.rows]
+
+    async def edge_exists(self, ns: str, id: str) -> bool:
+        res = await self._run(
+            f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid RETURN r.sid AS sid LIMIT 1",
+            {"ns": ns, "sid": id},
+        )
+        return bool(res.rows)
+
+    async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
+        current = await self.get_current_edge(ns, id)
+        if current is None:
+            return
+        merged = {**current["props"], **props}
+        sets = ["r.doc = $doc"]
+        params: dict[str, Any] = {"ns": ns, "sid": id, "doc": json.dumps(merged, default=str)}
+        for k, v in _scalars(merged).items():
+            sets.append(f"r.{k} = $s_{k}")
+            params[f"s_{k}"] = v
+        await self._run(
+            f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid AND r.is_current = true "
+            f"SET {', '.join(sets)}",
+            params,
+        )
+
+    async def count_edges(self, ns: str, id: str) -> int:
+        res = await self._run(
+            f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid RETURN count(*) AS n",
+            {"ns": ns, "sid": id},
+        )
+        return int(res.rows[0]["n"]) if res.rows else 0
+
+    async def delete_edges(self, ns: str, id: str) -> int:
+        n = await self.count_edges(ns, id)
+        if n:
+            await self._run(
+                f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid DELETE r",
+                {"ns": ns, "sid": id},
+            )
+        return n
+
+    async def match_edges(
+        self,
+        ns: str,
+        *,
+        from_label: str,
+        to_label: str | None = None,
+        type: str | None = None,
+        from_id: str | None = None,
+        to_id: str | None = None,
+        current_only: bool = False,
+        equals: dict | None = None,
+        order_by: str = "id",
+        skip: int = 0,
+        limit: int = 1000,
+    ) -> list[dict]:
+        blabel = f":{to_label}" if to_label else ""
+        where = ["r.ns = $ns"]
+        params: dict[str, Any] = {"ns": ns, "skip": skip, "limit": limit}
+        if current_only:
+            where.append("r.is_current = true")
+        if type is not None:
+            where.append("r.etype = $etype")
+            params["etype"] = type
+        if from_id is not None:
+            where.append("a.id = $fiid")
+            params["fiid"] = _sk(ns, from_id)
+        if to_id is not None:
+            where.append("b.id = $tiid")
+            params["tiid"] = _sk(ns, to_id)
+        for i, (key, value) in enumerate(sorted((equals or {}).items())):
+            where.append(f"r.{key} = $eq{i}")
+            params[f"eq{i}"] = value
+        ob = "sid" if order_by == "id" else order_by
+        res = await self._run(
+            f"MATCH (a:{from_label})-[r:{_EDGE}]->(b{blabel}) WHERE {' AND '.join(where)} "
+            f"RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.{ob} AS __ob "
+            f"ORDER BY __ob SKIP $skip LIMIT $limit",
+            params,
+        )
+        return [self._edge_row(r) for r in res.rows]
+
+    async def versioned_relation_ids(self, ns: str, label: str, id: str, *, exclude_types: list[str]) -> list[str]:
+        clauses = ["r.revision IS NOT NULL"]
+        params: dict[str, Any] = {"iid": _sk(ns, id), "ns": ns}
+        for i, t in enumerate(exclude_types):
+            clauses.append(f"r.etype <> $ex{i}")
+            params[f"ex{i}"] = t
+        out = []
+        for direction in (f"(x:{label} {{id: $iid}})-[r:{_EDGE}]->(o)", f"(o)-[r:{_EDGE}]->(x:{label} {{id: $iid}})"):
+            res = await self._run(
+                f"MATCH {direction} WHERE r.ns = $ns AND {' AND '.join(clauses)} RETURN DISTINCT r.sid AS rid",
+                params,
+            )
+            out.extend(r["rid"] for r in res.rows)
+        return list(dict.fromkeys(out))
+
+    async def child_nodes(
+        self,
+        ns: str,
+        parent_label: str,
+        parent_id: str,
+        edge_type: str,
+        child_label: str,
+        *,
+        order_by: str | None = None,
+    ) -> list[dict]:
+        ob = "" if order_by is None else f", c.{order_by} AS __ob"
+        order = "" if order_by is None else " ORDER BY __ob"
+        res = await self._run(
+            f"MATCH (p:{parent_label} {{id: $iid}})-[r:{_EDGE}]->(c:{child_label}) "
+            f"WHERE r.ns = $ns AND r.etype = $et RETURN c.doc AS doc{ob}{order}",
+            {"iid": _sk(ns, parent_id), "ns": ns, "et": edge_type},
+        )
+        return [json.loads(r["doc"]) for r in res.rows if r["doc"] is not None]
+
+    async def count_out_edges(self, ns: str, label: str, id: str) -> int:
+        res = await self._run(
+            f"MATCH (p:{label} {{id: $iid}})-[r:{_EDGE}]->(o) WHERE r.ns = $ns RETURN count(*) AS n",
+            {"iid": _sk(ns, id), "ns": ns},
+        )
+        return int(res.rows[0]["n"]) if res.rows else 0
+
+    async def count_in_edges_typed(self, ns: str, label: str, id: str, types: list[str]) -> int:
+        params: dict[str, Any] = {"iid": _sk(ns, id), "ns": ns}
+        ors = []
+        for i, t in enumerate(types):
+            ors.append(f"r.etype = $t{i}")
+            params[f"t{i}"] = t
+        res = await self._run(
+            f"MATCH (p)-[r:{_EDGE}]->(x:{label} {{id: $iid}}) WHERE r.ns = $ns AND ({' OR '.join(ors)}) "
+            "RETURN count(*) AS n",
+            params,
+        )
+        return int(res.rows[0]["n"]) if res.rows else 0
+
+    async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:
+        iid = _sk(ns, id)
+        for direction in (f"(t:{label} {{id: $iid}})-[r:{_EDGE}]->(o)", f"(o)-[r:{_EDGE}]->(t:{label} {{id: $iid}})"):
+            await self._run(
+                f"MATCH {direction} WHERE r.ns = $ns AND r.etype = $et DELETE r",
+                {"iid": iid, "ns": ns, "et": type},
+            )

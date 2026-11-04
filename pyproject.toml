@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "selfgraph"
+dynamic = ["version"]
+description = "Build a knowledge graph from unstructured text. No search; typed methods and Cypher."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "HydraDB" }]
+dependencies = ["pydantic>=2.5", "neo4j>=5.14"]
+
+[project.optional-dependencies]
+llm = ["instructor>=1.0", "litellm>=1.40"]
+tokenizer = ["tiktoken>=0.5"]
+ner = ["spacy>=3.0"]
+falkordb = ["falkordb>=1.0"]
+kuzu = ["kuzu>=0.6"]
+mcp = ["mcp>=1.2"]
+dev = ["pytest>=8", "mcp>=1.2", "ruff>=0.6"]
+all = ["instructor>=1.0", "litellm>=1.40", "tiktoken>=0.5", "falkordb>=1.0", "kuzu>=0.6", "mcp>=1.2"]
+
+[project.scripts]
+selfgraph = "selfgraph.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/hydra-db/selfgraph"
+
+[tool.hatch.version]
+path = "src/selfgraph/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/selfgraph"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "BLE"]
+ignore = ["B008", "SIM105"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]
