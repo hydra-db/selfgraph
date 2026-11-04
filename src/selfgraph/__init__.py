@@ -44,7 +44,7 @@ from .models import (
 from .protocols import Extractor, GraphStore, LLMClient
 from .sync import SyncSelfGraph
 
-__version__ = "0.1.0"
+__version__ = "0.0.2"
 
 if TYPE_CHECKING:
     from .stores.cypher import CypherStore, Neo4jStore
