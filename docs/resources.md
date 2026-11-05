@@ -7,7 +7,17 @@ The graph exposes four typed resources: `graph.entities`, `graph.relations`,
 
 ## Entities
 
+An id defaults to `type:name` with the name canonicalized, so surface variants of
+one entity (`Acme`, `Acme, Inc.`) share an id. Compute the id a name will resolve
+to with `selfgraph.entity_id(type, name)`, which is useful when authoring relations
+that reference an entity by id. Deleting an entity also removes its relations and
+any decision trace that references it.
+
 ```python
+from selfgraph import entity_id
+
+entity_id("Company", "Acme, Inc.")              # 'company:acme'
+
 acme = await graph.entities.create("Acme", "Company", id="company:acme")
 jane = await graph.entities.create(
     "Jane Doe",
@@ -42,6 +52,8 @@ await graph.relations.get("rel-id")             # current version
 ## Preferences
 
 A preference records that a subject prefers or avoids a value along a key.
+`strength` is optional and ranges from 0 to 1. Preferences are versioned like
+relations, so `versions` returns their history.
 
 ```python
 await graph.preferences.create(
@@ -52,14 +64,19 @@ await graph.preferences.create(
     strength=0.9,
 )
 
-await graph.preferences.list("person:jane")
+await graph.preferences.list("person:jane")   # one subject
+await graph.preferences.list()                 # every subject
+await graph.preferences.versions("pref-id")    # newest first
 ```
 
 ## Decisions
 
 A decision trace records a choice: its reasoning steps, rationale, outcome, and
 alternatives. Each step is the id of a relation that already exists, so the trace
-links a sequence of relations.
+links a sequence of relations. A decision's derived id is its actor plus its title,
+so two decisions by the same actor with the same title resolve to one; pass an
+explicit `id` to keep distinct decisions that share both. Decisions are mutated in
+place and are not versioned.
 
 ```python
 step = await graph.relations.create("person:jane", "COMPARED", "company:acme")

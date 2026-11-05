@@ -111,7 +111,7 @@ selfgraph --store neo4j --uri bolt://localhost:7687 --auth neo4j:password mcp
 
 ## Documentation
 
-Full docs are in [docs/](docs/): [install](docs/install.md), [quickstart](docs/quickstart.md), [inserting](docs/inserting.md), [resources](docs/resources.md), [retrieval](docs/retrieval.md), [backends](docs/backends.md), [CLI](docs/cli.md), [MCP](docs/mcp.md), and [errors](docs/errors.md).
+Full docs are in [docs/](https://github.com/hydra-db/selfgraph/tree/main/docs): [install](https://github.com/hydra-db/selfgraph/blob/main/docs/install.md), [quickstart](https://github.com/hydra-db/selfgraph/blob/main/docs/quickstart.md), [inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md), [resources](https://github.com/hydra-db/selfgraph/blob/main/docs/resources.md), [retrieval](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md), [backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md), [CLI](https://github.com/hydra-db/selfgraph/blob/main/docs/cli.md), [MCP](https://github.com/hydra-db/selfgraph/blob/main/docs/mcp.md), and [errors](https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md).
 
 ## Contributing
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "selfgraph"
 dynamic = ["version"]
-description = "Build a knowledge graph from unstructured text. No search; typed methods and Cypher."
+description = "Build a knowledge graph from unstructured text. Typed methods over any graph backend, with backend-native Cypher as an escape hatch."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -20,7 +20,7 @@ falkordb = ["falkordb>=1.0"]
 kuzu = ["kuzu>=0.6"]
 mcp = ["mcp>=1.2"]
 dev = ["pytest>=8", "mcp>=1.2", "ruff>=0.6"]
-all = ["instructor>=1.0", "litellm>=1.40", "tiktoken>=0.5", "falkordb>=1.0", "kuzu>=0.6", "mcp>=1.2"]
+all = ["instructor>=1.0", "litellm>=1.40", "tiktoken>=0.5", "spacy>=3.0", "falkordb>=1.0", "kuzu>=0.6", "mcp>=1.2"]
 
 [project.scripts]
 selfgraph = "selfgraph.cli:main"

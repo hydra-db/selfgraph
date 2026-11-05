@@ -30,6 +30,13 @@ pip install "selfgraph[kuzu,ner]"      # LLM-free extraction on an embedded grap
 pip install "selfgraph[all]"
 ```
 
+The `ner` extra installs spaCy but not a model. Download one for the NER path to
+run, otherwise extraction falls back to the regex heuristic:
+
+```bash
+python -m spacy download en_core_web_sm
+```
+
 ## CLI and MCP
 
 A bare install gives you the library and the `selfgraph` command. The MCP server
