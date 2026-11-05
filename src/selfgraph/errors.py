@@ -8,6 +8,7 @@ __all__ = [
     "ExtractionError",
     "PromptTemplateError",
     "StoreError",
+    "TransientError",
 ]
 
 
@@ -42,4 +43,8 @@ class PromptTemplateError(SelfGraphError):
 
 
 class StoreError(SelfGraphError):
+    pass
+
+
+class TransientError(StoreError):
     pass

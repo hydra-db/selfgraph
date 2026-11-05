@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from typing import Any
 
 from . import _ops
 from ._serde import now
+from .errors import TransientError, ValidationError
 from .extraction.extractor import DefaultExtractor
 from .insert import Insert
 from .llm.base import resolve_llm
@@ -28,6 +31,10 @@ from .retrieval import retrieve as _retrieve
 
 __all__ = ["SelfGraph"]
 
+_MAX_TX_RETRIES = 12
+_TX_RETRY_BASE_DELAY = 0.02
+_TX_RETRY_MAX_DELAY = 1.0
+
 _log = logging.getLogger("selfgraph")
 
 
@@ -42,6 +49,7 @@ class SelfGraph:
         extractor: Extractor | None = None,
         namespace: str = "default",
     ) -> None:
+        _ops._require_text("namespace", namespace)
         self.store = store
         self.namespace = namespace
         self._llm = resolve_llm(llm)
@@ -91,6 +99,14 @@ class SelfGraph:
         if not self._ready:
             await self.initialize()
 
+    async def _reader(self) -> GraphStore:
+        """Return the store after ensuring it is initialized, for read operations.
+
+        @return (GraphStore): the initialized store.
+        """
+        await self._ensure_ready()
+        return self.store
+
     async def close(self) -> None:
         """Close the underlying store connection if it has one."""
         close = getattr(self.store, "close", None)
@@ -107,6 +123,21 @@ class SelfGraph:
         await self.close()
 
     async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
+        """Run one raw Cypher statement directly against the store, as an unguarded escape hatch.
+
+        This runs the query verbatim: it can write, it is not scoped to the namespace, and it
+        bypasses id derivation, versioning, and provenance. Prefer the typed resources for managed
+        writes. The MCP run_cypher tool, by contrast, rejects write clauses.
+
+        @param query (str): the Cypher statement.
+        @param params (Mapping[str, JsonValue] | None): query parameters.
+        @return (CypherResult): the resulting rows and counters.
+        """
+        if not isinstance(query, str):
+            raise ValidationError(f"query must be a string, got {type(query).__name__}")
+        if not query.strip():
+            raise ValidationError("query cannot be empty")
+        _ops._require_json_mapping("params", params)
         await self._ensure_ready()
         return await self.store.run_cypher(query, params)
 
@@ -130,6 +161,12 @@ class SelfGraph:
         @param budget_tokens (int): the assembled-context token budget.
         @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
         """
+        if not isinstance(query, str):
+            raise ValidationError(f"query must be a string, got {type(query).__name__}")
+        if not isinstance(strategy, str):
+            raise ValidationError(f"strategy must be a string, got {type(strategy).__name__}")
+        for _name, _value in (("depth", depth), ("k", k), ("max_nodes", max_nodes), ("budget_tokens", budget_tokens)):
+            _ops._require_int(_name, _value)
         await self._ensure_ready()
         return await _retrieve(
             self,
@@ -143,8 +180,18 @@ class SelfGraph:
 
     async def _in_tx(self, fn: Callable[[Any], Awaitable[Any]]) -> Any:
         await self._ensure_ready()
-        async with self.store.transaction() as tx:
-            return await fn(tx)
+        for attempt in range(_MAX_TX_RETRIES):
+            try:
+                async with self.store.transaction() as tx:
+                    return await fn(tx)
+            except TransientError as exc:
+                if attempt == _MAX_TX_RETRIES - 1:
+                    raise TransientError(
+                        f"write contention: could not commit after {_MAX_TX_RETRIES} retries; "
+                        "retry the write or serialize concurrent writers to this edge"
+                    ) from exc
+                backoff = min(_TX_RETRY_BASE_DELAY * 2**attempt, _TX_RETRY_MAX_DELAY)
+                await asyncio.sleep(random.uniform(0, backoff))
 
     async def _write(self, op: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any) -> Any:
         """Run an _ops write inside a transaction with the namespace injected.
@@ -188,8 +235,8 @@ class SelfGraph:
         ns = self.namespace
         warnings = list(warnings or [])
 
-        await self._ensure_ready()
-        async with self.store.transaction() as tx:
+        async def _apply(tx: Any) -> InsertResult:
+            _ops._require_datetime("event_time", default_event_time)
             await _ops.validate_ontology(tx, ns, ontology)
             source_version: str | None = None
             base_evidence = []
@@ -249,21 +296,23 @@ class SelfGraph:
                     )
                 )
 
-        _log.debug(
-            "inserted %d entities, %d relations, %d preferences, %d decisions (source=%s)",
-            len(entities),
-            len(relations),
-            len(preferences),
-            len(decisions),
-            source_id,
-        )
-        return InsertResult(
-            source_id=source_id,
-            source_version=source_version,
-            created_at=created_at,
-            entities=entities,
-            relations=relations,
-            preferences=preferences,
-            decisions=decisions,
-            warnings=warnings,
-        )
+            _log.debug(
+                "inserted %d entities, %d relations, %d preferences, %d decisions (source=%s)",
+                len(entities),
+                len(relations),
+                len(preferences),
+                len(decisions),
+                source_id,
+            )
+            return InsertResult(
+                source_id=source_id,
+                source_version=source_version,
+                created_at=created_at,
+                entities=entities,
+                relations=relations,
+                preferences=preferences,
+                decisions=decisions,
+                warnings=warnings,
+            )
+
+        return await self._in_tx(_apply)

@@ -245,9 +245,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--store",
         default=None,
         choices=STORES,
-        help="backend: hydradb, neo4j, cypher, falkordb, or kuzu (default $SELFGRAPH_STORE or hydradb)",
+        help=(
+            "backend: hydradb, neo4j, cypher, falkordb, or kuzu "
+            "(default $SELFGRAPH_STORE, else embedded kuzu, or hydradb with --uri)"
+        ),
     )
-    parser.add_argument("--uri", default=None, help="Bolt URI for neo4j/hydradb")
+    parser.add_argument("--uri", default=None, help="Bolt URI for neo4j/cypher/hydradb, host:port for falkordb")
     parser.add_argument("--auth", default=None, help="'user:password', or a bare token (user neo4j)")
     parser.add_argument("--database", default=None, help="database name for Bolt stores")
     parser.add_argument("--namespace", default=None, help="graph namespace (default 'default')")
@@ -277,7 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
     rt.set_defaults(func=_retrieve)
 
     ins = sub.add_parser("insert", help="insert text or an ontology").add_subparsers(dest="what", required=True)
-    it = ins.add_parser("text", help="extract an ontology from text (needs an LLM)")
+    it = ins.add_parser("text", help="extract an ontology from text (LLM if configured, else NER or regex)")
     it.add_argument("text")
     it.add_argument("--source-id")
     it.add_argument("--metadata", help="JSON object of source metadata")

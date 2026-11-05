@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .client import SelfGraph
-from .errors import ValidationError
+from .errors import StoreError, ValidationError
 from .models import LLMConfig
 from .protocols import GraphStore
 
@@ -25,7 +26,7 @@ STORES = ("neo4j", "cypher", "hydradb", "falkordb", "kuzu")
 
 @dataclass
 class GraphSettings:
-    store: str = "hydradb"
+    store: str | None = None
     uri: str | None = None
     auth: str | None = None
     database: str | None = None
@@ -50,7 +51,7 @@ def settings_from_env(**overrides: Any) -> GraphSettings:
         return os.environ.get(env, default)
 
     return GraphSettings(
-        store=pick("store", "SELFGRAPH_STORE", "hydradb"),
+        store=pick("store", "SELFGRAPH_STORE"),
         uri=pick("uri", "SELFGRAPH_URI"),
         auth=pick("auth", "SELFGRAPH_AUTH"),
         database=pick("database", "SELFGRAPH_DATABASE"),
@@ -72,15 +73,28 @@ def _parse_auth(auth: str | None) -> tuple[str, str] | None:
 
 
 def _build_store(settings: GraphSettings) -> GraphStore:
-    kind = (settings.store or "hydradb").lower()
+    kind = (settings.store or ("hydradb" if settings.uri else "kuzu")).lower()
     if kind not in STORES:
         raise ValidationError(f"unknown store {settings.store!r}; choose one of {', '.join(STORES)}")
     if kind == "kuzu":
         from .stores.kuzu import KuzuStore
 
-        return KuzuStore(settings.uri or "selfgraph_kuzu")
+        path = settings.uri
+        if not path:
+            path = os.path.join(os.path.expanduser("~"), ".selfgraph", "default.kuzu")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            return KuzuStore(path)
+        except StoreError as exc:
+            if settings.store:
+                raise
+            raise ValidationError(
+                "no store configured, so SelfGraph defaults to the embedded Kuzu backend, which needs the kuzu "
+                "extra: pip install 'selfgraph[kuzu]', or set SELFGRAPH_STORE and SELFGRAPH_URI for a server"
+            ) from exc
     if not settings.uri:
-        raise ValidationError(f"the {kind!r} store needs a Bolt URI (--uri / SELFGRAPH_URI)")
+        hint = "host:port" if kind == "falkordb" else "a Bolt URI"
+        raise ValidationError(f"the {kind!r} store needs {hint} (--uri / SELFGRAPH_URI)")
     auth = _parse_auth(settings.auth)
     if kind in ("neo4j", "cypher"):
         from .stores.cypher import CypherStore, Neo4jStore
@@ -131,13 +145,15 @@ def to_jsonable(obj: Any) -> Any:
     @param obj (Any): the SDK return value to convert.
     @return (Any): JSON-ready data.
     """
-    if obj is None or isinstance(obj, (str, int, float, bool)):
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if obj is None or isinstance(obj, str | int | float | bool):
         return obj
     if isinstance(obj, BaseModel):
-        return obj.model_dump(mode="json")
+        return to_jsonable(obj.model_dump(mode="json"))
     if isinstance(obj, dict):
         return {k: to_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, list | tuple):
         return [to_jsonable(v) for v in obj]
     return obj
 

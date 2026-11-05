@@ -6,11 +6,15 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError as PydanticValidationError
 
+from ._ops import _require_json_mapping, _require_optional_text
+from ._serde import now
 from .errors import ExtractionError, SelfGraphError, ValidationError
+from .ids import _has_surrogate
 from .models import (
     ExtractionInstructions,
     ExtractionPrompts,
     InsertResult,
+    InsertWarning,
     JsonValue,
     Ontology,
     ParsedDocument,
@@ -53,6 +57,18 @@ class Insert:
         instructions: ExtractionInstructions | None = None,
         prompts: ExtractionPrompts | None = None,
     ) -> InsertResult:
+        if not isinstance(text, str):
+            raise ValidationError(f"text must be a string, got {type(text).__name__}")
+        if _has_surrogate(text) or "\x00" in text:
+            raise ValidationError("text cannot contain NUL or unpaired surrogate characters")
+        _require_optional_text("source_id", source_id)
+        _require_json_mapping("metadata", metadata)
+        if not text.strip():
+            return InsertResult(
+                source_id=source_id,
+                created_at=now(),
+                warnings=[InsertWarning(code="empty_text", message="text was empty; nothing was ingested")],
+            )
         extractor = self._c._build_extractor(instructions, prompts)
         document = ParsedDocument(text=text, media_type="text/plain")
         ontology = await self._extract(extractor, document)
@@ -72,6 +88,18 @@ class Insert:
         *,
         source_id: str | None = None,
     ) -> InsertResult:
+        """Merge a ready ontology into the graph as idempotent upserts.
+
+        References are validated before any write. The batch is atomic on transactional
+        backends (Neo4j, Memgraph); auto-commit backends (HydraDB, Kuzu, FalkorDB) apply
+        writes incrementally, so a mid-batch failure can leave earlier writes in place.
+        Re-running the same ontology reconciles a partial write rather than duplicating it.
+
+        @param ontology (Ontology | Mapping[str, Any]): the ontology to merge.
+        @param source_id (str | None): optional source id to attach as provenance.
+        @return (InsertResult): the inserted entities, relations, preferences, and decisions.
+        """
+        _require_optional_text("source_id", source_id)
         if isinstance(ontology, Ontology):
             ont = ontology
         else:

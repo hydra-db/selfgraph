@@ -2,15 +2,50 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
 
-from ..errors import StoreError
+from ..errors import StoreError, ValidationError
 from ..ids import quote_label
 from ..models import CypherResult
 from ._cypher import AutoCommitStore
 
 __all__ = ["KuzuStore"]
+
+_SAFE_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _normalize(value: Any) -> Any:
+    """Convert a Kuzu result value to a JSON-ready value, matching the Bolt store's serialization.
+
+    @param value (Any): a raw value from a Kuzu result row.
+    @return (Any): the JSON-ready equivalent (ISO strings for temporals, hex for blobs, str for the rest).
+    """
+    if isinstance(value, dict):
+        return {k if isinstance(k, str) else str(k): _normalize(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_normalize(v) for v in value]
+    if isinstance(value, bytes | bytearray):
+        return value.hex()
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        return iso()
+    return str(value)
+
+
+def _safe_order_by(order_by: str) -> str:
+    """Validate an order_by column is a plain identifier before interpolation.
+
+    @param order_by (str): the column name to order by.
+    @return (str): the validated column name.
+    """
+    if not _SAFE_COLUMN.match(order_by):
+        raise ValidationError(f"invalid order_by column {order_by!r}")
+    return order_by
+
 
 _SCHEMA = (
     "CREATE NODE TABLE IF NOT EXISTS N(pk STRING, id STRING, ns STRING, label STRING, doc STRING, PRIMARY KEY(pk))",
@@ -18,6 +53,7 @@ _SCHEMA = (
     "is_current BOOLEAN, revision INT64, doc STRING)",
 )
 _DATABASES: dict[str, Any] = {}
+_MAX_SKIP = 10_000_000
 
 
 def _pk(ns: str, id: str) -> str:
@@ -25,7 +61,7 @@ def _pk(ns: str, id: str) -> str:
 
 
 def _jv(value: Any) -> str:
-    return json.dumps(value, default=str)
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 class KuzuStore(AutoCommitStore):
@@ -33,7 +69,7 @@ class KuzuStore(AutoCommitStore):
         try:
             import kuzu
         except ImportError as exc:  # pragma: no cover
-            raise StoreError("the 'kuzu' package is required for KuzuStore; install selfgraph[kuzu]") from exc
+            raise StoreError("the 'kuzu' package is required for KuzuStore; install 'selfgraph[kuzu]'") from exc
         if path not in _DATABASES:
             _DATABASES[path] = kuzu.Database(path, **db_kwargs)
         self._db = _DATABASES[path]
@@ -43,18 +79,22 @@ class KuzuStore(AutoCommitStore):
     async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
         def _exec():
             qr = self._conn.execute(query, parameters=dict(params or {}))
+            if isinstance(qr, list):
+                raise StoreError("Kuzu runs one statement per query; pass one statement, not several joined by ';'")
             columns = qr.get_column_names()
             rows = []
             while qr.has_next():
-                rows.append(dict(zip(columns, qr.get_next(), strict=False)))
+                rows.append({k: _normalize(v) for k, v in zip(columns, qr.get_next(), strict=False)})
             return columns, rows
 
         async with self._lock:
             try:
                 columns, rows = await asyncio.to_thread(_exec)
+                return CypherResult(columns=columns, rows=rows)
+            except StoreError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 raise StoreError(f"Kuzu query failed: {exc}") from exc
-        return CypherResult(columns=columns, rows=rows)
 
     async def initialize(self) -> None:
         """Create the node and relationship tables if they do not exist."""
@@ -109,10 +149,12 @@ class KuzuStore(AutoCommitStore):
         skip: int = 0,
         limit: int = 1000,
     ) -> list[dict]:
+        if skip > _MAX_SKIP:
+            return []
         where = ["n.ns = $ns", "n.label = $label"]
         params: dict[str, Any] = {"ns": ns, "label": label}
         self._where_equals("n", equals, where, params)
-        ob = "n.id" if order_by == "id" else f"json_extract(n.doc, '{order_by}')"
+        ob = "n.id" if order_by == "id" else f"json_extract(n.doc, '{_safe_order_by(order_by)}')"
         res = await self._run(
             f"MATCH (n:N) WHERE {' AND '.join(where)} "
             f"RETURN n.doc AS doc ORDER BY {ob} SKIP {int(skip)} LIMIT {int(limit)}",
@@ -140,20 +182,30 @@ class KuzuStore(AutoCommitStore):
             return False
         if not await self.node_exists(ns, to_label, to_id):
             return False
-        await self._run(
-            "MATCH (a:N {pk:$f}), (b:N {pk:$t}) "
-            "CREATE (a)-[r:R {sid:$sid, ns:$ns, etype:$et, is_current:$isc, revision:$rev, doc:$doc}]->(b)",
-            {
-                "f": _pk(ns, from_id),
-                "t": _pk(ns, to_id),
-                "sid": props.get("id"),
-                "ns": ns,
-                "et": type,
-                "isc": props.get("is_current"),
-                "rev": props.get("revision"),
-                "doc": _jv(props),
-            },
-        )
+        sid = props.get("id")
+        rev = props.get("revision")
+        params = {
+            "f": _pk(ns, from_id),
+            "t": _pk(ns, to_id),
+            "sid": sid,
+            "ns": ns,
+            "et": type,
+            "isc": props.get("is_current"),
+            "rev": rev,
+            "doc": _jv(props),
+        }
+        if sid is not None and rev is not None:
+            query = (
+                "MATCH (a:N {pk:$f}), (b:N {pk:$t}) "
+                "MERGE (a)-[r:R {sid:$sid, ns:$ns, revision:$rev}]->(b) "
+                "SET r.etype=$et, r.is_current=$isc, r.doc=$doc"
+            )
+        else:
+            query = (
+                "MATCH (a:N {pk:$f}), (b:N {pk:$t}) "
+                "CREATE (a)-[r:R {sid:$sid, ns:$ns, etype:$et, is_current:$isc, revision:$rev, doc:$doc}]->(b)"
+            )
+        await self._run(query, params)
         return True
 
     @staticmethod
@@ -180,13 +232,6 @@ class KuzuStore(AutoCommitStore):
             {"ns": ns, "sid": id},
         )
         return [self._edge_row(r) for r in res.rows]
-
-    async def edge_exists(self, ns: str, id: str) -> bool:
-        res = await self._run(
-            "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid RETURN r.sid AS sid LIMIT 1",
-            {"ns": ns, "sid": id},
-        )
-        return bool(res.rows)
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
         current = await self.get_current_edge(ns, id)
@@ -230,6 +275,8 @@ class KuzuStore(AutoCommitStore):
         skip: int = 0,
         limit: int = 1000,
     ) -> list[dict]:
+        if skip > _MAX_SKIP:
+            return []
         where = ["r.ns = $ns", "a.label = $fl"]
         params: dict[str, Any] = {"ns": ns, "fl": from_label}
         if to_label is not None:
@@ -252,7 +299,7 @@ class KuzuStore(AutoCommitStore):
         elif order_by == "revision":
             ob = "r.revision"
         else:
-            ob = f"json_extract(r.doc, '{order_by}')"
+            ob = f"json_extract(r.doc, '{_safe_order_by(order_by)}')"
         res = await self._run(
             f"MATCH (a:N)-[r:R]->(b:N) WHERE {' AND '.join(where)} "
             f"RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et "
@@ -283,7 +330,7 @@ class KuzuStore(AutoCommitStore):
         *,
         order_by: str | None = None,
     ) -> list[dict]:
-        order = "" if order_by is None else f" ORDER BY json_extract(c.doc, '{order_by}')"
+        order = "" if order_by is None else f" ORDER BY json_extract(c.doc, '{_safe_order_by(order_by)}')"
         res = await self._run(
             "MATCH (p:N {pk:$pk})-[r:R]->(c:N) "
             f"WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl RETURN c.doc AS doc{order}",

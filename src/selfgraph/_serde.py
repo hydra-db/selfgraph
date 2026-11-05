@@ -58,14 +58,14 @@ def from_iso(value: Any) -> datetime | None:
 def _dumps(value: Any) -> str:
     try:
         return json.dumps(value, sort_keys=True, allow_nan=False)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ValidationError(f"value is not JSON-serializable: {exc}") from exc
 
 
 def _loads(value: Any, fallback: Any) -> Any:
     if value is None:
         return fallback
-    if isinstance(value, (dict, list)):
+    if isinstance(value, dict | list):
         return value
     try:
         return json.loads(value)

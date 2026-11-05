@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
+from collections.abc import Mapping
 
 from .errors import ValidationError
 
@@ -13,16 +15,79 @@ __all__ = [
     "preference_id",
     "decision_id",
     "profile_id",
+    "source_node_id",
     "source_version_id",
     "chunk_id",
     "quote_label",
     "quote_reltype",
 ]
 
+
+def _has_surrogate(text: str) -> bool:
+    """Report whether text contains a lone surrogate code point, which cannot be UTF-8 encoded.
+
+    @param text (str): the text to inspect.
+    @return (bool): True when a surrogate character is present.
+    """
+    return any(0xD800 <= ord(ch) <= 0xDFFF for ch in text)
+
+
+def _has_control(text: str) -> bool:
+    """Report whether text contains a C0/C1 control character, DEL, or a lone surrogate.
+
+    @param text (str): the text to inspect.
+    @return (bool): True when a control or surrogate character is present.
+    """
+    return any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or 0xD800 <= ord(ch) <= 0xDFFF for ch in text)
+
+
+_MAX_JSON_DEPTH = 64
+
+
+def _require_clean_json(name: str, value: object, depth: int = 0) -> None:
+    """Validate a stored JSON value: bounded nesting, clean string keys, and UTF-8-emittable string values.
+
+    The depth guard keeps a pathological nested value from exhausting the Python stack (a raw RecursionError
+    out of the typed API); the key check mirrors the identifier hygiene applied elsewhere; the value check
+    rejects a lone surrogate that would store but then break any later UTF-8 encode of the retrieved object.
+
+    @param name (str): the field name for error messages.
+    @param value (object): the JSON-shaped value to validate.
+    @param depth (int): the current nesting depth, for the recursion guard.
+    @return (None): nothing; raises ValidationError on excess depth, a control/surrogate key, or a surrogate value.
+    """
+    if depth > _MAX_JSON_DEPTH:
+        raise ValidationError(f"{name} is nested too deeply; keep it under {_MAX_JSON_DEPTH} levels")
+    if isinstance(value, str):
+        if _has_surrogate(value):
+            raise ValidationError(f"{name} values cannot contain unpaired surrogate characters")
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            if isinstance(key, str) and _has_control(key):
+                raise ValidationError(f"{name} keys cannot contain control or surrogate characters")
+            _require_clean_json(name, item, depth + 1)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _require_clean_json(name, item, depth + 1)
+
+
+def _require_str(label: str, value: object) -> None:
+    """Validate a value is a string with no control or surrogate characters.
+
+    @param label (str): the field name for the error message.
+    @param value (object): the value to check.
+    @return (None): nothing; raises ValidationError when not a clean string.
+    """
+    if not isinstance(value, str):
+        raise ValidationError(f"{label} must be a string, got {type(value).__name__}")
+    if _has_control(value):
+        raise ValidationError(f"{label} cannot contain control or surrogate characters")
+
+
 _WS = re.compile(r"\s+")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_PUNCT = re.compile(r"[^a-z0-9\s]+")
-_NON_IDENT = re.compile(r"[^a-z0-9]+")
+_PUNCT = re.compile(r"[^\w\s]+")
+_NON_IDENT = re.compile(r"[^\w]+")
 _ENTITY_SUFFIXES = frozenset(
     {
         "inc",
@@ -44,6 +109,23 @@ _ENTITY_SUFFIXES = frozenset(
         "sa",
         "nv",
         "the",
+    }
+)
+_ORG_TYPES = frozenset(
+    {
+        "company",
+        "organization",
+        "organisation",
+        "org",
+        "corporation",
+        "corp",
+        "business",
+        "firm",
+        "institution",
+        "agency",
+        "employer",
+        "vendor",
+        "bank",
     }
 )
 
@@ -70,6 +152,15 @@ def _hash(*parts: str | None) -> str:
     return h.hexdigest()
 
 
+def normalize_text(value: str) -> str:
+    """NFC-normalize text so an id, its stored field, and a filter argument share one byte form.
+
+    @param value (str): the text to normalize.
+    @return (str): the NFC-normalized text.
+    """
+    return unicodedata.normalize("NFC", value)
+
+
 def slug(text: str) -> str:
     """Lowercase ``text`` and turn runs of whitespace into single hyphens.
 
@@ -79,20 +170,25 @@ def slug(text: str) -> str:
     return _WS.sub("-", text.strip().lower())
 
 
-def _canonical_name(name: str) -> str:
+def _canonical_name(type: str, name: str) -> str:
     """Canonicalise an entity name so cross-document surface variants collapse.
 
-    Drops punctuation, a leading article, and trailing corporate suffixes so
-    "Acme", "Acme, Inc." and "The Acme Corporation" resolve to the same id.
+    Drops punctuation for every type; for organisation-like types it also drops a
+    leading article and trailing corporate suffixes, so "Acme", "Acme, Inc." and
+    "The Acme Corporation" resolve to one id while a Work "The Trial" stays distinct
+    from "Trial".
 
+    @param type (str): the entity type, which scopes suffix and article stripping.
     @param name (str): the raw entity name.
     @return (str): the canonical hyphenated form.
     """
+    name = normalize_text(name)
     words = _PUNCT.sub(" ", name.strip().lower()).split()
-    if words and words[0] == "the":
-        words = words[1:]
-    while len(words) > 1 and words[-1] in _ENTITY_SUFFIXES:
-        words = words[:-1]
+    if slug(type) in _ORG_TYPES:
+        if words and words[0] == "the":
+            words = words[1:]
+        while len(words) > 1 and words[-1] in _ENTITY_SUFFIXES:
+            words = words[:-1]
     return "-".join(words) if words else slug(name)
 
 
@@ -103,7 +199,10 @@ def entity_id(type: str, name: str) -> str:
     @param name (str): the entity name.
     @return (str): the derived entity id.
     """
-    return f"{slug(type)}:{_canonical_name(name)}"
+    _require_str("entity type", type)
+    _require_str("entity name", name)
+    type = normalize_text(type)
+    return f"{slug(type)}:{_canonical_name(type, name)}"
 
 
 def normalize_rel_type(type: str) -> str:
@@ -112,7 +211,11 @@ def normalize_rel_type(type: str) -> str:
     @param type (str): the raw relation type.
     @return (str): the canonical relation type.
     """
-    return _NON_IDENT.sub("_", type.strip().lower()).strip("_").upper()
+    _require_str("relation type", type)
+    normalized = _NON_IDENT.sub("_", normalize_text(type).strip().lower()).strip("_").upper()
+    if not normalized:
+        raise ValidationError("relation type cannot be empty; use a verb phrase, e.g. 'works at' or 'WORKS_AT'")
+    return normalized
 
 
 def relation_id(from_entity: str, type: str, to_entity: str) -> str:
@@ -123,6 +226,8 @@ def relation_id(from_entity: str, type: str, to_entity: str) -> str:
     @param to_entity (str): the target entity id.
     @return (str): the derived relation id.
     """
+    _require_str("from_entity", from_entity)
+    _require_str("to_entity", to_entity)
     return f"relation:{_hash(from_entity, normalize_rel_type(type), to_entity)}"
 
 
@@ -135,7 +240,11 @@ def preference_id(subject_entity: str, kind: str, key: str, value_entity: str) -
     @param value_entity (str): the value entity id.
     @return (str): the derived preference id.
     """
-    return f"preference:{_hash(subject_entity, kind, key, value_entity)}"
+    _require_str("subject_entity", subject_entity)
+    _require_str("preference kind", kind)
+    _require_str("preference key", key)
+    _require_str("value_entity", value_entity)
+    return f"preference:{_hash(subject_entity, kind, normalize_text(key), value_entity)}"
 
 
 def decision_id(actor_entity: str | None, title: str) -> str:
@@ -145,7 +254,10 @@ def decision_id(actor_entity: str | None, title: str) -> str:
     @param title (str): the decision title.
     @return (str): the derived decision id.
     """
-    return f"decision:{_hash(actor_entity, title)}"
+    if actor_entity is not None:
+        _require_str("actor_entity", actor_entity)
+    _require_str("decision title", title)
+    return f"decision:{_hash(actor_entity, normalize_text(title))}"
 
 
 def profile_id(subject_entity: str) -> str:
@@ -154,21 +266,32 @@ def profile_id(subject_entity: str) -> str:
     @param subject_entity (str): the subject entity id.
     @return (str): the profile node id.
     """
+    _require_str("subject_entity", subject_entity)
     return f"profile:{subject_entity}"
 
 
-def source_version_id(source_id: str, created_at_iso: str, content_hash: str) -> str:
-    """A unique ID for one insert of a source.
+def source_node_id(source_id: str) -> str:
+    """The internal source node ID, namespaced so it never collides with an entity id.
 
-    Every insert of a source creates a new source version, even with identical
-    content, so the created-at timestamp is part of the ID.
+    @param source_id (str): the caller's source id.
+    @return (str): the derived source node id.
+    """
+    _require_str("source_id", source_id)
+    return f"source:{source_id}"
+
+
+def source_version_id(source_id: str, content_hash: str) -> str:
+    """A content-addressed ID for a version of a source.
+
+    The ID is derived from the source id and a content digest, so re-inserting the
+    same content reuses one version rather than minting a new one on every retry.
 
     @param source_id (str): the source id.
-    @param created_at_iso (str): the insert timestamp as ISO text.
     @param content_hash (str): a digest of the source content.
     @return (str): the derived source version id.
     """
-    return f"sv:{_hash(source_id, created_at_iso, content_hash)}"
+    _require_str("source_id", source_id)
+    return f"sv:{_hash(source_id, content_hash)}"
 
 
 def content_hash(content: bytes) -> str:

@@ -10,9 +10,11 @@ from .errors import (
     PromptTemplateError,
     SelfGraphError,
     StoreError,
+    TransientError,
     ValidationError,
 )
 from .extraction import DEFAULT_PROMPTS, BasicExtractor, DefaultExtractor
+from .ids import decision_id, entity_id, normalize_rel_type, preference_id, profile_id, relation_id
 from .llm import build_llm_client
 from .models import (
     CypherResult,
@@ -44,7 +46,7 @@ from .models import (
 from .protocols import Extractor, GraphStore, LLMClient
 from .sync import SyncSelfGraph
 
-__version__ = "0.0.2"
+__version__ = "0.1.0"
 
 if TYPE_CHECKING:
     from .stores.cypher import CypherStore, Neo4jStore
@@ -69,6 +71,10 @@ def __getattr__(name: str):
         module = importlib.import_module(module_name)
         return getattr(module, attr)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(__all__)
 
 
 __all__ = [
@@ -111,6 +117,12 @@ __all__ = [
     "BasicExtractor",
     "DEFAULT_PROMPTS",
     "build_llm_client",
+    "entity_id",
+    "relation_id",
+    "preference_id",
+    "decision_id",
+    "profile_id",
+    "normalize_rel_type",
     "SelfGraphError",
     "ValidationError",
     "NotFoundError",
@@ -118,5 +130,6 @@ __all__ = [
     "ExtractionError",
     "PromptTemplateError",
     "StoreError",
+    "TransientError",
     "__version__",
 ]

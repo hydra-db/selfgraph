@@ -1,9 +1,11 @@
+import math
 from datetime import datetime
-from typing import Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, JsonValue, field_validator
 
-from .ids import normalize_rel_type
+from .errors import ValidationError
+from .ids import _has_control, _has_surrogate, _require_clean_json, normalize_rel_type
 
 __all__ = [
     "JsonValue",
@@ -142,6 +144,7 @@ class DeleteResult(BaseModel):
     deleted_entities: int = 0
     deleted_relation_versions: int = 0
     deleted_decisions: int = 0
+    deleted_preference_versions: int = 0
 
 
 class CypherResult(BaseModel):
@@ -158,6 +161,31 @@ class EntityInput(BaseModel):
     external_ids: dict[str, str] = Field(default_factory=dict)
     properties: dict[str, JsonValue] = Field(default_factory=dict)
 
+    @field_validator("type", "name")
+    @classmethod
+    def _require_non_empty(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValidationError(
+                "entity type and name cannot be empty; an entity needs both, e.g. type='Person', name='Jane Doe'"
+            )
+        return value.strip()
+
+    @field_validator("aliases")
+    @classmethod
+    def _clean_aliases(cls, value: list[str]) -> list[str]:
+        for alias in value:
+            if not isinstance(alias, str):
+                raise ValidationError(f"entity alias must be a string, got {type(alias).__name__}")
+            if _has_control(alias):
+                raise ValidationError("entity alias cannot contain control or surrogate characters")
+        return value
+
+    @field_validator("external_ids", "properties")
+    @classmethod
+    def _clean_json(cls, value: Any) -> Any:
+        _require_clean_json("entity property and external id", value)
+        return value
+
 
 class EvidenceInput(BaseModel):
     source_id: str
@@ -165,6 +193,27 @@ class EvidenceInput(BaseModel):
     start_offset: int | None = None
     end_offset: int | None = None
     confidence: float | None = None
+
+    @field_validator("source_id")
+    @classmethod
+    def _clean_source_id(cls, value: str) -> str:
+        if _has_control(value):
+            raise ValidationError("evidence source_id cannot contain control or surrogate characters")
+        return value
+
+    @field_validator("quote")
+    @classmethod
+    def _clean_quote(cls, value: str | None) -> str | None:
+        if value is not None and _has_surrogate(value):
+            raise ValidationError("evidence quote cannot contain unpaired surrogate characters")
+        return value
+
+    @field_validator("confidence")
+    @classmethod
+    def _finite_confidence(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValidationError("evidence confidence must be a finite number")
+        return value
 
 
 class RelationInput(BaseModel):
@@ -181,6 +230,12 @@ class RelationInput(BaseModel):
     def _normalize_type(cls, value: str) -> str:
         return normalize_rel_type(value)
 
+    @field_validator("properties")
+    @classmethod
+    def _clean_json(cls, value: Any) -> Any:
+        _require_clean_json("relation property", value)
+        return value
+
 
 class PreferenceInput(BaseModel):
     id: str | None = None
@@ -192,6 +247,19 @@ class PreferenceInput(BaseModel):
     strength: float | None = None
     properties: dict[str, JsonValue] = Field(default_factory=dict)
     event_time: datetime | None = None
+
+    @field_validator("key")
+    @classmethod
+    def _clean_key(cls, value: str) -> str:
+        if _has_control(value):
+            raise ValidationError("preference key cannot contain control or surrogate characters")
+        return value
+
+    @field_validator("properties")
+    @classmethod
+    def _clean_json(cls, value: Any) -> Any:
+        _require_clean_json("preference property", value)
+        return value
 
 
 class DecisionTraceInput(BaseModel):

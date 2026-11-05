@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -86,23 +85,18 @@ def _norm(name: str) -> str:
     return name.strip().lower()
 
 
-_NUMERIC_START = re.compile(r"^[\d$€£¥]")
-
-
 def _is_noise_name(name: str) -> bool:
-    """Report whether a name is a quantity or phrase fragment rather than an entity.
+    """Report whether a name is a bare quantity or phrase fragment rather than an entity.
 
     @param name (str): the candidate entity name.
     @return (bool): True when the name should not become an entity.
     """
     text = name.strip()
-    if not text or _NUMERIC_START.match(text):
+    if not text:
         return True
-    tokens = text.split()
-    if len(tokens) > 6:
+    if len(text.split()) > 6:
         return True
-    digit_tokens = sum(1 for t in tokens if any(c.isdigit() for c in t))
-    return digit_tokens / len(tokens) > 0.5
+    return not any(c.isalpha() for c in text)
 
 
 class _WarningSink:
@@ -222,7 +216,7 @@ class DefaultExtractor(_WarningSink):
             if ent is None:
                 if _is_noise_name(name):
                     return None
-                ent = EntityInput(type="Entity", name=name.strip())
+                ent = EntityInput(type="Thing", name=name.strip())
                 registry[key] = ent
             return _ids.entity_id(ent.type, ent.name)
 

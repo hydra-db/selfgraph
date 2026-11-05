@@ -67,19 +67,19 @@ _PAGE = 500
 _SCAN_LIMIT = 5000
 _MAX_PASSAGE_SOURCES = 12
 _MAX_PASSAGES = 6
-_PASSAGE_BUDGET_FRACTION = 0.6
+_PASSAGE_BUDGET_PERCENT = 60
 _BM25_K1 = 2.0
 _BM25_B = 1.0
 _GREP_WEIGHT = 1.0
 
 
 def _tokens(text: str) -> set[str]:
-    """Split text into lowercase alphanumeric tokens, dropping stopwords and single characters.
+    """Split text into lowercase alphanumeric tokens, dropping stopwords.
 
     @param text (str): the text to tokenize.
     @return (set[str]): the distinct content tokens.
     """
-    return {t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) > 1 and t not in _STOPWORDS}
+    return {t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in _STOPWORDS}
 
 
 def _entity_text(e: Entity) -> str:
@@ -267,7 +267,7 @@ async def _collect_passages(
     candidates: list[tuple[float, int, str]] = []
     for sv, d in sv_dist.items():
         chunks = await graph.store.child_nodes(ns, L_SOURCE_VERSION, sv, R_HAS_CHUNK, L_CHUNK, order_by="index")
-        for c in chunks:
+        for c in sorted(chunks, key=lambda c: int(c["index"])):
             text = (c.get("text") or "").strip()
             if text:
                 candidates.append((float(len(query_tokens & _tokens(text))), d, text))
@@ -327,7 +327,7 @@ def _assemble(passages, entities, relations, preferences, decisions, dist: dict[
         used += cost
         return True
 
-    passage_cap = int(budget_tokens * _PASSAGE_BUDGET_FRACTION)
+    passage_cap = budget_tokens * _PASSAGE_BUDGET_PERCENT // 100
     for p in passages:
         if not add(p, passage_cap):
             break

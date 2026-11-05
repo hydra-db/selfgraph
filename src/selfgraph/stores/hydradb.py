@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from ..errors import StoreError
+from ..errors import StoreError, TransientError
 from ..ids import quote_label
 from ..models import CypherResult
 from ._cypher import AutoCommitStore, records_to_result
@@ -14,6 +14,28 @@ __all__ = ["HydraDBStore"]
 
 _EDGE = "RELATES"
 _SCALARS = (str, int, float, bool)
+_MAX_STRING_BYTES = 32000
+
+
+def _guard_sizes(row: Mapping[str, Any]) -> None:
+    """Reject a write whose stored strings exceed the engine's per-string size limit.
+
+    @param row (Mapping[str, Any]): the column names and values about to be written.
+    @return (None): nothing; raises when a stored string is too large.
+    """
+    for key, value in row.items():
+        if isinstance(value, str) and len(value.encode("utf-8")) > _MAX_STRING_BYTES:
+            size = len(value.encode("utf-8"))
+            field = (
+                "the serialized node or edge document (HydraDB stores each node or edge as one JSON document, "
+                "so its properties share this budget)"
+                if key == "doc"
+                else f"the string column {key!r}"
+            )
+            raise StoreError(
+                f"HydraDB rejects {field} at {size} bytes; the engine limit is "
+                f"{_MAX_STRING_BYTES} bytes per stored string"
+            )
 
 
 def _sk(ns: str, sid: str) -> int:
@@ -56,6 +78,9 @@ class HydraDBStore(AutoCommitStore):
                 result = await session.run(query, dict(params or {}))
                 return await records_to_result(result)
             except Exception as exc:  # noqa: BLE001
+                lowered = f"{getattr(exc, 'code', '') or ''} {exc}".lower()
+                if any(k in lowered for k in ("snapshot", "epoch", "transient", "serializ", "conflict", "lock")):
+                    raise TransientError(f"HydraDB transaction conflict: {exc}") from exc
                 raise StoreError(f"HydraDB query failed: {exc}") from exc
 
     async def initialize(self) -> None:
@@ -76,6 +101,16 @@ class HydraDBStore(AutoCommitStore):
         res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.sid AS sid", {"iid": _sk(ns, id)})
         return bool(res.rows)
 
+    def check_doc_size(self, props: Mapping[str, Any]) -> None:
+        """Reject an encoded write whose serialized document exceeds the engine's per-string limit, before any write.
+
+        @param props (Mapping[str, Any]): the encoded node or edge properties about to be written.
+        @return (None): nothing; raises StoreError when the document is too large.
+        """
+        row: dict[str, Any] = {"doc": json.dumps(dict(props), default=str)}
+        row.update(_scalars(dict(props)))
+        _guard_sizes(row)
+
     async def upsert_node(self, ns: str, label: str, id: str, props: dict, *, extra_label: str | None = None) -> None:
         if extra_label is not None:
             quote_label(extra_label)
@@ -86,6 +121,7 @@ class HydraDBStore(AutoCommitStore):
             "doc": json.dumps(props, default=str),
         }
         row.update(_scalars(props))
+        _guard_sizes(row)
         sets = ", ".join(f"n.{k} = row.{k}" for k in row if k != "id")
         await self._run(f"UNWIND $rows AS row MERGE (n {{id: row.id}}) SET n:{label}, {sets}", {"rows": [row]})
 
@@ -153,10 +189,12 @@ class HydraDBStore(AutoCommitStore):
         if sid is not None:
             row["sid"] = sid
         row.update(_scalars(props))
-        inline = ", ".join(f"{k}: row.{k}" for k in row if k not in ("f", "t"))
+        _guard_sizes(row)
+        set_props = ", ".join(f"r.{k} = row.{k}" for k in row if k not in ("f", "t", "id"))
         await self._run(
             f"UNWIND $rows AS row MATCH (a:{from_label} {{id: row.f}}), (b:{to_label} {{id: row.t}}) "
-            f"CREATE (a)-[:{_EDGE} {{{inline}}}]->(b)",
+            f"MERGE (a)-[r:{_EDGE} {{id: row.id}}]->(b) "
+            f"SET {set_props}",
             {"rows": [row]},
         )
         return True
@@ -186,13 +224,6 @@ class HydraDBStore(AutoCommitStore):
         )
         return [self._edge_row(r) for r in res.rows]
 
-    async def edge_exists(self, ns: str, id: str) -> bool:
-        res = await self._run(
-            f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid RETURN r.sid AS sid LIMIT 1",
-            {"ns": ns, "sid": id},
-        )
-        return bool(res.rows)
-
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
         current = await self.get_current_edge(ns, id)
         if current is None:
@@ -203,6 +234,7 @@ class HydraDBStore(AutoCommitStore):
         for k, v in _scalars(merged).items():
             sets.append(f"r.{k} = $s_{k}")
             params[f"s_{k}"] = v
+        _guard_sizes(params)
         await self._run(
             f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid AND r.is_current = true "
             f"SET {', '.join(sets)}",

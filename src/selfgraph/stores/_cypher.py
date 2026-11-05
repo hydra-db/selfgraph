@@ -18,6 +18,16 @@ class AutoCommitStore:
         """
         return await self._run(query, params)
 
+    async def lock_node(self, ns: str, label: str, id: str) -> None:
+        """No-op: an auto-commit store has no transaction to serialize writes within.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param id (str): node id.
+        @return (None): nothing.
+        """
+        return None
+
     @asynccontextmanager
     async def transaction(self):
         yield self
@@ -42,16 +52,23 @@ def _to_json(value: Any) -> Any:
     """
     from neo4j.graph import Node, Path, Relationship
 
-    if isinstance(value, (Node, Relationship)):
-        return dict(value.items())
+    if isinstance(value, Node | Relationship):
+        return {k: _to_json(v) for k, v in value.items()}
     if isinstance(value, Path):
         return {
-            "nodes": [dict(n.items()) for n in value.nodes],
-            "relationships": [dict(r.items()) for r in value.relationships],
+            "nodes": [_to_json(n) for n in value.nodes],
+            "relationships": [_to_json(r) for r in value.relationships],
         }
+    if isinstance(value, bytes | bytearray):
+        return value.hex()
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        return iso()
+    if type(value).__name__ in ("Duration", "Point"):
+        return str(value)
     if isinstance(value, dict):
         return {k: _to_json(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_to_json(v) for v in value]
     return value
 
@@ -103,6 +120,23 @@ class CypherPrimitives:
         """
         res = await self._run(f"MATCH (n:{label} {{id:$id, ns:$ns}}) RETURN n.id AS id", {"id": id, "ns": ns})
         return bool(res.rows)
+
+    async def lock_node(self, ns: str, label: str, id: str) -> None:
+        """Take a write lock on a node to serialize concurrent read-modify-write updates.
+
+        Bumping a dedicated counter forces a write lock on Neo4j and a write-write conflict
+        on Memgraph, so concurrent updates that lock the same node run one at a time or retry.
+        The counter lives outside the entity's properties_json, so it never decodes into data.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param id (str): node id.
+        @return (None): nothing.
+        """
+        await self._run(
+            f"MATCH (n:{label} {{id:$id, ns:$ns}}) SET n._lock = coalesce(n._lock, 0) + 1",
+            {"id": id, "ns": ns},
+        )
 
     async def upsert_node(self, ns: str, label: str, id: str, props: dict, *, extra_label: str | None = None) -> None:
         """Merge a node by id and set its properties, optionally adding a second label.
@@ -210,11 +244,18 @@ class CypherPrimitives:
         @param props (dict): edge properties.
         @return (bool): True when both endpoints were found and the edge created.
         """
-        res = await self._run(
-            f"MATCH (a:{from_label} {{id:$from, ns:$ns}}), (b:{to_label} {{id:$to, ns:$ns}}) "
-            f"CREATE (a)-[r:{quote_reltype(type)}]->(b) SET r += $props RETURN r.id AS id",
-            {"from": from_id, "to": to_id, "ns": ns, "props": props},
-        )
+        match = f"MATCH (a:{from_label} {{id:$from, ns:$ns}}), (b:{to_label} {{id:$to, ns:$ns}}) "
+        params: dict[str, Any] = {"from": from_id, "to": to_id, "ns": ns, "props": props}
+        if "id" in props and "revision" in props:
+            write = (
+                f"MERGE (a)-[r:{quote_reltype(type)} {{id:$rid, ns:$ns, revision:$rev}}]->(b) "
+                "SET r += $props RETURN r.id AS id"
+            )
+            params["rid"] = props["id"]
+            params["rev"] = props["revision"]
+        else:
+            write = f"CREATE (a)-[r:{quote_reltype(type)}]->(b) SET r += $props RETURN r.id AS id"
+        res = await self._run(match + write, params)
         return bool(res.rows)
 
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
@@ -247,16 +288,6 @@ class CypherPrimitives:
             {"id": id, "ns": ns},
         )
         return [{"props": r["r"], "from_id": r["from_e"], "to_id": r["to_e"], "type": r["t"]} for r in res.rows]
-
-    async def edge_exists(self, ns: str, id: str) -> bool:
-        """Report whether any version of an edge exists.
-
-        @param ns (str): namespace.
-        @param id (str): edge id.
-        @return (bool): True when it exists.
-        """
-        res = await self._run("MATCH ()-[r {id:$id, ns:$ns}]->() RETURN r.id AS id LIMIT 1", {"id": id, "ns": ns})
-        return bool(res.rows)
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
         """Set properties on the current version of an edge.

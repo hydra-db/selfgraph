@@ -9,6 +9,8 @@ __all__ = ["BasicExtractor"]
 
 _SPACY = None
 _SPACY_READY = False
+_SPACY_HAS_LIB = False
+_FALLBACK_TYPE = "Thing"
 _TYPE_MAP = {
     "PERSON": "Person",
     "ORG": "Organization",
@@ -24,24 +26,53 @@ _TYPE_MAP = {
 }
 _CAP = re.compile(r"[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*")
 _SENT = re.compile(r"(?<=[.!?])\s+")
+_STOPNAMES = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "he",
+        "she",
+        "it",
+        "they",
+        "we",
+        "you",
+        "i",
+        "this",
+        "that",
+        "these",
+        "those",
+        "there",
+        "here",
+        "his",
+        "her",
+        "their",
+        "our",
+        "your",
+        "its",
+    }
+)
 
 
 def _nlp():
-    global _SPACY, _SPACY_READY
+    global _SPACY, _SPACY_READY, _SPACY_HAS_LIB
     if not _SPACY_READY:
         _SPACY_READY = True
         try:
             import spacy
-
+        except ImportError:  # pragma: no cover
+            return _SPACY
+        _SPACY_HAS_LIB = True
+        try:
             _SPACY = spacy.load("en_core_web_sm")
-        except Exception:  # noqa: BLE001  # pragma: no cover
+        except OSError:  # pragma: no cover
             _SPACY = None
     return _SPACY
 
 
 def _spacy_extract(nlp, text: str):
     doc = nlp(text)
-    entities = [EntityInput(type=_TYPE_MAP.get(e.label_, "Entity"), name=e.text) for e in doc.ents]
+    entities = [EntityInput(type=_TYPE_MAP.get(e.label_, _FALLBACK_TYPE), name=e.text) for e in doc.ents]
     tok_ent = {i: e for e in doc.ents for i in range(e.start, e.end)}
 
     def ent_for(token):
@@ -72,8 +103,9 @@ def _spacy_extract(nlp, text: str):
 def _regex_extract(text: str):
     entities, relations = [], []
     for sentence in _SENT.split(text):
-        names = list(dict.fromkeys(m.group(0).strip() for m in _CAP.finditer(sentence)))
-        entities.extend(EntityInput(type="Entity", name=name) for name in names)
+        raw = (m.group(0).strip().strip(".,;:!?") for m in _CAP.finditer(sentence))
+        names = list(dict.fromkeys(n for n in raw if n and n.lower() not in _STOPNAMES))
+        entities.extend(EntityInput(type=_FALLBACK_TYPE, name=name) for name in names)
         relations.extend(
             _RelOut(from_name=a, type="RELATED_TO", to_name=b) for a, b in zip(names, names[1:], strict=False)
         )
@@ -91,6 +123,9 @@ class BasicExtractor(_WarningSink):
             engine = "spaCy NER"
         else:
             entities, relations = _regex_extract(document.text)
-            engine = "heuristic regex; install the 'ner' extra for spaCy NER"
+            if _SPACY_HAS_LIB:
+                engine = "heuristic regex; run 'python -m spacy download en_core_web_sm' for spaCy NER"
+            else:
+                engine = "heuristic regex; install the 'ner' extra for spaCy NER"
         self._warnings = [InsertWarning(code="basic_extraction", message=f"extracted without an LLM using {engine}")]
         return DefaultExtractor._assemble(entities, relations, [], [])
