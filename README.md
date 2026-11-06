@@ -23,7 +23,7 @@
 - Text-to-graph extraction with any LLM provider, or without an LLM via spaCy NER or a zero-dependency fallback.
 - Typed CRUD over entities, relations, preferences, and decision traces.
 - Bitemporal versioning, source provenance, and per-namespace isolation.
-- Retrieval from keyword seeds and bounded BFS or DFS, returning source passages and relationships, no vector store.
+- Retrieval from keyword seeds and bounded BFS, DFS, or personalized PageRank, returning source passages and relationships, no vector store.
 - A CLI and an MCP server over the same API.
 - One storage interface across backends: Neo4j, Memgraph, FalkorDB, embedded Kuzu, HydraDB, or a custom store.
 

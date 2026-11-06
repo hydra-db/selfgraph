@@ -154,7 +154,7 @@ class SelfGraph:
         """Retrieve graph context for a query via keyword seeds and bounded traversal.
 
         @param query (str): the natural-language query to seed from.
-        @param strategy (str): "bfs" or "dfs" traversal order.
+        @param strategy (str): "bfs" or "dfs" traversal order, or "ppr" for personalized PageRank ranking.
         @param depth (int): the maximum number of hops from a seed.
         @param k (int): the maximum number of seed entities.
         @param max_nodes (int): the maximum number of entities to collect.

@@ -272,7 +272,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     rt = sub.add_parser("retrieve", help="retrieve graph context for a query")
     rt.add_argument("query")
-    rt.add_argument("--strategy", choices=["bfs", "dfs"], default="bfs", help="traversal order")
+    rt.add_argument(
+        "--strategy", choices=["bfs", "dfs", "ppr"], default="bfs", help="traversal order, or ppr for PageRank ranking"
+    )
     rt.add_argument("--depth", type=int, default=3, help="traversal hops (default 3)")
     rt.add_argument("--k", type=int, default=20, help="seed count (default 20)")
     rt.add_argument("--max-nodes", type=int, default=200, help="entity cap (default 200)")

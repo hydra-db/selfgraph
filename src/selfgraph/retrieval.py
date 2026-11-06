@@ -4,12 +4,14 @@ import logging
 import math
 import re
 from collections import deque
+from functools import partial
 from typing import TYPE_CHECKING
 
 from . import _ops
 from ._serde import L_CHUNK, L_SOURCE_VERSION, R_HAS_CHUNK
 from .errors import ValidationError
 from .extraction.chunking import count_tokens
+from .ids import normalize_text
 from .models import Entity, Preference, Relation, RetrievalResult, RetrievalSeed, Subgraph
 
 _log = logging.getLogger("selfgraph")
@@ -71,15 +73,30 @@ _PASSAGE_BUDGET_PERCENT = 60
 _BM25_K1 = 2.0
 _BM25_B = 1.0
 _GREP_WEIGHT = 1.0
+_GREP_MIN_ASCII = 3
+_STRATEGIES = ("bfs", "dfs", "ppr")
+_POOL_FACTOR = 4
+_PPR_DAMPING = 0.5
+_PPR_MAX_ITERATIONS = 50
+_PPR_TOLERANCE = 1e-6
+
+
+def _fold(text: str) -> str:
+    """Normalize text to NFC and casefold it, so query and stored text compare in one form.
+
+    @param text (str): the text to fold.
+    @return (str): the NFC-normalized, casefolded text.
+    """
+    return normalize_text(text).casefold()
 
 
 def _tokens(text: str) -> set[str]:
-    """Split text into lowercase alphanumeric tokens, dropping stopwords.
+    """Split text into casefolded Unicode letter and digit tokens, dropping stopwords.
 
     @param text (str): the text to tokenize.
     @return (set[str]): the distinct content tokens.
     """
-    return {t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in _STOPWORDS}
+    return {t for t in re.findall(r"[^\W_]+", _fold(text)) if t not in _STOPWORDS}
 
 
 def _entity_text(e: Entity) -> str:
@@ -135,32 +152,39 @@ def _bm25_scores(query: set[str], docs: list[list[str]]) -> list[float]:
 
 
 def _grep_score(terms: set[str], text: str) -> int:
-    """Count query terms that occur as a substring of the text.
+    """Count query terms found as a substring, skipping ASCII terms too short to be specific.
 
     @param terms (set[str]): the query content tokens.
-    @param text (str): the lowercased searchable text.
+    @param text (str): the folded searchable text.
     @return (int): the number of terms found as a substring.
     """
-    return sum(1 for t in terms if t in text)
+    return sum(1 for t in terms if (len(t) >= _GREP_MIN_ASCII or not t.isascii()) and t in text)
 
 
-async def _select_seeds(graph: SelfGraph, ns: str, query_tokens: set[str], k: int) -> list[tuple[Entity, float]]:
-    """Rank entities against the query by BM25 plus a grep substring boost.
+async def _paged(fetch, cap: int | None = None) -> list:
+    """Call a skip/limit list function page by page until it runs dry or reaches the cap.
 
-    @param graph (SelfGraph): the open graph.
-    @param ns (str): the namespace to search.
+    @param fetch (Callable[..., Awaitable[list]]): the list call, given skip and limit as keywords.
+    @param cap (int | None): the most rows to read, or None for all.
+    @return (list): every row read, in store order.
+    """
+    out: list = []
+    while cap is None or len(out) < cap:
+        batch = await fetch(skip=len(out), limit=_PAGE)
+        out.extend(batch)
+        if len(batch) < _PAGE:
+            break
+    return out
+
+
+def _select_seeds(entities: list[Entity], query_tokens: set[str], k: int) -> list[tuple[Entity, float]]:
+    """Rank entities by BM25 plus a grep boost, divided by the log of their distinct source count.
+
+    @param entities (list[Entity]): the candidate entities.
     @param query_tokens (set[str]): the content tokens from the query.
     @param k (int): the maximum number of seeds to keep.
     @return (list[tuple[Entity, float]]): seed entities with their scores, best first.
     """
-    entities: list[Entity] = []
-    skip = 0
-    while skip < _SCAN_LIMIT:
-        batch = await _ops.list_entities(graph.store, ns, type=None, name=None, skip=skip, limit=_PAGE)
-        entities.extend(batch)
-        skip += len(batch)
-        if len(batch) < _PAGE:
-            break
     if not entities:
         return []
 
@@ -169,17 +193,18 @@ async def _select_seeds(graph: SelfGraph, ns: str, query_tokens: set[str], k: in
     bm25 = _bm25_scores(query_tokens, docs)
     scored = []
     for i, entity in enumerate(entities):
-        score = bm25[i] + _GREP_WEIGHT * _grep_score(query_tokens, texts[i].lower())
+        score = bm25[i] + _GREP_WEIGHT * _grep_score(query_tokens, _fold(texts[i]))
         if score > 0:
-            scored.append((entity, score))
+            sources = len({ev.source_id for ev in entity.evidence})
+            scored.append((entity, score / math.log(math.e + sources)))
     scored.sort(key=lambda pair: (-pair[1], pair[0].id))
     return scored[:k]
 
 
 async def _traverse(
-    graph: SelfGraph, ns: str, seed_ids: list[str], strategy: str, depth: int, max_nodes: int
+    graph: SelfGraph, ns: str, seed_ids: list[str], strategy: str, depth: int, max_nodes: int, prefetch: int
 ) -> tuple[dict[str, int], list[Relation]]:
-    """Walk the current-relation graph out from the seeds in BFS or DFS order.
+    """Walk the current-relation graph out from the seeds in BFS or DFS order over prefetched adjacency.
 
     @param graph (SelfGraph): the open graph.
     @param ns (str): the namespace to traverse.
@@ -187,31 +212,142 @@ async def _traverse(
     @param strategy (str): "bfs" or "dfs" traversal order.
     @param depth (int): the maximum number of hops from a seed.
     @param max_nodes (int): the maximum number of entities to collect.
-    @return (tuple[dict[str, int], list[Relation]]): visited entity ids with distance, and the relations traversed.
+    @param prefetch (int): the most entities whose adjacency to load up front; DFS needs more than it keeps.
+    @return (tuple[dict[str, int], list[Relation]]): visited entity ids with distance, and the relations among them.
     """
+    adjacency = await _prefetch(graph, ns, seed_ids, depth, prefetch)
     start = [(sid, 0) for sid in seed_ids]
     frontier: deque[tuple[str, int]] = deque(start if strategy == "bfs" else list(reversed(start)))
     dist: dict[str, int] = {}
     relations: dict[str, Relation] = {}
     while frontier and len(dist) < max_nodes:
         node, d = frontier.popleft() if strategy == "bfs" else frontier.pop()
-        if node in dist:
+        if dist.get(node, depth + 1) <= d:
             continue
         dist[node] = d
         if d >= depth:
             continue
-        neighbors = await _ops.list_relations(
-            graph.store, ns, from_entity=node, type=None, to_entity=None, skip=0, limit=_SCAN_LIMIT
-        )
-        neighbors += await _ops.list_relations(
-            graph.store, ns, from_entity=None, type=None, to_entity=node, skip=0, limit=_SCAN_LIMIT
-        )
-        for rel in neighbors:
+        if node not in adjacency:
+            upcoming = frontier if strategy == "bfs" else reversed(frontier)
+            pending = [n for n, nd in upcoming if nd < depth and n not in adjacency]
+            adjacency.update(await _neighbors(graph, ns, list(dict.fromkeys([node, *pending]))[:_PAGE]))
+        for rel in adjacency[node]:
             relations[rel.id] = rel
             other = rel.to_entity if rel.from_entity == node else rel.from_entity
-            if other not in dist:
+            if dist.get(other, depth + 1) > d + 1:
                 frontier.append((other, d + 1))
-    return dist, list(relations.values())
+    return dist, _within(relations.values(), dist)
+
+
+async def _prefetch(
+    graph: SelfGraph, ns: str, seed_ids: list[str], depth: int, limit: int
+) -> dict[str, list[Relation]]:
+    """Load the adjacency of entities within depth - 1 hops of the seeds, one batched query per hop.
+
+    @param graph (SelfGraph): the open graph.
+    @param ns (str): the namespace to read.
+    @param seed_ids (list[str]): entity ids to start from.
+    @param depth (int): the maximum number of hops from a seed.
+    @param limit (int): the most entities to prefetch.
+    @return (dict[str, list[Relation]]): each prefetched entity's adjacent relations.
+    """
+    adjacency: dict[str, list[Relation]] = {}
+    level = list(dict.fromkeys(seed_ids))
+    seen = set(level)
+    for _ in range(depth):
+        level = level[: max(0, limit - len(adjacency))]
+        if not level:
+            break
+        adjacency.update(await _neighbors(graph, ns, level))
+        following = []
+        for node in level:
+            for rel in adjacency[node]:
+                other = rel.to_entity if rel.from_entity == node else rel.from_entity
+                if other not in seen:
+                    seen.add(other)
+                    following.append(other)
+        level = following
+    return adjacency
+
+
+async def _neighbors(graph: SelfGraph, ns: str, nodes: list[str]) -> dict[str, list[Relation]]:
+    """Fetch each entity's outgoing then incoming relations; one-sided queries, as OR scans every edge.
+
+    @param graph (SelfGraph): the open graph.
+    @param ns (str): the namespace to read.
+    @param nodes (list[str]): the entity ids to expand.
+    @return (dict[str, list[Relation]]): each entity's adjacent relations.
+    """
+    outgoing: dict[str, list[Relation]] = {n: [] for n in nodes}
+    incoming: dict[str, list[Relation]] = {n: [] for n in nodes}
+    for start in range(0, len(nodes), _PAGE):
+        chunk = nodes[start : start + _PAGE]
+        fetch = partial(_ops.list_relations, graph.store, ns, from_entity=None, type=None, to_entity=None)
+        for rel in await _paged(partial(fetch, from_in=chunk)):
+            outgoing[rel.from_entity].append(rel)
+        for rel in await _paged(partial(fetch, to_in=chunk)):
+            incoming[rel.to_entity].append(rel)
+    return {n: outgoing[n] + incoming[n] for n in nodes}
+
+
+async def _entity(graph: SelfGraph, ns: str, known: dict[str, Entity], eid: str) -> Entity | None:
+    """Return an entity from the already-scanned set, falling back to a store read past the scan limit.
+
+    @param graph (SelfGraph): the open graph.
+    @param ns (str): the namespace to read.
+    @param known (dict[str, Entity]): entities already loaded by the seed scan, by id.
+    @param eid (str): the entity id to resolve.
+    @return (Entity | None): the entity, or None if it no longer exists.
+    """
+    return known[eid] if eid in known else await _ops.get_entity(graph.store, ns, eid)
+
+
+def _within(relations, nodes) -> list[Relation]:
+    """Keep only the relations whose two endpoints are both among the given entities.
+
+    @param relations (Iterable[Relation]): the candidate relations.
+    @param nodes (Container[str]): the entity ids that were kept.
+    @return (list[Relation]): the relations with both endpoints kept.
+    """
+    return [r for r in relations if r.from_entity in nodes and r.to_entity in nodes]
+
+
+def _ppr_rank(seeds: list[tuple[Entity, float]], nodes, relations: list[Relation]) -> dict[str, int]:
+    """Rank entities by personalized PageRank over source-weighted undirected edges, restarting at the seeds.
+
+    @param seeds (list[tuple[Entity, float]]): seed entities with their scores.
+    @param nodes (Iterable[str]): the entity ids collected by traversal.
+    @param relations (list[Relation]): the relations collected by traversal.
+    @return (dict[str, int]): each entity's rank by PageRank mass, 0 for the highest.
+    """
+    nodes = set(nodes)
+    total = sum(score for e, score in seeds if e.id in nodes)
+    if not nodes or total <= 0:
+        return {n: i for i, n in enumerate(sorted(nodes))}
+    teleport = {e.id: score / total for e, score in seeds if e.id in nodes}
+    edges: dict[str, dict[str, float]] = {n: {} for n in nodes}
+    for r in relations:
+        if r.from_entity in nodes and r.to_entity in nodes and r.from_entity != r.to_entity:
+            weight = float(max(1, len({ev.source_id for ev in r.evidence})))
+            edges[r.from_entity][r.to_entity] = edges[r.from_entity].get(r.to_entity, 0.0) + weight
+            edges[r.to_entity][r.from_entity] = edges[r.to_entity].get(r.from_entity, 0.0) + weight
+    mass = dict.fromkeys(nodes, 0.0) | teleport
+    for _ in range(_PPR_MAX_ITERATIONS):
+        nxt = {n: (1 - _PPR_DAMPING) * teleport.get(n, 0.0) for n in nodes}
+        for n, m in mass.items():
+            out = edges[n]
+            if out:
+                norm = _PPR_DAMPING * m / sum(out.values())
+                for other, weight in out.items():
+                    nxt[other] += norm * weight
+            else:
+                for s, w in teleport.items():
+                    nxt[s] += _PPR_DAMPING * m * w
+        delta = sum(abs(nxt[n] - mass[n]) for n in nodes)
+        mass = nxt
+        if delta < _PPR_TOLERANCE:
+            break
+    return {n: i for i, n in enumerate(sorted(nodes, key=lambda n: (-mass[n], n)))}
 
 
 async def _collect_decisions(graph: SelfGraph, ns: str, relation_ids: set[str]):
@@ -224,17 +360,8 @@ async def _collect_decisions(graph: SelfGraph, ns: str, relation_ids: set[str]):
     """
     if not relation_ids:
         return []
-    out = []
-    skip = 0
-    while skip < _SCAN_LIMIT:
-        batch = await _ops.list_traces(graph.store, ns, actor_entity=None, status=None, skip=skip, limit=_PAGE)
-        for t in batch:
-            if any(step.relation_id in relation_ids for step in t.steps):
-                out.append(t)
-        skip += len(batch)
-        if len(batch) < _PAGE:
-            break
-    return out
+    traces = await _paged(partial(_ops.list_traces, graph.store, ns, actor_entity=None, status=None), _SCAN_LIMIT)
+    return [t for t in traces if any(step.relation_id in relation_ids for step in t.steps)]
 
 
 async def _collect_passages(
@@ -249,7 +376,7 @@ async def _collect_passages(
     @param graph (SelfGraph): the open graph to read.
     @param ns (str): the namespace to read.
     @param entities (list[Entity]): the collected entities carrying source evidence.
-    @param dist (dict[str, int]): distance of each entity from the nearest seed.
+    @param dist (dict[str, int]): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
     @param query_tokens (set[str]): the content tokens from the query.
     @return (list[str]): passage texts, most query-relevant first.
     """
@@ -289,20 +416,27 @@ async def _collect_preferences(graph: SelfGraph, ns: str, entity_ids) -> list[Pr
 
     @param graph (SelfGraph): the open graph to read.
     @param ns (str): the namespace to search.
-    @param entity_ids (Iterable[str]): the entity ids collected during traversal.
-    @return (list[Preference]): the preferences reached through those entities' profiles.
+    @param entity_ids (Iterable[str]): the entity ids collected during traversal, in rank order.
+    @return (list[Preference]): the preferences reached through those entities' profiles, grouped in that order.
     """
-    out: list[Preference] = []
-    for eid in entity_ids:
-        out.extend(
-            await _ops.list_preferences(
-                graph.store, ns, subject_entity=eid, key=None, kind=None, skip=0, limit=_SCAN_LIMIT
-            )
-        )
-    return out
+    order = {eid: i for i, eid in enumerate(entity_ids)}
+    if not order:
+        return []
+    fetch = partial(_ops.list_preferences, graph.store, ns, subject_entity=None, key=None, kind=None)
+    preferences = await _paged(fetch)
+    return sorted((p for p in preferences if p.subject_entity in order), key=lambda p: order[p.subject_entity])
 
 
-def _assemble(passages, entities, relations, preferences, decisions, dist: dict[str, int], budget_tokens: int) -> str:
+def _assemble(
+    passages,
+    entities,
+    relations,
+    preferences,
+    decisions,
+    names: dict[str, str],
+    dist: dict[str, int],
+    budget_tokens: int,
+) -> str:
     """Serialise passages and the subgraph into text for an LLM, under a token budget, nearest first.
 
     @param passages (list[str]): source passages to ground the answer, most relevant first.
@@ -310,11 +444,11 @@ def _assemble(passages, entities, relations, preferences, decisions, dist: dict[
     @param relations (list[Relation]): the collected relations.
     @param preferences (list[Preference]): the collected preferences.
     @param decisions (list[DecisionTrace]): the collected decision traces.
-    @param dist (dict[str, int]): distance of each entity from the nearest seed.
+    @param names (dict[str, str]): display name for every entity id the context mentions.
+    @param dist (dict[str, int]): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
     @param budget_tokens (int): the maximum estimated tokens to emit.
     @return (str): the assembled context text.
     """
-    name = {e.id: e.name for e in entities}
     lines: list[str] = []
     used = 0
 
@@ -333,12 +467,14 @@ def _assemble(passages, entities, relations, preferences, decisions, dist: dict[
             break
 
     far = len(dist) + 1
-    ordered = sorted(
-        relations,
-        key=lambda r: (min(dist.get(r.from_entity, far), dist.get(r.to_entity, far)), -r.created_at.timestamp()),
-    )
+
+    def rel_rank(r: Relation) -> tuple[int, int, float]:
+        a, b = dist.get(r.from_entity, far), dist.get(r.to_entity, far)
+        return min(a, b), max(a, b), -r.created_at.timestamp()
+
+    ordered = sorted(relations, key=rel_rank)
     for r in ordered:
-        line = f"{name.get(r.from_entity, r.from_entity)} -[{r.type}]-> {name.get(r.to_entity, r.to_entity)}"
+        line = f"{names.get(r.from_entity, r.from_entity)} -[{r.type}]-> {names.get(r.to_entity, r.to_entity)}"
         props = _format_props(r.properties)
         if props:
             line += f" {props}"
@@ -347,25 +483,27 @@ def _assemble(passages, entities, relations, preferences, decisions, dist: dict[
 
     for p in sorted(preferences, key=lambda p: dist.get(p.subject_entity, far)):
         verb = "prefers" if p.kind == "preference" else "avoids"
-        subject = name.get(p.subject_entity, p.subject_entity)
-        value = name.get(p.value_entity, p.value_entity)
+        subject = names.get(p.subject_entity, p.subject_entity)
+        value = names.get(p.value_entity, p.value_entity)
         line = f"{subject} {verb} {value} ({p.key})"
         if p.strength is not None:
             line += f" [strength {p.strength}]"
-        add(line, budget_tokens)
+        if not add(line, budget_tokens):
+            break
 
     for d in decisions:
         parts = [f"Decision: {d.title}"]
         if d.outcome_entity:
-            parts.append(f"outcome {name.get(d.outcome_entity, d.outcome_entity)}")
+            parts.append(f"outcome {names.get(d.outcome_entity, d.outcome_entity)}")
         if d.alternative_entities:
-            parts.append("alternatives " + ", ".join(name.get(a, a) for a in d.alternative_entities))
+            parts.append("alternatives " + ", ".join(names.get(a, a) for a in d.alternative_entities))
         if d.rationale:
             parts.append(f"rationale {d.rationale}")
         add("; ".join(parts), budget_tokens)
 
     for e in sorted(entities, key=lambda e: dist.get(e.id, far)):
-        add(f"{e.name} [{e.type}]", budget_tokens)
+        if not add(f"{e.name} [{e.type}]", budget_tokens):
+            break
 
     return "\n".join(lines)
 
@@ -384,7 +522,7 @@ async def retrieve(
 
     @param graph (SelfGraph): the open graph to read.
     @param query (str): the natural-language query to seed from.
-    @param strategy (str): "bfs" or "dfs" traversal order.
+    @param strategy (str): "bfs" or "dfs" traversal order, or "ppr" to rank the BFS subgraph by PageRank.
     @param depth (int): the maximum number of hops from a seed.
     @param k (int): the maximum number of seed entities.
     @param max_nodes (int): the maximum number of entities to collect.
@@ -392,28 +530,40 @@ async def retrieve(
     @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
     """
     strategy = strategy.lower()
-    if strategy not in ("bfs", "dfs"):
-        raise ValidationError(f"strategy must be 'bfs' or 'dfs', got {strategy!r}")
+    if strategy not in _STRATEGIES:
+        raise ValidationError(f"strategy must be one of {', '.join(_STRATEGIES)}, got {strategy!r}")
     if depth < 0 or k < 1 or max_nodes < 1 or budget_tokens < 1:
         raise ValidationError("depth must be >= 0 and k, max_nodes, budget_tokens must be >= 1")
 
     ns = graph.namespace
     query_tokens = _tokens(query)
-    seeds_scored = await _select_seeds(graph, ns, query_tokens, k) if query_tokens else []
+    scan = partial(_ops.list_entities, graph.store, ns, type=None, name=None)
+    known = {e.id: e for e in await _paged(scan, _SCAN_LIMIT)} if query_tokens else {}
+    seeds_scored = _select_seeds(list(known.values()), query_tokens, k)
     seed_ids = [e.id for e, _ in seeds_scored]
 
-    dist, relations = await _traverse(graph, ns, seed_ids, strategy, depth, max_nodes)
+    walk = "dfs" if strategy == "dfs" else "bfs"
+    pool = max(max_nodes, min(_SCAN_LIMIT, max_nodes * _POOL_FACTOR))
+    cap = pool if strategy == "ppr" else max_nodes
+    dist, relations = await _traverse(graph, ns, seed_ids, walk, depth, cap, cap if walk == "bfs" else pool)
+    if strategy == "ppr":
+        dist = {n: rank for n, rank in _ppr_rank(seeds_scored, dist, relations).items() if rank < max_nodes}
+        relations = _within(relations, dist)
 
-    entities = []
-    for eid in dist:
-        entity = await _ops.get_entity(graph.store, ns, eid)
-        if entity is not None:
-            entities.append(entity)
+    entities = [e for e in [await _entity(graph, ns, known, eid) for eid in dist] if e is not None]
 
     decisions = await _collect_decisions(graph, ns, {r.id for r in relations})
     preferences = await _collect_preferences(graph, ns, dist)
     passages = await _collect_passages(graph, ns, entities, dist, query_tokens)
-    context = _assemble(passages, entities, relations, preferences, decisions, dist, budget_tokens)
+    names = {e.id: e.name for e in entities}
+    mentioned = {p.subject_entity for p in preferences} | {p.value_entity for p in preferences}
+    for d in decisions:
+        mentioned.update(x for x in (d.outcome_entity, *d.alternative_entities) if x)
+    for eid in mentioned - names.keys():
+        entity = await _entity(graph, ns, known, eid)
+        if entity is not None:
+            names[eid] = entity.name
+    context = _assemble(passages, entities, relations, preferences, decisions, names, dist, budget_tokens)
 
     _log.debug(
         "retrieve %r: %d seeds, %d entities, %d relations, %d passages",

@@ -266,6 +266,8 @@ class HydraDBStore(AutoCommitStore):
         type: str | None = None,
         from_id: str | None = None,
         to_id: str | None = None,
+        from_in: list[str] | None = None,
+        to_in: list[str] | None = None,
         current_only: bool = False,
         equals: dict | None = None,
         order_by: str = "id",
@@ -286,6 +288,12 @@ class HydraDBStore(AutoCommitStore):
         if to_id is not None:
             where.append("b.id = $tiid")
             params["tiid"] = _sk(ns, to_id)
+        if from_in is not None:
+            where.append("a.id IN $fiids_in")
+            params["fiids_in"] = [_sk(ns, i) for i in from_in]
+        if to_in is not None:
+            where.append("b.id IN $tiids_in")
+            params["tiids_in"] = [_sk(ns, i) for i in to_in]
         for i, (key, value) in enumerate(sorted((equals or {}).items())):
             where.append(f"r.{key} = $eq{i}")
             params[f"eq{i}"] = value

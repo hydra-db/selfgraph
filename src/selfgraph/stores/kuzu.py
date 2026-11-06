@@ -269,6 +269,8 @@ class KuzuStore(AutoCommitStore):
         type: str | None = None,
         from_id: str | None = None,
         to_id: str | None = None,
+        from_in: list[str] | None = None,
+        to_in: list[str] | None = None,
         current_only: bool = False,
         equals: dict | None = None,
         order_by: str = "id",
@@ -293,6 +295,12 @@ class KuzuStore(AutoCommitStore):
         if to_id is not None:
             where.append("b.pk = $tpk")
             params["tpk"] = _pk(ns, to_id)
+        if from_in is not None:
+            where.append("a.pk IN $fpks")
+            params["fpks"] = [_pk(ns, i) for i in from_in]
+        if to_in is not None:
+            where.append("b.pk IN $tpks")
+            params["tpks"] = [_pk(ns, i) for i in to_in]
         self._where_equals("r", equals, where, params)
         if order_by == "id":
             ob = "r.sid"

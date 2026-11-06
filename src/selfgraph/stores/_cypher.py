@@ -332,6 +332,8 @@ class CypherPrimitives:
         type: str | None = None,
         from_id: str | None = None,
         to_id: str | None = None,
+        from_in: list[str] | None = None,
+        to_in: list[str] | None = None,
         current_only: bool = False,
         equals: dict | None = None,
         order_by: str = "id",
@@ -346,6 +348,8 @@ class CypherPrimitives:
         @param type (str | None): required edge type.
         @param from_id (str | None): required source id.
         @param to_id (str | None): required destination id.
+        @param from_in (list[str] | None): keep only edges whose source id is in this list.
+        @param to_in (list[str] | None): keep only edges whose destination id is in this list.
         @param current_only (bool): restrict to current versions.
         @param equals (dict | None): required edge property values.
         @param order_by (str): edge property to order by.
@@ -364,6 +368,12 @@ class CypherPrimitives:
         if to_id is not None:
             where.append("b.id = $to_e")
             params["to_e"] = to_id
+        if from_in is not None:
+            where.append("a.id IN $from_in")
+            params["from_in"] = list(from_in)
+        if to_in is not None:
+            where.append("b.id IN $to_in")
+            params["to_in"] = list(to_in)
         if type is not None:
             where.append("type(r) = $etype")
             params["etype"] = type

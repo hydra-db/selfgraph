@@ -77,7 +77,15 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
             lowered = str(exc).lower()
             if any(
                 k in lowered
-                for k in ("max pending queries", "too many connections", "timeout", "busy", "deadlock", "try again")
+                for k in (
+                    "max pending queries",
+                    "too many connections",
+                    "timeout",
+                    "timed out",
+                    "busy",
+                    "deadlock",
+                    "try again",
+                )
             ):
                 raise TransientError(f"FalkorDB transient error: {exc}") from exc
             raise StoreError(f"FalkorDB query failed: {exc}") from exc

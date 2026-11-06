@@ -27,7 +27,7 @@ auto-commit. Never put business logic in a store, and never make `_ops` backend-
 
 Where things live: `client.py` is the `SelfGraph` entry point. `insert.py` is the
 insert namespace, `resources/` holds the typed CRUD, `extraction/` runs LLM
-extraction, `retrieval.py` does keyword-seeded BFS/DFS retrieval, `llm/` wraps the
+extraction, `retrieval.py` does keyword-seeded BFS/DFS/PageRank retrieval, `llm/` wraps the
 LLM through litellm, `stores/` holds the backends (`_cypher.py` is the Cypher
 primitive base, `cypher.py` holds `CypherStore` and `Neo4jStore`, `falkordb.py`, `kuzu.py`, `hydradb.py`),
 and `runtime.py` is the shared factory

@@ -190,7 +190,7 @@ result.seeds
 result.subgraph
 ```
 
-`strategy` is `"bfs"` or `"dfs"`. `depth` is hops from each seed, `k` is the max seed entities, `max_nodes` caps the traversal, and `budget_tokens` caps the assembled context. `result.context` holds source passages, relationships, preferences, and decisions, nearest-first, ready for an LLM prompt. `result.seeds` are the entities matched from the query and `result.subgraph` holds everything collected. Passages come from the provenance of `insert.text`, so text-ingested facts retrieve best.
+`strategy` is `"bfs"` or `"dfs"`, or `"ppr"` to rank the collected subgraph by personalized PageRank. `depth` is hops from each seed, `k` is the max seed entities, `max_nodes` caps the traversal, and `budget_tokens` caps the assembled context. `result.context` holds source passages, relationships, preferences, and decisions, nearest-first, ready for an LLM prompt. `result.seeds` are the entities matched from the query and `result.subgraph` holds everything collected. Passages come from the provenance of `insert.text`, so text-ingested facts retrieve best.
 
 ## Backends
 

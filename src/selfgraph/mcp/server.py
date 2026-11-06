@@ -506,7 +506,7 @@ async def retrieve(
     max_nodes: int = 200,
     budget_tokens: int = 3000,
 ) -> dict[str, Any]:
-    """Retrieve graph context for a query by keyword seeds and bounded BFS or DFS traversal."""
+    """Retrieve graph context for a query by keyword seeds and bounded BFS, DFS, or PageRank ("ppr") ranking."""
     g = await _graph_handle()
     return to_jsonable(
         await g.retrieve(query, strategy=strategy, depth=depth, k=k, max_nodes=max_nodes, budget_tokens=budget_tokens)

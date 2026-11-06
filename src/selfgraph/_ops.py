@@ -1217,6 +1217,8 @@ async def list_relations(
     to_entity: str | None,
     skip: int,
     limit: int,
+    from_in: list[str] | None = None,
+    to_in: list[str] | None = None,
 ) -> list[Relation]:
     """List current relations, optionally filtered by endpoints and type.
 
@@ -1227,11 +1229,16 @@ async def list_relations(
     @param to_entity (str | None): destination filter.
     @param skip (int): rows to skip.
     @param limit (int): maximum rows.
+    @param from_in (list[str] | None): keep only relations whose source is in this list.
+    @param to_in (list[str] | None): keep only relations whose destination is in this list.
     @return (list[Relation]): the current relations.
     """
     _require_optional_text("from_entity filter", from_entity)
     _require_optional_text("type filter", type)
     _require_optional_text("to_entity filter", to_entity)
+    for name, ids in (("from_in filter", from_in), ("to_in filter", to_in)):
+        if ids is not None:
+            _require_list(name, ids)
     rows = await runner.match_edges(
         ns,
         from_label=L_ENTITY,
@@ -1239,6 +1246,8 @@ async def list_relations(
         type=_ids.normalize_rel_type(type) if type else None,
         from_id=from_entity,
         to_id=to_entity,
+        from_in=from_in,
+        to_in=to_in,
         current_only=True,
         order_by="id",
         skip=skip,
