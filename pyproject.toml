@@ -13,14 +13,14 @@ authors = [{ name = "HydraDB" }]
 dependencies = ["pydantic>=2.5", "neo4j>=5.14"]
 
 [project.optional-dependencies]
-llm = ["instructor>=1.0", "litellm>=1.40"]
+llm = ["instructor>=1.0", "litellm>=1.40", "mcp>=2.2"]
 tokenizer = ["tiktoken>=0.5"]
 ner = ["spacy>=3.0"]
 falkordb = ["falkordb>=1.0"]
 kuzu = ["kuzu>=0.6"]
-mcp = ["mcp>=1.2"]
-dev = ["pytest>=8", "mcp>=1.2", "ruff>=0.6"]
-all = ["instructor>=1.0", "litellm>=1.40", "tiktoken>=0.5", "spacy>=3.0", "falkordb>=1.0", "kuzu>=0.6", "mcp>=1.2"]
+mcp = ["mcp>=2.2"]
+dev = ["pytest>=8", "mcp>=2.2", "ruff>=0.6"]
+all = ["instructor>=1.0", "litellm>=1.40", "tiktoken>=0.5", "spacy>=3.0", "falkordb>=1.0", "kuzu>=0.6", "mcp>=2.2"]
 
 [project.scripts]
 selfgraph = "selfgraph.cli:main"
