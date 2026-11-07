@@ -1,0 +1,144 @@
+{
+  "name": "@hydradb/selfgraph",
+  "version": "0.0.3",
+  "description": "Build a knowledge graph from unstructured text. Typed methods over any graph backend, with backend-native Cypher as an escape hatch.",
+  "license": "Apache-2.0",
+  "author": "HydraDB",
+  "homepage": "https://github.com/hydra-db/selfgraph",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hydra-db/selfgraph.git",
+    "directory": "typescript"
+  },
+  "keywords": [
+    "knowledge-graph",
+    "graph",
+    "neo4j",
+    "cypher",
+    "llm",
+    "extraction",
+    "memgraph",
+    "falkordb",
+    "kuzu",
+    "hydradb"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./mcp": {
+      "import": {
+        "types": "./dist/mcp.d.ts",
+        "default": "./dist/mcp.js"
+      },
+      "require": {
+        "types": "./dist/mcp.d.cts",
+        "default": "./dist/mcp.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "selfgraph": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome ci .",
+    "format": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "neo4j-driver": "^6.3.0",
+    "zod": "^4.1.0"
+  },
+  "peerDependencies": {
+    "@ai-sdk/anthropic": "*",
+    "@ai-sdk/gateway": "*",
+    "@ai-sdk/google": "*",
+    "@ai-sdk/openai": "*",
+    "@ai-sdk/openai-compatible": "*",
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "ai": ">=5",
+    "falkordb": ">=6",
+    "js-tiktoken": "^1.0.0",
+    "kuzu": ">=0.11"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/anthropic": {
+      "optional": true
+    },
+    "@ai-sdk/gateway": {
+      "optional": true
+    },
+    "@ai-sdk/google": {
+      "optional": true
+    },
+    "@ai-sdk/openai": {
+      "optional": true
+    },
+    "@ai-sdk/openai-compatible": {
+      "optional": true
+    },
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "falkordb": {
+      "optional": true
+    },
+    "js-tiktoken": {
+      "optional": true
+    },
+    "kuzu": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@ai-sdk/anthropic": "^4.0.97",
+    "@ai-sdk/openai": "^4.0.109",
+    "@ai-sdk/openai-compatible": "^3.0.85",
+    "@biomejs/biome": "2.6.5",
+    "@commander-js/extra-typings": "15.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@noble/hashes": "^2.4.0",
+    "@types/node": "^22.10.0",
+    "@unicode/unicode-15.0.0": "2.1.0",
+    "ai": "^7.0.163",
+    "falkordb": "^7.0.0",
+    "js-tiktoken": "^1.0.21",
+    "kuzu": "^0.11.3",
+    "tsup": "^9.0.0",
+    "typescript": "~5.9.3",
+    "vitest": "^5.1.0"
+  }
+}

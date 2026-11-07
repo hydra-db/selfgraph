@@ -2,7 +2,8 @@
 
 SelfGraph builds a knowledge graph from text and reads it back through typed
 methods, graph traversal, and raw Cypher. It runs on any graph backend and needs
-no vector store.
+no vector store. It ships as a Python SDK and a TypeScript SDK that share one
+graph format.
 
 The graph holds four kinds of records: entities, relations between them,
 preferences a subject holds, and decision traces. Every write is an idempotent
@@ -21,6 +22,7 @@ upsert with a deterministic id, and relations keep their version history.
 | [CLI](cli.md) | The `selfgraph` command. |
 | [MCP](mcp.md) | The Model Context Protocol server. |
 | [Errors](errors.md) | The exception hierarchy. |
+| [TypeScript](typescript.md) | The npm package and how it differs from Python. |
 
 ## Scope
 

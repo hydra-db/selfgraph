@@ -31,3 +31,53 @@ jobs:
       - run: twine check dist/*
       - run: pip install "$(ls dist/*.whl)"
       - run: python -c "import selfgraph; from selfgraph import SelfGraph; print(selfgraph.__version__)"
+
+  typescript:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["20", "22", "24"]
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+        env:
+          SELFGRAPH_TEST_STORES: kuzu
+      - run: npm pack
+      - run: |
+          mkdir /tmp/smoke && cd /tmp/smoke && npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE"/typescript/hydradb-selfgraph-*.tgz
+          node -e "import('@hydradb/selfgraph').then((m) => console.log('esm', m.version))"
+          node -e "console.log('cjs', require('@hydradb/selfgraph').version)"
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - run: pip install ".[tokenizer,kuzu]"
+      - run: npm ci
+        working-directory: typescript
+      - run: npm test
+        working-directory: typescript
+        env:
+          SELFGRAPH_TEST_STORES: kuzu
+          SELFGRAPH_PY: python

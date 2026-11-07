@@ -1,0 +1,4602 @@
+{
+ "slug": {
+  "Person": "person",
+  "Big Company": "big-company",
+  "  Org ": "org",
+  "\u00dcberType": "\u00fcbertype",
+  "a\u3000b": "a-b",
+  "Company": "company",
+  "Organization": "organization",
+  "Work": "work",
+  " Bank ": "bank",
+  "U\u0308ber": "u\u0308ber",
+  "Acme": "acme",
+  "Acme, Inc.": "acme,-inc.",
+  "The Acme Corporation": "the-acme-corporation",
+  "  Jane   Doe ": "jane-doe",
+  "Zo\u00eb \u00c5ngstr\u00f6m": "zo\u00eb-\u00e5ngstr\u00f6m",
+  "\u5317\u4eac\u5927\u5b66": "\u5317\u4eac\u5927\u5b66",
+  "\ud83d\ude80 Rocket Co": "\ud83d\ude80-rocket-co",
+  "O'Reilly Media LLC": "o'reilly-media-llc",
+  "the": "the",
+  "Co": "co",
+  "AT&T": "at&t",
+  "x\u200by": "x\u200by",
+  "a\ufeffb": "a\ufeffb",
+  "Tab\tSeparated\u001cName": "tab-separated-name",
+  "\u0130stanbul": "i\u0307stanbul",
+  "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3": "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2",
+  "": "",
+  "   ": "",
+  "Group Holdings": "group-holdings",
+  "acme  llc  ltd": "acme-llc-ltd",
+  "Cafe\u0301 Ole\u0301": "cafe\u0301-ole\u0301",
+  "Caf\u00e9 Ol\u00e9": "caf\u00e9-ol\u00e9",
+  "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e": "\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+  "The Trial": "the-trial",
+  "The Acme Corporation Inc": "the-acme-corporation-inc",
+  "snake_case_name": "snake_case_name",
+  "\uff21\uff43\uff4d\uff45": "\uff41\uff43\uff4d\uff45"
+ },
+ "entity_id": [
+  [
+   "Person",
+   "Acme",
+   "person:acme"
+  ],
+  [
+   "Person",
+   "Acme, Inc.",
+   "person:acme-inc"
+  ],
+  [
+   "Person",
+   "The Acme Corporation",
+   "person:the-acme-corporation"
+  ],
+  [
+   "Person",
+   "  Jane   Doe ",
+   "person:jane-doe"
+  ],
+  [
+   "Person",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "person:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "Person",
+   "\u5317\u4eac\u5927\u5b66",
+   "person:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "Person",
+   "\ud83d\ude80 Rocket Co",
+   "person:rocket-co"
+  ],
+  [
+   "Person",
+   "O'Reilly Media LLC",
+   "person:o-reilly-media-llc"
+  ],
+  [
+   "Person",
+   "the",
+   "person:the"
+  ],
+  [
+   "Person",
+   "Co",
+   "person:co"
+  ],
+  [
+   "Person",
+   "AT&T",
+   "person:at-t"
+  ],
+  [
+   "Person",
+   "x\u200by",
+   "person:x-y"
+  ],
+  [
+   "Person",
+   "a\ufeffb",
+   "person:a-b"
+  ],
+  [
+   "Person",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "Person",
+   "\u0130stanbul",
+   "person:i-stanbul"
+  ],
+  [
+   "Person",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "person:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "Person",
+   "",
+   "person:"
+  ],
+  [
+   "Person",
+   "   ",
+   "person:"
+  ],
+  [
+   "Person",
+   "Group Holdings",
+   "person:group-holdings"
+  ],
+  [
+   "Person",
+   "acme  llc  ltd",
+   "person:acme-llc-ltd"
+  ],
+  [
+   "Person",
+   "Cafe\u0301 Ole\u0301",
+   "person:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Person",
+   "Caf\u00e9 Ol\u00e9",
+   "person:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Person",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "person:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "Person",
+   "The Trial",
+   "person:the-trial"
+  ],
+  [
+   "Person",
+   "The Acme Corporation Inc",
+   "person:the-acme-corporation-inc"
+  ],
+  [
+   "Person",
+   "snake_case_name",
+   "person:snake_case_name"
+  ],
+  [
+   "Person",
+   "\uff21\uff43\uff4d\uff45",
+   "person:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "Big Company",
+   "Acme",
+   "big-company:acme"
+  ],
+  [
+   "Big Company",
+   "Acme, Inc.",
+   "big-company:acme-inc"
+  ],
+  [
+   "Big Company",
+   "The Acme Corporation",
+   "big-company:the-acme-corporation"
+  ],
+  [
+   "Big Company",
+   "  Jane   Doe ",
+   "big-company:jane-doe"
+  ],
+  [
+   "Big Company",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "big-company:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "Big Company",
+   "\u5317\u4eac\u5927\u5b66",
+   "big-company:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "Big Company",
+   "\ud83d\ude80 Rocket Co",
+   "big-company:rocket-co"
+  ],
+  [
+   "Big Company",
+   "O'Reilly Media LLC",
+   "big-company:o-reilly-media-llc"
+  ],
+  [
+   "Big Company",
+   "the",
+   "big-company:the"
+  ],
+  [
+   "Big Company",
+   "Co",
+   "big-company:co"
+  ],
+  [
+   "Big Company",
+   "AT&T",
+   "big-company:at-t"
+  ],
+  [
+   "Big Company",
+   "x\u200by",
+   "big-company:x-y"
+  ],
+  [
+   "Big Company",
+   "a\ufeffb",
+   "big-company:a-b"
+  ],
+  [
+   "Big Company",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "Big Company",
+   "\u0130stanbul",
+   "big-company:i-stanbul"
+  ],
+  [
+   "Big Company",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "big-company:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "Big Company",
+   "",
+   "big-company:"
+  ],
+  [
+   "Big Company",
+   "   ",
+   "big-company:"
+  ],
+  [
+   "Big Company",
+   "Group Holdings",
+   "big-company:group-holdings"
+  ],
+  [
+   "Big Company",
+   "acme  llc  ltd",
+   "big-company:acme-llc-ltd"
+  ],
+  [
+   "Big Company",
+   "Cafe\u0301 Ole\u0301",
+   "big-company:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Big Company",
+   "Caf\u00e9 Ol\u00e9",
+   "big-company:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Big Company",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "big-company:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "Big Company",
+   "The Trial",
+   "big-company:the-trial"
+  ],
+  [
+   "Big Company",
+   "The Acme Corporation Inc",
+   "big-company:the-acme-corporation-inc"
+  ],
+  [
+   "Big Company",
+   "snake_case_name",
+   "big-company:snake_case_name"
+  ],
+  [
+   "Big Company",
+   "\uff21\uff43\uff4d\uff45",
+   "big-company:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "  Org ",
+   "Acme",
+   "org:acme"
+  ],
+  [
+   "  Org ",
+   "Acme, Inc.",
+   "org:acme"
+  ],
+  [
+   "  Org ",
+   "The Acme Corporation",
+   "org:acme"
+  ],
+  [
+   "  Org ",
+   "  Jane   Doe ",
+   "org:jane-doe"
+  ],
+  [
+   "  Org ",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "org:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "  Org ",
+   "\u5317\u4eac\u5927\u5b66",
+   "org:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "  Org ",
+   "\ud83d\ude80 Rocket Co",
+   "org:rocket"
+  ],
+  [
+   "  Org ",
+   "O'Reilly Media LLC",
+   "org:o-reilly-media"
+  ],
+  [
+   "  Org ",
+   "the",
+   "org:the"
+  ],
+  [
+   "  Org ",
+   "Co",
+   "org:co"
+  ],
+  [
+   "  Org ",
+   "AT&T",
+   "org:at-t"
+  ],
+  [
+   "  Org ",
+   "x\u200by",
+   "org:x-y"
+  ],
+  [
+   "  Org ",
+   "a\ufeffb",
+   "org:a-b"
+  ],
+  [
+   "  Org ",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "  Org ",
+   "\u0130stanbul",
+   "org:i-stanbul"
+  ],
+  [
+   "  Org ",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "org:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "  Org ",
+   "",
+   "org:"
+  ],
+  [
+   "  Org ",
+   "   ",
+   "org:"
+  ],
+  [
+   "  Org ",
+   "Group Holdings",
+   "org:group"
+  ],
+  [
+   "  Org ",
+   "acme  llc  ltd",
+   "org:acme"
+  ],
+  [
+   "  Org ",
+   "Cafe\u0301 Ole\u0301",
+   "org:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "  Org ",
+   "Caf\u00e9 Ol\u00e9",
+   "org:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "  Org ",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "org:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "  Org ",
+   "The Trial",
+   "org:trial"
+  ],
+  [
+   "  Org ",
+   "The Acme Corporation Inc",
+   "org:acme"
+  ],
+  [
+   "  Org ",
+   "snake_case_name",
+   "org:snake_case_name"
+  ],
+  [
+   "  Org ",
+   "\uff21\uff43\uff4d\uff45",
+   "org:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "\u00dcberType",
+   "Acme",
+   "\u00fcbertype:acme"
+  ],
+  [
+   "\u00dcberType",
+   "Acme, Inc.",
+   "\u00fcbertype:acme-inc"
+  ],
+  [
+   "\u00dcberType",
+   "The Acme Corporation",
+   "\u00fcbertype:the-acme-corporation"
+  ],
+  [
+   "\u00dcberType",
+   "  Jane   Doe ",
+   "\u00fcbertype:jane-doe"
+  ],
+  [
+   "\u00dcberType",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "\u00fcbertype:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "\u00dcberType",
+   "\u5317\u4eac\u5927\u5b66",
+   "\u00fcbertype:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "\u00dcberType",
+   "\ud83d\ude80 Rocket Co",
+   "\u00fcbertype:rocket-co"
+  ],
+  [
+   "\u00dcberType",
+   "O'Reilly Media LLC",
+   "\u00fcbertype:o-reilly-media-llc"
+  ],
+  [
+   "\u00dcberType",
+   "the",
+   "\u00fcbertype:the"
+  ],
+  [
+   "\u00dcberType",
+   "Co",
+   "\u00fcbertype:co"
+  ],
+  [
+   "\u00dcberType",
+   "AT&T",
+   "\u00fcbertype:at-t"
+  ],
+  [
+   "\u00dcberType",
+   "x\u200by",
+   "\u00fcbertype:x-y"
+  ],
+  [
+   "\u00dcberType",
+   "a\ufeffb",
+   "\u00fcbertype:a-b"
+  ],
+  [
+   "\u00dcberType",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "\u00dcberType",
+   "\u0130stanbul",
+   "\u00fcbertype:i-stanbul"
+  ],
+  [
+   "\u00dcberType",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "\u00fcbertype:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "\u00dcberType",
+   "",
+   "\u00fcbertype:"
+  ],
+  [
+   "\u00dcberType",
+   "   ",
+   "\u00fcbertype:"
+  ],
+  [
+   "\u00dcberType",
+   "Group Holdings",
+   "\u00fcbertype:group-holdings"
+  ],
+  [
+   "\u00dcberType",
+   "acme  llc  ltd",
+   "\u00fcbertype:acme-llc-ltd"
+  ],
+  [
+   "\u00dcberType",
+   "Cafe\u0301 Ole\u0301",
+   "\u00fcbertype:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "\u00dcberType",
+   "Caf\u00e9 Ol\u00e9",
+   "\u00fcbertype:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "\u00dcberType",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "\u00fcbertype:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "\u00dcberType",
+   "The Trial",
+   "\u00fcbertype:the-trial"
+  ],
+  [
+   "\u00dcberType",
+   "The Acme Corporation Inc",
+   "\u00fcbertype:the-acme-corporation-inc"
+  ],
+  [
+   "\u00dcberType",
+   "snake_case_name",
+   "\u00fcbertype:snake_case_name"
+  ],
+  [
+   "\u00dcberType",
+   "\uff21\uff43\uff4d\uff45",
+   "\u00fcbertype:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "a\u3000b",
+   "Acme",
+   "a-b:acme"
+  ],
+  [
+   "a\u3000b",
+   "Acme, Inc.",
+   "a-b:acme-inc"
+  ],
+  [
+   "a\u3000b",
+   "The Acme Corporation",
+   "a-b:the-acme-corporation"
+  ],
+  [
+   "a\u3000b",
+   "  Jane   Doe ",
+   "a-b:jane-doe"
+  ],
+  [
+   "a\u3000b",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "a-b:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "a\u3000b",
+   "\u5317\u4eac\u5927\u5b66",
+   "a-b:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "a\u3000b",
+   "\ud83d\ude80 Rocket Co",
+   "a-b:rocket-co"
+  ],
+  [
+   "a\u3000b",
+   "O'Reilly Media LLC",
+   "a-b:o-reilly-media-llc"
+  ],
+  [
+   "a\u3000b",
+   "the",
+   "a-b:the"
+  ],
+  [
+   "a\u3000b",
+   "Co",
+   "a-b:co"
+  ],
+  [
+   "a\u3000b",
+   "AT&T",
+   "a-b:at-t"
+  ],
+  [
+   "a\u3000b",
+   "x\u200by",
+   "a-b:x-y"
+  ],
+  [
+   "a\u3000b",
+   "a\ufeffb",
+   "a-b:a-b"
+  ],
+  [
+   "a\u3000b",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "a\u3000b",
+   "\u0130stanbul",
+   "a-b:i-stanbul"
+  ],
+  [
+   "a\u3000b",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "a-b:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "a\u3000b",
+   "",
+   "a-b:"
+  ],
+  [
+   "a\u3000b",
+   "   ",
+   "a-b:"
+  ],
+  [
+   "a\u3000b",
+   "Group Holdings",
+   "a-b:group-holdings"
+  ],
+  [
+   "a\u3000b",
+   "acme  llc  ltd",
+   "a-b:acme-llc-ltd"
+  ],
+  [
+   "a\u3000b",
+   "Cafe\u0301 Ole\u0301",
+   "a-b:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "a\u3000b",
+   "Caf\u00e9 Ol\u00e9",
+   "a-b:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "a\u3000b",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "a-b:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "a\u3000b",
+   "The Trial",
+   "a-b:the-trial"
+  ],
+  [
+   "a\u3000b",
+   "The Acme Corporation Inc",
+   "a-b:the-acme-corporation-inc"
+  ],
+  [
+   "a\u3000b",
+   "snake_case_name",
+   "a-b:snake_case_name"
+  ],
+  [
+   "a\u3000b",
+   "\uff21\uff43\uff4d\uff45",
+   "a-b:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "Company",
+   "Acme",
+   "company:acme"
+  ],
+  [
+   "Company",
+   "Acme, Inc.",
+   "company:acme"
+  ],
+  [
+   "Company",
+   "The Acme Corporation",
+   "company:acme"
+  ],
+  [
+   "Company",
+   "  Jane   Doe ",
+   "company:jane-doe"
+  ],
+  [
+   "Company",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "company:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "Company",
+   "\u5317\u4eac\u5927\u5b66",
+   "company:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "Company",
+   "\ud83d\ude80 Rocket Co",
+   "company:rocket"
+  ],
+  [
+   "Company",
+   "O'Reilly Media LLC",
+   "company:o-reilly-media"
+  ],
+  [
+   "Company",
+   "the",
+   "company:the"
+  ],
+  [
+   "Company",
+   "Co",
+   "company:co"
+  ],
+  [
+   "Company",
+   "AT&T",
+   "company:at-t"
+  ],
+  [
+   "Company",
+   "x\u200by",
+   "company:x-y"
+  ],
+  [
+   "Company",
+   "a\ufeffb",
+   "company:a-b"
+  ],
+  [
+   "Company",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "Company",
+   "\u0130stanbul",
+   "company:i-stanbul"
+  ],
+  [
+   "Company",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "company:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "Company",
+   "",
+   "company:"
+  ],
+  [
+   "Company",
+   "   ",
+   "company:"
+  ],
+  [
+   "Company",
+   "Group Holdings",
+   "company:group"
+  ],
+  [
+   "Company",
+   "acme  llc  ltd",
+   "company:acme"
+  ],
+  [
+   "Company",
+   "Cafe\u0301 Ole\u0301",
+   "company:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Company",
+   "Caf\u00e9 Ol\u00e9",
+   "company:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Company",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "company:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "Company",
+   "The Trial",
+   "company:trial"
+  ],
+  [
+   "Company",
+   "The Acme Corporation Inc",
+   "company:acme"
+  ],
+  [
+   "Company",
+   "snake_case_name",
+   "company:snake_case_name"
+  ],
+  [
+   "Company",
+   "\uff21\uff43\uff4d\uff45",
+   "company:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "Organization",
+   "Acme",
+   "organization:acme"
+  ],
+  [
+   "Organization",
+   "Acme, Inc.",
+   "organization:acme"
+  ],
+  [
+   "Organization",
+   "The Acme Corporation",
+   "organization:acme"
+  ],
+  [
+   "Organization",
+   "  Jane   Doe ",
+   "organization:jane-doe"
+  ],
+  [
+   "Organization",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "organization:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "Organization",
+   "\u5317\u4eac\u5927\u5b66",
+   "organization:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "Organization",
+   "\ud83d\ude80 Rocket Co",
+   "organization:rocket"
+  ],
+  [
+   "Organization",
+   "O'Reilly Media LLC",
+   "organization:o-reilly-media"
+  ],
+  [
+   "Organization",
+   "the",
+   "organization:the"
+  ],
+  [
+   "Organization",
+   "Co",
+   "organization:co"
+  ],
+  [
+   "Organization",
+   "AT&T",
+   "organization:at-t"
+  ],
+  [
+   "Organization",
+   "x\u200by",
+   "organization:x-y"
+  ],
+  [
+   "Organization",
+   "a\ufeffb",
+   "organization:a-b"
+  ],
+  [
+   "Organization",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "Organization",
+   "\u0130stanbul",
+   "organization:i-stanbul"
+  ],
+  [
+   "Organization",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "organization:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "Organization",
+   "",
+   "organization:"
+  ],
+  [
+   "Organization",
+   "   ",
+   "organization:"
+  ],
+  [
+   "Organization",
+   "Group Holdings",
+   "organization:group"
+  ],
+  [
+   "Organization",
+   "acme  llc  ltd",
+   "organization:acme"
+  ],
+  [
+   "Organization",
+   "Cafe\u0301 Ole\u0301",
+   "organization:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Organization",
+   "Caf\u00e9 Ol\u00e9",
+   "organization:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Organization",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "organization:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "Organization",
+   "The Trial",
+   "organization:trial"
+  ],
+  [
+   "Organization",
+   "The Acme Corporation Inc",
+   "organization:acme"
+  ],
+  [
+   "Organization",
+   "snake_case_name",
+   "organization:snake_case_name"
+  ],
+  [
+   "Organization",
+   "\uff21\uff43\uff4d\uff45",
+   "organization:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "Work",
+   "Acme",
+   "work:acme"
+  ],
+  [
+   "Work",
+   "Acme, Inc.",
+   "work:acme-inc"
+  ],
+  [
+   "Work",
+   "The Acme Corporation",
+   "work:the-acme-corporation"
+  ],
+  [
+   "Work",
+   "  Jane   Doe ",
+   "work:jane-doe"
+  ],
+  [
+   "Work",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "work:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "Work",
+   "\u5317\u4eac\u5927\u5b66",
+   "work:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "Work",
+   "\ud83d\ude80 Rocket Co",
+   "work:rocket-co"
+  ],
+  [
+   "Work",
+   "O'Reilly Media LLC",
+   "work:o-reilly-media-llc"
+  ],
+  [
+   "Work",
+   "the",
+   "work:the"
+  ],
+  [
+   "Work",
+   "Co",
+   "work:co"
+  ],
+  [
+   "Work",
+   "AT&T",
+   "work:at-t"
+  ],
+  [
+   "Work",
+   "x\u200by",
+   "work:x-y"
+  ],
+  [
+   "Work",
+   "a\ufeffb",
+   "work:a-b"
+  ],
+  [
+   "Work",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "Work",
+   "\u0130stanbul",
+   "work:i-stanbul"
+  ],
+  [
+   "Work",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "work:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "Work",
+   "",
+   "work:"
+  ],
+  [
+   "Work",
+   "   ",
+   "work:"
+  ],
+  [
+   "Work",
+   "Group Holdings",
+   "work:group-holdings"
+  ],
+  [
+   "Work",
+   "acme  llc  ltd",
+   "work:acme-llc-ltd"
+  ],
+  [
+   "Work",
+   "Cafe\u0301 Ole\u0301",
+   "work:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Work",
+   "Caf\u00e9 Ol\u00e9",
+   "work:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "Work",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "work:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "Work",
+   "The Trial",
+   "work:the-trial"
+  ],
+  [
+   "Work",
+   "The Acme Corporation Inc",
+   "work:the-acme-corporation-inc"
+  ],
+  [
+   "Work",
+   "snake_case_name",
+   "work:snake_case_name"
+  ],
+  [
+   "Work",
+   "\uff21\uff43\uff4d\uff45",
+   "work:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   " Bank ",
+   "Acme",
+   "bank:acme"
+  ],
+  [
+   " Bank ",
+   "Acme, Inc.",
+   "bank:acme"
+  ],
+  [
+   " Bank ",
+   "The Acme Corporation",
+   "bank:acme"
+  ],
+  [
+   " Bank ",
+   "  Jane   Doe ",
+   "bank:jane-doe"
+  ],
+  [
+   " Bank ",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "bank:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   " Bank ",
+   "\u5317\u4eac\u5927\u5b66",
+   "bank:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   " Bank ",
+   "\ud83d\ude80 Rocket Co",
+   "bank:rocket"
+  ],
+  [
+   " Bank ",
+   "O'Reilly Media LLC",
+   "bank:o-reilly-media"
+  ],
+  [
+   " Bank ",
+   "the",
+   "bank:the"
+  ],
+  [
+   " Bank ",
+   "Co",
+   "bank:co"
+  ],
+  [
+   " Bank ",
+   "AT&T",
+   "bank:at-t"
+  ],
+  [
+   " Bank ",
+   "x\u200by",
+   "bank:x-y"
+  ],
+  [
+   " Bank ",
+   "a\ufeffb",
+   "bank:a-b"
+  ],
+  [
+   " Bank ",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   " Bank ",
+   "\u0130stanbul",
+   "bank:i-stanbul"
+  ],
+  [
+   " Bank ",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "bank:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   " Bank ",
+   "",
+   "bank:"
+  ],
+  [
+   " Bank ",
+   "   ",
+   "bank:"
+  ],
+  [
+   " Bank ",
+   "Group Holdings",
+   "bank:group"
+  ],
+  [
+   " Bank ",
+   "acme  llc  ltd",
+   "bank:acme"
+  ],
+  [
+   " Bank ",
+   "Cafe\u0301 Ole\u0301",
+   "bank:caf\u00e9-ol\u00e9"
+  ],
+  [
+   " Bank ",
+   "Caf\u00e9 Ol\u00e9",
+   "bank:caf\u00e9-ol\u00e9"
+  ],
+  [
+   " Bank ",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "bank:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   " Bank ",
+   "The Trial",
+   "bank:trial"
+  ],
+  [
+   " Bank ",
+   "The Acme Corporation Inc",
+   "bank:acme"
+  ],
+  [
+   " Bank ",
+   "snake_case_name",
+   "bank:snake_case_name"
+  ],
+  [
+   " Bank ",
+   "\uff21\uff43\uff4d\uff45",
+   "bank:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "U\u0308ber",
+   "Acme",
+   "\u00fcber:acme"
+  ],
+  [
+   "U\u0308ber",
+   "Acme, Inc.",
+   "\u00fcber:acme-inc"
+  ],
+  [
+   "U\u0308ber",
+   "The Acme Corporation",
+   "\u00fcber:the-acme-corporation"
+  ],
+  [
+   "U\u0308ber",
+   "  Jane   Doe ",
+   "\u00fcber:jane-doe"
+  ],
+  [
+   "U\u0308ber",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "\u00fcber:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "U\u0308ber",
+   "\u5317\u4eac\u5927\u5b66",
+   "\u00fcber:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "U\u0308ber",
+   "\ud83d\ude80 Rocket Co",
+   "\u00fcber:rocket-co"
+  ],
+  [
+   "U\u0308ber",
+   "O'Reilly Media LLC",
+   "\u00fcber:o-reilly-media-llc"
+  ],
+  [
+   "U\u0308ber",
+   "the",
+   "\u00fcber:the"
+  ],
+  [
+   "U\u0308ber",
+   "Co",
+   "\u00fcber:co"
+  ],
+  [
+   "U\u0308ber",
+   "AT&T",
+   "\u00fcber:at-t"
+  ],
+  [
+   "U\u0308ber",
+   "x\u200by",
+   "\u00fcber:x-y"
+  ],
+  [
+   "U\u0308ber",
+   "a\ufeffb",
+   "\u00fcber:a-b"
+  ],
+  [
+   "U\u0308ber",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "U\u0308ber",
+   "\u0130stanbul",
+   "\u00fcber:i-stanbul"
+  ],
+  [
+   "U\u0308ber",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "\u00fcber:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "U\u0308ber",
+   "",
+   "\u00fcber:"
+  ],
+  [
+   "U\u0308ber",
+   "   ",
+   "\u00fcber:"
+  ],
+  [
+   "U\u0308ber",
+   "Group Holdings",
+   "\u00fcber:group-holdings"
+  ],
+  [
+   "U\u0308ber",
+   "acme  llc  ltd",
+   "\u00fcber:acme-llc-ltd"
+  ],
+  [
+   "U\u0308ber",
+   "Cafe\u0301 Ole\u0301",
+   "\u00fcber:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "U\u0308ber",
+   "Caf\u00e9 Ol\u00e9",
+   "\u00fcber:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "U\u0308ber",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "\u00fcber:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+  ],
+  [
+   "U\u0308ber",
+   "The Trial",
+   "\u00fcber:the-trial"
+  ],
+  [
+   "U\u0308ber",
+   "The Acme Corporation Inc",
+   "\u00fcber:the-acme-corporation-inc"
+  ],
+  [
+   "U\u0308ber",
+   "snake_case_name",
+   "\u00fcber:snake_case_name"
+  ],
+  [
+   "U\u0308ber",
+   "\uff21\uff43\uff4d\uff45",
+   "\u00fcber:\uff41\uff43\uff4d\uff45"
+  ]
+ ],
+ "normalize_rel_type": {
+  "works at": "WORKS_AT",
+  "WORKS_AT": "WORKS_AT",
+  "Works-At!!": "WORKS_AT",
+  " _founded_ ": "FOUNDED",
+  "\u00e9l\u00e8ve de": "\u00c9L\u00c8VE_DE",
+  "e\u0301le\u0300ve de": "\u00c9L\u00c8VE_DE",
+  "\ud83d\udd25hot": "HOT",
+  "a__b": "A__B",
+  "Kelvin\u212a": "KELVINK",
+  "stra\u00dfe": "STRASSE"
+ },
+ "relation_id": [
+  [
+   "person:jane",
+   "works at",
+   "company:acme",
+   "relation:ec6ca7724d4851341629a9b9"
+  ],
+  [
+   "person:jane",
+   "WORKS_AT",
+   "company:acme",
+   "relation:ec6ca7724d4851341629a9b9"
+  ],
+  [
+   "person:jane",
+   "Works-At!!",
+   "company:acme",
+   "relation:ec6ca7724d4851341629a9b9"
+  ],
+  [
+   "person:jane",
+   " _founded_ ",
+   "company:acme",
+   "relation:c01f946524509ad7f3c237af"
+  ],
+  [
+   "person:jane",
+   "\u00e9l\u00e8ve de",
+   "company:acme",
+   "relation:29907b0a50464a9fb49b47a7"
+  ],
+  [
+   "person:jane",
+   "e\u0301le\u0300ve de",
+   "company:acme",
+   "relation:29907b0a50464a9fb49b47a7"
+  ],
+  [
+   "person:jane",
+   "\ud83d\udd25hot",
+   "company:acme",
+   "relation:1652f229ddfebe3c8f2ca217"
+  ],
+  [
+   "person:jane",
+   "a__b",
+   "company:acme",
+   "relation:5407633129c5dff2d56417f2"
+  ],
+  [
+   "person:jane",
+   "Kelvin\u212a",
+   "company:acme",
+   "relation:ee16cde5009e0b81dcbcb034"
+  ],
+  [
+   "person:jane",
+   "stra\u00dfe",
+   "company:acme",
+   "relation:3adabe311e89cf1cdf53e17d"
+  ]
+ ],
+ "preference_id": [
+  [
+   "person:jane",
+   "preference",
+   "database",
+   "db:hydradb",
+   "preference:0c567cdcf34e22f87c99e5fe"
+  ],
+  [
+   "x",
+   "disinterest",
+   "",
+   "\ud83d\ude80",
+   "preference:cdbbc11160e404974a9c5ab4"
+  ]
+ ],
+ "decision_id": [
+  [
+   null,
+   "Pick DB",
+   "decision:e56d010ce2b53d5dfee8173e"
+  ],
+  [
+   "",
+   "Pick DB",
+   "decision:a155e713b14234d3602d4a7d"
+  ],
+  [
+   "person:jane",
+   "Pick DB",
+   "decision:0d115129ff520751e61e35a1"
+  ],
+  [
+   "a",
+   "bc",
+   "decision:bb13be3a3d1fc64c0d85f2cd"
+  ],
+  [
+   "ab",
+   "c",
+   "decision:5b08b70d4868d6efcae13c11"
+  ]
+ ],
+ "source_version_id": "sv:14f0f9279680f2fcb6760808",
+ "source_node_id": "source:notes",
+ "bad_strings": {
+  "tab\there": [
+   {
+    "error": "ValidationError"
+   },
+   {
+    "error": "ValidationError"
+   }
+  ],
+  "nul\u0000": [
+   {
+    "error": "ValidationError"
+   },
+   {
+    "error": "ValidationError"
+   }
+  ],
+  "del\u007f": [
+   {
+    "error": "ValidationError"
+   },
+   {
+    "error": "ValidationError"
+   }
+  ],
+  "c1\u0085": [
+   {
+    "error": "ValidationError"
+   },
+   {
+    "error": "ValidationError"
+   }
+  ],
+  "lone\ud800": [
+   {
+    "error": "ValidationError"
+   },
+   {
+    "error": "ValidationError"
+   }
+  ]
+ },
+ "rel_type_errors": {
+  "works at": "WORKS_AT",
+  "WORKS_AT": "WORKS_AT",
+  "Works-At!!": "WORKS_AT",
+  " _founded_ ": "FOUNDED",
+  "\u00e9l\u00e8ve de": "\u00c9L\u00c8VE_DE",
+  "e\u0301le\u0300ve de": "\u00c9L\u00c8VE_DE",
+  "\ud83d\udd25hot": "HOT",
+  "a__b": "A__B",
+  "Kelvin\u212a": "KELVINK",
+  "stra\u00dfe": "STRASSE",
+  "!!!": {
+   "error": "ValidationError"
+  },
+  "   ": {
+   "error": "ValidationError"
+  }
+ },
+ "nfc_ids": [
+  "preference:41c480c00563cb0d2772dc72",
+  "preference:41c480c00563cb0d2772dc72",
+  "decision:cac833d9805d7da9a92b6b45",
+  "decision:cac833d9805d7da9a92b6b45"
+ ],
+ "cursors": {
+  "0": "MA==",
+  "1": "MQ==",
+  "50": "NTA=",
+  "999": "OTk5",
+  "123456789": "MTIzNDU2Nzg5"
+ },
+ "cypher_blocked": {
+  "MATCH (n) RETURN n": false,
+  "match (n:Entity) where n.ns = $ns return n.id as id": false,
+  "OPTIONAL MATCH (n) RETURN n": false,
+  "WITH 1 AS x RETURN x": false,
+  "UNWIND [1,2] AS x RETURN x": false,
+  "RETURN 1": false,
+  "  \n RETURN 1": false,
+  "SHOW INDEXES": false,
+  "EXPLAIN MATCH (n) RETURN n": false,
+  "PROFILE MATCH (n) RETURN n": false,
+  "CREATE (n) RETURN n": true,
+  "MATCH (n) DETACH DELETE n": true,
+  "MATCH (n) SET n.x = 1": true,
+  "MERGE (n:X) RETURN n": true,
+  "MATCH (n) REMOVE n.x": true,
+  "DROP CONSTRAINT x": true,
+  "CALL db.labels()": true,
+  "MATCH (n) CALL { CREATE (m) } RETURN n": true,
+  "MATCH (n) FOREACH (x IN [1] | CREATE (m))": true,
+  "LOAD CSV FROM 'x' AS row RETURN row": true,
+  "BEGIN": true,
+  "TERMINATE TRANSACTIONS 'x'": true,
+  "MATCH (n) WHERE n.name = 'CREATE' RETURN n": false,
+  "MATCH (n) WHERE n.name = \"DELETE it\" RETURN n": false,
+  "MATCH (n) RETURN n.set AS set": false,
+  "MATCH (n:Create) RETURN n": false,
+  "MATCH (n) RETURN n AS create": false,
+  "MATCH (n) RETURN {merge: 1, delete: 2} AS m": false,
+  "MATCH (n) WHERE n.x = $create RETURN n": false,
+  "MATCH (n) /* CREATE */ RETURN n": false,
+  "MATCH (n) // DELETE\nRETURN n": false,
+  "MATCH (n) // DELETE\u2028CREATE (m) RETURN n": true,
+  "MATCH (n) RETURN n // trailing comment CREATE": false,
+  "MATCH (`CREATE` {x: 1}) RETURN 1": false,
+  "MATCH (n) WHERE n.x = 'it\\'s CREATE' RETURN n": false,
+  "MATCH (n) WHERE n.x = 'unterminated CREATE (m)": true,
+  "MATCH (n) /* unterminated CREATE": true,
+  "MATCH (n) RETURN n; CREATE (m)": true,
+  "USE other MATCH (n) RETURN n": true,
+  "MATCH (n) RETURN n UNION MATCH (m) CREATE (x) RETURN m": true,
+  "": false,
+  "   ": false,
+  "foo": true
+ },
+ "cypher_fuzz": {
+  " :Create  CREATE _CREATE  \u017fet// x\u2029CREATE": true,
+  "": false,
+  " RETURN 'CREATE'create CrEaTe  'CREATE' _CREATE  SET  ": true,
+  " // x\u2028  :Create OPTIONAL // DELETE\n LOADDETACH  SET  (n)  _CREATE": true,
+  " // x\u2029CREATE   ": true,
+  "\u017fet  SHOW // x\u2028": true,
+  " \"unterm  /* openBEGIN'it\\'s'  n.x = 1{a:1, set: 2}AS UNION CrEaTe": true,
+  "/* CREATE */FOREACHEXPLAINLOAD  create `bt``x`MERGEDETACH$create": true,
+  "  // x\u2028": false,
+  "UNION\u0085// x\u2029CREATEcreate -->": true,
+  "UNION  create EXPLAIN  (n)": true,
+  "  _CREATELOAD  n.set  {create: 1} -->{create: 1} \n \"unterm UNWIND": true,
+  " PROFILE :CreateWHERECrEaTe": false,
+  ":Create  USE": true,
+  "[1,2]  USE": true,
+  ";\u0000 DETACH CALL OPTIONAL  OPTIONAL": true,
+  "  CALLLOAD DETACH/* open\n  (n:Label) UNION": true,
+  "  \t  PROFILE 'it\\'s'  CREATE\u00e9  :Create:Create\u017fet ": false,
+  " WITH UNWINDMERGE (`CREATE`)  CREATE MATCH": true,
+  " /* open -->\n create \nDETACH  as\u0085'unterminated": true,
+  " x": true,
+  "'unterminated(n) DETACH PROFILEPROFILE'unterminated  MERGE": true,
+  " UNWIND  {a:1, set: 2} UNION  WHERE TERMINATE  (n)  [1,2] UNION": false,
+  "  {a:1, set: 2} {create: 1} /* open  BEGIN": true,
+  "  \n CREATE\u00e9 _CREATEPROFILE WITH  \"untermEXPLAIN": true,
+  "as UNION  \u0000\"DELETE\"": false,
+  "CrEaTe \u017fet 'unterminated (`CREATE`) 'unterminated": true,
+  "  \u212aeep 'unterminated  {create: 1}  CrEaTe  SET\u00e9CREATE  TERMINATE 'unterminated 'CREATE'": true,
+  " CREATE\u00e9  :Create:Create  --> EXPLAIN": true,
+  " DELETE DETACH": true,
+  "CREATE\u00e9  DETACH  _CREATE  'unterminated  n.x = 1DETACH  // DELETE\n match CREATE\u00e9": true,
+  "  PROFILE": false,
+  "[1,2] _CREATE": true,
+  " as LOAD  AS": true,
+  "as  $create CREATE  {create: 1}\u001c  _CREATE  $create  DELETE  DETACH": true,
+  "  matchBEGIN \u0085 BEGIN CALL 'unterminated  EXPLAIN // DELETE\n": true,
+  "  /* CREATE */  // DELETE\n\u00e9CREATE FOREACH  CREATE": true,
+  " USE BEGIN `bt``x`": true,
+  "  match \"DELETE\"\n  \u0085  WITH  USE`bt``x`": true,
+  "`bt``x` UNION  FOREACHn.x = 1  COPY \u212aeepDELETESET": true,
+  "(n:Label) \u001c 'CREATE' UNWIND  (n) COPY": true,
+  "  \t  {a:1, set: 2}": true,
+  "FOREACH \u0000": true,
+  " PROFILE :CreateMERGE  \u212aeep MERGE  'CREATE'  :Create": true,
+  "WITH(n:Label) EXPLAINmatch// DELETE\n": false,
+  "SHOW n.set/* CREATE */  LOAD  \u0000 SET FOREACH": true,
+  " as": true,
+  " COPY USE _CREATEx": true,
+  "DETACH  WHERE  // x\u2028UNION": true,
+  " USE CREATE\u00e9  CALLCOPY USE": true,
+  "CrEaTe": true,
+  " create[1,2] 'it\\'s' (`CREATE`)  $create\n RETURN  SHOW -->": true,
+  " n.x = 1 ": true,
+  "  TERMINATE LOAD`bt``x`  CALL": true,
+  "CREATE\u00e9 as MATCH EXPLAIN": true,
+  "  WITH  'unterminated n.x = 1\u017fet  _CREATE  'CREATE'  \"unterm  \u212aeep": true,
+  "  (n)  UNWIND (`CREATE`) \u212aeep  EXPLAIN  DELETE": true,
+  "CREATE MATCH    FOREACH'CREATE' CREATE": true,
+  "  \u212aeep": true,
+  "  \u001c\u0085 UNIONRETURNCALL USE": true,
+  " as\u0000// DELETE\nAS \u0000UNWINDCALL": true,
+  "CrEaTeUSE  \t AS  BEGIN": true,
+  "_CREATE": true,
+  " :Create": false,
+  " :Create (n)  CrEaTe  \u0000  x \u001c  \u00e9CREATE  n.set": true,
+  "  \"unterm LOAD  \n  DETACH _CREATE": true,
+  "  'CREATE'  UNION  DELETE  TERMINATE  // x\u2028 _CREATE  // x\u2029CREATE  ;": true,
+  " match DELETE  {a:1, set: 2}": true,
+  "\u212aeep": true,
+  "  CREATE  match  /* open  ASas 'it\\'s' PROFILE": true,
+  "  CrEaTe  /* CREATE */ PROFILE  'unterminatedCREATE\u00e9 xAS  TERMINATE": true,
+  " PROFILE  'it\\'s'x": false,
+  " 'unterminated  LOAD \n  \t create  DETACH": true,
+  "\t  UNION\n  DELETE 'unterminated": true,
+  "; UNION ;LOAD  /* CREATE */'it\\'s''it\\'s'": true,
+  "  WITH": false,
+  " n.x = 1match'it\\'s' _CREATE": true,
+  "USEUNWIND create  CrEaTe PROFILE  asDELETE  _CREATE": true,
+  "FOREACH SHOWOPTIONALCOPY:Create MERGE -->;": true,
+  "(n)  DETACH{create: 1}(n:Label) \u212aeepMATCHTERMINATE": true,
+  "SET SHOW COPY  LOAD{a:1, set: 2}": true,
+  "n.set": true,
+  " {a:1, set: 2}TERMINATEx USE CREATE  LOAD  n.x = 1 AS'CREATE'": true,
+  "WITH\u00e9CREATEFOREACH CREATE\u00e9  :Create  // DELETE\n EXPLAIN CREATE": true,
+  "\n \t\"unterm WHERE  DELETE 'unterminated": true,
+  "LOADas  PROFILE  as\t (n)": true,
+  "  \u001cSET \t create `bt``x`// DELETE\n \"DELETE\"": true,
+  "'CREATE' // DELETE\n AS CALL// DELETE\n": false,
+  "AS": true,
+  "CREATE\u00e9  WITH PROFILEn.setPROFILE": true,
+  " n.set(`CREATE`) \"unterm// x\u2028DELETE  `bt``x`    CrEaTe": true,
+  " n.set\t'CREATE'x": true,
+  " 'CREATE'  TERMINATE": true,
+  "  \"unterm createn.x = 1  x\"DELETE\" \u00e9CREATE OPTIONAL": true,
+  " /* CREATE */  \u017fet": true,
+  " // DELETE\n MATCH OPTIONAL  WHERE \t  (n)  ": false,
+  "   UNION \u017fet (n)": true,
+  "  WITHas \u00e9CREATE  MATCH /* open'it\\'s'\u0000\t": true,
+  "/* CREATE */ // DELETE\n match": false,
+  "  \tCREATE WITHFOREACH  \tCrEaTe": true,
+  " \u001cn.x = 1OPTIONALRETURN": true,
+  "  $create;WITH CREATE\u00e9PROFILE": true,
+  " UNWINDWITHBEGIN OPTIONALOPTIONALTERMINATE\u017fet  \"unterm": true,
+  " COPY \"untermWHERE  CREATE  DETACHCREATE match  DETACHCREATE": true,
+  "\"DELETE\"  FOREACH": true,
+  "  SET n.x = 1 (`CREATE`) CALL  n.x = 1": true,
+  "  'it\\'s' (n)  EXPLAIN\u212aeep(`CREATE`)MERGE MATCH USE": true,
+  "$create": false,
+  "  \u0000": false,
+  "{create: 1}_CREATECrEaTe": true,
+  " {a:1, set: 2}  WHEREWITH{a:1, set: 2}  COPYmatch  $create": true,
+  "  BEGINRETURNRETURN": true,
+  " CREATE\u00e9 as PROFILE COPY  (`CREATE`)USE\u0000": true,
+  " as  SHOW  (n:Label)(n) EXPLAIN  WHERE  --> match \u017fet": true,
+  "  \u0000\u0000\u00e9CREATEWHERE_CREATEDELETECALL": true,
+  "  BEGIN \u0085 (n:Label)'it\\'s'": true,
+  "  CrEaTe  WITHTERMINATE AScreate": true,
+  "  /* openMERGEFOREACH create\n UNWIND $create": true,
+  "  \"DELETE\" OPTIONAL $create\n  AS  /* open  TERMINATE": false,
+  "LOAD": true,
+  "  USEas  as \"DELETE\"": true,
+  " AS DETACHFOREACH": false,
+  " (n:Label) :CreateAS  /* CREATE */ \t \tRETURN MATCHFOREACH": true,
+  "WHERERETURNOPTIONAL": true,
+  " WITH": false,
+  "  WITH {a:1, set: 2}  [1,2] \"DELETE\"  as  --> \u017fet  \u0085  \n": true,
+  " RETURN(`CREATE`) RETURN as \u0085": false,
+  " _CREATE$create  {a:1, set: 2}": true,
+  "  (n) UNWIND": true,
+  "  'unterminated $create \u00e9CREATE\u001c  DETACH  /* open \t": true,
+  "UNION$create": true,
+  "  (n)\u0000 (n)  // x\u2028": true,
+  "$create [1,2]\t :Create  :Create": true,
+  " 'CREATE' 'CREATE' _CREATE": true,
+  "// x\u2028": false,
+  "BEGIN DELETE CREATE  DETACH  CREATE\u00e9": true,
+  " // x\u2028  n.x = 1PROFILE  MERGE {create: 1}MERGE": true,
+  " n.x = 1 \u017fet\"unterm (n) \u212aeep WHERE(n:Label) \u0085": true,
+  " COPY  \n  _CREATE   \n\n": true,
+  "CALL  UNWIND :Create": true,
+  " n.setSET AS  _CREATE RETURN  \u212aeep  RETURN  \u212aeep": true,
+  " n.set  'it\\'s'  x  BEGIN\t": true,
+  "// x\u2029CREATE 'CREATE'\u001c\"DELETE\"  \"DELETE\" match": true,
+  "'it\\'s' \"DELETE\"  BEGIN\u212aeep CREATE\u00e9:Create create {create: 1}{a:1, set: 2}": true,
+  "`bt``x`": false,
+  "  RETURN   CrEaTe  (n:Label)  `bt``x` CREATE  COPY\t": true,
+  " x \n": true,
+  " DELETE": true,
+  "\u0000 ;  n.x = 1 create\nMERGECOPY": true,
+  "COPYDETACH`bt``x`UNWIND  as  `bt``x` (n:Label)RETURN CALL": true,
+  "  ;COPYMERGESET  CREATE": true,
+  "// DELETE\n  // x\u2029CREATE  FOREACH as   ": true,
+  "  CREATE\u00e9as{a:1, set: 2}  DETACH(`CREATE`) \"DELETE\"": true,
+  " \n  \u0000 LOAD": true,
+  "(n)  \u0000  n.x = 1  COPYEXPLAIN PROFILE OPTIONAL LOAD": true,
+  "  'CREATE'`bt``x`COPY DELETEOPTIONAL  \t match MATCH  {create: 1}": true,
+  " /* CREATE *//* open $create  (n)": true,
+  " UNWIND\nMERGE MATCH SHOW \"DELETE\" create  DETACH  \u00e9CREATE": true,
+  "CREATE\u00e9\u0000 CREATE  _CREATE": true,
+  "\u0085  // x\u2029CREATE\u0085  EXPLAINAS COPY RETURN /* open": true,
+  " AS CREATE MATCH  // DELETE\n  --> DETACH": true,
+  " /* CREATE */  \t  \t  $create  CALL  (n)": true,
+  " ": false,
+  "  /* open n.setPROFILECrEaTe  \tCALL \u017fet": true,
+  " \t SETCOPY  n.x = 1": true,
+  "  CREATE   ;;": true,
+  "LOAD  n.x = 1 CrEaTe  MATCH as \u212aeep  WITH PROFILE": true,
+  " FOREACH(`CREATE`)  ASWHERE  WHERE": true,
+  "'unterminated  UNION x 'CREATE'  OPTIONAL  FOREACH\u00e9CREATE :Create": true,
+  "  create  WHERE DETACH match \u017fet  n.x = 1 {create: 1} UNION match": true,
+  "  \t  RETURN": false,
+  "  RETURN": false,
+  "  TERMINATE": true,
+  " _CREATE  COPY  create  -->\u017fet": true,
+  " UNWIND RETURN -->": false,
+  "   ": false,
+  "\u017fet \u017fet  UNWIND(n:Label)": true,
+  "as {create: 1}n.x = 1CREATE  TERMINATE": true,
+  "BEGIN  `bt``x`x\n  match": true,
+  " 'CREATE'  BEGIN {create: 1}SHOW /* open  UNWIND": true,
+  "  _CREATE": true,
+  " 'CREATE' /* CREATE */ LOAD MATCH": true,
+  "\u017fetUNION \u0000// x\u2029CREATE\u0000": true,
+  "// x\u2028 LOAD -->  OPTIONALMERGE -->  BEGIN \"unterm": true,
+  "  {create: 1} :CreateCOPY  CrEaTeFOREACH  matchUNWIND": true,
+  "'CREATE'  `bt``x` n.set  OPTIONAL": true,
+  " /* open  TERMINATE  TERMINATE  \t {create: 1}  (n:Label)  DETACH": true,
+  "  // DELETE\n  (n:Label) 'it\\'s'UNION// x\u2029CREATE DELETE'it\\'s'": true,
+  "  WITH(n)  _CREATE": false,
+  " EXPLAIN AS  (n:Label)  /* CREATE */MERGE (n:Label) as  \u017fet \u0000": true,
+  " n.set": true,
+  " \u00e9CREATEEXPLAIN": true,
+  "USE \u017fet  WHERE USE": true,
+  "'it\\'s' MATCHx": true,
+  "  OPTIONAL   'it\\'s' DETACH\u0085  :Create": true,
+  "UNION  // x\u2029CREATE  \t": true,
+  " \u001c  \t  UNION  x ; \t": true,
+  "'CREATE'": false,
+  "   \u017fetASSHOW   ": true,
+  "x'unterminated": true,
+  " \n/* CREATE */  \u001c COPY  (n:Label) n.setWHERE": true,
+  " MERGE  \u00e9CREATE /* CREATE */\u017fet  'it\\'s'  UNWIND  'unterminated  match": true,
+  "  (`CREATE`)PROFILEUNWIND  CALL`bt``x`": true,
+  "  \n": false,
+  "  CREATEUSE:Create MATCH $create": true,
+  "  UNION  {create: 1}  as OPTIONALPROFILE-->": true,
+  " CREATE\u00e9'it\\'s' MERGE n.x = 1 CREATE\u00e9  WITH\t  EXPLAIN": true,
+  " {create: 1}   'it\\'s'": true,
+  "  \t BEGIN{create: 1} USE": true,
+  "  as; 'unterminated CREATE\u00e9  CREATE\u00e9{create: 1}": true,
+  "  (n)'unterminated'CREATE'": true,
+  "  CrEaTe  COPYDETACHxCREATE _CREATE  COPY\u00e9CREATE /* CREATE */": true,
+  "  // x\u2029CREATE \u001c UNWIND \tas": true,
+  " // x\u2029CREATE x CALL{create: 1} UNWIND\u00e9CREATE  MERGE  COPY  \u0085": true,
+  "  COPY": true,
+  "  \u212aeepWITHUNION /* CREATE */ PROFILE\u001c // DELETE\n as": true,
+  " _CREATE 'unterminated// DELETE\n 'unterminatedCOPY UNION": true,
+  " \"unterm /* open  [1,2]  MATCH \u212aeep'it\\'s'  // x\u2028": true,
+  "  LOAD{a:1, set: 2}$create  create     match": true,
+  " ;  n.x = 1CREATE\u00e9 `bt``x`\"unterm RETURN SHOW  (`CREATE`)": true,
+  "  {a:1, set: 2}": true,
+  "BEGIN  // DELETE\n LOAD(`CREATE`)as": true,
+  " _CREATELOAD_CREATE:Create`bt``x`[1,2]  {create: 1} \t": true,
+  " (`CREATE`) (n:Label)  (n) // x\u2029CREATE  CrEaTe :Create  // DELETE\n": true,
+  "  // x\u2028 :Create\u017fet RETURN _CREATE\u0085": false,
+  "  \n\n    UNION  \u0085  CrEaTe RETURN   ": true,
+  "  TERMINATE \u017fet  CALL $create WHERE  MATCH[1,2]": true,
+  "// DELETE\n  as": true,
+  " $create (n:Label) 'CREATE'  \t": true,
+  " \"unterm  /* CREATE */ _CREATE BEGIN// x\u2028  WHERE\"DELETE\" MATCH  n.set": true,
+  "  -->  DETACHBEGIN// DELETE\n CrEaTe  'unterminated COPY   'CREATE'": true,
+  " UNWIND": false,
+  " 'unterminated": true,
+  "  // x\u2028 \"DELETE\"  PROFILE n.x = 1": false,
+  "  SHOW  x EXPLAIN LOAD  // DELETE\n": true,
+  "\u001cWHERE SHOW MATCH MATCH  ;  CrEaTe": true,
+  "(n)  \u0085 \u0000\u0085 (n:Label)-->": true,
+  "  \"DELETE\"; DETACH {a:1, set: 2}  MERGE  CREATE\u00e9'unterminatedBEGIN-->": true,
+  "  (`CREATE`)USE \n  SHOW": true,
+  "[1,2]  EXPLAIN \u212aeep \u0085// x\u2029CREATEFOREACH n.set;\u0085": true,
+  "LOAD  MATCHas": true,
+  "MERGE  WHERE LOAD CREATE\u00e9": true,
+  " USE  ;{create: 1}  CrEaTe  // DELETE\nCREATE\u00e9WITH  n.x = 1 (n)": true,
+  " ;'it\\'s'  UNWIND// x\u2029CREATE \u00e9CREATE'it\\'s'  CrEaTe  CREATE\u00e9BEGIN": true,
+  "  COPYFOREACH  (n:Label)`bt``x`  WITH UNWIND CrEaTe CREATE\u00e9  LOAD": true,
+  "  // x\u2028:Create  x AS n.x = 1": true,
+  "[1,2] {a:1, set: 2}  'it\\'s' DETACH\u0085 {create: 1}/* CREATE */": true,
+  " \u017fet UNWIND  \"unterm  // x\u2028 as'CREATE' -->BEGIN  _CREATE": true,
+  " as (`CREATE`) CALLCrEaTe CREATE // DELETE\n[1,2]  'it\\'s'-->": true,
+  " SHOW as// x\u2028 \t \u0000  `bt``x`": false,
+  " \"DELETE\" {a:1, set: 2} EXPLAIN CALL -->-->": true,
+  " COPY  COPY \u212aeep as  SHOW": true,
+  " \u017fet (n:Label) --> ;  (n)  // x\u2029CREATETERMINATE": true,
+  "(n:Label)": true,
+  "n.set {a:1, set: 2}n.set \"DELETE\" CREATE\u00e9": true,
+  "  COPY 'it\\'s'": true,
+  " MERGE create  [1,2]": true,
+  "  DELETE\u0000 n.x = 1\u212aeep  ": true,
+  "(`CREATE`)": true,
+  " 'unterminated  DETACHOPTIONAL  CREATE": true,
+  "  \"DELETE\"  FOREACH": true,
+  "[1,2] USE": true,
+  "AS match// x\u2028(`CREATE`) as\u017fet": true,
+  "COPYSET `bt``x`    n.x = 1": true,
+  "  'unterminatedSETTERMINATE": true,
+  "'CREATE'AS \u017fet": false,
+  "$create CREATE  LOAD   \"DELETE\"  (`CREATE`)": true,
+  " \"DELETE\" \u00e9CREATE  LOAD {a:1, set: 2}RETURNUNWIND// x\u2028 DELETE": true,
+  "  BEGIN SHOW": true,
+  " \u0085 \u212aeep": true,
+  "  EXPLAIN": false,
+  "CALL DELETE  \u001c    // x\u2029CREATEWITH create": true,
+  "\u212aeep  WHERE /* CREATE */(`CREATE`)\u212aeep  [1,2]CrEaTe $create": true,
+  " [1,2]  USE CALL  \u212aeepRETURN UNION// x\u2028": true,
+  " {create: 1}  n.x = 1\u0000  create {create: 1}  ASBEGIN  [1,2]// x\u2028": true,
+  " \u0000  \"unterm`bt``x` /* CREATE */": true,
+  " match \u0000 OPTIONAL  CALL \u017fetas  _CREATE match": true,
+  "match     'it\\'s'": false,
+  " UNION\u017fet[1,2] SHOW RETURNSET\"unterm  `bt``x`": true,
+  " SET :Create /* open  OPTIONAL": true,
+  " \u001c  'it\\'s'  :Create": false,
+  " -->  n.set": true,
+  "  \u212aeep  /* CREATE */ :Create BEGIN(`CREATE`)AS": true,
+  "  'CREATE'  CREATE\u00e9_CREATEx  CREATE": true,
+  "  DETACH  n.x = 1AS\u001c  MATCH": true,
+  " /* CREATE */ create'CREATE' `bt``x`  match": true,
+  " $createBEGIN ": false,
+  "WHERE  \n   CREATE\u00e9 \n as /* CREATE */ 'CREATE' -->": true,
+  " (n)\t SET \u0085": true,
+  "CrEaTe// x\u2029CREATE  n.x = 1 \"DELETE\" `bt``x` FOREACHWHERE// x\u2028": true,
+  "AS  CrEaTe  /* open\u212aeep": true,
+  "  UNION  OPTIONAL  n.set // DELETE\n  {a:1, set: 2}COPY  (n)": true,
+  "'unterminatedmatch (`CREATE`) WITH  /* open// x\u2029CREATEMATCHMERGE (n:Label)": true,
+  "\"untermLOAD LOAD BEGIN MERGE  create  [1,2]\"DELETE\"": true,
+  "\u212aeep{create: 1}  TERMINATE /* CREATE */ \u0000  PROFILE $create\u001c": true,
+  " ; \n  x_CREATE  \u017fet": true,
+  "\u00e9CREATE  SHOW  WHERE  DELETE[1,2] MATCHBEGIN": true,
+  "  SET:Create  DETACHx[1,2]  \u0085 n.setUNION": true,
+  "EXPLAINLOAD:Create  // DELETE\n  n.set  (n:Label) \u00e9CREATE": true,
+  "\"DELETE\"CALL  (n) 'CREATE'  n.set  OPTIONAL _CREATE": true,
+  "\u212aeep  \u212aeep \u0000UNWINDCOPY": true,
+  "  COPY(n)  BEGIN/* open": true,
+  "/* CREATE */  EXPLAIN  'CREATE''it\\'s'RETURN  ;\"DELETE\" ; /* CREATE */": false,
+  " $create`bt``x`\t": false,
+  "  DETACH \u0000\"unterm\"DELETE\"  COPY  (`CREATE`)  /* CREATE */  _CREATE": true,
+  " {a:1, set: 2}": true,
+  "create`bt``x` SET  COPYUNION": true,
+  "  FOREACH  /* CREATE */_CREATE  UNWIND": true,
+  " $create CREATE  // x\u2028  \u017fet// x\u2028     RETURN  $create": true,
+  "  UNION  MATCH:Create // x\u2029CREATE": true,
+  " \"unterm  // x\u2028[1,2]": true,
+  "  DETACH  WITH\u0085 DETACH /* CREATE */  \u017fet \u017fet MERGE": true,
+  "_CREATE\nCREATE\u00e9 \t ;  (n:Label) SHOW {create: 1}": true,
+  " RETURN  x  create": true,
+  " \"DELETE\"  n.set CREATE FOREACH// x\u2029CREATE": true,
+  " \n AS RETURN n.x = 1  x (n:Label) COPY": true,
+  "$create  as--> AS  n.set  SHOW  OPTIONAL": true,
+  ":Create  \"unterm \u00e9CREATE CrEaTe MERGEn.set": true,
+  " FOREACH:Create": true,
+  "SET/* open(`CREATE`)\t \u0000 'CREATE'// DELETE\n n.set": true,
+  "LOADASRETURN": true,
+  "  matchCREATE\u00e9 AS  DELETE": true,
+  " USE": true,
+  " // DELETE\n'it\\'s' MERGE{create: 1} EXPLAINn.set  \u0000  UNWIND": true,
+  "`bt``x` OPTIONAL; -->": false,
+  "  COPY// x\u2029CREATE/* open :Create": true,
+  "  UNWIND [1,2] ;  CrEaTe  xPROFILEmatch  SHOW  DETACH": true,
+  " n.set  CrEaTe  CALL (n:Label)": true,
+  "  COPY create  WHERE": true,
+  "  TERMINATEWITH SHOWCrEaTe LOAD": true,
+  "  :Create{create: 1}": true,
+  "BEGIN  FOREACH  [1,2] n.x = 1CALL {a:1, set: 2}": true,
+  "match  SHOW  'it\\'s' x{create: 1}": false,
+  " LOAD": true,
+  "WHERE": true,
+  "  OPTIONAL  ; :Create \u0085 'CREATE' TERMINATEDETACHPROFILE // DELETE\n": false,
+  "    // x\u2028 // x\u2028SHOW": false,
+  "n.x = 1\u001c  // x\u2028n.x = 1 SET  LOAD FOREACH  \u0085": true,
+  "  SET \u00e9CREATEUNWIND": true,
+  "  WHERE $create  PROFILEPROFILE  \u212aeep": true,
+  "/* CREATE */ {create: 1}\"DELETE\"": true,
+  "  `bt``x`  UNION   `bt``x` ;": true,
+  ";  x \"unterm": true,
+  " -->  _CREATE  as": true,
+  "  MERGE  AS": true,
+  "AS MERGE{create: 1}CrEaTe  DELETE ;  \"unterm": true,
+  " SHOW MATCH  UNIONDELETE  {create: 1}  (n) FOREACH": true,
+  "  // x\u2028 (`CREATE`)": true,
+  "  'CREATE'": false,
+  "  \u001c \u0085": false,
+  "\u212aeep SET  LOAD {a:1, set: 2}UNWIND CREATE(n)": true,
+  " UNION\"DELETE\" MERGE": true,
+  "'it\\'s'  {a:1, set: 2}MERGE  create MATCH": true,
+  "CrEaTe  SHOWPROFILE  as \t\u0000\"unterm": true,
+  "  (n:Label) {create: 1} \t": true,
+  "  \n  \t  as  AS": false,
+  " PROFILE": false,
+  " LOADCALL  /* CREATE */  MERGE \u00e9CREATE  \u212aeep": true,
+  "  \nn.set \t(n:Label)": true,
+  "DELETE  WHERE\u212aeep": true,
+  " CREATE \u017fet  CREATE\u00e9  WHERE": true,
+  " --> \"unterm\"unterm  MERGE\u0085   ": true,
+  " UNION": true,
+  " DELETE CrEaTe": true,
+  "WITH EXPLAINMATCH \u212aeep  x  'CREATE' LOAD": true,
+  "  CREATE": true,
+  "  $createcreateMATCH  \u0000 COPY  MERGELOAD \"DELETE\"": true,
+  "  {create: 1}  WITHCrEaTe  (n:Label)  'it\\'s'/* open  [1,2] :Create  \n": true,
+  " EXPLAIN": false,
+  "  \u001c// x\u2028  $create'unterminated  \t": true,
+  "[1,2]/* CREATE */": true,
+  " ;  \"DELETE\"  CrEaTe": true,
+  "  // x\u2029CREATE// DELETE\n": true,
+  "{a:1, set: 2}  AS  \"DELETE\"as OPTIONAL \u0000 // DELETE\n  SET [1,2]": true,
+  "  \u017fet /* CREATE */  as  \"unterm": true,
+  "  'it\\'s' /* open  UNION": true,
+  "  `bt``x`": false,
+  "  CrEaTe; CREATE\u00e9DELETE  // DELETE\n  SHOW    `bt``x` 'it\\'s'": true,
+  "  MERGE // x\u2028BEGIN DELETEBEGIN  CREATE": true,
+  " CREATERETURN UNION  \u0000 'it\\'s'SET": true,
+  "WHERE \n": true,
+  "  SET  [1,2]MERGE": true,
+  "  \u212aeepCREATE\u00e9  ; _CREATESET": true,
+  "`bt``x`  /* CREATE */EXPLAIN": false,
+  " _CREATE  {create: 1} {create: 1}  (n:Label)  SET n.x = 1  AS": true,
+  "WITH  \"DELETE\" \u212aeep  \"DELETE\"": false,
+  " \"unterm": true,
+  " CREATE\u00e9": true,
+  " DETACH  n.x = 1[1,2]  \u001c": true,
+  " // x\u2029CREATE/* open  TERMINATE-->MATCH (`CREATE`)": true,
+  "`bt``x`[1,2]": true,
+  " \n": false,
+  "\u212aeep\u0000 UNION:Create [1,2]  /* CREATE */ {a:1, set: 2}/* CREATE */ (n)": true,
+  "  \n UNWIND": false,
+  "EXPLAIN(`CREATE`)": false,
+  "n.set(n:Label) (`CREATE`)  'unterminatedOPTIONAL ASFOREACH  RETURN  DETACH": true,
+  "n.setcreate": true,
+  "{create: 1}  // x\u2028  // x\u2029CREATE UNION WHERE  COPY [1,2] BEGIN": true,
+  "  // x\u2028  \u017fet\u00e9CREATE\u00e9CREATE [1,2] ;": true,
+  "\u0000": false,
+  "  {a:1, set: 2}  x  AS[1,2]  SHOW": true,
+  "CREATE  (`CREATE`)  (n:Label)`bt``x`COPY CREATE\u00e9": true,
+  "DETACH UNWIND FOREACH": true,
+  "\"DELETE\"// x\u2028n.x = 1 // x\u2029CREATE DETACHEXPLAINas": true,
+  "  \u001ccreate // x\u2029CREATE // x\u2029CREATE (n)  {create: 1}{create: 1}  'CREATE'  [1,2]": true,
+  "COPY/* open": true,
+  "  USE SHOW": true,
+  " :CreateWITH  LOAD": true,
+  "  \u017fet AS  CREATE \u0085 CrEaTe CREATE\u00e9  (`CREATE`)  DELETE": true,
+  "/* open  FOREACH  ": true,
+  " UNWIND(n:Label)  match  \"unterm\n": false,
+  " CREATE\u00e9CREATE CrEaTe  \nBEGIN": true,
+  "  :Create-->[1,2] match// x\u2028  (n:Label) $create": true,
+  "  EXPLAINMERGE match UNWIND /* CREATE */ {create: 1}'CREATE'/* open  // x\u2029CREATE": true,
+  " \u001c  // x\u2028OPTIONAL  \n_CREATE  'unterminated BEGIN  (n)": true,
+  "  'it\\'s'  USE/* CREATE */  -->DELETEMATCH  'unterminated \t": true,
+  "   :Create n.x = 1 \n SET": true,
+  "  UNWIND  BEGIN as  {a:1, set: 2}  DETACH [1,2]  x /* CREATE */": true,
+  "  AS[1,2]UNWIND  WHERECOPY": true,
+  "UNWIND\u00e9CREATE \u017fet  EXPLAIN create  WHERE": true,
+  "  [1,2]CREATE // x\u2028$create-->   ": true,
+  " as as  'CREATE'": false,
+  " {create: 1} (n:Label)\t": true,
+  "FOREACHUNWIND  \u00e9CREATE 'unterminated": true,
+  " _CREATELOAD (`CREATE`) \"unterm": true,
+  " (n:Label)  \n  \u0000": true,
+  " // x\u2029CREATE FOREACH x  {a:1, set: 2} BEGINCALL[1,2]": true,
+  "; CREATE\u00e9": true,
+  " WHERE": true,
+  "DETACH  PROFILE": true,
+  " TERMINATE 'it\\'s'  :Create $create\t": true,
+  "COPY // x\u2029CREATE WITH  UNION RETURN `bt``x`": true,
+  " // x\u2028UNION EXPLAIN CREATEcreate SETDELETE  'CREATE' CALL": true,
+  "  /* open    /* open": true,
+  " /* CREATE */\u212aeep\u0000 {create: 1} x EXPLAIN USE  CALL": true,
+  "create WITH  CREATE\u00e9CREATE": true,
+  "USE (n:Label)  RETURN  'it\\'s'  LOAD  (`CREATE`)  $create  SHOW": true,
+  "'CREATE'/* openn.set n.set": true,
+  "CREATE\u00e9 COPY  MATCH \u0085  n.x = 1UNION": true,
+  "  n.set _CREATE \u001c CrEaTe  \u00e9CREATE WHERE  CREATEUNION  (n:Label)": true,
+  "  \u001c'it\\'s'  MATCHPROFILE  x`bt``x`// x\u2029CREATE": true,
+  "AS  \u00e9CREATE  [1,2]{create: 1}  create/* CREATE */\n  ;": true,
+  "    \u001c n.x = 1  TERMINATEas": true,
+  "  {create: 1}  // x\u2029CREATE// x\u2028 DETACH n.x = 1  {a:1, set: 2}  UNWIND": true,
+  " _CREATEAS  CALL _CREATE  'it\\'s'    [1,2] (n:Label)": true,
+  "\u212aeepSETDETACH  as\u017fet{create: 1}": true,
+  "  (n)\u001c USELOADUNION \"DELETE\"  'unterminated  CREATE\u00e9": true,
+  "  DETACH ;": true,
+  "\"unterm  \u001c": true,
+  "  {a:1, set: 2}  (`CREATE`)as": true,
+  " MATCH  as // x\u2029CREATE (n)  /* openWHEREas as": true,
+  " /* CREATE */  \"unterm WITH 'CREATE'\nWHERE SHOW": true,
+  "{a:1, set: 2} SHOW$create\t  CREATE\u00e9{create: 1} n.set": true,
+  " n.x = 1  WITH  // x\u2029CREATEcreate  UNWIND[1,2] CrEaTen.set/* CREATE */": true,
+  "n.x = 1  TERMINATE \u017fet  // x\u2028n.x = 1UNION": true,
+  "'unterminated FOREACH \"DELETE\"\"unterm `bt``x` \u001c": true,
+  "  WITH/* open n.x = 1": false,
+  "  (`CREATE`)BEGINSET OPTIONAL": true,
+  "  'it\\'s' _CREATE  WITH": true,
+  "[1,2] // DELETE\n  PROFILE\u212aeep  DELETE": true,
+  " [1,2]  DETACH(`CREATE`) /* CREATE */ CALL  USE": true,
+  "CrEaTen.set\u001c// DELETE\n`bt``x`; (n)AS": true,
+  "x  asWITH CREATE /* open  {a:1, set: 2}": true,
+  "  \"unterm  // x\u2029CREATE {a:1, set: 2}WITHWHERE  // DELETE\n  CREATE": true,
+  " /* open $create  _CREATERETURNOPTIONAL": true,
+  "WITH  UNWIND  \n:Create  \"DELETE\" FOREACH CREATE": true,
+  "x  SET": true,
+  " _CREATE  \"unterm": true,
+  " n.x = 1  // DELETE\n": true,
+  "OPTIONAL  EXPLAIN": false,
+  " /* open DETACH  UNWIND  \u017fet": true,
+  " WITH --> $create \u001cSHOW;DETACH": true,
+  " MERGELOAD": true,
+  "  CREATE\u00e9SHOW  EXPLAIN": true,
+  "WHERE(n:Label)": true,
+  " DETACH  OPTIONALRETURNn.set \tOPTIONAL  /* open  CrEaTe": true,
+  "DETACH  CALL(`CREATE`)": true,
+  " RETURNSET  n.x = 1 \t  /* CREATE */ LOAD": true,
+  "matchFOREACH WITHUSE\u0085  /* open WITH": true,
+  "USE // x\u2029CREATE": true,
+  " // x\u2029CREATE  \u017fet {create: 1} -->": true,
+  "  (n) CALL": true,
+  "\"DELETE\"ASPROFILECALL \u00e9CREATE": true,
+  " EXPLAIN  'it\\'s' PROFILE  SET": true,
+  "  :CreateRETURN": false,
+  "  \u017fet\t  DELETE// x\u2028createEXPLAIN  EXPLAIN {a:1, set: 2}": true,
+  "  --> (`CREATE`)": true,
+  "DETACH\u017fet FOREACH SET \"unterm/* open  SET": true,
+  "AS // x\u2028  RETURN  as-->": true,
+  ":Create  UNWIND WHERE": false,
+  "  [1,2]  `bt``x` FOREACH": true,
+  " \u017fet": true,
+  "  // x\u2028 UNION  OPTIONAL TERMINATE DETACHmatch:Create": true,
+  "  SET// x\u2028 CrEaTe  // x\u2029CREATE OPTIONAL \u0085  SHOW _CREATE create": true,
+  "\u017fet UNWIND  BEGIN  CALL(`CREATE`) CREATE\u00e9// x\u2029CREATE MATCH-->": true,
+  "RETURN \u00e9CREATE DETACH  `bt``x`  MERGE CREATE\u00e9": true,
+  " UNWIND n.x = 1 ;SHOW MATCH": false,
+  " \"unterm  BEGINWHERE TERMINATE    WITH  CREATE": true,
+  "CrEaTe  SHOW// x\u2029CREATE CREATE\u00e9;": true,
+  " as  n.x = 1COPY PROFILE\u212aeep  // x\u2029CREATE 'CREATE'": true,
+  "  \u00e9CREATE  (n)  \u0000  /* open  -->  SET": true,
+  "TERMINATE": true,
+  " WITH  'it\\'s'  AS": false,
+  "  WHERE  FOREACH  CREATE\u001c\u00e9CREATE  ;_CREATE": true,
+  "--> OPTIONAL  ;\u001c  COPY\u00e9CREATE": true,
+  " (n)\u0085 --> FOREACH": true,
+  "$create  (n)DETACH/* open CrEaTe:Create\n": true,
+  "CrEaTeCALL  FOREACH$create": true,
+  " SET ;  RETURN_CREATE n.set(`CREATE`) {a:1, set: 2} OPTIONAL": true,
+  "  FOREACH(n)(n:Label)  \u00e9CREATE  WITH": true,
+  "/* CREATE */ MATCH": false,
+  " --> 'it\\'s'": true,
+  "  as  {create: 1}  \u017fet  PROFILE  \u001cDELETE\u001ccreate  \n": true,
+  "USE{a:1, set: 2}\u001c     n.set": true,
+  "  CREATE  \"unterm{a:1, set: 2}  match FOREACH  SET  n.set(n)": true,
+  " EXPLAIN  PROFILERETURN'unterminated MATCHDETACH // x\u2029CREATE  `bt``x`": true,
+  " PROFILE  \t  LOAD  match// DELETE\n": true,
+  "  CrEaTe   \"unterm  {a:1, set: 2}  COPY(n:Label)": true,
+  "  \"unterm \u00e9CREATE": true,
+  "COPY WITH  CREATE\u00e9 MERGEPROFILE  MERGE  (n) // x\u2029CREATE": true,
+  "BEGIN\u0000  CALL(n)": true,
+  " \nn.x = 1:Create ;{a:1, set: 2}(n:Label)\u00e9CREATE": true,
+  "SET n.x = 1  \"DELETE\"  \u212aeep  BEGINRETURN": true,
+  "TERMINATE  'unterminated": true,
+  "  $create USE{a:1, set: 2}  WHERE/* CREATE */x  SET\"DELETE\"": true,
+  "  // x\u2028{create: 1}  -->as FOREACH FOREACH  \u017fet  ;": true,
+  "  SETMERGE  CALL     UNION BEGIN": true,
+  "\u212aeep  \u212aeep:Create\"unterm{create: 1} SHOW": true,
+  "  PROFILE  $create": false,
+  " UNWIND; n.x = 1create": false,
+  " x  \u001c // x\u2028:Create // x\u2028  USE  \u00e9CREATE DETACH": true,
+  "  x `bt``x` COPY": true,
+  " PROFILE  n.setDELETE  SHOW": false,
+  "  COPYSHOW BEGIN  \u0085  USE  UNWIND": true,
+  "\u017fet;  FOREACH": true,
+  "match": false,
+  " SETUNWIND 'it\\'s'  TERMINATE \"DELETE\"`bt``x` \"DELETE\"  // DELETE\n": true,
+  " RETURN  _CREATESETOPTIONAL \u0000/* CREATE */  OPTIONAL // DELETE\n": false,
+  "\u212aeep  /* open  match": true,
+  " match  USE{a:1, set: 2}": true,
+  "  USE": true,
+  "  SET": true,
+  "`bt``x`  $create \u001c CREATE\u00e9\u0000  (`CREATE`)": true,
+  " \t// x\u2028 'CREATE';": true,
+  "WITH\n SETMERGETERMINATE create  COPY  matchBEGIN": true,
+  "  PROFILE BEGINWITH": false,
+  "  \u212aeepPROFILE WHERE  EXPLAIN  EXPLAIN createUNWINDMATCH": true,
+  "// DELETE\n  // x\u2028  (n:Label)(n) RETURN  CALL  {create: 1}": true,
+  " CREATE\u00e9  'it\\'s' (`CREATE`) x {a:1, set: 2}\"unterm": true,
+  "\u00e9CREATE": true,
+  "COPY x /* CREATE */  as  n.set": true,
+  "as  match SHOW": false,
+  "  'CREATE'  EXPLAINMERGEDELETE": true,
+  " SET EXPLAIN": true,
+  "  n.set MATCH 'it\\'s' UNWIND  /* open x(`CREATE`)  // DELETE\n\"unterm": true,
+  " AS COPYn.set": false,
+  " // x\u2029CREATE": true,
+  " \"DELETE\"// x\u2028": false,
+  "  ;  WHERETERMINATE // x\u2028  EXPLAIN [1,2]MERGE\t  [1,2]": true,
+  "  \tUNION\u0085": true,
+  " WHERE\u0085": true,
+  " UNION CREATE\u00e9 MATCH// x\u2028  _CREATE  ": true,
+  " WHERE CREATE\u00e9 RETURN": true,
+  " :Create --> BEGIN  RETURN     WHEREas": true,
+  "matchTERMINATE": true,
+  "  \u017fet": true,
+  " CREATE\u00e9  MERGE": true,
+  "  (n:Label) `bt``x`WHERE create // DELETE\n  _CREATE `bt``x`  \n  \u0085": true,
+  " SHOW \u001c  \n'it\\'s'\u001c // DELETE\n  UNWIND CALL": true,
+  "UNWIND SHOW  PROFILE \u001cSET  CrEaTe  /* CREATE */;": true,
+  " CrEaTeUSE(n)": true,
+  " \"unterm  // x\u2028BEGIN MATCH": true,
+  " RETURN": false,
+  "  UNION": true,
+  " /* CREATE */'it\\'s'n.x = 1  // x\u2028  UNWIND  TERMINATE WHERE \u212aeep SHOW": true,
+  "CREATE\u00e9 CALL": true,
+  "\"DELETE\"SHOW asxmatchn.set MERGEMERGE  \t": false,
+  "  \u212aeepUSE MATCH/* open (`CREATE`) /* openWHERE": true,
+  " BEGIN FOREACH\u00e9CREATE /* open \u017fet": true,
+  " {a:1, set: 2} /* open \u0000MERGE": true,
+  "  CREATE  \u001c  AS": true,
+  "  UNION  CrEaTe  UNWIND LOAD SHOW'CREATE'": true,
+  "  ; UNION  LOADASas CrEaTe  [1,2]": true,
+  "  as  \u0000  \t": true,
+  " \t \u0085 UNION(n) create  create  MATCH {a:1, set: 2} DETACH": true,
+  " EXPLAIN\t  UNIONWHERECALL as:CreateUNION": false,
+  "EXPLAIN [1,2]": false,
+  "(n:Label) match\u212aeep \u017fet CREATE\u00e9\u001cUSE": true,
+  " x create MERGE  \u001c  (n)  as RETURN 'unterminated \u212aeep": true,
+  "\t // x\u2028  OPTIONAL createMATCHx": false,
+  "{a:1, set: 2}  EXPLAIN": true,
+  " {a:1, set: 2}  as": true,
+  "MERGE  \u001c [1,2] WHERE LOAD": true,
+  " OPTIONAL  WITH TERMINATExAS  COPY": true,
+  "[1,2] CREATE \u001c\u212aeepASmatch\"DELETE\"": true,
+  " SET// DELETE\n  \"unterm :Create \"untermn.x = 1 WHERE": true,
+  "\"DELETE\" SET create": true,
+  "\"DELETE\"AS// DELETE\n create": true,
+  " 'unterminated  UNWIND  \nSET -->/* CREATE */ AS  MERGE": true,
+  "UNWIND CrEaTeasn.x = 1\u00e9CREATE  DELETE CREATE\u00e9 ": true,
+  " UNWIND\u001ccreate SHOW'unterminated": true,
+  " `bt``x`    CREATE\u00e9  COPY": true,
+  "  PROFILE /* open  OPTIONAL\u001c  DELETE  {a:1, set: 2} n.set": true,
+  "  RETURN\u001c  CALL  OPTIONAL \u0085": true,
+  "  CrEaTeUNWIND LOADDELETE (n)  (n:Label)  WITH": true,
+  " {a:1, set: 2}OPTIONAL": true,
+  "{a:1, set: 2}": true,
+  "  \"unterm  UNWIND  COPY WITHWITH\u00e9CREATEUSE \u0000": true,
+  " $create (`CREATE`)\u001c  match  {a:1, set: 2}": true,
+  " _CREATE DETACH": true,
+  "\u0085'unterminated  // DELETE\n  n.set as // DELETE\n USEDETACH /* CREATE */": true,
+  "  (n:Label) MERGE": true,
+  "MERGE // x\u2029CREATE\u00e9CREATE": true,
+  "FOREACH  \u001c [1,2] \u0000  USE  $create": true,
+  " 'CREATE'": false,
+  " COPY": true,
+  " LOAD [1,2] $create /* CREATE */": true,
+  "CREATE\u00e9  \t  `bt``x`  SETAS\u001c": true,
+  "  ;COPY  \u0000  WITHcreate  COPY// x\u2028CALL": true,
+  "  AS{a:1, set: 2}  as  _CREATE": true,
+  "  'unterminated ;CREATE\u00e9 \"DELETE\"(`CREATE`)  TERMINATE  \u0000  FOREACH 'it\\'s'": true,
+  " 'CREATE' \u0000 /* open:Create COPY": true,
+  "PROFILE  {a:1, set: 2}\u001c": false,
+  "DELETE   FOREACHSET `bt``x` FOREACH\n": true,
+  "  create// x\u2029CREATE-->// x\u2028  {create: 1}SHOW": true,
+  "CALLUNION ;  BEGIN :CreateSET": true,
+  "  \t   SHOW  \u0000": false,
+  "BEGIN\tMERGE": true,
+  "  'it\\'s'": false,
+  " WITH \u0085  $create  // DELETE\nmatch CREATE\u00e9 \u212aeep CrEaTe  AS": true,
+  " CALLCOPY": true,
+  " match CrEaTe WITH": true,
+  "(`CREATE`) /* CREATE */": true,
+  "LOADPROFILE[1,2](`CREATE`) n.x = 1": true,
+  "MERGE": true,
+  " create  CREATE  as \u00e9CREATE": true,
+  "`bt``x`DETACH \u0085  CREATE\u00e9 TERMINATE": true,
+  "  'CREATE'LOAD": true,
+  "CREATE\u00e9 CREATE\u00e9\u017fet": true,
+  "  DETACH": true,
+  "  \"DELETE\"\u00e9CREATE \n": true,
+  "  'unterminated": true,
+  "DELETE WITH  UNWIND \u212aeep  'it\\'s' TERMINATE`bt``x`/* CREATE */  (`CREATE`)": true,
+  "  match `bt``x`UNWIND": false,
+  "  WITH UNWIND\u001cDELETE CREATE 'it\\'s'_CREATE": true,
+  "(n:Label)  EXPLAINCREATE  (n:Label)": true,
+  "CREATE": true,
+  "  AS CALL  FOREACH 'it\\'s' WITH": true,
+  " \u00e9CREATE  SHOW  [1,2];  'unterminated": true,
+  "BEGIN \u017fet  create  n.set'unterminated as  `bt``x` \"DELETE\"": true,
+  "-->  $create  {a:1, set: 2}  \"DELETE\"  n.x = 1": true,
+  "  CREATE BEGINCrEaTe  n.x = 1DELETE": true,
+  " create;  RETURN\u001c x  BEGIN'CREATE'  CrEaTe": true,
+  "UNION SHOW": true,
+  "  DELETE  \u017fet  createMERGE": true,
+  "  \u212aeepMERGE CALLTERMINATESHOW{a:1, set: 2} COPY 'it\\'s'": true,
+  " CrEaTe-->  -->  COPY'unterminated \u0000 \u0085TERMINATE": true,
+  "SHOW EXPLAIN PROFILE WHERE\u017fet  (`CREATE`) match": false,
+  "  'unterminated  DETACH  (n:Label)CALL": true,
+  "  WITH  $create _CREATE [1,2] // x\u2028": false,
+  " \u00e9CREATE\u0085 COPY -->OPTIONAL": true,
+  "-->(n)\n:CreateLOAD": true,
+  " MATCH": false,
+  "  BEGIN  TERMINATE _CREATE  CREATE\u00e9 FOREACH  MERGE": true,
+  "as  \t": true,
+  "'CREATE'DELETE /* open  (`CREATE`)  _CREATE": true,
+  " xFOREACH x  [1,2]  /* open": true,
+  "-->'unterminated\u00e9CREATE  [1,2] EXPLAIN{a:1, set: 2} create SET": true,
+  " COPY OPTIONALcreate  createPROFILE": true,
+  " (n)\u0000": true,
+  "   FOREACH  'unterminatedCOPYEXPLAINPROFILE": true,
+  "  WHERE \u0085  \u212aeep  create\"DELETE\"": true,
+  " FOREACH  OPTIONAL UNWIND/* openn.x = 1  UNION": true,
+  "  WHERE": true,
+  " 'it\\'s'  // x\u2028match  DELETECrEaTe /* CREATE */_CREATE  \u00e9CREATE  {create: 1}": false,
+  " \u00e9CREATE": true,
+  " OPTIONALFOREACH  'CREATE' n.set  SHOW n.x = 1WITH(n)`bt``x`": true,
+  "/* open  MATCH": true,
+  "  \u0000\u212aeep": true,
+  " CALL WHERE  // DELETE\n [1,2]  {a:1, set: 2} n.x = 1 UNWIND  match": true,
+  "  COPY  \u0000 `bt``x`n.x = 1 // DELETE\n DETACH  CREATE\u00e9": true,
+  " \u0085  as  USE $create `bt``x`  'it\\'s'": false,
+  "  MERGE  \u00e9CREATE /* openOPTIONAL  _CREATE": true,
+  " \u0085 COPY": true,
+  "  EXPLAIN  SET  'it\\'s'": true,
+  "  UNWIND\u212aeepn.x = 1  CREATE--> \"DELETE\" [1,2] COPY  ;": true,
+  " (n:Label)MERGE  UNWIND  (`CREATE`)BEGIN  AS": true,
+  " MERGE{create: 1}  'CREATE'": true,
+  "MERGE  UNWINDCrEaTe WITH": true,
+  "SET  LOAD $create\u212aeepBEGIN  \"unterm-->'unterminated  WITH": true,
+  "  `bt``x` `bt``x` OPTIONAL {create: 1}  n.set :Create {create: 1}": false,
+  "{create: 1}  UNION\t 'it\\'s'  // DELETE\n RETURN": true,
+  "`bt``x`  SHOW  :Create\nMERGE  \t  PROFILE": true,
+  "  {a:1, set: 2}  x": true,
+  "// x\u2029CREATE  ; (`CREATE`) // DELETE\n  :Create  CALL": true,
+  " DELETE \nCREATE\u00e9\"DELETE\"": true,
+  "{a:1, set: 2}  COPY {create: 1}  /* open SETas": true,
+  "  \u0085  \u00e9CREATEmatchCREATE\u00e9createCREATE\u00e9": true,
+  " USELOADMERGE  n.set create UNWIND PROFILE DETACH": true,
+  " OPTIONAL 'CREATE'SET  EXPLAIN": true,
+  " // DELETE\n": false,
+  " BEGIN 'CREATE' RETURN  \"unterm  n.setCrEaTe  [1,2]  TERMINATE": true,
+  "  DELETERETURN": true,
+  " MERGE": true,
+  " match": false,
+  "  UNION  MERGE 'it\\'s' \u017fet WITH": true,
+  "; {a:1, set: 2} x(n:Label)$create\"DELETE\" 'unterminated ;  COPY": true,
+  " CALL \u00e9CREATE": true,
+  "  PROFILE  CREATE/* CREATE */  ; \u00e9CREATE": true,
+  "  \u00e9CREATE  MATCH\"DELETE\" \u0085  (`CREATE`)  :Create  -->": true,
+  " WHERE  /* CREATE */": true,
+  "CALL  n.set": true,
+  "  \t `bt``x`": false,
+  " x$create  \u001c // x\u2028EXPLAIN  $create\u0000\u0000": true,
+  "  MERGECOPYWITHCOPY \u00e9CREATE  \u00e9CREATE  _CREATE // x\u2029CREATE  (n:Label)": true,
+  "  TERMINATE  as  (`CREATE`) // x\u2028  \"unterm": true,
+  " \"unterm DETACHTERMINATE // x\u2028": true,
+  "// x\u2029CREATE  'CREATE'  n.x = 1 CrEaTe  BEGIN \u017fet": true,
+  "FOREACH \u0085\"DELETE\"  CREATE\u00e9CrEaTe  \"DELETE\"": true,
+  " RETURN\u212aeep  (n) create  as": true,
+  "UNWIND  -->  /* CREATE */BEGIN": true,
+  "  CREATE\u00e9  TERMINATE'it\\'s'  [1,2]:Create  -->  'unterminated RETURN  \u212aeep": true,
+  "  LOAD \u0085": true,
+  "  PROFILE {create: 1}  xx as  RETURN'unterminated CrEaTe": true,
+  "  'unterminated  CrEaTe  LOAD\u212aeep  CALL \t \t": true,
+  "  asMERGE": true,
+  " 'unterminated as": true,
+  " OPTIONAL WHERE  (n)  ": false,
+  "  \nUNWIND $createCREATE\u00e9; PROFILE": false,
+  " \t'unterminated  \u0000 n.x = 1MERGE  ;": true,
+  "  (n:Label)": true,
+  " WHERE COPY'unterminatedn.x = 1// x\u2028\u017fet": true,
+  "TERMINATE  (`CREATE`) (`CREATE`) {a:1, set: 2}\u0000 DELETE// x\u2029CREATE\u0000": true,
+  "// x\u2028  CALLBEGIN (n:Label) 'it\\'s'": true,
+  "'it\\'s'": false,
+  "  BEGIN  UNION'unterminated  WITH  \u0000": true,
+  "WITH  WITH": false,
+  "SHOW SHOW  createMATCH": false,
+  "  create `bt``x`  \u001c": true,
+  " \u001c": false,
+  "  LOAD": true,
+  " ;": true,
+  "  \u001c USE 'CREATE' USECOPY  UNION `bt``x`{create: 1}  // x\u2029CREATE": true,
+  " MATCH  WITH COPY \u017fet n.x = 1 USE  FOREACH  `bt``x`": true,
+  "  \u0000:Create  match \u0085  'CREATE'": false,
+  "  DETACH{a:1, set: 2}  match CREATE": true,
+  "  /* open  n.set {a:1, set: 2}  {a:1, set: 2}  DELETEWHERE": true,
+  "/* open MERGE DETACH SET  \u00e9CREATE": true,
+  " (n)": true,
+  "  // x\u2028 // DELETE\n$create/* open EXPLAIN ASDELETE n.x = 1": true,
+  "AS \u212aeep// x\u2029CREATE": true,
+  "(`CREATE`)TERMINATE OPTIONAL  \u212aeep \"DELETE\"  AS": true,
+  " WITH as BEGINTERMINATE (`CREATE`)  CrEaTeTERMINATEcreate  BEGIN": true,
+  " ; CALL'CREATE'n.x = 1 SHOW  'CREATE' // x\u2029CREATE": true,
+  " x  \t  MERGE  \u00e9CREATE LOAD  RETURNCREATE": true,
+  "  :Create OPTIONAL  UNWIND": false,
+  "\u001cCrEaTe COPYMATCH  OPTIONAL  :Create": true,
+  " $create": false,
+  "  ;": true,
+  "(`CREATE`) USE  \u001cOPTIONAL": true,
+  "UNIONcreate CrEaTe CREATE  WITHWHERE": true,
+  "WITH \u001c// x\u2028LOAD n.x = 1  _CREATEDELETE": true,
+  " 'unterminatedDELETE": true,
+  "  EXPLAIN \u00e9CREATE": false,
+  " CREATE // x\u2029CREATE  USEMERGE  \u212aeep": true,
+  "SHOWMERGE\"DELETE\" MATCH CrEaTe": true,
+  "  'CREATE'   \u001cSHOW SETCrEaTe  OPTIONAL DETACH": true,
+  " [1,2]// x\u2029CREATEx  \u00e9CREATE  [1,2]": true,
+  "\u0000  \u00e9CREATE  /* open (n)  UNWINDEXPLAINDELETE{create: 1}  // DELETE\n": true,
+  " \n\u001c  DELETE  match'CREATE'  \u0085 RETURN  LOADSET": true,
+  "/* CREATE */AS  n.x = 1  /* open/* openLOAD\u212aeep": true,
+  "(n:Label)  ; EXPLAIN[1,2]": true,
+  "  (n){a:1, set: 2} TERMINATEEXPLAIN  UNWIND": true,
+  "\t  ; ": true,
+  "  match// DELETE\n (`CREATE`)$create 'CREATE'": false,
+  "  FOREACH  [1,2]CREATE\u00e9 (`CREATE`)'unterminated EXPLAIN  PROFILE \"unterm {a:1, set: 2}": true,
+  "COPYRETURN  DELETE": true,
+  "[1,2]LOADDETACHDETACH  CALL": true,
+  "USE n.x = 1": true,
+  "RETURN COPY 'CREATE'": true,
+  " DETACH`bt``x` SET\"DELETE\"  :Create  as": true,
+  "CALL\u00e9CREATE PROFILESET(`CREATE`) ;": true,
+  "  WITH match  ;  \n LOAD WITH  x OPTIONAL// x\u2029CREATE": true,
+  "SET // x\u2028/* CREATE */  x  CrEaTe  'it\\'s' AS \"DELETE\"$create": true,
+  " COPY SET:Create \tAS": true,
+  "  AS  /* CREATE */  CREATE\u00e9USE": true,
+  "  'unterminatedMATCH \u001c'it\\'s' \u0085  CALL  \u212aeep": true,
+  "  \u0000MERGE as  \"DELETE\" (n)[1,2] UNION": true,
+  "`bt``x`LOAD  {create: 1}  {a:1, set: 2}  MERGE `bt``x`": true,
+  "SETLOAD  UNWIND FOREACH{create: 1}\u0085  // DELETE\n  USE": true,
+  " \n  {a:1, set: 2} {a:1, set: 2}  /* open": true,
+  " (`CREATE`)  x (`CREATE`) $create \u0000": true,
+  " :Create MERGE  WITH  /* open{a:1, set: 2}": true,
+  "OPTIONAL \u00e9CREATE  'it\\'s' \u212aeep_CREATE  CREATE": true,
+  " FOREACH;; \"unterm  'unterminated /* open": true,
+  " \t UNION": true,
+  "CREATE\u00e9  `bt``x`": true,
+  "  \n \u001c": false,
+  "LOAD  /* open SHOWEXPLAIN  SET USE(n)  WITH": true,
+  "  \u00e9CREATE  \u212aeep \u001cPROFILE// x\u2028 TERMINATE\"unterm// DELETE\n": true,
+  " \t CrEaTe": true,
+  "  RETURN  n.x = 1  `bt``x`  DETACHCREATE\u00e9 CALL  match \n \"DELETE\"": true,
+  " [1,2] WITHCOPY  (`CREATE`)  match (`CREATE`)create match": true,
+  "  SET MERGE  LOAD  USEWHERE  COPY [1,2] \u0000\u0085": true,
+  "  n.x = 1 CREATE\u00e9 EXPLAINOPTIONAL": true,
+  " -->  // DELETE\n\n  [1,2]": true,
+  "UNION  'it\\'s'": true,
+  "\u212aeep --> USEPROFILE  AS UNION": true,
+  "RETURN \u017fet \"DELETE\"'it\\'s'": true,
+  "`bt``x`match  TERMINATE  CREATE\u00e9  {create: 1}UNWIND {create: 1}EXPLAIN": false,
+  " /* CREATE */ 'CREATE' 'unterminated  UNWIND \t  AS": true,
+  "  CREATE\u00e9 as{create: 1}  SETLOAD": true,
+  "  // x\u2029CREATE (n:Label)CREATE\u00e9 [1,2]as // DELETE\n": true,
+  "  // x\u2028  COPY UNION LOAD  [1,2] \u00e9CREATE  'CREATE''CREATE'": true,
+  " x DETACHCALL  COPY (n:Label) \t": true,
+  "USE \u017fet EXPLAIN  \u212aeep MERGE// x\u2029CREATE": true,
+  " \"DELETE\"  `bt``x`\u212aeep match \"DELETE\" FOREACH  // x\u2028 /* open": true,
+  " x   \u0085 -->  CALL  {create: 1}": true,
+  " 'unterminated \t UNIONDETACH// DELETE\n": true,
+  " \u212aeep": true,
+  " WITH UNWIND as\u212aeep asCALLMATCHWHEREOPTIONAL": false,
+  " \u00e9CREATE  $create TERMINATE [1,2] SET": true,
+  "  \u017fetUNIONBEGIN OPTIONAL {create: 1}": true,
+  "$create  n.x = 1  :Create (n)create": true,
+  "  PROFILE;// x\u2029CREATE  \u212aeepUSE _CREATECOPYUNWIND  CREATE": true,
+  " 'it\\'s'  COPY // DELETE\n  [1,2] CrEaTe  {a:1, set: 2}MATCH as": true,
+  "  MERGE 'unterminated [1,2]'CREATE'     n.x = 1 DETACH": true,
+  "  MATCH  LOAD n.setEXPLAIN/* CREATE */  OPTIONAL": true,
+  " DELETE \u001c LOAD \u00e9CREATE(n)": true,
+  "  CREATE\u00e9 SET EXPLAIN  creatematch  WHERESHOW \n": true,
+  "  `bt``x`  $create SET  'it\\'s'\"untermn.set": true,
+  "n.x = 1": true,
+  "WITH'unterminated  SHOW": false,
+  "/* CREATE */  USE // x\u2029CREATE \tas DETACH": true,
+  "TERMINATE  USEDETACH  /* CREATE */ 'CREATE' -->COPY": true,
+  " // DELETE\n $create RETURN": false,
+  "\u001cWHERE  \"DELETE\"  TERMINATE \u017fet :Create`bt``x`  _CREATE CREATE\u00e9": true,
+  "DELETECrEaTe match `bt``x`   _CREATE": true,
+  "  create LOAD\"DELETE\"// x\u2029CREATE (n:Label) // x\u2028  \u017fet  -->  $create": true,
+  "  CREATE \u017fetcreate  UNION": true,
+  "  \u212aeep  [1,2];": true,
+  "CALL  'CREATE' LOAD// x\u2029CREATE(n)  USE  \t": true,
+  " \u017fet  \"untermOPTIONALSET`bt``x`  LOAD  (n)AS": true,
+  "  USE  \u0085 'CREATE'as  CREATE\u00e9 DELETE": true,
+  "  DELETE  MATCH as  CALLas  \n :CreateCALL": true,
+  "\u001c": false,
+  "  $create COPY \u0000:Create  'CREATE' {a:1, set: 2}  UNION  PROFILE": true,
+  "\u001c  :Create  :Create n.set": true,
+  "  BEGIN// DELETE\n": true,
+  " \u212aeep AS  PROFILE SHOW  --> \u212aeepFOREACH": true,
+  "'unterminated(n)  {a:1, set: 2} x": true,
+  "  CALL CrEaTe COPY  /* CREATE */ 'unterminated[1,2] /* CREATE */ DETACH": true,
+  " xx(n) USE :Create -->OPTIONAL'it\\'s'": true,
+  "  n.set \u017fet :CreateAS // x\u2029CREATE 'it\\'s'  $create": true,
+  "  `bt``x` ASLOAD CREATE// x\u2028 FOREACH TERMINATE  match  SHOW": true,
+  "  \"unterm  DETACHDETACH  'it\\'s'{create: 1}MERGE CrEaTe  // x\u2028   ": true,
+  "  'CREATE' CREATE\u00e9// x\u2028  (n:Label) n.x = 1": true,
+  "`bt``x` RETURNas  PROFILE  as  USEBEGIN  \"DELETE\"": true,
+  "'it\\'s'  (n:Label) UNION  CALL AS  ;  COPY": true,
+  " DELETE \"unterm": true,
+  " -->EXPLAIN'unterminated   _CREATE": true,
+  "create \"DELETE\"": true,
+  "  $create  \u0000 $create x BEGIN // x\u2029CREATEAS": true,
+  " $createCREATE  FOREACH  MATCH": true,
+  " \u0085WITH (`CREATE`) match \u212aeep": false,
+  "UNION\u0000\u212aeep // x\u2029CREATE// x\u2029CREATEMATCH": true,
+  "  as\n \"unterm  /* CREATE */\u017fet\u017fet": true,
+  "  \u017fetEXPLAINCREATE\u00e9  \u0085 SET  \u0085": true,
+  "RETURN  FOREACH\u001c  USE  WHERE _CREATECOPY": true,
+  "// x\u2028n.set LOAD": true,
+  "  CREATE(n)  AS  :Create  CREATE\u00e9  match'it\\'s'     // x\u2029CREATE": true,
+  "  EXPLAIN(n)": false,
+  " SHOW-->  MATCH (n:Label)  FOREACH  CREATE match  MERGE": true,
+  " EXPLAIN\u212aeep PROFILE  SHOW": true,
+  "  BEGIN\n  DETACH AS/* CREATE */-->DETACHCALL": true,
+  "n.x = 1match  USECREATE MERGE :Create  ;  create": true,
+  "create n.set n.x = 1/* open  RETURN": true,
+  " x`bt``x` \"unterm UNWIND CREATE\u00e9OPTIONAL CREATE\u017fet BEGIN": true,
+  "  /* CREATE */\u212aeep WHERE (n:Label)  ;; x": true,
+  "USE\u0085  CALL \nFOREACH AS  UNION ; WITH": true,
+  " (n)\u017fet  LOAD  'it\\'s'": true,
+  " \"DELETE\" CrEaTe:Create MERGE create CrEaTe  :Create DELETE": true,
+  "\u001c [1,2] ": true,
+  " match(`CREATE`) AS  \u00e9CREATESHOW\u00e9CREATE/* open": false,
+  "  x FOREACHcreate$createLOAD": true,
+  "LOAD [1,2]  \u00e9CREATE(n)\n": true,
+  " \"DELETE\"": false,
+  "  \"DELETE\"": false,
+  "\"unterm:Create OPTIONAL  UNION  MERGE  'CREATE'": true,
+  " 'unterminated\u212aeepn.set": true,
+  "$create  DELETE": true,
+  "\"DELETE\"LOAD  'unterminated  \u0000": true,
+  " CALL   [1,2] $create  CREATE\u00e9 USE  _CREATE{a:1, set: 2} 'CREATE'": true,
+  "EXPLAIN UNION  EXPLAIN CrEaTe  OPTIONALn.set $create": true,
+  "  \u001c  --> {a:1, set: 2}\u017fet": true,
+  " (n)  SET  PROFILE": true,
+  "\u001c// x\u2028  AS  // x\u2029CREATE  /* open(`CREATE`)": true,
+  "(n:Label)EXPLAINRETURN// x\u2028": true,
+  " \u001c _CREATE CREATE(n) FOREACH ASBEGIN\"DELETE\"": true,
+  "/* open RETURN  create \u001c UNION n.set WHERE  _CREATE": true,
+  "create // DELETE\n\tOPTIONAL": true,
+  " CrEaTe": true,
+  "RETURN  :Create  EXPLAIN{a:1, set: 2}OPTIONALCALLCALL": false,
+  "-->  COPY": true,
+  " \u0085  \tTERMINATE  create (n)": true,
+  "  USE  AS  CREATE\u00e9 // DELETE\nn.set": true,
+  "  \u212aeepMATCH \"DELETE\"": true,
+  "  EXPLAIN(n)OPTIONAL  SHOW (n) EXPLAIN": false,
+  "  TERMINATE// x\u2028_CREATE  WHERECrEaTe": true,
+  " // x\u2029CREATE  UNION   (n:Label)UNWIND\u00e9CREATE  // DELETE\n  TERMINATE \"unterm": true,
+  " (n:Label)BEGIN UNIONLOAD  UNION  CREATE\u00e9": true,
+  "  x LOAD  \"unterm  CALL  WHERE (n)(`CREATE`) \u017fet{create: 1}": true,
+  "  DETACH $create  LOAD": true,
+  " \u0000 (n)TERMINATE  $create\t-->TERMINATE  ;  WHERE": true,
+  "as  -->  MATCH (`CREATE`) (n:Label) CREATE\u00e9asmatch": true,
+  "MATCH  COPYDELETE {a:1, set: 2}": false,
+  " `bt``x` 'CREATE'CrEaTe  n.x = 1\"unterm": true,
+  "/* CREATE */  BEGIN  RETURN$create": true,
+  "// DELETE\n 'unterminated(`CREATE`) AS\u0085  \u017fet n.x = 1 FOREACH RETURN": true,
+  "  /* CREATE */ DELETE  ;": true,
+  "[1,2]{a:1, set: 2}  CREATE \u001c  OPTIONAL/* CREATE */WITH": true,
+  " CrEaTe{create: 1} \"unterm `bt``x`  FOREACH": true,
+  "  \u017fet  \n": true,
+  "DELETEUNWIND": true,
+  "'unterminated n.x = 1(`CREATE`)UNWINDmatchCOPYWITH /* open  -->": true,
+  "  x": true,
+  "  OPTIONAL  TERMINATE (`CREATE`) \u017fet \u00e9CREATE  EXPLAIN  (n:Label)": true,
+  "  CrEaTe\u017fet  RETURNn.x = 1  n.set": true,
+  "USE(n)  \u212aeep WITHCALL UNWIND;": true,
+  "WITH  --> \u0000  CrEaTe  SHOW  RETURN  DELETE /* CREATE */\"DELETE\"": true,
+  "  _CREATEUSE $create  USE  RETURNDELETEUNWIND  [1,2] AS": true,
+  " COPY  \u001c": true,
+  "DELETE$create--> 'CREATE'UNION `bt``x` \"unterm  \u212aeep  [1,2]": true,
+  "  DELETEBEGINCALL BEGIN  :Create `bt``x`": true,
+  "USE AS 'it\\'s'  {a:1, set: 2}  \u017fet  /* open": true,
+  " /* CREATE */ DELETE CrEaTeOPTIONALOPTIONAL CREATECALL CrEaTe": true,
+  "[1,2]  UNION  UNWIND(n)    DETACH  ;": true,
+  "BEGINMERGE {create: 1}  _CREATE CREATE\u00e9COPY EXPLAIN \"DELETE\" SET": true,
+  "  /* CREATE */  // x\u2029CREATE  DETACH  \t \t": true,
+  "  MATCH// x\u2028// x\u2028 DELETE": true,
+  " createAS  /* CREATE *//* CREATE */": true,
+  " 'CREATE'{a:1, set: 2}\u0085 \"DELETE\" (n:Label)  SET": true,
+  "\"DELETE\" // x\u2029CREATE {a:1, set: 2} AS  MATCH [1,2]": true,
+  ";WHERE WHERE \u212aeep": true,
+  "as  [1,2]\"DELETE\"": true,
+  " OPTIONAL CREATE\u00e9SET// x\u2029CREATE  SHOWWHERE": true,
+  " 'CREATE'  UNWIND": false,
+  "  CREATE\u00e9": true,
+  "  // x\u2029CREATE\u00e9CREATE  DELETE UNION  MATCH$create `bt``x`": true,
+  "  OPTIONAL": false,
+  "UNWIND  COPYCrEaTe\n EXPLAIN  /* CREATE */\u0000": false,
+  "[1,2]": true,
+  " SET$create  CALL  `bt``x`\u212aeep \"DELETE\" (n:Label)  UNWIND [1,2]": true,
+  "  \n COPY  USEWHERE": true,
+  "  USE\u00e9CREATE  DETACHas  \"DELETE\" WHERE  MERGE  WITHDELETE": true,
+  "  (`CREATE`) :Create:Create": true,
+  "DETACHCOPY 'CREATE'  as WHERE  (`CREATE`)  UNWIND": true,
+  "_CREATE DELETEUNION`bt``x`  \u0085 DELETE": true,
+  "  (`CREATE`)  BEGIN": true,
+  "MATCH  SHOW  'CREATE' createCrEaTe \u017fet// DELETE\n(n:Label)": true,
+  " LOAD\u00e9CREATE;  \u00e9CREATE UNION  FOREACH  \t  SET  RETURN": true,
+  "  as  CrEaTe": false,
+  "WITH \"unterm  TERMINATE'it\\'s' xas :Create  BEGIN\u00e9CREATE": false,
+  "SHOW PROFILE -->  \t  ;LOADUSE  CrEaTe": true,
+  " CrEaTe  n.set// x\u2028": true,
+  "  'CREATE'n.x = 1": true,
+  "   [1,2]  \u0000  /* CREATE */": true,
+  "CALL  [1,2] // DELETE\n match {a:1, set: 2}  `bt``x`DELETE  -->": true,
+  "  'it\\'s' RETURN\u212aeep match  (n:Label) match": true,
+  " \u00e9CREATE DELETELOAD  \u0000 `bt``x`  MERGE\t /* open  LOAD": true,
+  " DELETEMERGE:Create DELETEn.set": true,
+  "  (n:Label)  AS": true,
+  "CREATE\u00e9 /* CREATE */\u0085[1,2]  WHERE TERMINATE": true,
+  "  \u00e9CREATE  // x\u2028 // x\u2028\n DETACH(n:Label)match  \u017fet": true,
+  " SHOW": false,
+  "(n:Label) DETACH  TERMINATEUNION {a:1, set: 2}(`CREATE`)": true,
+  "'it\\'s'  CREATE\u00e9": true,
+  "(n:Label)  `bt``x` PROFILEFOREACH {create: 1}": true,
+  ";TERMINATE  // DELETE\n  {a:1, set: 2}USE FOREACH CREATE\u00e9 ": true,
+  " RETURN  LOAD  WHERE  CALLWHERE  /* open": true,
+  " ; \u0000  \"DELETE\"": true,
+  "  MATCH CREATE MATCH  AS n.set  FOREACH MERGE  x  // x\u2028": true,
+  "CREATE\u00e9MATCH ;(n)  EXPLAINn.x = 1": true,
+  "FOREACH ;  \"DELETE\" // x\u2028  CREATE\u00e9": true,
+  "\u0000  MATCH  COPY  SHOW// DELETE\n  DETACH (`CREATE`)SHOW": true,
+  "// x\u2028 \tRETURN 'unterminated CrEaTe  :Create": true,
+  " as  \"DELETE\"  CrEaTeWHERE  \u212aeep": true,
+  "// x\u2029CREATE/* CREATE */  /* open\"unterm  UNWINDcreateSET  {create: 1}": true,
+  "  'CREATE'  \u212aeep": true,
+  " OPTIONAL OPTIONALmatch": false,
+  "LOAD MATCH  $createWHERE  \u00e9CREATE  n.set": true,
+  "  (n)  // x\u2028     MERGE'it\\'s'x:Create \u017fet-->": true,
+  "CALL  [1,2]  FOREACH x  _CREATE[1,2] OPTIONAL{a:1, set: 2}  \n": true,
+  " (`CREATE`) // x\u2029CREATEWHEREn.set  TERMINATE -->(`CREATE`)  (`CREATE`)DETACH": true,
+  " // x\u2029CREATE 'it\\'s'": true,
+  "  (n:Label) n.x = 1  \u017fet {a:1, set: 2} $create  asas  match": true,
+  "  as": true,
+  "  {a:1, set: 2} // x\u2028  n.x = 1  -->FOREACH  as {create: 1}match": true,
+  "matchCREATE  CREATE // DELETE\n": true,
+  "  'it\\'s' \u0085create  UNION{create: 1} DETACH PROFILE\"DELETE\"": true
+ },
+ "content_hash": {
+  "Jane Doe works at Acme. She met Bob Smith in Paris! Then Acme Corp hired Carol.": "d3c131a2bd16115faa6ac1b3",
+  "Zo\u00eb \u00c5ngstr\u00f6m visited S\u00e3o Paulo. \u00c9mile Zola wrote books.": "6d97c8188e4a82ecfb285cd9",
+  "no capitals here at all": "41aac61542969be1252b5373",
+  "Apple Inc. and Microsoft Corp. compete. 3M Company too? Yes. NASA launched Apollo 11.": "4755af5f39cc3ac993fab4c1",
+  "\ud83d\ude80 Rocket Labs launched from New Zealand. The Team cheered.": "3318620d93fe75c7058fc950",
+  "He met She. They saw It, This! Those were Acme's. Neo4j and S3 work with GPT-4.": "d0ca301ee16916fd377532ea",
+  "The rain fell. A Storm hit Paris; Berlin, Rome: Madrid! Done?": "926e2e0443af7a1aec0beea5"
+ },
+ "quote_label": {
+  "Entity": "Entity",
+  "Big Company": "`Big Company`",
+  "has`tick": "`has``tick`",
+  "_x9": "_x9",
+  "9x": "`9x`",
+  "\u00dcnicode": "`\u00dcnicode`"
+ },
+ "dumps_sorted": [
+  [
+   {
+    "b": 1,
+    "a": [
+     1,
+     2.5,
+     null,
+     true
+    ],
+    "c": {
+     "z": "\u00e9",
+     "y": "\ud83d\ude80"
+    }
+   },
+   "{\"a\": [1, 2.5, null, true], \"b\": 1, \"c\": {\"y\": \"\\ud83d\\ude80\", \"z\": \"\\u00e9\"}}"
+  ],
+  [
+   {
+    "ctrl": "a\u0000b\u001f\u007f\n\t\"\\",
+    "big": 9007199254740991,
+    "f": 1e-05,
+    "g": 1e+16,
+    "h": 0.1,
+    "neg": -2.5e-07
+   },
+   "{\"big\": 9007199254740991, \"ctrl\": \"a\\u0000b\\u001f\\u007f\\n\\t\\\"\\\\\", \"f\": 1e-05, \"g\": 1e+16, \"h\": 0.1, \"neg\": -2.5e-07}"
+  ],
+  [
+   [],
+   "[]"
+  ],
+  [
+   {},
+   "{}"
+  ],
+  [
+   {
+    "10": 1,
+    "2": 2,
+    "x": 3
+   },
+   "{\"10\": 1, \"2\": 2, \"x\": 3}"
+  ],
+  [
+   "line\u2028sep",
+   "\"line\\u2028sep\""
+  ],
+  [
+   [
+    1.5,
+    100.25,
+    3.14159,
+    2e-07,
+    123456789.125
+   ],
+   "[1.5, 100.25, 3.14159, 2e-07, 123456789.125]"
+  ]
+ ],
+ "dumps_default": [
+  [
+   {
+    "b": 1,
+    "a": [
+     1,
+     2.5,
+     null,
+     true
+    ],
+    "c": {
+     "z": "\u00e9",
+     "y": "\ud83d\ude80"
+    }
+   },
+   "{\"b\": 1, \"a\": [1, 2.5, null, true], \"c\": {\"z\": \"\\u00e9\", \"y\": \"\\ud83d\\ude80\"}}"
+  ],
+  [
+   {
+    "ctrl": "a\u0000b\u001f\u007f\n\t\"\\",
+    "big": 9007199254740991,
+    "f": 1e-05,
+    "g": 1e+16,
+    "h": 0.1,
+    "neg": -2.5e-07
+   },
+   "{\"ctrl\": \"a\\u0000b\\u001f\\u007f\\n\\t\\\"\\\\\", \"big\": 9007199254740991, \"f\": 1e-05, \"g\": 1e+16, \"h\": 0.1, \"neg\": -2.5e-07}"
+  ],
+  [
+   [],
+   "[]"
+  ],
+  [
+   {},
+   "{}"
+  ],
+  [
+   {
+    "10": 1,
+    "2": 2,
+    "x": 3
+   },
+   "{\"10\": 1, \"2\": 2, \"x\": 3}"
+  ],
+  [
+   "line\u2028sep",
+   "\"line\\u2028sep\""
+  ],
+  [
+   [
+    1.5,
+    100.25,
+    3.14159,
+    2e-07,
+    123456789.125
+   ],
+   "[1.5, 100.25, 3.14159, 2e-07, 123456789.125]"
+  ]
+ ],
+ "float_repr": [
+  [
+   0.1,
+   "0.1"
+  ],
+  [
+   1.5,
+   "1.5"
+  ],
+  [
+   100.0,
+   "100.0"
+  ],
+  [
+   1e+16,
+   "1e+16"
+  ],
+  [
+   1000000000000000.0,
+   "1000000000000000.0"
+  ],
+  [
+   1.2345e-05,
+   "1.2345e-05"
+  ],
+  [
+   0.0001,
+   "0.0001"
+  ],
+  [
+   1e-05,
+   "1e-05"
+  ],
+  [
+   123456789.123,
+   "123456789.123"
+  ],
+  [
+   -0.5,
+   "-0.5"
+  ],
+  [
+   1e+300,
+   "1e+300"
+  ],
+  [
+   5e-324,
+   "5e-324"
+  ],
+  [
+   2.5e-07,
+   "2.5e-07"
+  ]
+ ],
+ "datetimes": [
+  {
+   "iso": "2026-11-06T10:00:00+00:00",
+   "str": "2026-11-06 10:00:00+00:00",
+   "pydantic": "2026-11-06T10:00:00Z"
+  },
+  {
+   "iso": "2026-11-06T10:00:00.123456+00:00",
+   "str": "2026-11-06 10:00:00.123456+00:00",
+   "pydantic": "2026-11-06T10:00:00.123456Z"
+  },
+  {
+   "iso": "2026-11-06T10:00:00.123000+00:00",
+   "str": "2026-11-06 10:00:00.123000+00:00",
+   "pydantic": "2026-11-06T10:00:00.123000Z"
+  },
+  {
+   "iso": "1999-01-02T03:04:05.000006+00:00",
+   "str": "1999-01-02 03:04:05.000006+00:00",
+   "pydantic": "1999-01-02T03:04:05.000006Z"
+  },
+  {
+   "iso": "2025-12-31T18:30:00+00:00",
+   "str": "2026-01-01 00:00:00+05:30",
+   "pydantic": "2026-01-01T00:00:00+05:30"
+  },
+  {
+   "iso": "0800-05-05T05:05:05+00:00",
+   "str": "0800-05-05 05:05:05+00:00",
+   "pydantic": "0800-05-05T05:05:05Z"
+  }
+ ],
+ "from_iso": {
+  "2026-11-06T10:00:00+00:00": "2026-11-06T10:00:00+00:00",
+  "2026-11-06T10:00:00.123456+00:00": "2026-11-06T10:00:00.123456+00:00",
+  "2026-11-06T10:00:00Z": "2026-11-06T10:00:00+00:00",
+  "2026-11-06T10:00:00": "2026-11-06T10:00:00+00:00",
+  "2026-11-06": "2026-11-06T00:00:00+00:00",
+  "2026-11-06T10:00:00.5-02:30": "2026-11-06T12:30:00.500000+00:00",
+  "2026-11-06 10:00:00.1234567+00:00": "2026-11-06T10:00:00.123456+00:00"
+ },
+ "format_props": [
+  [
+   {},
+   ""
+  ],
+  [
+   {
+    "since": 2020,
+    "role": "CTO",
+    "active": true,
+    "ratio": 1.5,
+    "none": null,
+    "tags": [
+     "a",
+     "b"
+    ],
+    "nested": {
+     "k": "it's"
+    }
+   },
+   "{since=2020, role=CTO, active=True, ratio=1.5, none=None, tags=['a', 'b'], nested={'k': \"it's\"}}"
+  ]
+ ],
+ "tokens": {
+  "Jane Doe works at Acme. She met Bob Smith in Paris! Then Acme Corp hired Carol.": [
+   "acme",
+   "bob",
+   "carol",
+   "corp",
+   "doe",
+   "hired",
+   "jane",
+   "met",
+   "paris",
+   "she",
+   "smith",
+   "then",
+   "works"
+  ],
+  "Zo\u00eb \u00c5ngstr\u00f6m visited S\u00e3o Paulo. \u00c9mile Zola wrote books.": [
+   "books",
+   "paulo",
+   "s\u00e3o",
+   "visited",
+   "wrote",
+   "zola",
+   "zo\u00eb",
+   "\u00e5ngstr\u00f6m",
+   "\u00e9mile"
+  ],
+  "no capitals here at all": [
+   "all",
+   "capitals",
+   "here",
+   "no"
+  ],
+  "Apple Inc. and Microsoft Corp. compete. 3M Company too? Yes. NASA launched Apollo 11.": [
+   "11",
+   "3m",
+   "apollo",
+   "apple",
+   "company",
+   "compete",
+   "corp",
+   "inc",
+   "launched",
+   "microsoft",
+   "nasa",
+   "too",
+   "yes"
+  ],
+  "\ud83d\ude80 Rocket Labs launched from New Zealand. The Team cheered.": [
+   "cheered",
+   "labs",
+   "launched",
+   "new",
+   "rocket",
+   "team",
+   "zealand"
+  ],
+  "He met She. They saw It, This! Those were Acme's. Neo4j and S3 work with GPT-4.": [
+   "4",
+   "acme",
+   "gpt",
+   "he",
+   "met",
+   "neo4j",
+   "s",
+   "s3",
+   "saw",
+   "she",
+   "this",
+   "those",
+   "work"
+  ],
+  "The rain fell. A Storm hit Paris; Berlin, Rome: Madrid! Done?": [
+   "berlin",
+   "done",
+   "fell",
+   "hit",
+   "madrid",
+   "paris",
+   "rain",
+   "rome",
+   "storm"
+  ],
+  "Stra\u00dfe STRASSE": [
+   "strasse"
+  ],
+  "\u01c5 \u01c6 \u01c4": [
+   "\u01c6"
+  ],
+  "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3 \u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2 \u03c2": [
+   "\u03c3",
+   "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c3"
+  ],
+  "\uab70\uab71 \u13f8 \u13f0": [
+   "\u13a0\u13a1",
+   "\u13f0"
+  ],
+  "\u0130stanbul \u0131": [
+   "i",
+   "stanbul",
+   "\u0131"
+  ],
+  "\ufb03 \ufb01 \ufb00": [
+   "ff",
+   "ffi",
+   "fi"
+  ],
+  "Caf\u00e9 Cafe\u0301": [
+   "caf\u00e9"
+  ],
+  "\u4e16\u754c \u6771\u4eac\u30bf\u30ef\u30fc": [
+   "\u4e16\u754c",
+   "\u6771\u4eac\u30bf\u30ef\u30fc"
+  ],
+  "\uff26\uff55\uff4c\uff4c": [
+   "\uff46\uff55\uff4c\uff4c"
+  ],
+  "\u0939\u093f\u0928\u094d\u0926\u0940": [
+   "\u0926",
+   "\u0928",
+   "\u0939"
+  ],
+  "n x y Z 3 a_b c-d": [
+   "3",
+   "b",
+   "c",
+   "d",
+   "n",
+   "x",
+   "y",
+   "z"
+  ],
+  "K Kelvin\u212a \u00c5\u212b": [
+   "k",
+   "kelvink",
+   "\u00e5\u00e5"
+  ],
+  "\u0149 \u01f0 \u0390": [
+   "j",
+   "\u02bcn",
+   "\u03b9"
+  ]
+ },
+ "fold": {
+  "Stra\u00dfe STRASSE": "strasse strasse",
+  "\u01c5 \u01c6 \u01c4": "\u01c6 \u01c6 \u01c6",
+  "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3 \u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2 \u03c2": "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c3 \u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c3 \u03c3",
+  "\uab70\uab71 \u13f8 \u13f0": "\u13a0\u13a1 \u13f0 \u13f0",
+  "\u0130stanbul \u0131": "i\u0307stanbul \u0131",
+  "\ufb03 \ufb01 \ufb00": "ffi fi ff",
+  "Caf\u00e9 Cafe\u0301": "caf\u00e9 caf\u00e9",
+  "\u4e16\u754c \u6771\u4eac\u30bf\u30ef\u30fc": "\u4e16\u754c \u6771\u4eac\u30bf\u30ef\u30fc",
+  "\uff26\uff55\uff4c\uff4c": "\uff46\uff55\uff4c\uff4c",
+  "\u0939\u093f\u0928\u094d\u0926\u0940": "\u0939\u093f\u0928\u094d\u0926\u0940",
+  "n x y Z 3 a_b c-d": "n x y z 3 a_b c-d",
+  "K Kelvin\u212a \u00c5\u212b": "k kelvink \u00e5\u00e5",
+  "\u0149 \u01f0 \u0390": "\u02bcn j\u030c \u03b9\u0308\u0301"
+ },
+ "grep": [
+  [
+   [
+    "acme"
+   ],
+   "acme labs inc",
+   1
+  ],
+  [
+   [
+    "acme"
+   ],
+   "\u6771\u4eac\u30bf\u30ef\u30fc",
+   0
+  ],
+  [
+   [
+    "acme"
+   ],
+   "n",
+   0
+  ],
+  [
+   [
+    "acme",
+    "labs"
+   ],
+   "acme labs inc",
+   2
+  ],
+  [
+   [
+    "acme",
+    "labs"
+   ],
+   "\u6771\u4eac\u30bf\u30ef\u30fc",
+   0
+  ],
+  [
+   [
+    "acme",
+    "labs"
+   ],
+   "n",
+   0
+  ],
+  [
+   [
+    "\u6771\u4eac"
+   ],
+   "acme labs inc",
+   0
+  ],
+  [
+   [
+    "\u6771\u4eac"
+   ],
+   "\u6771\u4eac\u30bf\u30ef\u30fc",
+   1
+  ],
+  [
+   [
+    "\u6771\u4eac"
+   ],
+   "n",
+   0
+  ],
+  [
+   [
+    "caf\u00e9"
+   ],
+   "acme labs inc",
+   0
+  ],
+  [
+   [
+    "caf\u00e9"
+   ],
+   "\u6771\u4eac\u30bf\u30ef\u30fc",
+   0
+  ],
+  [
+   [
+    "caf\u00e9"
+   ],
+   "n",
+   0
+  ],
+  [
+   [
+    "n"
+   ],
+   "acme labs inc",
+   0
+  ],
+  [
+   [
+    "n"
+   ],
+   "\u6771\u4eac\u30bf\u30ef\u30fc",
+   0
+  ],
+  [
+   [
+    "n"
+   ],
+   "n",
+   0
+  ],
+  [
+   [
+    "berlin",
+    "strasse"
+   ],
+   "acme labs inc",
+   0
+  ],
+  [
+   [
+    "berlin",
+    "strasse"
+   ],
+   "\u6771\u4eac\u30bf\u30ef\u30fc",
+   0
+  ],
+  [
+   [
+    "berlin",
+    "strasse"
+   ],
+   "n",
+   0
+  ],
+  [
+   [],
+   "acme labs inc",
+   0
+  ],
+  [
+   [],
+   "\u6771\u4eac\u30bf\u30ef\u30fc",
+   0
+  ],
+  [
+   [],
+   "n",
+   0
+  ],
+  [
+   [
+    "here",
+    "nothing"
+   ],
+   "acme labs inc",
+   0
+  ],
+  [
+   [
+    "here",
+    "nothing"
+   ],
+   "\u6771\u4eac\u30bf\u30ef\u30fc",
+   0
+  ],
+  [
+   [
+    "here",
+    "nothing"
+   ],
+   "n",
+   0
+  ]
+ ],
+ "seed_entities": [
+  {
+   "id": "t:acme",
+   "type": "Thing",
+   "name": "Acme",
+   "aliases": [],
+   "external_ids": {},
+   "properties": {},
+   "evidence": [
+    {
+     "source_id": "s1",
+     "source_version": "s1:v",
+     "chunk_id": null,
+     "quote": null,
+     "start_offset": null,
+     "end_offset": null,
+     "confidence": null
+    },
+    {
+     "source_id": "s2",
+     "source_version": "s2:v",
+     "chunk_id": null,
+     "quote": null,
+     "start_offset": null,
+     "end_offset": null,
+     "confidence": null
+    },
+    {
+     "source_id": "s3",
+     "source_version": "s3:v",
+     "chunk_id": null,
+     "quote": null,
+     "start_offset": null,
+     "end_offset": null,
+     "confidence": null
+    },
+    {
+     "source_id": "s4",
+     "source_version": "s4:v",
+     "chunk_id": null,
+     "quote": null,
+     "start_offset": null,
+     "end_offset": null,
+     "confidence": null
+    },
+    {
+     "source_id": "s5",
+     "source_version": "s5:v",
+     "chunk_id": null,
+     "quote": null,
+     "start_offset": null,
+     "end_offset": null,
+     "confidence": null
+    }
+   ],
+   "created_at": "2026-01-01T00:00:00Z",
+   "updated_at": "2026-01-01T00:00:00Z"
+  },
+  {
+   "id": "t:acme-labs",
+   "type": "Thing",
+   "name": "Acme Labs",
+   "aliases": [],
+   "external_ids": {},
+   "properties": {},
+   "evidence": [
+    {
+     "source_id": "s1",
+     "source_version": "s1:v",
+     "chunk_id": null,
+     "quote": null,
+     "start_offset": null,
+     "end_offset": null,
+     "confidence": null
+    }
+   ],
+   "created_at": "2026-01-01T00:00:00Z",
+   "updated_at": "2026-01-01T00:00:00Z"
+  },
+  {
+   "id": "t:tokyo",
+   "type": "Thing",
+   "name": "\u6771\u4eac\u30bf\u30ef\u30fc",
+   "aliases": [],
+   "external_ids": {},
+   "properties": {},
+   "evidence": [
+    {
+     "source_id": "s2",
+     "source_version": "s2:v",
+     "chunk_id": null,
+     "quote": null,
+     "start_offset": null,
+     "end_offset": null,
+     "confidence": null
+    }
+   ],
+   "created_at": "2026-01-01T00:00:00Z",
+   "updated_at": "2026-01-01T00:00:00Z"
+  },
+  {
+   "id": "t:cafe",
+   "type": "Thing",
+   "name": "Caf\u00e9 Ol\u00e9",
+   "aliases": [
+    "Cafe"
+   ],
+   "external_ids": {},
+   "properties": {},
+   "evidence": [],
+   "created_at": "2026-01-01T00:00:00Z",
+   "updated_at": "2026-01-01T00:00:00Z"
+  },
+  {
+   "id": "t:n",
+   "type": "Thing",
+   "name": "N",
+   "aliases": [],
+   "external_ids": {},
+   "properties": {},
+   "evidence": [
+    {
+     "source_id": "s1",
+     "source_version": "s1:v",
+     "chunk_id": null,
+     "quote": null,
+     "start_offset": null,
+     "end_offset": null,
+     "confidence": null
+    }
+   ],
+   "created_at": "2026-01-01T00:00:00Z",
+   "updated_at": "2026-01-01T00:00:00Z"
+  },
+  {
+   "id": "t:strasse",
+   "type": "Thing",
+   "name": "Hauptstra\u00dfe",
+   "aliases": [],
+   "external_ids": {},
+   "properties": {
+    "city": "Berlin"
+   },
+   "evidence": [],
+   "created_at": "2026-01-01T00:00:00Z",
+   "updated_at": "2026-01-01T00:00:00Z"
+  }
+ ],
+ "seeds": {
+  "acme": [
+   [
+    "t:acme-labs",
+    1.485170809511
+   ],
+   [
+    "t:acme",
+    1.093928505918
+   ]
+  ],
+  "acme labs": [
+   [
+    "t:acme-labs",
+    3.329395225396
+   ],
+   [
+    "t:acme",
+    1.093928505918
+   ]
+  ],
+  "\u6771\u4eac": [
+   [
+    "t:tokyo",
+    0.761462859615
+   ]
+  ],
+  "caf\u00e9": [
+   [
+    "t:cafe",
+    2.15533378071
+   ]
+  ],
+  "n": [
+   [
+    "t:n",
+    1.407590023151
+   ]
+  ],
+  "STRASSE berlin": [
+   [
+    "t:strasse",
+    3.421949268567
+   ]
+  ],
+  "a": [],
+  "nothing here": []
+ },
+ "ppr": {
+  "chain": {
+   "seeds": [
+    [
+     "a",
+     1.0
+    ]
+   ],
+   "nodes": [
+    "a",
+    "b",
+    "c",
+    "d"
+   ],
+   "relations": [
+    {
+     "id": "r:a>b",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "b",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:b>c",
+     "revision": 1,
+     "from_entity": "b",
+     "type": "R",
+     "to_entity": "c",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:c>d",
+     "revision": 1,
+     "from_entity": "c",
+     "type": "R",
+     "to_entity": "d",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    }
+   ],
+   "ranks": {
+    "a": 0,
+    "b": 1,
+    "c": 2,
+    "d": 3
+   }
+  },
+  "star_ties": {
+   "seeds": [
+    [
+     "hub",
+     2.0
+    ]
+   ],
+   "nodes": [
+    "hub",
+    "x",
+    "y",
+    "z",
+    "w"
+   ],
+   "relations": [
+    {
+     "id": "r:hub>x",
+     "revision": 1,
+     "from_entity": "hub",
+     "type": "R",
+     "to_entity": "x",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:hub>y",
+     "revision": 1,
+     "from_entity": "hub",
+     "type": "R",
+     "to_entity": "y",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:hub>z",
+     "revision": 1,
+     "from_entity": "hub",
+     "type": "R",
+     "to_entity": "z",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:w>hub",
+     "revision": 1,
+     "from_entity": "w",
+     "type": "R",
+     "to_entity": "hub",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    }
+   ],
+   "ranks": {
+    "hub": 0,
+    "w": 1,
+    "x": 2,
+    "y": 3,
+    "z": 4
+   }
+  },
+  "weighted": {
+   "seeds": [
+    [
+     "a",
+     1.0
+    ],
+    [
+     "e",
+     0.5
+    ]
+   ],
+   "nodes": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e"
+   ],
+   "relations": [
+    {
+     "id": "r:a>b",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "b",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": [
+      {
+       "source_id": "s1",
+       "source_version": "s1:v",
+       "chunk_id": null,
+       "quote": null,
+       "start_offset": null,
+       "end_offset": null,
+       "confidence": null
+      },
+      {
+       "source_id": "s2",
+       "source_version": "s2:v",
+       "chunk_id": null,
+       "quote": null,
+       "start_offset": null,
+       "end_offset": null,
+       "confidence": null
+      },
+      {
+       "source_id": "s3",
+       "source_version": "s3:v",
+       "chunk_id": null,
+       "quote": null,
+       "start_offset": null,
+       "end_offset": null,
+       "confidence": null
+      }
+     ]
+    },
+    {
+     "id": "r:a>c",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "c",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:b>d",
+     "revision": 1,
+     "from_entity": "b",
+     "type": "R",
+     "to_entity": "d",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:c>d",
+     "revision": 1,
+     "from_entity": "c",
+     "type": "R",
+     "to_entity": "d",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:d>e",
+     "revision": 1,
+     "from_entity": "d",
+     "type": "R",
+     "to_entity": "e",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": [
+      {
+       "source_id": "s1",
+       "source_version": "s1:v",
+       "chunk_id": null,
+       "quote": null,
+       "start_offset": null,
+       "end_offset": null,
+       "confidence": null
+      },
+      {
+       "source_id": "s1",
+       "source_version": "s1:v",
+       "chunk_id": null,
+       "quote": null,
+       "start_offset": null,
+       "end_offset": null,
+       "confidence": null
+      }
+     ]
+    }
+   ],
+   "ranks": {
+    "a": 0,
+    "e": 1,
+    "b": 2,
+    "d": 3,
+    "c": 4
+   }
+  },
+  "isolated": {
+   "seeds": [
+    [
+     "a",
+     1.0
+    ],
+    [
+     "q",
+     1.0
+    ]
+   ],
+   "nodes": [
+    "a",
+    "b",
+    "q",
+    "lone"
+   ],
+   "relations": [
+    {
+     "id": "r:a>b",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "b",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    }
+   ],
+   "ranks": {
+    "a": 0,
+    "q": 1,
+    "b": 2,
+    "lone": 3
+   }
+  },
+  "self_loop": {
+   "seeds": [
+    [
+     "a",
+     1.0
+    ]
+   ],
+   "nodes": [
+    "a",
+    "b"
+   ],
+   "relations": [
+    {
+     "id": "r:a>a",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "a",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:a>b",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "b",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    }
+   ],
+   "ranks": {
+    "a": 0,
+    "b": 1
+   }
+  },
+  "no_seed_mass": {
+   "seeds": [
+    [
+     "zz",
+     1.0
+    ]
+   ],
+   "nodes": [
+    "b",
+    "a",
+    "c"
+   ],
+   "relations": [
+    {
+     "id": "r:a>b",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "b",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    }
+   ],
+   "ranks": {
+    "a": 0,
+    "b": 1,
+    "c": 2
+   }
+  },
+  "two_seeds_tie": {
+   "seeds": [
+    [
+     "a",
+     1.0
+    ],
+    [
+     "b",
+     1.0
+    ]
+   ],
+   "nodes": [
+    "a",
+    "b",
+    "m",
+    "n2"
+   ],
+   "relations": [
+    {
+     "id": "r:a>m",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "m",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:b>m",
+     "revision": 1,
+     "from_entity": "b",
+     "type": "R",
+     "to_entity": "m",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:a>n2",
+     "revision": 1,
+     "from_entity": "a",
+     "type": "R",
+     "to_entity": "n2",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    },
+    {
+     "id": "r:b>n2",
+     "revision": 1,
+     "from_entity": "b",
+     "type": "R",
+     "to_entity": "n2",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2026-01-01T00:00:00Z",
+     "is_current": true,
+     "evidence": []
+    }
+   ],
+   "ranks": {
+    "a": 0,
+    "b": 1,
+    "m": 2,
+    "n2": 3
+   }
+  }
+ },
+ "noise": {
+  "3M": false,
+  "$5": true,
+  "Apollo 11": false,
+  "one two three four five six seven": true,
+  "abc 12 34": false,
+  "Jane": false,
+  "Neo4j": false,
+  "S3": false,
+  "GPT-4": false,
+  "42": true,
+  "3.14": true,
+  "  ": true,
+  "$$$": true,
+  "\u5317\u4eac": false,
+  "\u0661\u0662\u0663": true
+ },
+ "sk": [
+  [
+   "default",
+   "person:jane",
+   "2360337691888942189"
+  ],
+  [
+   "x",
+   "\ud83d\ude80",
+   "3211951872378266324"
+  ],
+  [
+   "default",
+   "a|WORKS_AT|b|None|None",
+   "8206691930086050538"
+  ]
+ ],
+ "chunks": {
+  "text": "Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. ",
+  "by_chars": [
+   {
+    "index": 0,
+    "text": "Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha ",
+    "start_offset": 0,
+    "end_offset": 198
+   },
+   {
+    "index": 1,
+    "text": "ma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma ",
+    "start_offset": 158,
+    "end_offset": 353
+   },
+   {
+    "index": 2,
+    "text": "lpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha ",
+    "start_offset": 313,
+    "end_offset": 510
+   },
+   {
+    "index": 3,
+    "text": "ma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma ",
+    "start_offset": 470,
+    "end_offset": 665
+   },
+   {
+    "index": 4,
+    "text": "lpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha ",
+    "start_offset": 625,
+    "end_offset": 822
+   },
+   {
+    "index": 5,
+    "text": "ma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Emoji \ud83d\ude80 rockets and ",
+    "start_offset": 782,
+    "end_offset": 980
+   },
+   {
+    "index": 6,
+    "text": "a beta gamma delta. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 ",
+    "start_offset": 940,
+    "end_offset": 1138
+   },
+   {
+    "index": 7,
+    "text": "oji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au ",
+    "start_offset": 1098,
+    "end_offset": 1294
+   },
+   {
+    "index": 8,
+    "text": "f\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets ",
+    "start_offset": 1254,
+    "end_offset": 1452
+   },
+   {
+    "index": 9,
+    "text": "ckets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji ",
+    "start_offset": 1412,
+    "end_offset": 1612
+   },
+   {
+    "index": 10,
+    "text": "Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au ",
+    "start_offset": 1572,
+    "end_offset": 1770
+   },
+   {
+    "index": 11,
+    "text": "f\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets ",
+    "start_offset": 1730,
+    "end_offset": 1928
+   },
+   {
+    "index": 12,
+    "text": "ckets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text ",
+    "start_offset": 1888,
+    "end_offset": 2087
+   },
+   {
+    "index": 13,
+    "text": "pace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more ",
+    "start_offset": 2047,
+    "end_offset": 2242
+   },
+   {
+    "index": 14,
+    "text": "ew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to ",
+    "start_offset": 2202,
+    "end_offset": 2397
+   },
+   {
+    "index": 15,
+    "text": "aph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on ",
+    "start_offset": 2357,
+    "end_offset": 2552
+   },
+   {
+    "index": 16,
+    "text": "\u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\n",
+    "start_offset": 2512,
+    "end_offset": 2712
+   },
+   {
+    "index": 17,
+    "text": "nd more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph ",
+    "start_offset": 2672,
+    "end_offset": 2872
+   },
+   {
+    "index": 18,
+    "text": "to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 ",
+    "start_offset": 2832,
+    "end_offset": 3031
+   },
+   {
+    "index": 19,
+    "text": "hitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more ",
+    "start_offset": 2991,
+    "end_offset": 3191
+   },
+   {
+    "index": 20,
+    "text": "ew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to ",
+    "start_offset": 3151,
+    "end_offset": 3346
+   },
+   {
+    "index": 21,
+    "text": "aph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on ",
+    "start_offset": 3306,
+    "end_offset": 3501
+   },
+   {
+    "index": 22,
+    "text": "\u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\n",
+    "start_offset": 3461,
+    "end_offset": 3661
+   },
+   {
+    "index": 23,
+    "text": "nd more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. ",
+    "start_offset": 3621,
+    "end_offset": 3805
+   }
+  ],
+  "by_tokens": [
+   {
+    "index": 0,
+    "text": "Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta",
+    "start_offset": 0,
+    "end_offset": 310
+   },
+   {
+    "index": 1,
+    "text": " beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta.",
+    "start_offset": 269,
+    "end_offset": 575
+   },
+   {
+    "index": 2,
+    "text": " gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha",
+    "start_offset": 538,
+    "end_offset": 845
+   },
+   {
+    "index": 3,
+    "text": " delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait",
+    "start_offset": 808,
+    "end_offset": 1060
+   },
+   {
+    "index": 4,
+    "text": "\ufffd\ufffd rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait.",
+    "start_offset": 1035,
+    "end_offset": 1233
+   },
+   {
+    "index": 5,
+    "text": "\ufffd rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji",
+    "start_offset": 1205,
+    "end_offset": 1408
+   },
+   {
+    "index": 6,
+    "text": " rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ufffd",
+    "start_offset": 1375,
+    "end_offset": 1579
+   },
+   {
+    "index": 7,
+    "text": " and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ufffd",
+    "start_offset": 1553,
+    "end_offset": 1749
+   },
+   {
+    "index": 8,
+    "text": " caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80",
+    "start_offset": 1727,
+    "end_offset": 1919
+   },
+   {
+    "index": 9,
+    "text": " au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on",
+    "start_offset": 1902,
+    "end_offset": 2113
+   },
+   {
+    "index": 10,
+    "text": "\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more",
+    "start_offset": 2080,
+    "end_offset": 2314
+   },
+   {
+    "index": 11,
+    "text": "\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d",
+    "start_offset": 2295,
+    "end_offset": 2518
+   },
+   {
+    "index": 12,
+    "text": " paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn",
+    "start_offset": 2496,
+    "end_offset": 2733
+   },
+   {
+    "index": 13,
+    "text": " whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew",
+    "start_offset": 2697,
+    "end_offset": 2934
+   },
+   {
+    "index": 14,
+    "text": " words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on",
+    "start_offset": 2898,
+    "end_offset": 3135
+   },
+   {
+    "index": 15,
+    "text": "\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more",
+    "start_offset": 3102,
+    "end_offset": 3336
+   },
+   {
+    "index": 16,
+    "text": "\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d",
+    "start_offset": 3317,
+    "end_offset": 3540
+   },
+   {
+    "index": 17,
+    "text": " paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn",
+    "start_offset": 3518,
+    "end_offset": 3755
+   },
+   {
+    "index": 18,
+    "text": " whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. ",
+    "start_offset": 3719,
+    "end_offset": 3805
+   }
+  ],
+  "count_tokens": [
+   21,
+   18,
+   5,
+   23,
+   14,
+   29,
+   17
+  ]
+ },
+ "extract": [
+  {
+   "text": "Jane Doe works at Acme. She met Bob Smith in Paris! Then Acme Corp hired Carol.",
+   "ontology": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Jane Doe",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Acme",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Bob Smith",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Paris",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Then Acme Corp",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Carol",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:jane-doe",
+      "type": "RELATED_TO",
+      "to_entity": "thing:acme",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:bob-smith",
+      "type": "RELATED_TO",
+      "to_entity": "thing:paris",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:then-acme-corp",
+      "type": "RELATED_TO",
+      "to_entity": "thing:carol",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "Zo\u00eb \u00c5ngstr\u00f6m visited S\u00e3o Paulo. \u00c9mile Zola wrote books.",
+   "ontology": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Zo\u00eb",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "S\u00e3o Paulo",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Zola",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:zo\u00eb",
+      "type": "RELATED_TO",
+      "to_entity": "thing:s\u00e3o-paulo",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "no capitals here at all",
+   "ontology": {
+    "entities": [],
+    "relations": [],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "Apple Inc. and Microsoft Corp. compete. 3M Company too? Yes. NASA launched Apollo 11.",
+   "ontology": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Apple Inc",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Microsoft Corp",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "M Company",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Yes",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "NASA",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Apollo",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:nasa",
+      "type": "RELATED_TO",
+      "to_entity": "thing:apollo",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "\ud83d\ude80 Rocket Labs launched from New Zealand. The Team cheered.",
+   "ontology": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Rocket Labs",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "New Zealand",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "The Team",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:rocket-labs",
+      "type": "RELATED_TO",
+      "to_entity": "thing:new-zealand",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "He met She. They saw It, This! Those were Acme's. Neo4j and S3 work with GPT-4.",
+   "ontology": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Acme's",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Neo4j",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "S3",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "GPT-4",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:neo4j",
+      "type": "RELATED_TO",
+      "to_entity": "thing:s3",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:s3",
+      "type": "RELATED_TO",
+      "to_entity": "thing:gpt-4",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "The rain fell. A Storm hit Paris; Berlin, Rome: Madrid! Done?",
+   "ontology": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "A Storm",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Paris",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Berlin",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Rome",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Madrid",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Done",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:a-storm",
+      "type": "RELATED_TO",
+      "to_entity": "thing:paris",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:paris",
+      "type": "RELATED_TO",
+      "to_entity": "thing:berlin",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:berlin",
+      "type": "RELATED_TO",
+      "to_entity": "thing:rome",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:rome",
+      "type": "RELATED_TO",
+      "to_entity": "thing:madrid",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  }
+ ]
+}

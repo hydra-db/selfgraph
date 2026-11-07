@@ -52,3 +52,11 @@ To run the command in its own isolated environment, use `pipx` or `uv`:
 uv tool install selfgraph
 pipx install selfgraph
 ```
+
+## TypeScript
+
+```bash
+npm install @hydradb/selfgraph
+```
+
+See [TypeScript](typescript.md) for the optional packages.

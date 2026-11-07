@@ -1,13 +1,13 @@
 ---
 name: selfgraph
-description: Use the SelfGraph Python SDK to build and query a knowledge graph from text. Use this when a task needs to turn documents or notes into a graph of entities and relationships, extract structured facts with an LLM, give an agent persistent memory (entity preferences and bitemporal decision traces), version facts as they change over time, or retrieve graph-grounded context (source passages plus relationships) for RAG and question answering. Covers ingestion (insert.text and insert.ontology), typed CRUD over entities, relations, preferences, and decisions, keyword plus graph retrieval, and running against any graph backend (Neo4j, Memgraph, FalkorDB, Kuzu, HydraDB). Reach for this whenever the task mentions a knowledge graph, graph memory, entity or relationship extraction, or graph RAG with SelfGraph.
+description: Use the SelfGraph SDK (Python or TypeScript) to build and query a knowledge graph from text. Use this when a task needs to turn documents or notes into a graph of entities and relationships, extract structured facts with an LLM, give an agent persistent memory (entity preferences and bitemporal decision traces), version facts as they change over time, or retrieve graph-grounded context (source passages plus relationships) for RAG and question answering. Covers ingestion (insert.text and insert.ontology), typed CRUD over entities, relations, preferences, and decisions, keyword plus graph retrieval, and running against any graph backend (Neo4j, Memgraph, FalkorDB, Kuzu, HydraDB). Reach for this whenever the task mentions a knowledge graph, graph memory, entity or relationship extraction, or graph RAG with SelfGraph.
 ---
 
 # SelfGraph
 
 ## Overview
 
-SelfGraph is a Python SDK that turns unstructured text into a queryable, versioned knowledge graph. Python owns all the logic (merge, versioning, id derivation, validation); a pluggable store backend holds the graph (Neo4j, Memgraph, FalkorDB, embedded Kuzu, or HydraDB).
+SelfGraph is a Python and TypeScript SDK that turns unstructured text into a queryable, versioned knowledge graph. The SDK owns all the logic (merge, versioning, id derivation, validation); a pluggable store backend holds the graph (Neo4j, Memgraph, FalkorDB, embedded Kuzu, or HydraDB).
 
 Use it to ingest text, read and write typed facts, and retrieve LLM-ready context grounded in the source.
 
@@ -218,7 +218,23 @@ selfgraph retrieve "who led the acquisition"
 selfgraph mcp
 ```
 
-`selfgraph mcp` runs the MCP server over stdio with 20 tools. Configure via flags or `SELFGRAPH_*` environment variables (`SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`).
+`selfgraph mcp` runs the MCP server over stdio with 26 tools. Configure via flags or `SELFGRAPH_*` environment variables (`SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`).
+
+## TypeScript
+
+`npm install @hydradb/selfgraph` (Node 20+) gives the same API in pure TypeScript, and it reads and writes the same graph as Python. Method names are camelCase and options go in a trailing object; model fields and option keys keep their Python names.
+
+```ts
+import { KuzuStore, SelfGraph } from "@hydradb/selfgraph";
+
+const graph = new SelfGraph(new KuzuStore("graph.kuzu"), { namespace: "default" });
+await graph.insert.ontology({ entities: [{ type: "Company", name: "Acme" }] });
+const result = await graph.retrieve("Acme", { strategy: "ppr", max_nodes: 50 });
+await graph.runCypher("MATCH (n) RETURN count(n) AS n");
+await graph.close();
+```
+
+Optional features are peer packages: `kuzu`, `falkordb`, `ai` plus an `@ai-sdk/*` provider for `insert.text`, `js-tiktoken`, and `@modelcontextprotocol/sdk`. `llm` takes an `LLMConfig`, an AI SDK model object, or an `LLMClient`. There is no spaCy path and no sync client. In an update, an omitted field keeps its value and `null` clears it. See `docs/typescript.md`.
 
 ## Rules and gotchas
 

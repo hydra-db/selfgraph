@@ -6,11 +6,12 @@
 
 <p align="center">
   <b>Turn unstructured text into a queryable, versioned knowledge graph.</b><br/>
-  One graph API over any graph backend.
+  One graph API over any graph backend, in Python and TypeScript.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/node-20%2B-3178C6?logo=typescript&logoColor=white" alt="TypeScript, Node 20+" />
   <img src="https://img.shields.io/badge/license-Apache--2.0-3DA639" alt="License Apache-2.0" />
   <img src="https://img.shields.io/badge/backends-any%20graph%20DB-FF5719" alt="Any graph backend" />
   <img src="https://img.shields.io/badge/interfaces-SDK%20%7C%20CLI%20%7C%20MCP-6E56CF" alt="Interfaces SDK, CLI, MCP" />
@@ -26,6 +27,7 @@
 - Retrieval from keyword seeds and bounded BFS, DFS, or personalized PageRank, returning source passages and relationships, no vector store.
 - A CLI and an MCP server over the same API.
 - One storage interface across backends: Neo4j, Memgraph, FalkorDB, embedded Kuzu, HydraDB, or a custom store.
+- A pure TypeScript SDK in [typescript/](typescript/) that reads and writes the same graph as the Python one.
 
 ## Install
 
@@ -37,6 +39,8 @@ pip install "selfgraph[falkordb]"     # the FalkorDB backend
 pip install "selfgraph[kuzu]"         # the embedded Kuzu backend
 pip install "selfgraph[all]"          # llm, tokenizer, falkordb, kuzu, mcp
 ```
+
+For TypeScript, `npm install @hydradb/selfgraph`. See [typescript/README.md](typescript/README.md).
 
 ## Quickstart
 
@@ -88,7 +92,7 @@ async with SelfGraph(
 
 ## Backends
 
-All logic lives in Python; a store only implements a small set of graph primitives, so the same graph runs on any backend.
+All logic lives in the SDK; a store only implements a small set of graph primitives, so the same graph runs on any backend.
 
 ```python
 from selfgraph import Neo4jStore, CypherStore, FalkorDBStore, KuzuStore, HydraDBStore
@@ -111,7 +115,7 @@ selfgraph --store neo4j --uri bolt://localhost:7687 --auth neo4j:password mcp
 
 ## Documentation
 
-Full docs are in [docs/](https://github.com/hydra-db/selfgraph/tree/main/docs): [install](https://github.com/hydra-db/selfgraph/blob/main/docs/install.md), [quickstart](https://github.com/hydra-db/selfgraph/blob/main/docs/quickstart.md), [inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md), [resources](https://github.com/hydra-db/selfgraph/blob/main/docs/resources.md), [retrieval](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md), [backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md), [CLI](https://github.com/hydra-db/selfgraph/blob/main/docs/cli.md), [MCP](https://github.com/hydra-db/selfgraph/blob/main/docs/mcp.md), and [errors](https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md).
+Full docs are in [docs/](https://github.com/hydra-db/selfgraph/tree/main/docs): [install](https://github.com/hydra-db/selfgraph/blob/main/docs/install.md), [quickstart](https://github.com/hydra-db/selfgraph/blob/main/docs/quickstart.md), [inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md), [resources](https://github.com/hydra-db/selfgraph/blob/main/docs/resources.md), [retrieval](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md), [backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md), [CLI](https://github.com/hydra-db/selfgraph/blob/main/docs/cli.md), [MCP](https://github.com/hydra-db/selfgraph/blob/main/docs/mcp.md), [errors](https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md), and [TypeScript](https://github.com/hydra-db/selfgraph/blob/main/docs/typescript.md).
 
 ## Contributing
 
