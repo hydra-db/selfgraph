@@ -57,3 +57,9 @@ For a Bolt backend, pass its connection flags instead:
 
 The backend you name must be reachable when the client starts the server. A Kuzu
 file needs nothing running, which is why it is the simplest target.
+
+## Errors
+
+A tool that fails returns an MCP error result, with the error flag set and the
+SelfGraph error type and message as its text, such as
+`NotFoundError: Entity 'person:nobody' does not exist`.

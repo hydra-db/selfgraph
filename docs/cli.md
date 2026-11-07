@@ -9,7 +9,7 @@ These come before the subcommand and pick the backend.
 
 | Flag | Meaning |
 |------|---------|
-| `--store` | `hydradb` (default), `neo4j`, `cypher`, `falkordb`, or `kuzu`. |
+| `--store` | `hydradb`, `neo4j`, `cypher`, `falkordb`, or `kuzu`. Defaults to embedded `kuzu` at `~/.selfgraph/default.kuzu`, or `hydradb` when `--uri` is given. |
 | `--uri` | Bolt URI for the Bolt stores; the file path for `kuzu`; `host:port` for `falkordb`. |
 | `--auth` | `user:password`, or a bare token with user `neo4j`. |
 | `--database` | Database name for Bolt stores. |
@@ -35,7 +35,7 @@ selfgraph version
 | `mcp` | Run the MCP server over stdio. See [MCP](mcp.md). |
 | `query` | Run one Cypher statement. |
 | `retrieve` | Retrieve context for a query. |
-| `insert text` | Extract an ontology from text. Needs an LLM. |
+| `insert text` | Extract an ontology from text, with an LLM if one is configured, else spaCy or the regex fallback. |
 | `insert ontology` | Insert a ready ontology from a JSON file, or `-` for stdin. |
 | `entity` | `create`, `get`, `list`, `update`, `delete`. |
 | `relation` | `create`, `get`, `list`, `versions`, `update`, `delete`. |

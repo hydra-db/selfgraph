@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { chunkByChars, loadTokenizer } from "../src/chunking.js";
 import { BasicExtractor } from "../src/extraction/basic.js";
-import { isNoiseName } from "../src/extraction/extractor.js";
+import { assembleOntology, isNoiseName } from "../src/extraction/extractor.js";
 import {
   contentHash,
   decisionId,
@@ -154,6 +154,11 @@ describe("extraction, chunking, and retrieval helpers match Python", () => {
       const ontology = await new BasicExtractor().extract({ text: c.text, media_type: "text/plain", metadata: {} });
       expect(toJsonable(ontology), c.text).toEqual(c.ontology);
     }
+  });
+
+  it("relation endpoints resolve to an extracted entity by canonical name", () => {
+    const { entities, relations, ontology } = fx.assemble;
+    expect(toJsonable(assembleOntology(entities, relations, [], []))).toEqual(ontology);
   });
 
   it("noise names and context property rendering", () => {

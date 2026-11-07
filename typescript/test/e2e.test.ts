@@ -136,12 +136,13 @@ describe.skipIf(!neo4jUp)("built MCP server over stdio", () => {
       const got = await client.callTool({ name: "get_entity", arguments: { id: "agent:mcp-bot" } });
       expect(JSON.parse((got.content as Array<{ text: string }>)[0]!.text)).toMatchObject({ name: "Mcp Bot" });
       const missing = await client.callTool({ name: "delete_entity", arguments: { id: "agent:nobody" } });
-      expect(missing.isError).toBeFalsy();
+      expect(missing.isError).toBe(true);
       expect(missing.structuredContent).toEqual({
         error: "Entity 'agent:nobody' does not exist",
         error_type: "NotFoundError",
       });
       const write = await client.callTool({ name: "run_cypher", arguments: { query: "MATCH (n) DETACH DELETE n" } });
+      expect(write.isError).toBe(true);
       expect((write.structuredContent as { error_type: string }).error_type).toBe("ValidationError");
       const read = await client.callTool({
         name: "run_cypher",

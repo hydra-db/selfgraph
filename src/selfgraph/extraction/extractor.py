@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -79,6 +80,7 @@ class _DecisionsOut(BaseModel):
 
 
 _log = logging.getLogger("selfgraph")
+_MAX_CONCURRENT_CALLS = 8
 
 
 def _norm(name: str) -> str:
@@ -161,21 +163,33 @@ class DefaultExtractor(_WarningSink):
             ("decisions", _DecisionsOut, raw_decisions, "decisions"),
         ]
 
-        succeeded = 0
-        for chunk in chunks:
-            chunk_ok = False
-            for kind, schema, sink, attr in kinds:
+        gate = asyncio.Semaphore(_MAX_CONCURRENT_CALLS)
+
+        async def run(chunk, kind: str, schema: type, attr: str) -> list | InsertWarning:
+            async with gate:
                 try:
-                    result = await self._call(kind, chunk.text, schema)
-                    sink.extend(getattr(result, attr))
-                    chunk_ok = True
+                    return getattr(await self._call(kind, chunk.text, schema), attr)
                 except Exception as exc:  # noqa: BLE001
-                    self._warnings.append(
-                        InsertWarning(
-                            code="extraction_partial_failure",
-                            message=f"{kind} extraction failed on chunk {chunk.index}: {exc}",
-                        )
+                    return InsertWarning(
+                        code="extraction_partial_failure",
+                        message=f"{kind} extraction failed on chunk {chunk.index}: {exc}",
                     )
+
+        outcomes = iter(
+            await asyncio.gather(
+                *(run(chunk, kind, schema, attr) for chunk in chunks for kind, schema, _, attr in kinds)
+            )
+        )
+        succeeded = 0
+        for _chunk in chunks:
+            chunk_ok = False
+            for _kind, _schema, sink, _attr in kinds:
+                outcome = next(outcomes)
+                if isinstance(outcome, InsertWarning):
+                    self._warnings.append(outcome)
+                else:
+                    sink.extend(outcome)
+                    chunk_ok = True
             if chunk_ok:
                 succeeded += 1
 
@@ -212,7 +226,9 @@ class DefaultExtractor(_WarningSink):
             if name is None or not name.strip():
                 return None
             key = _norm(name)
-            ent = registry.get(key)
+            ent = registry.get(key) or next(
+                (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)), None
+            )
             if ent is None:
                 if _is_noise_name(name):
                     return None

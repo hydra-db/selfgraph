@@ -60,7 +60,7 @@ Use `async with` to initialize on entry and close on exit; the store also initia
 
 ## Ingesting data
 
-### From text (needs an LLM)
+### From text
 
 ```python
 res = await graph.insert.text(
@@ -239,7 +239,7 @@ Optional features are peer packages: `kuzu`, `falkordb`, `ai` plus an `@ai-sdk/*
 ## Rules and gotchas
 
 - Await every call. `async with SelfGraph(...)` manages setup and teardown; a bare `SelfGraph(...)` still initializes lazily. `SyncSelfGraph` is the same API without `await`.
-- `insert.text` needs an LLM (the `[llm]` extra plus `LLMConfig` or a custom extractor); `insert.ontology` does not.
+- `insert.text` works best with an LLM (the `[llm]` extra plus `LLMConfig` or a custom extractor); without one it falls back to spaCy or a regex pass, which mislabel more. `insert.ontology` needs neither.
 - Ids are derived when omitted (`type:canonical-name` for entities, a hash for relations). Pass explicit ids when you need to reference a fact later, such as decision `steps`.
 - Re-inserting unchanged facts is a no-op; changing relation or preference properties makes a new revision, readable via `relations.versions(id)`.
 - Keep one `namespace` per tenant; reads and writes never cross namespaces.

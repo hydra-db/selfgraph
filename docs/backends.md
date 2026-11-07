@@ -43,21 +43,28 @@ For `kuzu`, `uri` is the file path.
 
 ## Concurrency
 
-IDs are deterministic and writes are idempotent upserts, so re-running the same
+IDs are deterministic and inserts are idempotent upserts, so re-running the same
 insert never duplicates data. Under concurrent writers the guarantees differ by
-backend. Entities and nodes dedupe safely everywhere.
+backend.
+
+The auto-commit backends (HydraDB, Kuzu, FalkorDB) run one write at a time per
+graph object, so concurrent writers in one process behave like the transactional
+backends: one concurrent `create` of an id wins and the rest raise `ConflictError`,
+and concurrent updates each keep their own version. Writers in separate processes
+are not serialized on those backends.
 
 Creating and versioning the same relation or preference is a read-modify-write. On
 the transactional backends (Neo4j, Memgraph) each write serializes on its subject
 node (the relation's from-entity, the preference's profile), so concurrent writers
 each keep their own version, concurrent first-time creation of the same edge resolves
 to one current version, and a loser under heavy contention raises `TransientError` to
-retry rather than losing data; the single current-version invariant always holds. The
-auto-commit backends (HydraDB, Kuzu, FalkorDB) cannot serialize, so concurrent writes
-to one edge collapse to a single last-writer-wins version and the other writes' data
-is lost silently (final state is still consistent with exactly one current version).
-Serialize writes in your application for strict multi-writer workloads against one
-edge on those backends.
+retry rather than losing data; the single current-version invariant always holds. On
+the auto-commit backends, writes from separate processes to one entity or edge are a
+race: concurrent creates of one id can all report success while only one write's data
+is kept, and concurrent updates to one edge collapse to a single last-writer-wins
+version (final state is still consistent with exactly one current version). Route
+writes to one graph through a single process for strict multi-writer workloads on
+those backends.
 
 A multi-item insert validates every reference before writing anything. On the
 transactional Bolt backends (Neo4j, Memgraph) the whole batch then commits or rolls

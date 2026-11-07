@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { ValidationError } from "../errors.js";
 import { comparePy, pyStrip } from "../internal/py.js";
 import type { CypherResult, JsonValue } from "../models.js";
@@ -52,6 +53,13 @@ export function sortedEntries(equals: Props | null | undefined): Array<[string, 
   return Object.entries(equals ?? {}).sort(([a], [b]) => comparePy(a, b));
 }
 
+/**
+ * The count column of the first row as an integer, or 0 when there is no row.
+ *
+ * @param rows (CypherResult["rows"]): the rows of a count query.
+ * @param column (string): the count column.
+ * @return (number): the count.
+ */
 export function toCount(rows: CypherResult["rows"], column = "n"): number {
   const row = rows[0];
   return row ? Math.trunc(Number(row[column])) : 0;
@@ -116,8 +124,12 @@ export interface AutoCommit {
   transaction<T>(this: GraphPrimitives, fn: (tx: GraphPrimitives) => Promise<T>): Promise<T>;
 }
 
+const inWrite = new AsyncLocalStorage<boolean>();
+const writeQueues = new WeakMap<object, Promise<unknown>>();
+
 /**
- * Make a store auto-commit: lockNode is a no-op and a transaction runs its writes directly on the store.
+ * Make a store auto-commit: a transaction runs its writes directly on the store, one transaction at a time per store,
+ * since an auto-commit backend cannot isolate a read-modify-write; lockNode is a no-op.
  *
  * @param Base (B): the class to extend.
  * @return (B & AbstractConstructor<AutoCommit>): the auto-commit subclass.
@@ -127,7 +139,13 @@ export function autoCommit<B extends AbstractConstructor<object>>(Base: B): B & 
     async lockNode(_ns: string, _label: string, _id: string): Promise<void> {}
 
     async transaction<T>(this: GraphPrimitives, fn: (tx: GraphPrimitives) => Promise<T>): Promise<T> {
-      return fn(this);
+      if (inWrite.getStore()) return fn(this);
+      const run = (writeQueues.get(this) ?? Promise.resolve()).then(() => inWrite.run(true, () => fn(this)));
+      writeQueues.set(
+        this,
+        run.catch(() => undefined),
+      );
+      return run;
     }
   }
   return AutoCommitted;
@@ -345,6 +363,12 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
   }
 }
 
+/**
+ * An edge from an r, from_e (from id), to_e (to id) and t (edge type) row.
+ *
+ * @param row (Record<string, JsonValue>): the row.
+ * @return (EdgeRow): the edge.
+ */
 function edgeRow(row: Record<string, JsonValue>): EdgeRow {
   return {
     props: row.r as Props,

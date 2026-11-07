@@ -4598,5 +4598,79 @@
     "decisions": []
    }
   }
- ]
+ ],
+ "assemble": {
+  "entities": [
+   {
+    "type": "Company",
+    "name": "Acme"
+   },
+   {
+    "type": "Person",
+    "name": "Soham"
+   }
+  ],
+  "relations": [
+   {
+    "from_name": "Soham",
+    "type": "WORKS_AT",
+    "to_name": "Acme Inc."
+   },
+   {
+    "from_name": "soham",
+    "type": "KNOWS",
+    "to_name": "Jane Doe"
+   }
+  ],
+  "ontology": {
+   "entities": [
+    {
+     "id": null,
+     "type": "Company",
+     "name": "Acme",
+     "aliases": [],
+     "external_ids": {},
+     "properties": {}
+    },
+    {
+     "id": null,
+     "type": "Person",
+     "name": "Soham",
+     "aliases": [],
+     "external_ids": {},
+     "properties": {}
+    },
+    {
+     "id": null,
+     "type": "Thing",
+     "name": "Jane Doe",
+     "aliases": [],
+     "external_ids": {},
+     "properties": {}
+    }
+   ],
+   "relations": [
+    {
+     "id": null,
+     "from_entity": "person:soham",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "evidence": []
+    },
+    {
+     "id": null,
+     "from_entity": "person:soham",
+     "type": "KNOWS",
+     "to_entity": "thing:jane-doe",
+     "properties": {},
+     "event_time": null,
+     "evidence": []
+    }
+   ],
+   "preferences": [],
+   "decisions": []
+  }
+ }
 }

@@ -59,6 +59,7 @@ interface KuzuModule {
 }
 
 const DATABASES = new Map<string, KuzuDatabase>();
+const OPEN_STORES = new Map<string, number>();
 const MAX_SKIP = 10_000_000;
 
 function normalize(value: unknown): unknown {
@@ -113,6 +114,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
       db = new kuzu.Database(this.path);
       DATABASES.set(this.path, db);
     }
+    OPEN_STORES.set(this.path, (OPEN_STORES.get(this.path) ?? 0) + 1);
     return new kuzu.Connection(db);
   });
   private queue: Promise<unknown> = Promise.resolve();
@@ -173,11 +175,17 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     await db?.close?.();
   }
 
-  /** Close the connection; the database stays cached for other stores on the same path. */
+  /** Close the connection, and the database once no other store in this process holds it. */
   async close(): Promise<void> {
     await this.conn.release(async (conn) => {
       await this.queue;
       await conn.close?.();
+      const open = (OPEN_STORES.get(this.path) ?? 1) - 1;
+      if (open > 0) OPEN_STORES.set(this.path, open);
+      else {
+        OPEN_STORES.delete(this.path);
+        await KuzuStore.closeDatabase(this.path);
+      }
     });
   }
 

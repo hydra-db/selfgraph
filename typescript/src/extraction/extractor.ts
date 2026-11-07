@@ -97,6 +97,7 @@ export interface RawDecision {
 
 const HAS_LETTER = /\p{L}/u;
 export const FALLBACK_TYPE = "Thing";
+const MAX_CONCURRENT_CALLS = 8;
 
 const norm = (name: string): string => pyStrip(name).toLowerCase();
 
@@ -143,7 +144,9 @@ export function assembleOntology(
   const resolve = (name: string | null | undefined): string | null => {
     if (name == null || !pyStrip(name)) return null;
     const key = norm(name);
-    let ent = registry.get(key);
+    let ent =
+      registry.get(key) ??
+      [...registry.values()].find((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
     if (ent === undefined) {
       if (isNoiseName(name)) return null;
       ent = { type: FALLBACK_TYPE, name: pyStrip(name) };
@@ -275,7 +278,10 @@ export class DefaultExtractor implements Extractor {
 
     const step = <T>(kind: ObjectType, schema: z.ZodType<T>, sink: (result: T) => void) => ({
       kind,
-      run: async (text: string) => sink(await this.call(kind, text, schema)),
+      run: async (text: string) => {
+        const result = await this.call(kind, text, schema);
+        return () => sink(result);
+      },
     });
     const steps = [
       step("entities", EntitiesOut, (r) => rawEntities.push(...r.entities)),
@@ -284,26 +290,38 @@ export class DefaultExtractor implements Extractor {
       step("decisions", DecisionsOut, (r) => rawDecisions.push(...r.decisions)),
     ];
 
-    let succeeded = 0;
-    for (const chunk of chunks) {
-      let chunkOk = false;
-      for (const { kind, run } of steps) {
-        try {
-          await run(chunk.text);
-          chunkOk = true;
-        } catch (exc) {
-          this.warnings.push({
-            code: "extraction_partial_failure",
-            message: `${kind} extraction failed on chunk ${chunk.index}: ${errorMessage(exc)}`,
-            source_id: null,
-            chunk_id: null,
-          });
-        }
+    const calls = chunks.flatMap((chunk) => steps.map(({ kind, run }) => ({ chunk, kind, run })));
+    const outcomes: Array<{ apply: () => void } | { error: unknown }> = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < calls.length) {
+        const i = next++;
+        const { chunk, run } = calls[i]!;
+        outcomes[i] = await run(chunk.text).then(
+          (apply) => ({ apply }),
+          (error: unknown) => ({ error }),
+        );
       }
-      if (chunkOk) succeeded++;
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_CALLS, calls.length) }, worker));
 
-    if (succeeded === 0 && this.warnings.length) {
+    const ok = new Set<number>();
+    calls.forEach(({ chunk, kind }, i) => {
+      const outcome = outcomes[i]!;
+      if ("apply" in outcome) {
+        outcome.apply();
+        ok.add(chunk.index);
+      } else {
+        this.warnings.push({
+          code: "extraction_partial_failure",
+          message: `${kind} extraction failed on chunk ${chunk.index}: ${errorMessage(outcome.error)}`,
+          source_id: null,
+          chunk_id: null,
+        });
+      }
+    });
+
+    if (!ok.size && this.warnings.length) {
       throw new ExtractionError(
         `extraction failed for the whole input (${this.warnings.length} errors); first: ${this.warnings[0]!.message}`,
       );

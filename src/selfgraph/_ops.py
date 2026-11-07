@@ -561,7 +561,7 @@ async def upsert_entity(
     evidence: list[Evidence],
     created_at: datetime,
 ) -> Entity:
-    """Insert-semantics upsert: merge aliases, external_ids, properties, and evidence.
+    """Insert-semantics upsert: keep the stored name, record a new surface form as an alias, and merge the rest.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -592,14 +592,14 @@ async def upsert_entity(
         await _write_entity(runner, ns, eid, etype, props)
         return decode_entity(props)
 
-    merged_aliases = _dedup_text_list([*existing.aliases, *ent.aliases])
+    renamed = [ename] if ename != existing.name else []
+    merged_aliases = _dedup_text_list([*existing.aliases, *ent.aliases, *renamed])
     merged_external = {**existing.external_ids, **ent.external_ids}
     merged_properties = {**existing.properties, **_canon_props(ent.properties)}
     merged_evidence = _merge_evidence(existing.evidence, evidence)
 
     if (
         etype == existing.type
-        and ename == existing.name
         and merged_aliases == existing.aliases
         and merged_external == existing.external_ids
         and merged_properties == existing.properties
@@ -611,7 +611,7 @@ async def upsert_entity(
         ns=ns,
         id=eid,
         type=etype,
-        name=ename,
+        name=existing.name,
         aliases=merged_aliases,
         external_ids=merged_external,
         properties=merged_properties,

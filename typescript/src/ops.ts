@@ -445,7 +445,7 @@ async function rewriteEntity(
 }
 
 /**
- * Insert-semantics upsert: merge aliases, external_ids, properties, and evidence; replace type and name.
+ * Insert-semantics upsert: keep the stored name, record a new surface form as an alias, merge the rest, and replace the type.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -490,8 +490,8 @@ export async function upsertEntity(
     existing,
     {
       type: etype,
-      name: ename,
-      aliases: dedupTextList([...existing.aliases, ...ent.aliases]),
+      name: existing.name,
+      aliases: dedupTextList([...existing.aliases, ...ent.aliases, ...(ename === existing.name ? [] : [ename])]),
       external_ids: { ...existing.external_ids, ...ent.external_ids },
       properties: { ...existing.properties, ...canonProps(ent.properties) },
       evidence: mergeEvidence(existing.evidence, evidence),

@@ -15,15 +15,7 @@ import {
 } from "../protocols.js";
 import { type BoltStoreOptions, boltAuth, errorCode, recordsToResult, toBoltParams } from "./bolt.js";
 import { AutoCommitStore, bindList, quoteLabel, toCount, whereEquals } from "./cypherPrimitives.js";
-import {
-  deleteBothWays,
-  docs,
-  edgeRow,
-  endpointsExist,
-  firstDoc,
-  mergedCurrentEdge,
-  relationIdsBothWays,
-} from "./docRows.js";
+import { deleteBothWays, docs, edgeRow, firstDoc, mergedCurrentEdge, relationIdsBothWays } from "./docRows.js";
 
 const EDGE = "RELATES";
 const HANDSHAKE_RETRIES = 50;
@@ -232,7 +224,11 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     toId: string,
     props: Props,
   ): Promise<boolean> {
-    if (!(await endpointsExist(this, ns, fromLabel, fromId, toLabel, toId))) return false;
+    const both = await this._run(`MATCH (a:${fromLabel} {id: $f}), (b:${toLabel} {id: $t}) RETURN a.sid AS sid`, {
+      f: surrogateKey(ns, fromId),
+      t: surrogateKey(ns, toId),
+    });
+    if (!both.rows.length) return false;
     const sid = props.id;
     const rev = props.revision;
     const row: Props = {

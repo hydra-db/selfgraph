@@ -98,11 +98,11 @@ To add another database, extend `CypherPrimitives` and implement `_run`, or impl
 
 ## Writes, ids, and concurrency
 
-Ids are deterministic: an entity is `type:name` with the name canonicalized and NFC-normalized, so `Acme`, `Acme, Inc.` and `The Acme Corporation` share `company:acme` (article and suffix stripping applies to organization-like types only; a Work "The Trial" stays `work:the-trial`). `entityId(type, name)` computes the id a name resolves to. Every write is an idempotent upsert, so re-running an insert never duplicates data.
+Ids are deterministic: an entity is `type:name` with the name canonicalized and NFC-normalized, so `Acme`, `Acme, Inc.` and `The Acme Corporation` share `company:acme` (article and suffix stripping applies to organization-like types only; a Work "The Trial" stays `work:the-trial`). `entityId(type, name)` computes the id a name resolves to. Inserts are idempotent upserts, so re-running an insert never duplicates data, and an insert that reaches an existing entity under another surface form keeps the stored name and adds the new form to its aliases. `create` with an id that already exists raises `ConflictError`.
 
 Updates merge: properties, aliases, and external ids merge into what is stored, and `remove_properties` / `remove_aliases` drop entries. Relations and preferences keep every version (`relations.versions(id)`, `preferences.versions(id)`); an update that changes nothing is a no-op. Decisions are updated in place. Deleting an entity removes its relations, its preferences, and any decision trace that references it.
 
-Concurrency differs by backend. On Neo4j and Memgraph each write serializes on its subject node and a whole insert commits or rolls back as one unit; a lost race raises `TransientError`, which the SDK retries with backoff. HydraDB, Kuzu, and FalkorDB auto-commit, so a batch applies incrementally and concurrent writes to one relation or preference are last-writer-wins; serialize writers to one edge yourself there.
+Concurrency differs by backend. On Neo4j and Memgraph each write serializes on its subject node and a whole insert commits or rolls back as one unit; a lost race raises `TransientError`, which the SDK retries with backoff. HydraDB, Kuzu, and FalkorDB auto-commit, so a batch applies incrementally. They run one write at a time per store object, so concurrent writers in one process behave as on Neo4j; writers in separate processes are not serialized, and concurrent writes there to one entity or edge are last-writer-wins.
 
 ## Coming from the Python SDK
 
@@ -135,7 +135,7 @@ npx @hydradb/selfgraph --store neo4j --uri bolt://localhost:7687 --auth neo4j:pa
 npx @hydradb/selfgraph --store neo4j --uri bolt://localhost:7687 --auth neo4j:password mcp
 ```
 
-The CLI and the MCP server expose the same commands and 26 tools as the Python ones, read the same `SELFGRAPH_*` environment variables, and print the same JSON. A failing tool returns `{error, error_type}` as its result rather than failing the call. The MCP `run_cypher` tool is read-only: it rejects any write, schema, transaction, or admin statement (a keyword guard, not a sandbox), while `graph.runCypher()` in code runs anything. `import { buildServer, TOOLS } from "@hydradb/selfgraph/mcp"` embeds the server in your own process.
+The CLI and the MCP server expose the same commands and 26 tools as the Python ones, read the same `SELFGRAPH_*` environment variables, and print the same JSON. A failing tool returns an MCP error result (`isError` set) whose content is `{error, error_type}`. The MCP `run_cypher` tool is read-only: it rejects any write, schema, transaction, or admin statement (a keyword guard, not a sandbox), while `graph.runCypher()` in code runs anything. `import { buildServer, TOOLS } from "@hydradb/selfgraph/mcp"` embeds the server in your own process.
 
 ## Known issues
 

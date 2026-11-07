@@ -128,10 +128,11 @@ def _is_blocked_query(query: str) -> bool:
     return bool(head) and _READ_OPENERS.match(head) is None
 
 
-def _tool(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
-    """Wrap a tool so any error returns a structured dict instead of crashing the tool call.
+def _tool(fn: Callable[..., Awaitable[Any]], tool_error: type[Exception]) -> Callable[..., Awaitable[Any]]:
+    """Wrap a tool so any error fails the call with the error type and message, flagged as an MCP error.
 
     @param fn (Callable[..., Awaitable[Any]]): the tool coroutine to wrap.
+    @param tool_error (type[Exception]): the SDK's ToolError, which the server reports with the error flag set.
     @return (Callable[..., Awaitable[Any]]): the wrapped tool.
     """
 
@@ -140,9 +141,9 @@ def _tool(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         try:
             return await fn(*args, **kwargs)
         except SelfGraphError as exc:
-            return {"error": str(exc), "error_type": type(exc).__name__}
+            raise tool_error(f"{type(exc).__name__}: {exc}") from exc
         except Exception as exc:  # noqa: BLE001
-            return {"error": f"{type(exc).__name__}: {exc}", "error_type": "InternalError"}
+            raise tool_error(f"InternalError: {type(exc).__name__}: {exc}") from exc
 
     return wrapper
 
@@ -544,17 +545,22 @@ TOOLS = [
 
 
 def _server_class():
-    """The MCP server class across SDK versions: MCPServer (mcp >= 2) or FastMCP (mcp 1.x)."""
+    """The MCP server and tool-error classes across SDK versions: MCPServer (mcp >= 2) or FastMCP (mcp 1.x).
+
+    @return (tuple[type, type[Exception]]): the server class and its ToolError.
+    """
     try:
         from mcp.server.mcpserver import MCPServer
+        from mcp.server.mcpserver.exceptions import ToolError
 
-        return MCPServer
+        return MCPServer, ToolError
     except ImportError:
         pass
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp.exceptions import ToolError
 
-        return FastMCP
+        return FastMCP, ToolError
     except ImportError as exc:  # pragma: no cover - optional dep
         raise RuntimeError("the 'mcp' package is required to run the MCP server; install selfgraph[mcp]") from exc
 
@@ -567,11 +573,12 @@ def build_server(name: str = "selfgraph"):
 
     @param name (str): the server name.
     """
-    server = _server_class()(name)
+    server_class, tool_error = _server_class()
+    server = server_class(name)
     structured = "structured_output" in inspect.signature(server.tool).parameters
     for fn in TOOLS:
         decorate = server.tool(structured_output=True) if structured else server.tool()
-        decorate(_tool(fn))
+        decorate(_tool(fn, tool_error))
     return server
 
 

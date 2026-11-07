@@ -8,7 +8,8 @@ from typing import Any
 from ..errors import StoreError, TransientError
 from ..ids import quote_label
 from ..models import CypherResult
-from ._cypher import AutoCommitStore, records_to_result
+from ._cypher import AutoCommitStore, count_of, records_to_result, where_equals
+from ._docrows import delete_both_ways, docs, edge_row, first_doc, merged_current_edge, relation_ids_both_ways
 
 __all__ = ["HydraDBStore"]
 
@@ -53,6 +54,10 @@ def _scalars(props: dict) -> dict:
     return {k: v for k, v in props.items() if k not in ("id", "ns") and isinstance(v, _SCALARS)}
 
 
+def _doc(props: Mapping[str, Any]) -> str:
+    return json.dumps(dict(props), default=str)
+
+
 class HydraDBStore(AutoCommitStore):
     def __init__(
         self,
@@ -93,9 +98,7 @@ class HydraDBStore(AutoCommitStore):
 
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
         res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.doc AS doc", {"iid": _sk(ns, id)})
-        if not res.rows or res.rows[0]["doc"] is None:
-            return None
-        return json.loads(res.rows[0]["doc"])
+        return first_doc(res.rows)
 
     async def node_exists(self, ns: str, label: str, id: str) -> bool:
         res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.sid AS sid", {"iid": _sk(ns, id)})
@@ -107,7 +110,7 @@ class HydraDBStore(AutoCommitStore):
         @param props (Mapping[str, Any]): the encoded node or edge properties about to be written.
         @return (None): nothing; raises StoreError when the document is too large.
         """
-        row: dict[str, Any] = {"doc": json.dumps(dict(props), default=str)}
+        row: dict[str, Any] = {"doc": _doc(props)}
         row.update(_scalars(dict(props)))
         _guard_sizes(row)
 
@@ -118,7 +121,7 @@ class HydraDBStore(AutoCommitStore):
             "id": _sk(ns, id),
             "sid": id,
             "ns": ns,
-            "doc": json.dumps(props, default=str),
+            "doc": _doc(props),
         }
         row.update(_scalars(props))
         _guard_sizes(row)
@@ -143,16 +146,14 @@ class HydraDBStore(AutoCommitStore):
     ) -> list[dict]:
         where = ["n.ns = $ns"]
         params: dict[str, Any] = {"ns": ns, "skip": skip, "limit": limit}
-        for i, (key, value) in enumerate(sorted((equals or {}).items())):
-            where.append(f"n.{key} = $eq{i}")
-            params[f"eq{i}"] = value
+        where_equals("n", equals, where, params)
         ob = "sid" if order_by == "id" else order_by
         res = await self._run(
             f"MATCH (n:{label}) WHERE {' AND '.join(where)} "
-            f"RETURN n.doc AS doc, n.{ob} AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
+            f"RETURN n.doc AS doc, n.`{ob}` AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
             params,
         )
-        return [json.loads(r["doc"]) for r in res.rows if r["doc"] is not None]
+        return docs(res.rows)
 
     async def delete_node(self, ns: str, label: str, id: str) -> None:
         await self._run(f"MATCH (n:{label} {{id: $iid}}) DETACH DELETE n", {"iid": _sk(ns, id)})
@@ -160,9 +161,7 @@ class HydraDBStore(AutoCommitStore):
     async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
         where = ["n.ns = $ns"]
         params: dict[str, Any] = {"ns": ns}
-        for i, (key, value) in enumerate(sorted(equals.items())):
-            where.append(f"n.{key} = $eq{i}")
-            params[f"eq{i}"] = value
+        where_equals("n", equals, where, params)
         res = await self._run(f"MATCH (n:{label}) WHERE {' AND '.join(where)} RETURN n.id AS iid", params)
         ids = [r["iid"] for r in res.rows]
         for iid in ids:
@@ -172,9 +171,11 @@ class HydraDBStore(AutoCommitStore):
     async def create_edge(
         self, ns: str, type: str, from_label: str, from_id: str, to_label: str, to_id: str, props: dict
     ) -> bool:
-        if not await self.node_exists(ns, from_label, from_id):
-            return False
-        if not await self.node_exists(ns, to_label, to_id):
+        both = await self._run(
+            f"MATCH (a:{from_label} {{id: $f}}), (b:{to_label} {{id: $t}}) RETURN a.sid AS sid",
+            {"f": _sk(ns, from_id), "t": _sk(ns, to_id)},
+        )
+        if not both.rows:
             return False
         sid = props.get("id")
         rev = props.get("revision")
@@ -184,7 +185,7 @@ class HydraDBStore(AutoCommitStore):
             "id": _sk(ns, f"{from_id}|{type}|{to_id}|{sid}|{rev}"),
             "ns": ns,
             "etype": type,
-            "doc": json.dumps(props, default=str),
+            "doc": _doc(props),
         }
         if sid is not None:
             row["sid"] = sid
@@ -199,21 +200,13 @@ class HydraDBStore(AutoCommitStore):
         )
         return True
 
-    def _edge_row(self, row) -> dict:
-        return {
-            "props": json.loads(row["doc"]) if row["doc"] is not None else {},
-            "from_id": row["fa"],
-            "to_id": row["tb"],
-            "type": row["et"],
-        }
-
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
         res = await self._run(
             f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid AND r.is_current = true "
             "RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et",
             {"ns": ns, "sid": id},
         )
-        return self._edge_row(res.rows[0]) if res.rows else None
+        return edge_row(res.rows[0]) if res.rows else None
 
     async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
         res = await self._run(
@@ -222,15 +215,14 @@ class HydraDBStore(AutoCommitStore):
             "ORDER BY rev",
             {"ns": ns, "sid": id},
         )
-        return [self._edge_row(r) for r in res.rows]
+        return [edge_row(r) for r in res.rows]
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
-        current = await self.get_current_edge(ns, id)
-        if current is None:
+        merged = await merged_current_edge(self, ns, id, props)
+        if merged is None:
             return
-        merged = {**current["props"], **props}
         sets = ["r.doc = $doc"]
-        params: dict[str, Any] = {"ns": ns, "sid": id, "doc": json.dumps(merged, default=str)}
+        params: dict[str, Any] = {"ns": ns, "sid": id, "doc": _doc(merged)}
         for k, v in _scalars(merged).items():
             sets.append(f"r.{k} = $s_{k}")
             params[f"s_{k}"] = v
@@ -246,7 +238,7 @@ class HydraDBStore(AutoCommitStore):
             f"MATCH (a)-[r:{_EDGE}]->(b) WHERE r.ns = $ns AND r.sid = $sid RETURN count(*) AS n",
             {"ns": ns, "sid": id},
         )
-        return int(res.rows[0]["n"]) if res.rows else 0
+        return count_of(res.rows)
 
     async def delete_edges(self, ns: str, id: str) -> int:
         n = await self.count_edges(ns, id)
@@ -294,32 +286,23 @@ class HydraDBStore(AutoCommitStore):
         if to_in is not None:
             where.append("b.id IN $tiids_in")
             params["tiids_in"] = [_sk(ns, i) for i in to_in]
-        for i, (key, value) in enumerate(sorted((equals or {}).items())):
-            where.append(f"r.{key} = $eq{i}")
-            params[f"eq{i}"] = value
+        where_equals("r", equals, where, params)
         ob = "sid" if order_by == "id" else order_by
         res = await self._run(
             f"MATCH (a:{from_label})-[r:{_EDGE}]->(b{blabel}) WHERE {' AND '.join(where)} "
-            f"RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.{ob} AS __ob "
+            f"RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.`{ob}` AS __ob "
             f"ORDER BY __ob SKIP $skip LIMIT $limit",
             params,
         )
-        return [self._edge_row(r) for r in res.rows]
+        return [edge_row(r) for r in res.rows]
 
     async def versioned_relation_ids(self, ns: str, label: str, id: str, *, exclude_types: list[str]) -> list[str]:
-        clauses = ["r.revision IS NOT NULL"]
+        where = ["r.ns = $ns", "r.revision IS NOT NULL"]
         params: dict[str, Any] = {"iid": _sk(ns, id), "ns": ns}
         for i, t in enumerate(exclude_types):
-            clauses.append(f"r.etype <> $ex{i}")
+            where.append(f"r.etype <> $ex{i}")
             params[f"ex{i}"] = t
-        out = []
-        for direction in (f"(x:{label} {{id: $iid}})-[r:{_EDGE}]->(o)", f"(o)-[r:{_EDGE}]->(x:{label} {{id: $iid}})"):
-            res = await self._run(
-                f"MATCH {direction} WHERE r.ns = $ns AND {' AND '.join(clauses)} RETURN DISTINCT r.sid AS rid",
-                params,
-            )
-            out.extend(r["rid"] for r in res.rows)
-        return list(dict.fromkeys(out))
+        return await relation_ids_both_ways(self._run, f"x:{label} {{id: $iid}}", f"r:{_EDGE}", "o", where, params)
 
     async def child_nodes(
         self,
@@ -331,21 +314,21 @@ class HydraDBStore(AutoCommitStore):
         *,
         order_by: str | None = None,
     ) -> list[dict]:
-        ob = "" if order_by is None else f", c.{order_by} AS __ob"
+        ob = "" if order_by is None else f", c.`{order_by}` AS __ob"
         order = "" if order_by is None else " ORDER BY __ob"
         res = await self._run(
             f"MATCH (p:{parent_label} {{id: $iid}})-[r:{_EDGE}]->(c:{child_label}) "
             f"WHERE r.ns = $ns AND r.etype = $et RETURN c.doc AS doc{ob}{order}",
             {"iid": _sk(ns, parent_id), "ns": ns, "et": edge_type},
         )
-        return [json.loads(r["doc"]) for r in res.rows if r["doc"] is not None]
+        return docs(res.rows)
 
     async def count_out_edges(self, ns: str, label: str, id: str) -> int:
         res = await self._run(
             f"MATCH (p:{label} {{id: $iid}})-[r:{_EDGE}]->(o) WHERE r.ns = $ns RETURN count(*) AS n",
             {"iid": _sk(ns, id), "ns": ns},
         )
-        return int(res.rows[0]["n"]) if res.rows else 0
+        return count_of(res.rows)
 
     async def count_in_edges_typed(self, ns: str, label: str, id: str, types: list[str]) -> int:
         params: dict[str, Any] = {"iid": _sk(ns, id), "ns": ns}
@@ -358,12 +341,8 @@ class HydraDBStore(AutoCommitStore):
             "RETURN count(*) AS n",
             params,
         )
-        return int(res.rows[0]["n"]) if res.rows else 0
+        return count_of(res.rows)
 
     async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:
-        iid = _sk(ns, id)
-        for direction in (f"(t:{label} {{id: $iid}})-[r:{_EDGE}]->(o)", f"(o)-[r:{_EDGE}]->(t:{label} {{id: $iid}})"):
-            await self._run(
-                f"MATCH {direction} WHERE r.ns = $ns AND r.etype = $et DELETE r",
-                {"iid": iid, "ns": ns, "et": type},
-            )
+        params = {"iid": _sk(ns, id), "ns": ns, "et": type}
+        await delete_both_ways(self._run, f"t:{label} {{id: $iid}}", f"r:{_EDGE}", "o", params)

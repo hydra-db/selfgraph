@@ -2,8 +2,9 @@
 
 The graph exposes four typed resources: `graph.entities`, `graph.relations`,
 `graph.preferences`, and `graph.decisions`. Each offers `create`, `get`, `list`,
-`iterate`, `update`, and `delete`. Ids are deterministic, so passing the same
-`id` updates the existing record.
+`iterate`, `update`, and `delete`. Ids are deterministic, so `create` with an id
+that already exists raises `ConflictError`; change a record with `update`, or use
+`insert.ontology`, which merges into an existing record.
 
 ## Entities
 

@@ -483,19 +483,19 @@ export function configure(value: GraphSettings | null = null): void {
 }
 
 /**
- * Run a tool, returning an error as a structured {error, error_type} result instead of failing the call.
+ * Run a tool, turning an error into a structured {error, error_type} result flagged as an MCP error.
  *
  * @param t (Tool): the tool.
  * @param args (Record<string, unknown>): the validated arguments.
- * @return (unknown): the JSON-ready result.
+ * @return ({ result: unknown; isError: boolean }): the JSON-ready result, and whether it is an error.
  */
-export async function callTool(t: Tool, args: Record<string, unknown>): Promise<unknown> {
+export async function callTool(t: Tool, args: Record<string, unknown>): Promise<{ result: unknown; isError: boolean }> {
   try {
-    return toJsonable(await t.run(await graph.get(), args));
+    return { result: toJsonable(await t.run(await graph.get(), args)), isError: false };
   } catch (exc) {
-    if (exc instanceof SelfGraphError) return { error: exc.message, error_type: exc.name };
+    if (exc instanceof SelfGraphError) return { result: { error: exc.message, error_type: exc.name }, isError: true };
     const name = exc instanceof Error ? exc.name : "Error";
-    return { error: `${name}: ${errorMessage(exc)}`, error_type: "InternalError" };
+    return { result: { error: `${name}: ${errorMessage(exc)}`, error_type: "InternalError" }, isError: true };
   }
 }
 
@@ -526,10 +526,10 @@ export async function buildServer(name = "selfgraph"): Promise<McpServerLike> {
   const server = new McpServer({ name, version });
   for (const t of TOOLS) {
     server.registerTool(t.name, { description: t.description, inputSchema: t.input }, async (args) => {
-      const result = await callTool(t, args);
+      const { result, isError } = await callTool(t, args);
       const content = [{ type: "text", text: JSON.stringify(result, null, 2) }];
       const structured = result !== null && typeof result === "object" && !Array.isArray(result) ? result : { result };
-      return { content, structuredContent: structured };
+      return { content, structuredContent: structured, isError };
     });
   }
   return server;

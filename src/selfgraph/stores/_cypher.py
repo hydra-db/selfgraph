@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from ..ids import quote_label, quote_reltype
 from ..models import CypherResult, JsonValue
+
+_IN_WRITE: ContextVar[bool] = ContextVar("selfgraph_in_write", default=False)
 
 
 class AutoCommitStore:
@@ -19,7 +23,7 @@ class AutoCommitStore:
         return await self._run(query, params)
 
     async def lock_node(self, ns: str, label: str, id: str) -> None:
-        """No-op: an auto-commit store has no transaction to serialize writes within.
+        """No-op: writes are already serialized per store by transaction.
 
         @param ns (str): namespace.
         @param label (str): node label.
@@ -30,7 +34,21 @@ class AutoCommitStore:
 
     @asynccontextmanager
     async def transaction(self):
-        yield self
+        """Run one write at a time on this store, since an auto-commit backend cannot isolate a read-modify-write.
+
+        @return (AsyncIterator[AutoCommitStore]): this store, held until the write finishes.
+        """
+        if _IN_WRITE.get():
+            yield self
+            return
+        if "_write_lock" not in self.__dict__:
+            self._write_lock = asyncio.Lock()
+        async with self._write_lock:
+            token = _IN_WRITE.set(True)
+            try:
+                yield self
+            finally:
+                _IN_WRITE.reset(token)
 
 
 _COUNTER_NAMES = (
@@ -71,6 +89,38 @@ def _to_json(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [_to_json(v) for v in value]
     return value
+
+
+def _edge_row(row: dict) -> dict:
+    """An edge from an r, from_e (from id), to_e (to id) and t (edge type) row.
+
+    @param row (dict): the row.
+    @return (dict): the edge's props, from_id, to_id and type.
+    """
+    return {"props": row["r"], "from_id": row["from_e"], "to_id": row["to_e"], "type": row["t"]}
+
+
+def where_equals(alias: str, equals: dict | None, where: list[str], params: dict) -> None:
+    """Add one alias.key = $eqN clause per equality-filter entry, in sorted key order, and bind its parameter.
+
+    @param alias (str): the node or relationship variable.
+    @param equals (dict | None): the property filter.
+    @param where (list[str]): the clauses to extend.
+    @param params (dict): the parameters to extend.
+    @return (None): nothing.
+    """
+    for i, (key, value) in enumerate(sorted((equals or {}).items())):
+        where.append(f"{alias}.{key} = $eq{i}")
+        params[f"eq{i}"] = value
+
+
+def count_of(rows: list[dict]) -> int:
+    """The n column of the first row as an int, or 0 when there is no row.
+
+    @param rows (list[dict]): the rows of a count query.
+    @return (int): the count.
+    """
+    return int(rows[0]["n"]) if rows else 0
 
 
 async def records_to_result(result) -> CypherResult:
@@ -188,9 +238,7 @@ class CypherPrimitives:
         """
         where = ["n.ns = $ns"]
         params: dict[str, Any] = {"ns": ns, "skip": skip, "limit": limit}
-        for i, (key, value) in enumerate(sorted((equals or {}).items())):
-            where.append(f"n.{key} = $eq{i}")
-            params[f"eq{i}"] = value
+        where_equals("n", equals, where, params)
         query = f"MATCH (n:{label}) WHERE {' AND '.join(where)} RETURN n ORDER BY n.{order_by} SKIP $skip LIMIT $limit"
         res = await self._run(query, params)
         return [r["n"] for r in res.rows]
@@ -214,11 +262,9 @@ class CypherPrimitives:
         """
         where = ["n.ns = $ns"]
         params: dict[str, Any] = {"ns": ns}
-        for i, (key, value) in enumerate(sorted(equals.items())):
-            where.append(f"n.{key} = $eq{i}")
-            params[f"eq{i}"] = value
+        where_equals("n", equals, where, params)
         count = await self._run(f"MATCH (n:{label}) WHERE {' AND '.join(where)} RETURN count(n) AS n", params)
-        n = int(count.rows[0]["n"]) if count.rows else 0
+        n = count_of(count.rows)
         if n:
             await self._run(f"MATCH (n:{label}) WHERE {' AND '.join(where)} DETACH DELETE n", params)
         return n
@@ -270,10 +316,7 @@ class CypherPrimitives:
             "RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t",
             {"id": id, "ns": ns},
         )
-        if not res.rows:
-            return None
-        row = res.rows[0]
-        return {"props": row["r"], "from_id": row["from_e"], "to_id": row["to_e"], "type": row["t"]}
+        return _edge_row(res.rows[0]) if res.rows else None
 
     async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
         """Return every version of an edge by id, oldest first.
@@ -287,7 +330,7 @@ class CypherPrimitives:
             "RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t ORDER BY r.revision",
             {"id": id, "ns": ns},
         )
-        return [{"props": r["r"], "from_id": r["from_e"], "to_id": r["to_e"], "type": r["t"]} for r in res.rows]
+        return [_edge_row(r) for r in res.rows]
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
         """Set properties on the current version of an edge.
@@ -309,7 +352,7 @@ class CypherPrimitives:
         @return (int): the number of versions.
         """
         res = await self._run("MATCH ()-[r {id:$id, ns:$ns}]->() RETURN count(r) AS n", {"id": id, "ns": ns})
-        return int(res.rows[0]["n"]) if res.rows else 0
+        return count_of(res.rows)
 
     async def delete_edges(self, ns: str, id: str) -> int:
         """Delete every version of an edge by id.
@@ -377,16 +420,14 @@ class CypherPrimitives:
         if type is not None:
             where.append("type(r) = $etype")
             params["etype"] = type
-        for i, (key, value) in enumerate(sorted((equals or {}).items())):
-            where.append(f"r.{key} = $eq{i}")
-            params[f"eq{i}"] = value
+        where_equals("r", equals, where, params)
         query = (
             f"MATCH (a:{from_label})-[r]->(b{blabel}) WHERE {' AND '.join(where)} "
             f"RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t "
             f"ORDER BY r.{order_by} SKIP $skip LIMIT $limit"
         )
         res = await self._run(query, params)
-        return [{"props": r["r"], "from_id": r["from_e"], "to_id": r["to_e"], "type": r["t"]} for r in res.rows]
+        return [_edge_row(r) for r in res.rows]
 
     async def versioned_relation_ids(self, ns: str, label: str, id: str, *, exclude_types: list[str]) -> list[str]:
         """Return distinct ids of versioned edges touching a node, excluding some types.
@@ -446,7 +487,7 @@ class CypherPrimitives:
         res = await self._run(
             f"MATCH (p:{label} {{id:$id, ns:$ns}})-[r]->() RETURN count(r) AS n", {"id": id, "ns": ns}
         )
-        return int(res.rows[0]["n"]) if res.rows else 0
+        return count_of(res.rows)
 
     async def count_in_edges_typed(self, ns: str, label: str, id: str, types: list[str]) -> int:
         """Count incoming edges of given types into a node.
@@ -466,7 +507,7 @@ class CypherPrimitives:
             f"MATCH (p)-[r]->(x:{label} {{id:$id, ns:$ns}}) WHERE {' OR '.join(ors)} RETURN count(r) AS n",
             params,
         )
-        return int(res.rows[0]["n"]) if res.rows else 0
+        return count_of(res.rows)
 
     async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:
         """Delete all edges of a type incident to a node.

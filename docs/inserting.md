@@ -40,7 +40,9 @@ pip install "selfgraph[llm]"
 
 With no `llm`, `insert.text` extracts with spaCy when the `ner` extra is
 installed, and with a built-in regex pass otherwise. The regex pass finds fewer
-relations; `result.warnings` says which path ran.
+relations; `result.warnings` says which path ran. Both are fallbacks: they guess
+entity types from capitalization and patterns and can mislabel them (a company
+typed as a place) or link the wrong pair, so use an LLM when the graph matters.
 
 ```bash
 pip install "selfgraph[ner]"
@@ -71,4 +73,6 @@ or any extraction dependency.
 ## Idempotence
 
 Every insert is an upsert keyed on a deterministic id. Inserting the same text or
-ontology twice produces the same graph, so reruns are safe.
+ontology twice produces the same graph, so reruns are safe. A later insert that
+reaches an existing entity under another surface form, such as `Acme, Inc.` after
+`Acme`, keeps the stored name and adds the new form to its aliases.

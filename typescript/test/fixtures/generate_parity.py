@@ -7,9 +7,9 @@ from pydantic import BaseModel
 from selfgraph import _serde, ids
 from selfgraph.extraction import chunking
 from selfgraph.extraction.basic import _regex_extract
-from selfgraph.extraction.extractor import DefaultExtractor, _is_noise_name
+from selfgraph.extraction.extractor import DefaultExtractor, _is_noise_name, _RelOut
 from selfgraph.mcp.server import _is_blocked_query
-from selfgraph.models import Entity, Evidence, Relation
+from selfgraph.models import Entity, EntityInput, Evidence, Relation
 from selfgraph.resources._common import encode_cursor
 from selfgraph.retrieval import _fold, _format_props, _grep_score, _ppr_rank, _select_seeds, _tokens
 from selfgraph.stores.hydradb import _sk
@@ -383,6 +383,24 @@ def extract_cases():
     return out
 
 
+ASSEMBLE_ENTITIES = [{"type": "Company", "name": "Acme"}, {"type": "Person", "name": "Soham"}]
+ASSEMBLE_RELATIONS = [
+    {"from_name": "Soham", "type": "WORKS_AT", "to_name": "Acme Inc."},
+    {"from_name": "soham", "type": "KNOWS", "to_name": "Jane Doe"},
+]
+
+
+def assemble_case():
+    ontology = DefaultExtractor._assemble(
+        [EntityInput(**e) for e in ASSEMBLE_ENTITIES], [_RelOut(**r) for r in ASSEMBLE_RELATIONS], [], []
+    )
+    return {
+        "entities": ASSEMBLE_ENTITIES,
+        "relations": ASSEMBLE_RELATIONS,
+        "ontology": ontology.model_dump(mode="json"),
+    }
+
+
 def main():
     out = {
         "slug": {t: attempt(ids.slug, t) for t in TYPES + NAMES},
@@ -465,6 +483,7 @@ def main():
         ],
         "chunks": chunk_cases(),
         "extract": extract_cases(),
+        "assemble": assemble_case(),
     }
     json.dump(out, sys.stdout, ensure_ascii=True, indent=1)
 
