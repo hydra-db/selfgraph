@@ -16,6 +16,7 @@ upsert with a deterministic id, and relations keep their version history.
 | [Install](install.md) | The package and its optional extras. |
 | [Quickstart](quickstart.md) | A first graph with no server and no LLM. |
 | [Inserting](inserting.md) | `insert.text` extraction and `insert.ontology`. |
+| [Schema](schema.md) | An optional type layer that guides extraction and validates inserts. |
 | [Resources](resources.md) | Typed CRUD over entities, relations, preferences, and decisions. |
 | [Retrieval](retrieval.md) | `retrieve` and how it seeds and traverses. |
 | [Backends](backends.md) | The built-in stores and how to add your own. |

@@ -32,6 +32,18 @@ jobs:
       - run: pip install "$(ls dist/*.whl)"
       - run: python -c "import selfgraph; from selfgraph import SelfGraph; print(selfgraph.__version__)"
 
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ".[dev,tokenizer,kuzu]"
+      - run: pytest tests/
+        env:
+          SELFGRAPH_TEST_STORES: kuzu
+
   typescript:
     runs-on: ubuntu-latest
     strategy:

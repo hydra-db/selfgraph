@@ -23,7 +23,7 @@ export { DefaultExtractor, type DefaultExtractorOptions } from "./extraction/ext
 export { DEFAULT_PROMPTS } from "./extraction/prompts.js";
 export * as ids from "./ids.js";
 export { decisionId, entityId, normalizeRelType, preferenceId, profileId, relationId } from "./ids.js";
-export type { InsertTextOptions } from "./insert.js";
+export type { InsertOntologyOptions, InsertTextOptions } from "./insert.js";
 export { buildLlmClient, type LLMArg } from "./llm/index.js";
 export {
   type CypherResult,
@@ -92,6 +92,16 @@ export type {
 } from "./resources/index.js";
 export type { RetrieveOptions } from "./retrieval.js";
 export { DEFAULT_SETTINGS, type GraphSettings, STORES, settingsFromEnv, version } from "./runtime.js";
+export {
+  EntityType,
+  type ParsedSchema,
+  PropertySpec,
+  type PropertyType,
+  RelationEndpoint,
+  RelationType,
+  Schema,
+  type SchemaMode,
+} from "./schema.js";
 export { CypherStore, type CypherStoreOptions, Neo4jStore } from "./stores/cypher.js";
 export { CypherPrimitives } from "./stores/cypherPrimitives.js";
 export { FalkorDBStore, type FalkorDBStoreOptions } from "./stores/falkordb.js";

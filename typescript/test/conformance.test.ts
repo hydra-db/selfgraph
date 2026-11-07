@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { KuzuStore, SelfGraph } from "../src/index.js";
-import { conformanceStore, dump, write } from "./conformance/ts_side.js";
+import { conformanceStore, dump, schemaWarnings, write } from "./conformance/ts_side.js";
 import { reachable, selectedStores, uniqueNs } from "./helpers.js";
 
 const PY = process.env.SELFGRAPH_PY;
@@ -17,7 +17,7 @@ const KUZU = join(KUZU_DIR, "graph.kuzu");
 
 afterAll(() => rmSync(KUZU_DIR, { recursive: true, force: true }));
 
-function py(cmd: "write" | "dump", store: string, ns: string): unknown {
+function py(cmd: "write" | "dump" | "schema", store: string, ns: string): unknown {
   const out = execFileSync(PY!, [SCRIPT, cmd, store, ns, KUZU], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   return JSON.parse(out);
 }
@@ -92,6 +92,10 @@ const live = new Map<string, boolean>();
 for (const spec of specs) live.set(spec.name, await reachable(spec));
 
 describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
+  it("schema validation produces identical warnings in both languages", () => {
+    expect(schemaWarnings()).toEqual(py("schema", "-", "-"));
+  });
+
   for (const { name: store } of specs) {
     it.skipIf(!live.get(store))(
       `${store}: Python and TypeScript read, write, and agree on the same graph`,

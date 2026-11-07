@@ -99,6 +99,28 @@ await graph.insert.ontology(
 
 The payload may also carry `preferences` and `decisions`. Use this when you already have structured facts (another system produced them, or in tests). No passages are created, so retrieval over these facts is relationships-only.
 
+## Schema (optional)
+
+Pass a `schema` to the graph or to a single insert to declare the entity and relation types you expect. It is advisory and SDK-only: it writes nothing to the backend. It guides `insert.text` extraction by adding your types to the prompt, and it validates every insert.
+
+```python
+from selfgraph import Schema
+
+schema = Schema(
+    entities=[
+        {"name": "Person", "aliases": ["user"], "properties": [{"name": "age", "type": "integer", "required": True}]},
+        {"name": "Manager", "parent": "Person"},
+        {"name": "Company", "aliases": ["org"]},
+    ],
+    relations=[{"type": "WORKS_AT", "from": {"types": ["Person"], "max_count": 1}, "to": {"types": ["Company"]}}],
+)
+res = await graph.insert.ontology(ontology, schema=schema)
+for w in res.warnings:
+    print(w.code, w.message)
+```
+
+`schema_mode` is `"warn"` (default, violations go to `res.warnings` and the write proceeds), `"strict"` (any violation raises `ValidationError` before writing), or `"off"` (no checks, extraction catalog still used). A per-insert `schema` or `schema_mode` overrides the graph-level one. Entity types resolve aliases and follow `parent` for endpoint checks; cardinality is counted per insert, not across the graph. See `docs/schema.md`.
+
 ## Entities
 
 ```python

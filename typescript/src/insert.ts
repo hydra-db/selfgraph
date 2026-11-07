@@ -20,6 +20,7 @@ import {
 import * as ops from "./ops.js";
 import type { Extractor, LLMClient } from "./protocols.js";
 import { recordSource } from "./provenance.js";
+import { asSchema, type ParsedSchema, type Schema, type SchemaMode, validateAgainstSchema } from "./schema.js";
 import { hasSurrogate, pyTypeName, requireJsonMapping, requireOptionalText } from "./validate.js";
 
 export interface InsertTextOptions {
@@ -28,6 +29,14 @@ export interface InsertTextOptions {
   metadata?: JsonObject | null;
   instructions?: ExtractionInstructions | null;
   prompts?: ExtractionPrompts | null;
+  schema?: Schema | ParsedSchema | null;
+  schema_mode?: SchemaMode | null;
+}
+
+export interface InsertOntologyOptions {
+  source_id?: string | null;
+  schema?: Schema | ParsedSchema | null;
+  schema_mode?: SchemaMode | null;
 }
 
 export interface ExtractionSetup {
@@ -35,6 +44,8 @@ export interface ExtractionSetup {
   instructions: ExtractionInstructions | null;
   prompts: ExtractionPrompts | null;
   extractor: Extractor | null;
+  schema: ParsedSchema | null;
+  schemaMode: SchemaMode;
 }
 
 interface Provenance {
@@ -62,6 +73,7 @@ export class Insert {
   private extractorFor(
     callInstructions: ExtractionInstructions | null,
     callPrompts: ExtractionPrompts | null,
+    schema: ParsedSchema | null,
   ): Extractor {
     const { extractor, llm, prompts, instructions } = this.setup;
     if (extractor !== null) return extractor;
@@ -71,6 +83,7 @@ export class Insert {
       instructions,
       call_prompts: callPrompts,
       call_instructions: callInstructions,
+      schema: schema ?? this.setup.schema,
     });
   }
 
@@ -81,10 +94,25 @@ export class Insert {
    * @param source (Provenance): the source and provenance fields, and the warnings to report.
    * @return (InsertResult): the insert result.
    */
-  private async apply(ontology: ParsedOntology, source: Provenance): Promise<InsertResult> {
+  private async apply(
+    ontology: ParsedOntology,
+    source: Provenance,
+    schema: ParsedSchema | null,
+    schemaMode: SchemaMode | null,
+  ): Promise<InsertResult> {
     const createdAt = new Date();
+    const activeSchema = schema ?? this.setup.schema;
+    const mode = schemaMode ?? this.setup.schemaMode;
     return this.graph.write(async (tx, ns) => {
       await ops.validateOntology(tx, ns, ontology);
+      const warnings = [...source.warnings];
+      if (activeSchema !== null && mode !== "off") {
+        const schemaWarnings = validateAgainstSchema(ontology, activeSchema);
+        if (mode === "strict" && schemaWarnings.length) {
+          throw new ValidationError(schemaWarnings.map((w) => w.message).join("; "));
+        }
+        warnings.push(...schemaWarnings);
+      }
       let sourceVersion: string | null = null;
       let baseEvidence: Evidence[] = [];
 
@@ -141,7 +169,7 @@ export class Insert {
         relations,
         preferences,
         decisions,
-        warnings: [...source.warnings],
+        warnings,
       };
     });
   }
@@ -186,18 +214,24 @@ export class Insert {
         ],
       };
     }
-    const extractor = this.extractorFor(options.instructions ?? null, options.prompts ?? null);
+    const activeSchema = asSchema(options.schema);
+    const extractor = this.extractorFor(options.instructions ?? null, options.prompts ?? null, activeSchema);
     const document: ParsedDocument = { text, media_type: "text/plain", metadata: {} };
     const ontology = await this.extract(extractor, document);
     const warnings: InsertWarning[] = extractor.popWarnings?.() ?? [];
-    return this.apply(ontology, {
-      source_id: options.source_id ?? null,
-      parsed_text: text,
-      media_type: document.media_type,
-      metadata: options.metadata ?? null,
-      default_event_time: eventTime,
-      warnings,
-    });
+    return this.apply(
+      ontology,
+      {
+        source_id: options.source_id ?? null,
+        parsed_text: text,
+        media_type: document.media_type,
+        metadata: options.metadata ?? null,
+        default_event_time: eventTime,
+        warnings,
+      },
+      activeSchema,
+      options.schema_mode ?? null,
+    );
   }
 
   /**
@@ -207,16 +241,21 @@ export class Insert {
    * @param options ({ source_id?: string | null }): the source id to record provenance under.
    * @return (InsertResult): what was inserted.
    */
-  async ontology(ontology: Ontology, options: { source_id?: string | null } = {}): Promise<InsertResult> {
+  async ontology(ontology: Ontology, options: InsertOntologyOptions = {}): Promise<InsertResult> {
     requireOptionalText("source_id", options.source_id);
     const parsed = parseOrThrow(Ontology, ontology, "ontology");
-    return this.apply(parsed, {
-      source_id: options.source_id ?? null,
-      parsed_text: "",
-      media_type: "application/octet-stream",
-      metadata: null,
-      default_event_time: null,
-      warnings: [],
-    });
+    return this.apply(
+      parsed,
+      {
+        source_id: options.source_id ?? null,
+        parsed_text: "",
+        media_type: "application/octet-stream",
+        metadata: null,
+        default_event_time: null,
+        warnings: [],
+      },
+      asSchema(options.schema),
+      options.schema_mode ?? null,
+    );
   }
 }

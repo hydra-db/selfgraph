@@ -16,6 +16,7 @@ import {
   Status,
 } from "../models.js";
 import type { Extractor, LLMClient } from "../protocols.js";
+import { type ParsedSchema, renderSchemaCatalog } from "../schema.js";
 import { effectiveInstruction, effectivePrompt, type ObjectType, render } from "./prompts.js";
 
 const EntitiesOut = z.object({
@@ -237,21 +238,26 @@ export interface DefaultExtractorOptions {
   instructions?: ExtractionInstructions | null;
   call_prompts?: ExtractionPrompts | null;
   call_instructions?: ExtractionInstructions | null;
+  schema?: ParsedSchema | null;
 }
 
 export class DefaultExtractor implements Extractor {
   private warnings: InsertWarning[] = [];
+  private readonly catalogs: Partial<Record<ObjectType, string>>;
 
   /**
    * Extract entities, relations, preferences, and decisions from text with an LLM, chunk by chunk.
    *
    * @param llm (LLMClient): the LLM client.
-   * @param options (DefaultExtractorOptions): client-level and per-call prompts and instructions.
+   * @param options (DefaultExtractorOptions): client-level and per-call prompts, instructions, and schema guidance.
    */
   constructor(
     private readonly llm: LLMClient,
     private readonly options: DefaultExtractorOptions = {},
-  ) {}
+  ) {
+    const [entities, relations] = options.schema ? renderSchemaCatalog(options.schema) : ["", ""];
+    this.catalogs = { entities, relations };
+  }
 
   popWarnings(): InsertWarning[] {
     const out = this.warnings;
@@ -261,7 +267,9 @@ export class DefaultExtractor implements Extractor {
 
   private async call<T>(objectType: ObjectType, text: string, output: z.ZodType<T>): Promise<T> {
     const template = effectivePrompt(objectType, this.options.prompts, this.options.call_prompts);
-    const instruction = effectiveInstruction(objectType, this.options.instructions, this.options.call_instructions);
+    let instruction = effectiveInstruction(objectType, this.options.instructions, this.options.call_instructions);
+    const catalog = this.catalogs[objectType] ?? "";
+    if (catalog) instruction = instruction ? `${instruction}\n\n${catalog}` : catalog;
     const [system, user] = render(template, text, instruction);
     return this.llm.generate({ system, user, output });
   }

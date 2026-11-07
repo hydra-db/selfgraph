@@ -48,4 +48,5 @@ ignore = ["B008", "SIM105"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501"]
+"conftest.py" = ["E501", "BLE001"]
 "typescript/test/**" = ["E501"]

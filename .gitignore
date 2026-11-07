@@ -12,7 +12,3 @@ venv/
 *.db
 *.sqlite3
 .DS_Store
-
-# kept local, not shipped
-tests/
-conftest.py

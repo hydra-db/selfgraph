@@ -28,6 +28,7 @@ from .protocols import Extractor, GraphStore, LLMClient
 from .provenance import record_source
 from .resources import Decisions, Entities, Preferences, Relations
 from .retrieval import retrieve as _retrieve
+from .schema import Schema, SchemaMode, as_schema, validate_against_schema
 
 __all__ = ["SelfGraph"]
 
@@ -48,6 +49,8 @@ class SelfGraph:
         prompts: ExtractionPrompts | None = None,
         extractor: Extractor | None = None,
         namespace: str = "default",
+        schema: Schema | Mapping[str, Any] | None = None,
+        schema_mode: SchemaMode = "warn",
     ) -> None:
         _ops._require_text("namespace", namespace)
         self.store = store
@@ -56,6 +59,8 @@ class SelfGraph:
         self._instructions = instructions
         self._prompts = prompts
         self._extractor = extractor
+        self._schema = as_schema(schema)
+        self._schema_mode: SchemaMode = schema_mode
         self._ready = False
 
         self.entities = Entities(self)
@@ -63,6 +68,14 @@ class SelfGraph:
         self.preferences = Preferences(self)
         self.decisions = Decisions(self)
         self.insert = Insert(self)
+
+    @property
+    def schema(self) -> Schema | None:
+        """The active schema, exposed read-only for agents and the MCP server.
+
+        @return (Schema | None): the schema, or None when none is set.
+        """
+        return self._schema
 
     @classmethod
     def from_env(cls, **overrides: Any) -> SelfGraph:
@@ -205,6 +218,7 @@ class SelfGraph:
         self,
         call_instructions: ExtractionInstructions | None,
         call_prompts: ExtractionPrompts | None,
+        schema: Schema | None = None,
     ) -> Extractor:
         if self._extractor is not None:
             return self._extractor
@@ -218,6 +232,7 @@ class SelfGraph:
             instructions=self._instructions,
             call_prompts=call_prompts,
             call_instructions=call_instructions,
+            schema=schema if schema is not None else self._schema,
         )
 
     async def _apply_ontology(
@@ -230,14 +245,23 @@ class SelfGraph:
         metadata: dict[str, JsonValue] | None,
         default_event_time: datetime | None,
         warnings: list[InsertWarning] | None = None,
+        schema: Schema | None = None,
+        schema_mode: SchemaMode | None = None,
     ) -> InsertResult:
         created_at = now()
         ns = self.namespace
         warnings = list(warnings or [])
+        active_schema = schema if schema is not None else self._schema
+        mode = schema_mode if schema_mode is not None else self._schema_mode
 
         async def _apply(tx: Any) -> InsertResult:
             _ops._require_datetime("event_time", default_event_time)
             await _ops.validate_ontology(tx, ns, ontology)
+            if active_schema is not None and mode != "off":
+                schema_warnings = validate_against_schema(ontology, active_schema)
+                if mode == "strict" and schema_warnings:
+                    raise ValidationError("; ".join(w.message for w in schema_warnings))
+                warnings.extend(schema_warnings)
             source_version: str | None = None
             base_evidence = []
 

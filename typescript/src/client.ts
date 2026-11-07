@@ -8,6 +8,7 @@ import type { Extractor, GraphStore } from "./protocols.js";
 import { Decisions, Entities, Preferences, Relations } from "./resources/index.js";
 import { type RetrieveOptions, retrieve } from "./retrieval.js";
 import { buildLlm, buildStore, DEFAULT_SETTINGS, type GraphSettings, settingsFromEnv } from "./runtime.js";
+import { asSchema, type ParsedSchema, type Schema, type SchemaMode } from "./schema.js";
 import { pyTypeName, requireJsonMapping, requireText } from "./validate.js";
 
 export interface SelfGraphOptions {
@@ -16,6 +17,8 @@ export interface SelfGraphOptions {
   prompts?: ExtractionPrompts | null;
   extractor?: Extractor | null;
   namespace?: string;
+  schema?: Schema | ParsedSchema | null;
+  schema_mode?: SchemaMode;
 }
 
 const asyncDispose: typeof Symbol.asyncDispose =
@@ -30,19 +33,21 @@ export class SelfGraph {
   readonly preferences: Preferences;
   readonly decisions: Decisions;
   readonly insert: Insert;
+  readonly schema: ParsedSchema | null;
   private readonly graph: GraphAccess;
 
   /**
    * A knowledge graph over any GraphStore, initialized lazily on first use.
    *
    * @param store (GraphStore): the graph store.
-   * @param options (SelfGraphOptions): the LLM, extraction instructions and prompts, a custom extractor, and the namespace.
+   * @param options (SelfGraphOptions): the LLM, extraction instructions and prompts, a custom extractor, the namespace, and an optional schema.
    */
   constructor(store: GraphStore, options: SelfGraphOptions = {}) {
     const namespace = options.namespace ?? DEFAULT_SETTINGS.namespace;
     requireText("namespace", namespace);
     this.store = store;
     this.namespace = namespace;
+    this.schema = asSchema(options.schema);
     this.graph = new GraphAccess(store, namespace);
     this.entities = new Entities(this.graph);
     this.relations = new Relations(this.graph);
@@ -53,6 +58,8 @@ export class SelfGraph {
       instructions: options.instructions ?? null,
       prompts: options.prompts ?? null,
       extractor: options.extractor ?? null,
+      schema: this.schema,
+      schemaMode: options.schema_mode ?? "warn",
     });
   }
 

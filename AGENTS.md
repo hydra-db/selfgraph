@@ -12,7 +12,7 @@ match the surrounding code, and respect the invariants below.
 - `typescript/` is a pure TypeScript port with identical behavior. When you change ids, encoding, validation, or retrieval in Python, port the change there and run `npm test` in `typescript/` with `SELFGRAPH_PY` set to a Python that has this checkout installed; the conformance test compares both sides byte for byte.
 - Lint and format before pushing: `ruff check .` and `ruff format .` (config lives in `pyproject.toml`; CI runs `ruff check` and `ruff format --check`).
 - In `typescript/`, lint and format with Biome before pushing: `npm run lint` checks and `npm run format` fixes (config lives in `typescript/biome.json`; CI runs `npm run lint`, `typecheck`, `build`, and `test`).
-- The test suite is not committed to this repo and needs a graph backend: a Bolt server (Neo4j by default, or Memgraph), FalkorDB, HydraDB, or embedded Kuzu, selected with `SELFGRAPH_TEST_STORE` (or the first entry of `SELFGRAPH_TEST_STORES`, the TypeScript suite's plural selector). Backend connection details accept the TypeScript `SG_*` names first (`SG_NEO4J_URI`, `SG_NEO4J_PASSWORD`, `SG_MEMGRAPH_URI`, `SG_FALKOR_PORT`, `SG_HYDRADB_URI`, `SG_HYDRADB_TOKEN`), then the bare names (`NEO4J_URI`, `NEO4J_AUTH`, `CYPHER_URI`, `FALKOR_PORT`, `HYDRADB_URI`, `HYDRADB_TOKEN`), so one set of variables drives both suites. If you add tests, drive async code with `asyncio.run(...)` and do not add `pytest-asyncio`.
+- The test suite lives in `tests/` and needs a graph backend: a Bolt server (Neo4j by default, or Memgraph), FalkorDB, HydraDB, or embedded Kuzu, selected with `SELFGRAPH_TEST_STORE` (or the first entry of `SELFGRAPH_TEST_STORES`, the TypeScript suite's plural selector). Backend connection details accept the TypeScript `SG_*` names first (`SG_NEO4J_URI`, `SG_NEO4J_PASSWORD`, `SG_MEMGRAPH_URI`, `SG_FALKOR_PORT`, `SG_HYDRADB_URI`, `SG_HYDRADB_TOKEN`), then the bare names (`NEO4J_URI`, `NEO4J_AUTH`, `CYPHER_URI`, `FALKOR_PORT`, `HYDRADB_URI`, `HYDRADB_TOKEN`), so one set of variables drives both suites. If you add tests, drive async code with `asyncio.run(...)` and do not add `pytest-asyncio`.
 
 ## Architecture invariant
 
@@ -28,7 +28,8 @@ filtering, `HydraDBStore` to HydraDB's dialect with integer surrogate keys and
 auto-commit. Never put business logic in a store, and never make `_ops` backend-aware.
 
 Where things live: `client.py` is the `SelfGraph` entry point. `insert.py` is the
-insert namespace, `resources/` holds the typed CRUD, `extraction/` runs LLM
+insert namespace, `schema.py` is the optional TBox that guides extraction and
+validates inserts, `resources/` holds the typed CRUD, `extraction/` runs LLM
 extraction, `retrieval.py` does keyword-seeded BFS/DFS/PageRank retrieval, `llm/` wraps the
 LLM through litellm, `stores/` holds the backends (`_cypher.py` is the Cypher
 primitive base, `cypher.py` holds `CypherStore` and `Neo4jStore`, `falkordb.py`, `kuzu.py`, `hydradb.py`),

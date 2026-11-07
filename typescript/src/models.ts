@@ -4,7 +4,7 @@ import { ValidationError } from "./errors.js";
 import { normalizeRelType } from "./ids.js";
 import { pyStrip } from "./internal/py.js";
 import { parseIso } from "./internal/time.js";
-import { KINDS } from "./schema.js";
+import { KINDS } from "./labels.js";
 import { hasControl, hasSurrogate, requireCleanJson } from "./validate.js";
 
 export type JsonValue =

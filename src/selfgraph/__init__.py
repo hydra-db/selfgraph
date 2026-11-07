@@ -44,6 +44,7 @@ from .models import (
     Subgraph,
 )
 from .protocols import Extractor, GraphStore, LLMClient
+from .schema import EntityType, PropertySpec, RelationEndpoint, RelationType, Schema
 from .sync import SyncSelfGraph
 
 __version__ = "0.0.3"
@@ -105,6 +106,11 @@ __all__ = [
     "PreferenceInput",
     "DecisionTraceInput",
     "Ontology",
+    "Schema",
+    "EntityType",
+    "RelationType",
+    "RelationEndpoint",
+    "PropertySpec",
     "LLMConfig",
     "PromptTemplate",
     "ExtractionInstructions",

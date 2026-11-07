@@ -70,6 +70,12 @@ await graph.insert.ontology({
 Use this when you already have structured data, or to seed a graph without an LLM
 or any extraction dependency.
 
+## Validating against a schema
+
+Pass a `schema` to the graph or to a single insert to guide extraction and check
+what you write. By default violations come back in `result.warnings` and the write
+still happens; `schema_mode="strict"` rejects them instead. See [Schema](schema.md).
+
 ## Idempotence
 
 Every insert is an upsert keyed on a deterministic id. Inserting the same text or

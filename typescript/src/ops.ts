@@ -4,6 +4,25 @@ import { dumps, loads } from "./internal/json.js";
 import { deepEqual, isPlainObject, pyRepr, pyStrip, utf8 } from "./internal/py.js";
 import { toIso } from "./internal/time.js";
 import {
+  childEdgeId,
+  EDGE_TYPES,
+  L_ENTITY,
+  L_PROFILE,
+  L_STEP,
+  L_TRACE,
+  LABELS,
+  PREFERENCE_EDGE_TYPES,
+  preferenceEdgeType,
+  preferenceKindOf,
+  R_CONSIDERED,
+  R_FROM,
+  R_HAS_PROFILE,
+  R_HAS_STEP,
+  R_MADE_DECISION,
+  R_RESULTED_IN,
+  R_TO,
+} from "./labels.js";
+import {
   DEFAULT_KIND,
   type DecisionStep,
   type DecisionTrace,
@@ -22,25 +41,6 @@ import {
   Status,
 } from "./models.js";
 import type { EdgeRow, GraphPrimitives, Props } from "./protocols.js";
-import {
-  childEdgeId,
-  EDGE_TYPES,
-  L_ENTITY,
-  L_PROFILE,
-  L_STEP,
-  L_TRACE,
-  LABELS,
-  PREFERENCE_EDGE_TYPES,
-  preferenceEdgeType,
-  preferenceKindOf,
-  R_CONSIDERED,
-  R_FROM,
-  R_HAS_PROFILE,
-  R_HAS_STEP,
-  R_MADE_DECISION,
-  R_RESULTED_IN,
-  R_TO,
-} from "./schema.js";
 import {
   decodeEntity,
   decodePreference,

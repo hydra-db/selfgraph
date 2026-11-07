@@ -2,9 +2,9 @@ import neo4j, { type Config, type Driver, type Session, type Transaction } from 
 
 import { errorMessage, type SelfGraphError, StoreError, TransientError } from "../errors.js";
 import { sleep } from "../internal/time.js";
+import { LABELS } from "../labels.js";
 import type { CypherResult } from "../models.js";
 import type { GraphPrimitives, GraphStore } from "../protocols.js";
-import { LABELS } from "../schema.js";
 import { type BoltStoreOptions, boltAuth, errorCode, recordsToResult, toBoltParams } from "./bolt.js";
 import { CypherPrimitives } from "./cypherPrimitives.js";
 

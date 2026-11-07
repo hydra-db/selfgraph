@@ -23,6 +23,7 @@ from ..models import (
     Status,
 )
 from ..protocols import LLMClient
+from ..schema import Schema, render_schema_catalog
 from .chunking import chunk_text
 from .prompts import effective_instruction, effective_prompt, render
 
@@ -118,6 +119,7 @@ class DefaultExtractor(_WarningSink):
         instructions: ExtractionInstructions | None = None,
         call_prompts: ExtractionPrompts | None = None,
         call_instructions: ExtractionInstructions | None = None,
+        schema: Schema | None = None,
     ) -> None:
         self._llm = llm
         self._client_prompts = prompts
@@ -125,6 +127,8 @@ class DefaultExtractor(_WarningSink):
         self._call_prompts = call_prompts
         self._call_instructions = call_instructions
         self._warnings: list[InsertWarning] = []
+        entity_catalog, relation_catalog = render_schema_catalog(schema) if schema is not None else ("", "")
+        self._catalogs = {"entities": entity_catalog, "relations": relation_catalog}
 
     def _prompt(self, object_type: str):
         return effective_prompt(
@@ -142,7 +146,11 @@ class DefaultExtractor(_WarningSink):
 
     async def _call(self, object_type: str, text: str, output: type):
         template = self._prompt(object_type)
-        system, user = render(template, text=text, instructions=self._instruction(object_type))
+        instruction = self._instruction(object_type)
+        catalog = self._catalogs.get(object_type, "")
+        if catalog:
+            instruction = f"{instruction}\n\n{catalog}" if instruction else catalog
+        system, user = render(template, text=text, instructions=instruction)
         return await self._llm.generate(system=system, user=user, output=output)
 
     async def extract(self, document: ParsedDocument) -> Ontology:

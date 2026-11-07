@@ -5,11 +5,11 @@ import { normalizeText } from "./ids.js";
 import { casefold } from "./internal/casefold.js";
 import { comparePy, cpLen, NON_ASCII, pyFloatRepr, pyRepr, pyStr, pyStrip } from "./internal/py.js";
 import { epochMicros } from "./internal/time.js";
+import { preferenceEdgeType } from "./labels.js";
 import type { DecisionTrace, Entity, JsonObject, Preference, Relation, RetrievalResult, Subgraph } from "./models.js";
 import * as ops from "./ops.js";
 import type { GraphPrimitives } from "./protocols.js";
 import { readChunks } from "./provenance.js";
-import { preferenceEdgeType } from "./schema.js";
 import { pyTypeName, requireInt } from "./validate.js";
 
 const STOPWORDS = new Set(

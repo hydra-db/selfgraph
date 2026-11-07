@@ -19,6 +19,7 @@ from .models import (
     Ontology,
     ParsedDocument,
 )
+from .schema import Schema, SchemaMode, as_schema
 
 if TYPE_CHECKING:
     from .client import SelfGraph
@@ -56,6 +57,8 @@ class Insert:
         metadata: dict[str, JsonValue] | None = None,
         instructions: ExtractionInstructions | None = None,
         prompts: ExtractionPrompts | None = None,
+        schema: Schema | Mapping[str, Any] | None = None,
+        schema_mode: SchemaMode | None = None,
     ) -> InsertResult:
         if not isinstance(text, str):
             raise ValidationError(f"text must be a string, got {type(text).__name__}")
@@ -69,7 +72,8 @@ class Insert:
                 created_at=now(),
                 warnings=[InsertWarning(code="empty_text", message="text was empty; nothing was ingested")],
             )
-        extractor = self._c._build_extractor(instructions, prompts)
+        active_schema = as_schema(schema)
+        extractor = self._c._build_extractor(instructions, prompts, schema=active_schema)
         document = ParsedDocument(text=text, media_type="text/plain")
         ontology = await self._extract(extractor, document)
         return await self._c._apply_ontology(
@@ -80,6 +84,8 @@ class Insert:
             metadata=metadata,
             default_event_time=event_time,
             warnings=_drain_warnings(extractor),
+            schema=active_schema,
+            schema_mode=schema_mode,
         )
 
     async def ontology(
@@ -87,6 +93,8 @@ class Insert:
         ontology: Ontology | Mapping[str, Any],
         *,
         source_id: str | None = None,
+        schema: Schema | Mapping[str, Any] | None = None,
+        schema_mode: SchemaMode | None = None,
     ) -> InsertResult:
         """Merge a ready ontology into the graph as idempotent upserts.
 
@@ -114,4 +122,6 @@ class Insert:
             media_type=None,
             metadata=None,
             default_event_time=None,
+            schema=as_schema(schema),
+            schema_mode=schema_mode,
         )

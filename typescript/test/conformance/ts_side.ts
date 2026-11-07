@@ -1,6 +1,64 @@
 import type { GraphStore } from "../../src/index.js";
 import { FalkorDBStore, ids, KuzuStore, type SelfGraph, toJsonable } from "../../src/index.js";
+import { Ontology } from "../../src/models.js";
+import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { STORE_SPECS } from "../helpers.js";
+
+const SCHEMA_SPEC = {
+  name: "conformance",
+  entities: [
+    {
+      name: "Person",
+      description: "a human",
+      aliases: ["user"],
+      properties: [
+        { name: "age", type: "integer", required: true },
+        { name: "nickname", type: "string" },
+      ],
+    },
+    { name: "Manager", parent: "Person" },
+    { name: "Company", aliases: ["org"], properties: [{ name: "founded", type: "datetime" }] },
+  ],
+  relations: [
+    { type: "WORKS_AT", from: { types: ["Person"], max_count: 1 }, to: { types: ["Company"], min_count: 1 } },
+    { type: "KNOWS", aliases: ["is friends with"], from: { types: ["Person"] }, to: { types: ["Person"] } },
+  ],
+};
+
+const SCHEMA_CASES = [
+  {
+    entities: [
+      { id: "manager:m", type: "Manager", name: "M", properties: { age: 30 } },
+      { id: "org:o", type: "org", name: "O" },
+    ],
+    relations: [{ from_entity: "manager:m", type: "works at", to_entity: "org:o" }],
+  },
+  {
+    entities: [
+      { id: "person:p", type: "Person", name: "P" },
+      { id: "thing:x", type: "Alien", name: "X" },
+      { id: "company:c", type: "Company", name: "C", properties: { founded: 5 } },
+    ],
+    relations: [
+      { id: "relation:r1", from_entity: "person:p", type: "WORKS_AT", to_entity: "company:c" },
+      { id: "relation:r2", from_entity: "person:p", type: "WORKS_AT", to_entity: "company:c" },
+      { id: "relation:r3", from_entity: "company:c", type: "WORKS_AT", to_entity: "company:c" },
+      { id: "relation:r4", from_entity: "person:p", type: "LIKES", to_entity: "company:c" },
+    ],
+  },
+];
+
+/**
+ * Validate each schema case and return its warnings as code and message pairs.
+ *
+ * @return (Array<Array<{ code: string; message: string }>>): one list per case.
+ */
+export function schemaWarnings(): Array<Array<{ code: string; message: string }>> {
+  const schema = Schema.parse(SCHEMA_SPEC);
+  return SCHEMA_CASES.map((c) =>
+    validateAgainstSchema(Ontology.parse(c), schema).map((w) => ({ code: w.code, message: w.message })),
+  );
+}
 
 const ZOE = ids.entityId("Person", "Zoë Ångström");
 

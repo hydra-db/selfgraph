@@ -2,9 +2,9 @@ import { loadTokenizer } from "./chunking.js";
 import * as ids from "./ids.js";
 import { pyJsonDumps, pyStr, utf8 } from "./internal/py.js";
 import { toIso } from "./internal/time.js";
+import { childEdgeId, L_CHUNK, L_SOURCE, L_SOURCE_VERSION, R_HAS_CHUNK, R_HAS_VERSION } from "./labels.js";
 import type { Evidence, JsonObject } from "./models.js";
 import type { GraphPrimitives } from "./protocols.js";
-import { childEdgeId, L_CHUNK, L_SOURCE, L_SOURCE_VERSION, R_HAS_CHUNK, R_HAS_VERSION } from "./schema.js";
 import { evidenceOf } from "./serde.js";
 
 /**

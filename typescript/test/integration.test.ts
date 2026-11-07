@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { GraphPrimitives, GraphStore } from "../src/index.js";
 import { ConflictError, ids, NotFoundError, SelfGraph, TransientError, ValidationError } from "../src/index.js";
-import { childEdgeId } from "../src/schema.js";
+import { childEdgeId } from "../src/labels.js";
 import { reachable, STORE_SPECS, type StoreSpec, selectedStores, uniqueNs } from "./helpers.js";
 
 const specs = selectedStores();
@@ -325,6 +325,26 @@ function suite(spec: StoreSpec) {
         await store.close?.();
       }
     }
+  });
+
+  it("warns on schema violations but still writes, and rejects them in strict mode", async () => {
+    const schema = {
+      entities: [{ name: "Person", properties: [{ name: "age", type: "integer" as const, required: true }] }],
+      relations: [{ type: "KNOWS", from: { types: ["Person"] }, to: { types: ["Person"] } }],
+    };
+    const ontology = {
+      entities: [{ id: "person:schemaguy", type: "Person", name: "Schema Guy" }],
+      relations: [{ from_entity: "person:schemaguy", type: "LIKES", to_entity: "person:schemaguy" }],
+    };
+    const warned = await graph.insert.ontology(ontology, { schema });
+    expect(warned.warnings.map((w) => w.code)).toEqual(["missing_required_property", "unknown_relation_type"]);
+    expect(await graph.entities.get("person:schemaguy")).not.toBeNull();
+
+    await expect(graph.insert.ontology(ontology, { schema, schema_mode: "strict" })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    const quiet = await graph.insert.ontology(ontology, { schema, schema_mode: "off" });
+    expect(quiet.warnings).toEqual([]);
   });
 
   it.runIf(spec.name === "hydradb")("rejects a document over HydraDB's 32 KB string limit before writing", async () => {

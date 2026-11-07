@@ -4,8 +4,68 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from selfgraph import EvidenceInput, SelfGraph, ids
+from selfgraph import EvidenceInput, Ontology, Schema, SelfGraph, ids
 from selfgraph.runtime import to_jsonable
+from selfgraph.schema import validate_against_schema
+
+SCHEMA_SPEC = {
+    "name": "conformance",
+    "entities": [
+        {
+            "name": "Person",
+            "description": "a human",
+            "aliases": ["user"],
+            "properties": [
+                {"name": "age", "type": "integer", "required": True},
+                {"name": "nickname", "type": "string"},
+            ],
+        },
+        {"name": "Manager", "parent": "Person"},
+        {"name": "Company", "aliases": ["org"], "properties": [{"name": "founded", "type": "datetime"}]},
+    ],
+    "relations": [
+        {
+            "type": "WORKS_AT",
+            "from": {"types": ["Person"], "max_count": 1},
+            "to": {"types": ["Company"], "min_count": 1},
+        },
+        {"type": "KNOWS", "aliases": ["is friends with"], "from": {"types": ["Person"]}, "to": {"types": ["Person"]}},
+    ],
+}
+
+SCHEMA_CASES = [
+    {
+        "entities": [
+            {"id": "manager:m", "type": "Manager", "name": "M", "properties": {"age": 30}},
+            {"id": "org:o", "type": "org", "name": "O"},
+        ],
+        "relations": [{"from_entity": "manager:m", "type": "works at", "to_entity": "org:o"}],
+    },
+    {
+        "entities": [
+            {"id": "person:p", "type": "Person", "name": "P"},
+            {"id": "thing:x", "type": "Alien", "name": "X"},
+            {"id": "company:c", "type": "Company", "name": "C", "properties": {"founded": 5}},
+        ],
+        "relations": [
+            {"id": "relation:r1", "from_entity": "person:p", "type": "WORKS_AT", "to_entity": "company:c"},
+            {"id": "relation:r2", "from_entity": "person:p", "type": "WORKS_AT", "to_entity": "company:c"},
+            {"id": "relation:r3", "from_entity": "company:c", "type": "WORKS_AT", "to_entity": "company:c"},
+            {"id": "relation:r4", "from_entity": "person:p", "type": "LIKES", "to_entity": "company:c"},
+        ],
+    },
+]
+
+
+def schema_warnings():
+    """Validate each schema case and return its warnings as code and message pairs.
+
+    @return (list): one list of {code, message} per case.
+    """
+    schema = Schema.model_validate(SCHEMA_SPEC)
+    cases = [Ontology.model_validate(case) for case in SCHEMA_CASES]
+    return [[{"code": w.code, "message": w.message} for w in validate_against_schema(ont, schema)] for ont in cases]
+
 
 STORES = {
     "neo4j": lambda p: __import__("selfgraph").Neo4jStore(
@@ -182,7 +242,11 @@ async def dump(graph, ns):
 
 
 async def main():
-    cmd, store_name, ns = sys.argv[1], sys.argv[2], sys.argv[3]
+    cmd = sys.argv[1]
+    if cmd == "schema":
+        json.dump(schema_warnings(), sys.stdout, sort_keys=True, ensure_ascii=False)
+        return
+    store_name, ns = sys.argv[2], sys.argv[3]
     kuzu_path = sys.argv[4] if len(sys.argv) > 4 else None
     graph = SelfGraph(store=STORES[store_name](kuzu_path), namespace=ns)
     try:
