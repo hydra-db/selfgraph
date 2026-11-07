@@ -1,15 +1,38 @@
-import neo4j, { type Config, type Driver, type Session, type Transaction } from "neo4j-driver";
+import type { Config, Driver, Session, Transaction } from "neo4j-driver";
 
 import { errorMessage, type SelfGraphError, StoreError, TransientError } from "../errors.js";
 import { sleep } from "../internal/time.js";
 import { LABELS } from "../labels.js";
 import type { CypherResult } from "../models.js";
 import type { GraphPrimitives, GraphStore } from "../protocols.js";
-import { type BoltStoreOptions, boltAuth, errorCode, recordsToResult, toBoltParams } from "./bolt.js";
+import { type BoltStoreOptions, errorCode, openDriver, recordsToResult, toBoltParams } from "./bolt.js";
 import { CypherPrimitives } from "./cypherPrimitives.js";
 
 const INIT_ATTEMPTS = 5;
 const INIT_BASE_DELAY_MS = 50;
+
+const CONNECTION_MARKERS = [
+  "security.",
+  "unauthorized",
+  "authentication",
+  "databasenotfound",
+  "serviceunavailable",
+  "couldn't connect",
+  "failed to establish",
+  "connection refused",
+];
+
+/**
+ * Whether a driver error means the store was unreachable or refused the login or database.
+ *
+ * @param exc (unknown): the driver error.
+ * @return (boolean): true for a connection, auth, or missing-database error.
+ */
+function isConnectionError(exc: unknown): boolean {
+  const name = exc instanceof Error ? exc.name : "";
+  const lowered = `${errorCode(exc)} ${name} ${errorMessage(exc)}`.toLowerCase();
+  return CONNECTION_MARKERS.some((k) => lowered.includes(k));
+}
 
 /**
  * Map a Bolt driver error to a library error; lost races and retryable conflicts, including a post-check uniqueness violation, become TransientError.
@@ -63,7 +86,7 @@ export class CypherStore extends CypherPrimitives implements GraphStore {
       notificationFilter: { minimumSeverityLevel: "OFF" },
       ...config,
     };
-    this.driver = neo4j.driver(uri, boltAuth(auth), withQuietNotifications);
+    this.driver = openDriver(uri, auth, withQuietNotifications);
     this.database = database ?? null;
   }
 
@@ -100,6 +123,9 @@ export class CypherStore extends CypherPrimitives implements GraphStore {
             continue;
           }
           if (err instanceof TransientError) throw err;
+          if (isConnectionError(exc)) {
+            throw new StoreError(`could not connect to the graph store: ${errorMessage(exc)}`, { cause: exc });
+          }
           throw new StoreError(`failed creating constraint on ${label}: ${errorMessage(exc)}`, { cause: exc });
         } finally {
           await session.close().catch(() => undefined);

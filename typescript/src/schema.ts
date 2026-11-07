@@ -2,46 +2,36 @@ import { z } from "zod";
 
 import { entityId, normalizeRelType } from "./ids.js";
 import { pyRepr } from "./internal/py.js";
-import type { InsertWarning, ParsedOntology } from "./models.js";
-
-export type PropertyType = "string" | "integer" | "float" | "boolean" | "datetime" | "json";
-export type SchemaMode = "off" | "warn" | "strict";
-
-const nullableString = z
-  .string()
-  .nullish()
-  .transform((v) => v ?? null);
-const nullableNumber = z
-  .number()
-  .nullish()
-  .transform((v) => v ?? null);
+import { type InsertWarning, insertWarning, optNumber, optString, type ParsedOntology } from "./models.js";
 
 const PropertyTypeSchema = z.enum(["string", "integer", "float", "boolean", "datetime", "json"]);
+export type PropertyType = z.infer<typeof PropertyTypeSchema>;
+export type SchemaMode = "off" | "warn" | "strict";
 
 export const PropertySpec = z.object({
   name: z.string(),
   type: PropertyTypeSchema.default("string"),
   required: z.boolean().default(false),
-  description: nullableString,
+  description: optString,
 });
 
 export const EntityType = z.object({
   name: z.string(),
-  description: nullableString,
+  description: optString,
   aliases: z.array(z.string()).default([]),
   properties: z.array(PropertySpec).default([]),
-  parent: nullableString,
+  parent: optString,
 });
 
 export const RelationEndpoint = z.object({
   types: z.array(z.string()).default([]),
-  min_count: nullableNumber,
-  max_count: nullableNumber,
+  min_count: optNumber,
+  max_count: optNumber,
 });
 
 export const RelationType = z.object({
   type: z.string(),
-  description: nullableString,
+  description: optString,
   aliases: z.array(z.string()).default([]),
   from: RelationEndpoint.default({ types: [], min_count: null, max_count: null }),
   to: RelationEndpoint.default({ types: [], min_count: null, max_count: null }),
@@ -49,8 +39,8 @@ export const RelationType = z.object({
 });
 
 export const Schema = z.object({
-  name: nullableString,
-  version: nullableString,
+  name: optString,
+  version: optString,
   entities: z.array(EntityType).default([]),
   relations: z.array(RelationType).default([]),
 });
@@ -72,8 +62,6 @@ export function asSchema(value: Schema | ParsedSchema | null | undefined): Parse
   if (value === null || value === undefined) return null;
   return Schema.parse(value);
 }
-
-const warn = (code: string, message: string): InsertWarning => ({ code, message, source_id: null, chunk_id: null });
 
 /**
  * Map each entity type name and alias to its type.
@@ -159,14 +147,14 @@ function checkProperties(
   for (const spec of specs) {
     if (spec.required && !(spec.name in properties)) {
       warnings.push(
-        warn("missing_required_property", `${kind} ${ref} is missing required property ${pyRepr(spec.name)}`),
+        insertWarning("missing_required_property", `${kind} ${ref} is missing required property ${pyRepr(spec.name)}`),
       );
     }
   }
   for (const spec of specs) {
     if (spec.name in properties && !typeOk(properties[spec.name], spec.type)) {
       warnings.push(
-        warn("property_type_mismatch", `${kind} ${ref} property ${pyRepr(spec.name)} should be ${spec.type}`),
+        insertWarning("property_type_mismatch", `${kind} ${ref} property ${pyRepr(spec.name)} should be ${spec.type}`),
       );
     }
   }
@@ -191,7 +179,7 @@ export function validateAgainstSchema(ontology: ParsedOntology, schema: ParsedSc
     const ref = ent.id || `${ent.type}:${ent.name}`;
     if (matched === undefined) {
       if (entities.size)
-        warnings.push(warn("unknown_entity_type", `entity ${ref} has unknown type ${pyRepr(ent.type)}`));
+        warnings.push(insertWarning("unknown_entity_type", `entity ${ref} has unknown type ${pyRepr(ent.type)}`));
     } else {
       typeOfId.set(ent.id || entityId(ent.type, ent.name), matched);
       warnings.push(...checkProperties("entity", ref, ent.properties, matched.properties));
@@ -205,7 +193,7 @@ export function validateAgainstSchema(ontology: ParsedOntology, schema: ParsedSc
     const ref = rel.id || `${rel.from_entity} -${rtype}-> ${rel.to_entity}`;
     if (matched === undefined) {
       if (relations.size)
-        warnings.push(warn("unknown_relation_type", `relation ${ref} has unknown type ${pyRepr(rtype)}`));
+        warnings.push(insertWarning("unknown_relation_type", `relation ${ref} has unknown type ${pyRepr(rtype)}`));
       continue;
     }
     const sides: Array<[string, ParsedEndpoint, string]> = [
@@ -217,7 +205,7 @@ export function validateAgainstSchema(ontology: ParsedOntology, schema: ParsedSc
       const mismatch = endType !== undefined && !endpoint.types.some((t) => isA(endType, t, entities));
       if (endpoint.types.length && mismatch) {
         warnings.push(
-          warn(
+          insertWarning(
             "endpoint_type_violation",
             `relation ${ref} ${side} entity ${eid} is not one of ${pyRepr(endpoint.types)}`,
           ),
@@ -242,7 +230,7 @@ export function validateAgainstSchema(ontology: ParsedOntology, schema: ParsedSc
         if (ctype !== rtype || cside !== side) continue;
         if (endpoint.min_count !== null && n < endpoint.min_count) {
           warnings.push(
-            warn(
+            insertWarning(
               "cardinality_violation",
               `${eid} has ${n} ${rtype} (${side}) in this insert, below min ${endpoint.min_count}`,
             ),
@@ -250,7 +238,7 @@ export function validateAgainstSchema(ontology: ParsedOntology, schema: ParsedSc
         }
         if (endpoint.max_count !== null && n > endpoint.max_count) {
           warnings.push(
-            warn(
+            insertWarning(
               "cardinality_violation",
               `${eid} has ${n} ${rtype} (${side}) in this insert, above max ${endpoint.max_count}`,
             ),

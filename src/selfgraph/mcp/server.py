@@ -6,11 +6,13 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from pydantic import NonNegativeInt, PositiveInt
+
 from ..client import SelfGraph
 from ..errors import SelfGraphError, ValidationError
 from ..runtime import GraphSettings, build_graph, settings_from_env, to_jsonable
 
-__all__ = ["configure", "build_server", "run_stdio", "TOOLS"]
+__all__ = ["configure", "close", "build_server", "run_stdio", "TOOLS"]
 
 _settings: GraphSettings | None = None
 _graph: SelfGraph | None = None
@@ -158,6 +160,17 @@ def configure(settings: GraphSettings | None = None) -> None:
     _graph = None
 
 
+async def close() -> None:
+    """Close the cached graph, if one is open; the next tool call reopens it.
+
+    @return (None): nothing.
+    """
+    global _graph
+    graph, _graph = _graph, None
+    if graph is not None:
+        await graph.close()
+
+
 async def _graph_handle() -> SelfGraph:
     """Return the shared graph, opening and initialising it on first use.
 
@@ -226,7 +239,7 @@ async def get_entity(id: str) -> dict[str, Any] | None:
 
 
 async def list_entities(
-    type: str | None = None, name: str | None = None, limit: int = 50, cursor: str | None = None
+    type: str | None = None, name: str | None = None, limit: PositiveInt = 50, cursor: str | None = None
 ) -> dict[str, Any]:
     """List entities, optionally filtered by type and/or name. Paged via next_cursor."""
     g = await _graph_handle()
@@ -293,7 +306,7 @@ async def list_relations(
     from_entity: str | None = None,
     type: str | None = None,
     to_entity: str | None = None,
-    limit: int = 50,
+    limit: PositiveInt = 50,
     cursor: str | None = None,
 ) -> dict[str, Any]:
     """List current relationships, optionally filtered by endpoints and/or type."""
@@ -356,7 +369,7 @@ async def list_preferences(
     subject_entity: str | None = None,
     key: str | None = None,
     kind: str | None = None,
-    limit: int = 50,
+    limit: PositiveInt = 50,
     cursor: str | None = None,
 ) -> dict[str, Any]:
     """List current preferences, optionally scoped to one subject entity. Paged via next_cursor."""
@@ -474,7 +487,7 @@ async def get_decision(id: str) -> dict[str, Any] | None:
 async def list_decisions(
     actor_entity: str | None = None,
     status: str | None = None,
-    limit: int = 50,
+    limit: PositiveInt = 50,
     cursor: str | None = None,
 ) -> dict[str, Any]:
     """List decision traces, optionally filtered by actor and/or status."""
@@ -502,10 +515,10 @@ async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
 async def retrieve(
     query: str,
     strategy: str = "bfs",
-    depth: int = 3,
-    k: int = 20,
-    max_nodes: int = 200,
-    budget_tokens: int = 3000,
+    depth: NonNegativeInt = 3,
+    k: PositiveInt = 20,
+    max_nodes: PositiveInt = 200,
+    budget_tokens: PositiveInt = 3000,
 ) -> dict[str, Any]:
     """Retrieve graph context for a query by keyword seeds and bounded BFS, DFS, or PageRank ("ppr") ranking."""
     g = await _graph_handle()

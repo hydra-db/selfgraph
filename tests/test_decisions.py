@@ -106,7 +106,6 @@ def test_delete_trace_keeps_relations():
     dr = run(g.decisions.delete(dec.id))
     assert dr.deleted_decisions == 1
     assert run(g.decisions.get(dec.id)) is None
-    # relations the steps pointed at stay
     assert run(g.relations.get(r1.id)) is not None
 
 

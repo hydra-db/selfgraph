@@ -32,6 +32,15 @@ def _has_surrogate(text: str) -> bool:
     return any(0xD800 <= ord(ch) <= 0xDFFF for ch in text)
 
 
+def _unstorable(text: str) -> bool:
+    """Report whether text holds a NUL or a lone surrogate, which some backends cannot store or encode.
+
+    @param text (str): the text to inspect.
+    @return (bool): True when a NUL or surrogate character is present.
+    """
+    return "\x00" in text or _has_surrogate(text)
+
+
 def _has_control(text: str) -> bool:
     """Report whether text contains a C0/C1 control character, DEL, or a lone surrogate.
 
@@ -59,8 +68,8 @@ def _require_clean_json(name: str, value: object, depth: int = 0) -> None:
     if depth > _MAX_JSON_DEPTH:
         raise ValidationError(f"{name} is nested too deeply; keep it under {_MAX_JSON_DEPTH} levels")
     if isinstance(value, str):
-        if _has_surrogate(value):
-            raise ValidationError(f"{name} values cannot contain unpaired surrogate characters")
+        if _unstorable(value):
+            raise ValidationError(f"{name} values cannot contain NUL or unpaired surrogate characters")
     elif isinstance(value, Mapping):
         for key, item in value.items():
             if isinstance(key, str) and _has_control(key):
@@ -72,14 +81,16 @@ def _require_clean_json(name: str, value: object, depth: int = 0) -> None:
 
 
 def _require_str(label: str, value: object) -> None:
-    """Validate a value is a string with no control or surrogate characters.
+    """Validate a value is a non-empty string with no control or surrogate characters.
 
     @param label (str): the field name for the error message.
     @param value (object): the value to check.
-    @return (None): nothing; raises ValidationError when not a clean string.
+    @return (None): nothing; raises ValidationError when not a clean, non-empty string.
     """
     if not isinstance(value, str):
         raise ValidationError(f"{label} must be a string, got {type(value).__name__}")
+    if not value.strip():
+        raise ValidationError(f"{label} cannot be empty")
     if _has_control(value):
         raise ValidationError(f"{label} cannot contain control or surrogate characters")
 

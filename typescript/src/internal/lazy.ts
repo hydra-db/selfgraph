@@ -34,23 +34,13 @@ export class Lazy<T> {
   }
 
   /**
-   * Drop the value and return what was pending, so the next get loads again.
-   *
-   * @return (Promise<T> | null): the dropped value, or null when none was loaded.
-   */
-  reset(): Promise<T> | null {
-    const pending = this.pending;
-    this.pending = null;
-    return pending;
-  }
-
-  /**
    * Drop the value and hand it to release once loaded; a load that never started or failed has nothing to release.
    *
    * @param release ((value: T) => Promise<void>): frees the loaded value.
    */
   async release(release: (value: T) => Promise<void>): Promise<void> {
-    const pending = this.reset();
+    const pending = this.pending;
+    this.pending = null;
     if (pending === null) return;
     let value: T;
     try {

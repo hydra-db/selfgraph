@@ -1,6 +1,5 @@
-import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { ValidationError } from "./errors.js";
 import { pyRepr } from "./internal/py.js";
@@ -93,6 +92,7 @@ const SERVER_STORES: Record<string, { address: string; build: (uri: string, sett
   {
     neo4j: { address: "a Bolt URI", build: (uri, s) => new Neo4jStore(uri, boltOptions(s)) },
     cypher: { address: "a Bolt URI", build: (uri, s) => new CypherStore(uri, boltOptions(s)) },
+    memgraph: { address: "a Bolt URI", build: (uri, s) => new CypherStore(uri, boltOptions(s)) },
     hydradb: { address: "a Bolt URI", build: (uri, s) => new HydraDBStore(uri, boltOptions(s)) },
     falkordb: { address: "host:port", build: falkorStore },
   };
@@ -108,12 +108,7 @@ export const STORES: readonly string[] = [...Object.keys(SERVER_STORES), "kuzu"]
 export function buildStore(settings: GraphSettings): GraphStore {
   const kind = (settings.store || (settings.uri ? "hydradb" : "kuzu")).toLowerCase();
   if (kind === "kuzu") {
-    let path = settings.uri;
-    if (!path) {
-      path = join(homedir(), ".selfgraph", "default.kuzu");
-      mkdirSync(dirname(path), { recursive: true });
-    }
-    return new KuzuStore(path);
+    return new KuzuStore(settings.uri || join(homedir(), ".selfgraph", "default.kuzu"));
   }
   const server = SERVER_STORES[kind];
   if (server === undefined) {

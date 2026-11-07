@@ -140,7 +140,9 @@ class SelfGraph:
 
         This runs the query verbatim: it can write, it is not scoped to the namespace, and it
         bypasses id derivation, versioning, and provenance. Prefer the typed resources for managed
-        writes. The MCP run_cypher tool, by contrast, rejects write clauses.
+        writes. The MCP run_cypher tool, by contrast, rejects write clauses. The query sees each
+        backend's physical storage, including internal fields, and what it accepts differs per
+        backend; see docs/backends.md.
 
         @param query (str): the Cypher statement.
         @param params (Mapping[str, JsonValue] | None): query parameters.

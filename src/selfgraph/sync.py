@@ -40,8 +40,34 @@ class _SyncProxy:
 
 class SyncSelfGraph:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._bind(SelfGraph(*args, **kwargs))
+
+    @classmethod
+    def from_env(cls, **overrides: Any) -> SyncSelfGraph:
+        """Build a graph from SELFGRAPH_* environment variables.
+
+        @param overrides (Any): GraphSettings fields that take precedence over the environment.
+        @return (SyncSelfGraph): the constructed graph.
+        """
+        return cls._of(SelfGraph.from_env(**overrides))
+
+    @classmethod
+    def connect(cls, **settings: Any) -> SyncSelfGraph:
+        """Build a graph from store and LLM settings without importing a store class.
+
+        @param settings (Any): GraphSettings fields such as store, uri, auth, namespace, llm_provider, llm_model.
+        @return (SyncSelfGraph): the constructed graph.
+        """
+        return cls._of(SelfGraph.connect(**settings))
+
+    @classmethod
+    def _of(cls, graph: SelfGraph) -> SyncSelfGraph:
+        obj = cls.__new__(cls)
+        obj._bind(graph)
+        return obj
+
+    def _bind(self, graph: SelfGraph) -> None:
         self._loop = asyncio.new_event_loop()
-        graph = SelfGraph(*args, **kwargs)
         self._async = graph
         self.store = graph.store
         self.namespace = graph.namespace

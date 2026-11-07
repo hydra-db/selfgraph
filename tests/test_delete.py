@@ -8,7 +8,7 @@ def build(g):
     run(g.entities.create("Feature", "Feature", id="feature:temporal"))
     r1 = run(g.relations.create("person:soham", "WORKS_AT", "company:hydradb"))
     r2 = run(g.relations.create("company:hydradb", "REQUIRES", "feature:temporal"))
-    run(g.relations.update(r1.id, set_properties={"role": "CEO"}))  # r1 now has 2 versions
+    run(g.relations.update(r1.id, set_properties={"role": "CEO"}))
     pref = run(g.preferences.create("person:soham", "database", "company:hydradb"))
     dec = run(g.decisions.create("D", steps=[r1.id, r2.id], id="decision:d", actor_entity="person:soham"))
     return r1, r2, pref, dec
@@ -32,11 +32,10 @@ def test_entity_delete_cascades():
     assert dr.deleted_decisions == 1
 
     assert run(g.entities.get("person:soham")) is None
-    assert run(g.relations.get(r1.id)) is None  # relation attached to deleted entity gone
-    assert run(g.preferences.get(pref.id)) is None  # preference gone
-    assert run(g.relations.get(r2.id)) is not None  # unrelated relation remains
+    assert run(g.relations.get(r1.id)) is None
+    assert run(g.preferences.get(pref.id)) is None
+    assert run(g.relations.get(r2.id)) is not None
 
-    # the decision trace is gone because its actor entity was deleted
     assert run(g.decisions.get(dec.id)) is None
 
 

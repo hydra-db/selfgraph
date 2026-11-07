@@ -4,7 +4,9 @@ The graph exposes four typed resources: `graph.entities`, `graph.relations`,
 `graph.preferences`, and `graph.decisions`. Each offers `create`, `get`, `list`,
 `iterate`, `update`, and `delete`. Ids are deterministic, so `create` with an id
 that already exists raises `ConflictError`; change a record with `update`, or use
-`insert.ontology`, which merges into an existing record.
+`insert.ontology`, which merges into an existing record. `delete` raises
+`NotFoundError` for an id that does not exist, and `versions` returns an empty list
+for one.
 
 ## Entities
 
@@ -35,7 +37,14 @@ await graph.entities.delete("company:acme")
 ## Relations
 
 A relation connects two entities and carries properties. Updating a relation
-writes a new version and keeps the old one.
+writes a new version and keeps the old one. Evidence passed to `update` is added to
+the relation's evidence; it never replaces or clears it.
+
+Some relation types are reserved for the edges SelfGraph writes itself and are
+rejected: `PREFERS`, `AVOIDS`, `HAS_PROFILE`, `MADE_DECISION`, `HAS_STEP`, `FROM`,
+`TO`, `RESULTED_IN`, `CONSIDERED`, `HAS_VERSION`, and `HAS_CHUNK` (in any case).
+Record preferences and decisions through their own resources, and pick another type,
+such as `LIKES` or `MOVED_FROM`, for ordinary relations.
 
 ```python
 rel = await graph.relations.create(
@@ -73,8 +82,10 @@ await graph.preferences.versions("pref-id")    # newest first
 ## Decisions
 
 A decision trace records a choice: its reasoning steps, rationale, outcome, and
-alternatives. Each step is the id of a relation that already exists, so the trace
-links a sequence of relations. A decision's derived id is its actor plus its title,
+alternatives. Each step is the id of a relation that already exists, kept in the
+order given; the steps are not checked to form a connected path. A new decision's
+`status` defaults to `"completed"`; pass `status="active"` for one still in
+progress. A decision's derived id is its actor plus its title,
 so two decisions by the same actor with the same title resolve to one; pass an
 explicit `id` to keep distinct decisions that share both. Decisions are mutated in
 place and are not versioned.

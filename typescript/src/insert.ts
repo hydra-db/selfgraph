@@ -10,6 +10,7 @@ import {
   type ExtractionPrompts,
   type InsertResult,
   type InsertWarning,
+  insertWarning,
   type JsonObject,
   Ontology,
   type ParsedDocument,
@@ -21,7 +22,7 @@ import * as ops from "./ops.js";
 import type { Extractor, LLMClient } from "./protocols.js";
 import { recordSource } from "./provenance.js";
 import { asSchema, type ParsedSchema, type Schema, type SchemaMode, validateAgainstSchema } from "./schema.js";
-import { hasSurrogate, pyTypeName, requireJsonMapping, requireOptionalText } from "./validate.js";
+import { isUnstorable, pyTypeName, requireJsonMapping, requireOptionalText } from "./validate.js";
 
 export interface InsertTextOptions {
   source_id?: string | null;
@@ -194,7 +195,7 @@ export class Insert {
    */
   async text(text: string, options: InsertTextOptions = {}): Promise<InsertResult> {
     if (typeof text !== "string") throw new ValidationError(`text must be a string, got ${pyTypeName(text)}`);
-    if (hasSurrogate(text) || text.includes("\x00")) {
+    if (isUnstorable(text)) {
       throw new ValidationError("text cannot contain NUL or unpaired surrogate characters");
     }
     requireOptionalText("source_id", options.source_id);
@@ -209,9 +210,7 @@ export class Insert {
         relations: [],
         preferences: [],
         decisions: [],
-        warnings: [
-          { code: "empty_text", message: "text was empty; nothing was ingested", source_id: null, chunk_id: null },
-        ],
+        warnings: [insertWarning("empty_text", "text was empty; nothing was ingested")],
       };
     }
     const activeSchema = asSchema(options.schema);
@@ -219,6 +218,16 @@ export class Insert {
     const document: ParsedDocument = { text, media_type: "text/plain", metadata: {} };
     const ontology = await this.extract(extractor, document);
     const warnings: InsertWarning[] = extractor.popWarnings?.() ?? [];
+    const { instructions, prompts } = this.setup;
+    const customized = options.instructions || options.prompts || instructions || prompts;
+    if (customized && !(extractor instanceof DefaultExtractor)) {
+      warnings.push(
+        insertWarning(
+          "prompts_ignored",
+          "instructions and prompts apply only to LLM extraction, and no LLM is configured",
+        ),
+      );
+    }
     return this.apply(
       ontology,
       {

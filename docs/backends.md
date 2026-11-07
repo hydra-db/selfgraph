@@ -22,7 +22,14 @@ HydraDBStore("bolt://127.0.0.1:17687", auth=("neo4j", "<token>"))
 | `HydraDBStore` | HydraDB. | core |
 
 Neo4j and Memgraph are tested on Bolt. `KuzuStore` writes to a file path and
-needs no server, which makes it the simplest choice for local work and tests.
+needs no server, which makes it the simplest choice for local work and tests. It
+creates the file's folder if needed. Each open Kuzu database reserves 8 TB of
+virtual memory by default, so a process that keeps many open at once can run out of
+address space; pass `max_db_size` (in bytes), for example
+`KuzuStore("graph.kuzu", max_db_size=1 << 30)`, or close each graph when done.
+
+`HydraDBStore` authenticates with the token in the second slot of `auth`; the first
+slot can be any non-empty name.
 
 ## From settings
 
@@ -31,7 +38,7 @@ name and connection settings. The environment variables are `SELFGRAPH_STORE`,
 `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_DATABASE`, and `SELFGRAPH_NAMESPACE`.
 With no store set, SelfGraph uses embedded Kuzu when you give no URI (zero setup,
 needs the `kuzu` extra) and HydraDB when you do, so set `store=` for any other
-backend.
+backend. `memgraph` is accepted as a store name and uses `CypherStore`.
 
 ```python
 SelfGraph.connect(store="hydradb", uri="bolt://127.0.0.1:17687", auth="neo4j:<token>")
@@ -87,3 +94,20 @@ Implement the `GraphStore` primitives (`upsert_node`, `create_edge`, `get_node`,
 `match_nodes`, `match_edges`, `update_current_edge`, and the rest) and pass your
 store to `SelfGraph`. Keep backend dialect inside the store; the shared logic
 never writes it.
+
+## Raw Cypher
+
+`graph.run_cypher()` sends a statement straight to the backend, so it sees each
+backend's physical storage rather than the typed model, and what it accepts
+differs:
+
+- Neo4j, Memgraph, and FalkorDB store nodes under their labels (`Entity`, plus the
+  entity type) with the SelfGraph id in `n.id`. Rows include internal fields such as
+  `_lock` and JSON-encoded `evidence_json`.
+- Kuzu stores every node in one table `N` and every edge in one table `R`, with the
+  record as JSON in `doc`; query `MATCH (n:N) WHERE n.label = 'Entity' RETURN n.doc`.
+  Kuzu rejects a parameter the statement does not use.
+- HydraDB runs a narrow openCypher subset: reliably `MATCH (n:Label) ... RETURN
+  n.prop` with a predicate. There `n.id` is HydraDB's internal integer key; the
+  SelfGraph id is `n.sid`.
+

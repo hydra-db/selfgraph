@@ -135,7 +135,7 @@ const str = z.string();
 const optStr = z.string().nullish();
 const optObj = z.record(z.string(), z.any()).nullish();
 const optList = z.array(z.string()).nullish();
-const limit = z.number().int().default(DEFAULT_PAGE_LIMIT);
+const limit = z.number().int().min(1).default(DEFAULT_PAGE_LIMIT);
 const cursor = z.string().nullish();
 const newestFirst = z.boolean().default(true);
 
@@ -448,10 +448,10 @@ export const TOOLS: Tool[] = [
     input: {
       query: str,
       strategy: z.string().default(RETRIEVE_DEFAULTS.strategy),
-      depth: z.number().int().default(RETRIEVE_DEFAULTS.depth),
-      k: z.number().int().default(RETRIEVE_DEFAULTS.k),
-      max_nodes: z.number().int().default(RETRIEVE_DEFAULTS.max_nodes),
-      budget_tokens: z.number().int().default(RETRIEVE_DEFAULTS.budget_tokens),
+      depth: z.number().int().min(0).default(RETRIEVE_DEFAULTS.depth),
+      k: z.number().int().min(1).default(RETRIEVE_DEFAULTS.k),
+      max_nodes: z.number().int().min(1).default(RETRIEVE_DEFAULTS.max_nodes),
+      budget_tokens: z.number().int().min(1).default(RETRIEVE_DEFAULTS.budget_tokens),
     },
     run: (g, a) =>
       g.retrieve(a.query, {
@@ -473,25 +473,34 @@ const graph = new Lazy(async () => {
 });
 
 /**
- * Set the backend for the tools and drop any cached graph.
+ * Set the backend for the tools, closing any cached graph.
  *
  * @param value (GraphSettings | null): the backend settings, or null to read the environment.
  */
-export function configure(value: GraphSettings | null = null): void {
+export async function configure(value: GraphSettings | null = null): Promise<void> {
   settings = value ?? settingsFromEnv();
-  graph.reset();
+  await close();
+}
+
+/** Close the cached graph, if one is open, so an embedding process can exit; the next tool call reopens it. */
+export async function close(): Promise<void> {
+  await graph.release((g) => g.close().catch(() => undefined));
 }
 
 /**
- * Run a tool, turning an error into a structured {error, error_type} result flagged as an MCP error.
+ * Validate the arguments and run a tool, turning an error into a structured {error, error_type} result flagged as an MCP error.
  *
  * @param t (Tool): the tool.
  * @param args (Record<string, unknown>): the validated arguments.
  * @return ({ result: unknown; isError: boolean }): the JSON-ready result, and whether it is an error.
  */
 export async function callTool(t: Tool, args: Record<string, unknown>): Promise<{ result: unknown; isError: boolean }> {
+  const parsed = z.object(t.input).safeParse(args);
+  if (!parsed.success) {
+    return { result: { error: z.prettifyError(parsed.error), error_type: "ValidationError" }, isError: true };
+  }
   try {
-    return { result: toJsonable(await t.run(await graph.get(), args)), isError: false };
+    return { result: toJsonable(await t.run(await graph.get(), parsed.data)), isError: false };
   } catch (exc) {
     if (exc instanceof SelfGraphError) return { result: { error: exc.message, error_type: exc.name }, isError: true };
     const name = exc instanceof Error ? exc.name : "Error";
@@ -541,7 +550,7 @@ export async function buildServer(name = "selfgraph"): Promise<McpServerLike> {
  * @param value (GraphSettings | null): the backend settings, or null to read the environment.
  */
 export async function runStdio(value: GraphSettings | null = null): Promise<void> {
-  configure(value);
+  await configure(value);
   const server = await buildServer();
   const { StdioServerTransport } = await loadOptional<{ StdioServerTransport: new () => unknown }>(
     "@modelcontextprotocol/sdk/server/stdio.js",
@@ -550,5 +559,5 @@ export async function runStdio(value: GraphSettings | null = null): Promise<void
   );
   await server.connect(new StdioServerTransport());
   await new Promise<void>((resolve) => process.stdin.once("close", resolve));
-  await graph.release((g) => g.close().catch(() => undefined));
+  await close();
 }

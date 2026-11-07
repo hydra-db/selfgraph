@@ -56,14 +56,21 @@ function parseJson(text: string, where: string): unknown {
  * Parse repeated key=value flags; each value is JSON if it parses, else text.
  *
  * @param pairs (string[]): the key=value strings.
+ * @param text (boolean): keep every value as text instead of parsing JSON.
  * @return (JsonObject): the parsed mapping.
  */
-function kv(pairs: string[]): JsonObject {
+function kv(pairs: string[], text: true): Record<string, string>;
+function kv(pairs: string[], text?: false): JsonObject;
+function kv(pairs: string[], text = false): JsonObject {
   const out: JsonObject = {};
   for (const pair of pairs) {
     const i = pair.indexOf("=");
     if (i < 0) throw new ValidationError(`expected key=value, got ${pyRepr(pair)}`);
     const value = pair.slice(i + 1);
+    if (text) {
+      out[pair.slice(0, i)] = value;
+      continue;
+    }
     try {
       out[pair.slice(0, i)] = JSON.parse(value);
     } catch {
@@ -121,10 +128,16 @@ function entityCommands(program: Command<[], GlobalOptions>): void {
     .requiredOption("--type <type>")
     .option("--id <id>")
     .option("--alias <alias>", "alias (repeatable)", collect, [])
+    .option("--external-id <SYSTEM=ID>", "external id (repeatable)", collect, [])
     .option("--prop <KEY=VALUE>", "property (repeatable)", collect, [])
     .action((o, cmd) =>
       emit(cmd, (g) =>
-        g.entities.create(o.name, o.type, { id: o.id, aliases: listOrNull(o.alias), properties: kvOrNull(o.prop) }),
+        g.entities.create(o.name, o.type, {
+          id: o.id,
+          aliases: listOrNull(o.alias),
+          external_ids: o.externalId.length ? kv(o.externalId, true) : null,
+          properties: kvOrNull(o.prop),
+        }),
       ),
     );
   ent.command("get <id>").action((id, _o, cmd) => emit(cmd, (g) => g.entities.get(id)));
@@ -135,15 +148,21 @@ function entityCommands(program: Command<[], GlobalOptions>): void {
     .command("update <id>")
     .option("--name <name>")
     .option("--type <type>")
-    .option("--alias <alias>", "replace aliases (repeatable)", collect, [])
+    .option("--alias <alias>", "add an alias (repeatable)", collect, [])
+    .option("--external-id <SYSTEM=ID>", "set an external id (repeatable)", collect, [])
     .option("--prop <KEY=VALUE>", "set property (repeatable)", collect, [])
+    .option("--remove-alias <alias>", "remove an alias (repeatable)", collect, [])
+    .option("--remove-prop <KEY>", "remove a property (repeatable)", collect, [])
     .action((id, o, cmd) =>
       emit(cmd, (g) =>
         g.entities.update(id, {
           ...(o.name !== undefined && { name: o.name }),
           ...(o.type !== undefined && { type: o.type }),
           ...(o.alias.length && { aliases: o.alias }),
+          ...(o.externalId.length && { external_ids: kv(o.externalId, true) }),
           ...(o.prop.length && { properties: kv(o.prop) }),
+          ...(o.removeAlias.length && { remove_aliases: o.removeAlias }),
+          ...(o.removeProp.length && { remove_properties: o.removeProp }),
         }),
       ),
     );
@@ -156,8 +175,11 @@ function relationCommands(program: Command<[], GlobalOptions>): void {
     .command("create <FROM> <TYPE> <TO>")
     .option("--id <id>")
     .option("--prop <KEY=VALUE>", "property (repeatable)", collect, [])
+    .option("--event-time <iso>", "when the fact became true (ISO 8601)")
     .action((from, type, to, o, cmd) =>
-      emit(cmd, (g) => g.relations.create(from, type, to, { id: o.id, properties: kvOrNull(o.prop) })),
+      emit(cmd, (g) =>
+        g.relations.create(from, type, to, { id: o.id, properties: kvOrNull(o.prop), event_time: o.eventTime }),
+      ),
     );
   rel.command("get <id>").action((id, _o, cmd) => emit(cmd, (g) => g.relations.get(id)));
   paging(rel.command("list").option("--from <id>").option("--type <type>").option("--to <id>")).action((o, cmd) =>
@@ -171,41 +193,71 @@ function relationCommands(program: Command<[], GlobalOptions>): void {
     .description("make a new version with changed properties")
     .option("--set <KEY=VALUE>", "set property (repeatable)", collect, [])
     .option("--remove <KEY>", "remove property (repeatable)", collect, [])
+    .option("--event-time <iso>", "when the new version became true (ISO 8601)")
     .action((id, o, cmd) =>
-      emit(cmd, (g) => g.relations.update(id, { set_properties: kvOrNull(o.set), remove_properties: o.remove })),
+      emit(cmd, (g) =>
+        g.relations.update(id, {
+          set_properties: kvOrNull(o.set),
+          remove_properties: o.remove,
+          event_time: o.eventTime,
+        }),
+      ),
     );
   rel.command("delete <id>").action((id, _o, cmd) => emit(cmd, (g) => g.relations.delete(id)));
 }
 
 function preferenceCommands(program: Command<[], GlobalOptions>): void {
-  const pref = program.command("preference").description("create/get/list/delete preferences");
+  const pref = program.command("preference").description("create/get/list/versions/update/delete preferences");
   pref
     .command("create <subject> <key> <value>")
+    .description("value is an existing entity id, e.g. tool:hydradb")
+    .option("--id <id>")
     .addOption(new Option("--kind <kind>").choices(Kind.options).default(DEFAULT_KIND))
+    .option("--about <id>", "entity id the preference is about")
     .option("--strength <x>", "strength", floatArg)
     .option("--prop <KEY=VALUE>", "property (repeatable)", collect, [])
+    .option("--event-time <iso>", "when the preference became true (ISO 8601)")
     .action((subject, key, value, o, cmd) =>
       emit(cmd, (g) =>
         g.preferences.create(subject, key, value, {
+          id: o.id,
           kind: o.kind,
+          about_entity: o.about,
           strength: o.strength,
           properties: kvOrNull(o.prop),
+          event_time: o.eventTime,
         }),
       ),
     );
   pref.command("get <id>").action((id, _o, cmd) => emit(cmd, (g) => g.preferences.get(id)));
   paging(
-    pref.command("list <subject>").option("--key <key>").addOption(new Option("--kind <kind>").choices(Kind.options)),
+    pref
+      .command("list [subject]")
+      .description("omit subject to list every subject")
+      .option("--key <key>")
+      .addOption(new Option("--kind <kind>").choices(Kind.options)),
   ).action((subject, o, cmd) =>
-    emit(cmd, (g) => g.preferences.list(subject, { key: o.key, kind: o.kind, cursor: o.cursor, limit: o.limit })),
+    emit(cmd, (g) =>
+      g.preferences.list(subject ?? null, { key: o.key, kind: o.kind, cursor: o.cursor, limit: o.limit }),
+    ),
   );
   pref
     .command("update <id>")
     .option("--strength <x>", "strength", floatArg)
     .option("--prop <KEY=VALUE>", "set property (repeatable)", collect, [])
+    .option("--remove-prop <KEY>", "remove a property (repeatable)", collect, [])
+    .option("--event-time <iso>", "when the new version became true (ISO 8601)")
     .action((id, o, cmd) =>
-      emit(cmd, (g) => g.preferences.update(id, { strength: o.strength, properties: kvOrNull(o.prop) })),
+      emit(cmd, (g) =>
+        g.preferences.update(id, {
+          strength: o.strength,
+          properties: kvOrNull(o.prop),
+          remove_properties: o.removeProp,
+          event_time: o.eventTime,
+        }),
+      ),
     );
+  pref.command("versions <id>").action((id, _o, cmd) => emit(cmd, (g) => g.preferences.versions(id)));
   pref.command("delete <id>").action((id, _o, cmd) => emit(cmd, (g) => g.preferences.delete(id)));
 }
 
@@ -280,7 +332,7 @@ export function buildParser(): Command<[], GlobalOptions> {
     .addOption(
       new Option(
         "--store <store>",
-        "backend: hydradb, neo4j, cypher, falkordb, or kuzu (default $SELFGRAPH_STORE, else embedded kuzu, or hydradb with --uri)",
+        "backend: hydradb, neo4j, cypher, memgraph, falkordb, or kuzu (default $SELFGRAPH_STORE, else embedded kuzu, or hydradb with --uri)",
       ).choices(STORES),
     )
     .option("--uri <uri>", "Bolt URI for neo4j/cypher/hydradb, host:port for falkordb")
@@ -371,7 +423,12 @@ export function buildParser(): Command<[], GlobalOptions> {
     .option("--source-id <id>")
     .action((path, o, cmd) =>
       emit(cmd, (g) => {
-        const raw = readFileSync(path === "-" ? 0 : path, "utf8");
+        let raw: string;
+        try {
+          raw = readFileSync(path === "-" ? 0 : path, "utf8");
+        } catch (exc) {
+          throw new ValidationError(`cannot read ${pyRepr(path)}: ${(exc as Error).message}`);
+        }
         return g.insert.ontology(parseJson(raw, ` in ${pyRepr(path)}`) as Ontology, { source_id: o.sourceId });
       }),
     );

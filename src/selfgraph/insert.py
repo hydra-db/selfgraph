@@ -9,7 +9,8 @@ from pydantic import ValidationError as PydanticValidationError
 from ._ops import _require_json_mapping, _require_optional_text
 from ._serde import now
 from .errors import ExtractionError, SelfGraphError, ValidationError
-from .ids import _has_surrogate
+from .extraction.extractor import DefaultExtractor
+from .ids import _unstorable
 from .models import (
     ExtractionInstructions,
     ExtractionPrompts,
@@ -62,7 +63,7 @@ class Insert:
     ) -> InsertResult:
         if not isinstance(text, str):
             raise ValidationError(f"text must be a string, got {type(text).__name__}")
-        if _has_surrogate(text) or "\x00" in text:
+        if _unstorable(text):
             raise ValidationError("text cannot contain NUL or unpaired surrogate characters")
         _require_optional_text("source_id", source_id)
         _require_json_mapping("metadata", metadata)
@@ -76,6 +77,15 @@ class Insert:
         extractor = self._c._build_extractor(instructions, prompts, schema=active_schema)
         document = ParsedDocument(text=text, media_type="text/plain")
         ontology = await self._extract(extractor, document)
+        warnings = _drain_warnings(extractor)
+        customized = instructions or prompts or self._c._instructions or self._c._prompts
+        if customized and not isinstance(extractor, DefaultExtractor):
+            warnings.append(
+                InsertWarning(
+                    code="prompts_ignored",
+                    message="instructions and prompts apply only to LLM extraction, and no LLM is configured",
+                )
+            )
         return await self._c._apply_ontology(
             ontology,
             source_id=source_id,
@@ -83,7 +93,7 @@ class Insert:
             media_type="text/plain",
             metadata=metadata,
             default_event_time=event_time,
-            warnings=_drain_warnings(extractor),
+            warnings=warnings,
             schema=active_schema,
             schema_mode=schema_mode,
         )

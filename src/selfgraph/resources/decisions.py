@@ -35,7 +35,7 @@ class Decisions:
         """Record a decision trace over existing relations.
 
         @param title (str): the decision title.
-        @param steps (Iterable[str]): ids of relations that already exist, in order, forming the path to the outcome.
+        @param steps (Iterable[str]): ids of relations that already exist, in order; they are not checked to connect.
         @param id (str | None): explicit id, else derived.
         @param actor_entity (str | None): the deciding entity id.
         @param summary (str | None): a short summary.

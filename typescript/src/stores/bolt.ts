@@ -1,6 +1,7 @@
 import neo4j, {
   type AuthToken,
   type Config,
+  type Driver,
   isDate,
   isDateTime,
   isDuration,
@@ -16,7 +17,8 @@ import neo4j, {
   type Result,
 } from "neo4j-driver";
 
-import { isPlainObject } from "../internal/py.js";
+import { errorMessage, StoreError } from "../errors.js";
+import { isPlainObject, pyRepr } from "../internal/py.js";
 import type { CypherResult, JsonValue } from "../models.js";
 import { type CounterName, WRITE_COUNTER_NAMES } from "./cypherPrimitives.js";
 
@@ -44,15 +46,20 @@ export function errorCode(exc: unknown): string {
 }
 
 /**
- * Build a Bolt auth token from a (user, password) pair or pass a token through.
+ * Open a Bolt driver, turning a malformed URI or driver config into a StoreError.
  *
- * @param auth (BoltAuth): the auth pair or token.
- * @return (AuthToken | undefined): the auth token, or undefined for none.
+ * @param uri (string): the Bolt URI.
+ * @param auth (BoltAuth): a (user, password) pair or a driver token.
+ * @param config (Config): extra driver config.
+ * @return (Driver): the driver.
  */
-export function boltAuth(auth: BoltAuth): AuthToken | undefined {
-  if (!auth) return undefined;
-  if (Array.isArray(auth)) return neo4j.auth.basic(auth[0], auth[1]);
-  return auth;
+export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver {
+  const token = !auth ? undefined : Array.isArray(auth) ? neo4j.auth.basic(auth[0], auth[1]) : auth;
+  try {
+    return neo4j.driver(uri, token, config);
+  } catch (exc) {
+    throw new StoreError(`cannot open a Bolt driver for ${pyRepr(uri)}: ${errorMessage(exc)}`, { cause: exc });
+  }
 }
 
 /**

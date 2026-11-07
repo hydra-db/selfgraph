@@ -80,10 +80,12 @@ describe("ids match Python byte for byte", () => {
     for (const [from, type, to, expected] of fx.relation_id) expect(relationId(from, type, to)).toBe(expected);
   });
   it("preference_id", () => {
-    for (const [s, k, key, v, expected] of fx.preference_id) expect(preferenceId(s, k, key, v)).toBe(expected);
+    for (const [s, k, key, v, expected] of fx.preference_id)
+      expect(attempt(() => preferenceId(s, k, key, v))).toEqual(expected);
   });
-  it("decision_id, with None distinct from the empty string", () => {
-    for (const [actor, title, expected] of fx.decision_id) expect(decisionId(actor, title)).toBe(expected);
+  it("decision_id, with an empty actor or title rejected", () => {
+    for (const [actor, title, expected] of fx.decision_id)
+      expect(attempt(() => decisionId(actor, title))).toEqual(expected);
   });
   it("source_version_id and content_hash", () => {
     expect(sourceVersionId("notes", "abc")).toBe(fx.source_version_id);

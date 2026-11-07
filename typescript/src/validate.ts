@@ -16,6 +16,16 @@ export function hasSurrogate(text: string): boolean {
 }
 
 /**
+ * Report whether text holds a NUL or an unpaired surrogate, which some backends cannot store or encode.
+ *
+ * @param text (string): the text to inspect.
+ * @return (boolean): true when a NUL or surrogate character is present.
+ */
+export function isUnstorable(text: string): boolean {
+  return text.includes("\x00") || hasSurrogate(text);
+}
+
+/**
  * Report whether text holds a C0/C1 control character, DEL, or an unpaired surrogate.
  *
  * @param text (string): the text to inspect.
@@ -41,7 +51,9 @@ export function requireCleanJson(name: string, value: unknown, depth = 0): void 
     throw new ValidationError(`${name} is nested too deeply; keep it under ${MAX_JSON_DEPTH} levels`);
   }
   if (typeof value === "string") {
-    if (hasSurrogate(value)) throw new ValidationError(`${name} values cannot contain unpaired surrogate characters`);
+    if (isUnstorable(value)) {
+      throw new ValidationError(`${name} values cannot contain NUL or unpaired surrogate characters`);
+    }
   } else if (Array.isArray(value)) {
     for (const item of value) requireCleanJson(name, item, depth + 1);
   } else if (isPlainObject(value)) {
@@ -53,13 +65,14 @@ export function requireCleanJson(name: string, value: unknown, depth = 0): void 
 }
 
 /**
- * Validate a value is a string with no control or surrogate characters.
+ * Validate a value is a non-empty string with no control or surrogate characters.
  *
  * @param label (string): the field name for the error message.
  * @param value (unknown): the value to check.
  */
 export function requireStr(label: string, value: unknown): asserts value is string {
   if (typeof value !== "string") throw new ValidationError(`${label} must be a string, got ${pyTypeName(value)}`);
+  if (!pyStrip(value)) throw new ValidationError(`${label} cannot be empty`);
   if (hasControl(value)) throw new ValidationError(`${label} cannot contain control or surrogate characters`);
 }
 

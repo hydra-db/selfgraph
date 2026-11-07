@@ -114,14 +114,11 @@ def new_graph(**kwargs) -> SelfGraph:
 
 
 class FakeLLM:
-    """An ``LLMClient`` that returns scripted structured output per schema type.
-
-    ``responses`` maps an output class name to either an instance of that class or
-    a callable ``(system, user) -> instance``. Unmapped types return an empty
-    instance of the requested class.
-    """
-
     def __init__(self, responses: dict[str, Any] | None = None) -> None:
+        """An LLM client that returns scripted structured output per schema type.
+
+        @param responses (dict[str, Any] | None): maps an output class name to an instance, an exception to raise, or a callable (system, user) -> instance. Unmapped types return an empty instance.
+        """
         self.responses = responses or {}
         self.calls: list[tuple[str, str, str]] = []
 
@@ -129,7 +126,7 @@ class FakeLLM:
         self.calls.append((output.__name__, system, user))
         spec = self.responses.get(output.__name__)
         if spec is None:
-            return output()  # empty instance (all fields default)
+            return output()
         if isinstance(spec, BaseException):
             raise spec
         if isinstance(spec, Callable):

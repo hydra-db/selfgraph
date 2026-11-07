@@ -1,6 +1,6 @@
 import type { z } from "zod";
 
-import { ExtractionError } from "../errors.js";
+import { ExtractionError, ValidationError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { LLM_DEFAULTS, LLMConfig, type ParsedLLMConfig } from "../models.js";
@@ -112,6 +112,9 @@ class AISDKClient implements LLMClient {
    * @return (T): the parsed structured output.
    */
   async generate<T>(args: { system: string; user: string; output: z.ZodType<T> }): Promise<T> {
+    if (typeof (args.output as { safeParse?: unknown } | null)?.safeParse !== "function") {
+      throw new ValidationError("output must be a zod schema");
+    }
     const ai = await loadOptional<{
       generateText: (options: Record<string, unknown>) => Promise<{ output: unknown }>;
       Output: { object: (options: { schema: unknown }) => unknown };

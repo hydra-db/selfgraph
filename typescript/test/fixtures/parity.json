@@ -124,12 +124,16 @@
   [
    "Person",
    "",
-   "person:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Person",
    "   ",
-   "person:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Person",
@@ -261,12 +265,16 @@
   [
    "Big Company",
    "",
-   "big-company:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Big Company",
    "   ",
-   "big-company:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Big Company",
@@ -398,12 +406,16 @@
   [
    "  Org ",
    "",
-   "org:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "  Org ",
    "   ",
-   "org:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "  Org ",
@@ -535,12 +547,16 @@
   [
    "\u00dcberType",
    "",
-   "\u00fcbertype:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "\u00dcberType",
    "   ",
-   "\u00fcbertype:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "\u00dcberType",
@@ -672,12 +688,16 @@
   [
    "a\u3000b",
    "",
-   "a-b:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "a\u3000b",
    "   ",
-   "a-b:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "a\u3000b",
@@ -809,12 +829,16 @@
   [
    "Company",
    "",
-   "company:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Company",
    "   ",
-   "company:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Company",
@@ -946,12 +970,16 @@
   [
    "Organization",
    "",
-   "organization:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Organization",
    "   ",
-   "organization:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Organization",
@@ -1083,12 +1111,16 @@
   [
    "Work",
    "",
-   "work:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Work",
    "   ",
-   "work:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Work",
@@ -1220,12 +1252,16 @@
   [
    " Bank ",
    "",
-   "bank:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    " Bank ",
    "   ",
-   "bank:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    " Bank ",
@@ -1357,12 +1393,16 @@
   [
    "U\u0308ber",
    "",
-   "\u00fcber:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "U\u0308ber",
    "   ",
-   "\u00fcber:"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "U\u0308ber",
@@ -1497,7 +1537,9 @@
    "disinterest",
    "",
    "\ud83d\ude80",
-   "preference:cdbbc11160e404974a9c5ab4"
+   {
+    "error": "ValidationError"
+   }
   ]
  ],
  "decision_id": [
@@ -1509,7 +1551,9 @@
   [
    "",
    "Pick DB",
-   "decision:a155e713b14234d3602d4a7d"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "person:jane",

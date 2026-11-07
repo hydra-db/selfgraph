@@ -17,7 +17,7 @@ from .._serde import (
 )
 from ..errors import SelfGraphError, StoreError, TransientError
 from ..models import CypherResult
-from ._cypher import CypherPrimitives, records_to_result
+from ._cypher import CypherPrimitives, bolt_driver, records_to_result
 
 __all__ = ["CypherStore", "Neo4jStore"]
 
@@ -39,6 +39,18 @@ _INIT_BASE_DELAY = 0.05
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 
+_CONNECTION_MARKERS = (
+    "security.",
+    "unauthorized",
+    "authentication",
+    "databasenotfound",
+    "serviceunavailable",
+    "couldn't connect",
+    "failed to establish",
+    "connection refused",
+)
+
+
 def _translate_cypher_error(exc: BaseException) -> SelfGraphError:
     """Map a Bolt driver error to a library error, TransientError for retryable races.
 
@@ -57,6 +69,16 @@ def _translate_cypher_error(exc: BaseException) -> SelfGraphError:
     if is_conflict or transient:
         return TransientError(f"Cypher transaction conflict: {exc}")
     return StoreError(f"Cypher query failed: {exc}")
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    """Report whether a driver error means the store was unreachable or refused the login or database.
+
+    @param exc (BaseException): the driver exception.
+    @return (bool): True for a connection, auth, or missing-database error.
+    """
+    lowered = f"{getattr(exc, 'code', '') or ''} {type(exc).__name__} {exc}".lower()
+    return any(k in lowered for k in _CONNECTION_MARKERS)
 
 
 class _CypherWriter(CypherPrimitives):
@@ -80,17 +102,13 @@ class CypherStore(CypherPrimitives):
         database: str | None = None,
         **driver_kwargs: Any,
     ) -> None:
-        try:
-            from neo4j import AsyncGraphDatabase
-        except ImportError as exc:  # pragma: no cover
-            raise StoreError("the 'neo4j' Bolt driver is required for CypherStore") from exc
         kwargs = dict(driver_kwargs)
         kwargs.setdefault("notifications_min_severity", "OFF")
         try:
-            self._driver = AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
-        except Exception:  # noqa: BLE001 - older drivers reject the notification config kwarg
+            self._driver = bolt_driver(uri, auth, **kwargs)
+        except StoreError:
             kwargs.pop("notifications_min_severity", None)
-            self._driver = AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
+            self._driver = bolt_driver(uri, auth, **kwargs)
         self._database = database
 
     def _session(self):
@@ -125,6 +143,8 @@ class CypherStore(CypherPrimitives):
                         continue
                     if isinstance(err, TransientError):
                         raise err from exc
+                    if _is_connection_error(exc):
+                        raise StoreError(f"could not connect to the graph store: {exc}") from exc
                     raise StoreError(f"failed creating constraint on {label}: {exc}") from exc
 
     @asynccontextmanager

@@ -38,8 +38,11 @@ pip install "selfgraph[llm]"          # LLM text extraction for any provider
 pip install "selfgraph[ner]"          # LLM-free extraction via spaCy NER
 pip install "selfgraph[falkordb]"     # the FalkorDB backend
 pip install "selfgraph[kuzu]"         # the embedded Kuzu backend
-pip install "selfgraph[all]"          # llm, tokenizer, falkordb, kuzu, mcp
+pip install "selfgraph[all]"          # llm, tokenizer, ner, falkordb, kuzu, mcp
 ```
+
+spaCy NER also needs its English model: `python -m spacy download en_core_web_sm`.
+Without it, extraction falls back to a built-in regex pass.
 
 For TypeScript, `npm install @hydradb/selfgraph`. See [typescript/README.md](typescript/README.md).
 

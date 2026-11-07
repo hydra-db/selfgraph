@@ -56,8 +56,8 @@ export const DateTimeInput = z.union([z.date(), z.string()]).transform((value, c
 export type DateTimeInput = z.input<typeof DateTimeInput>;
 
 const nullable = <T extends z.ZodType>(schema: T) => schema.nullish().transform((v) => v ?? null);
-const optString = nullable(z.string());
-const optNumber = nullable(z.number());
+export const optString = nullable(z.string());
+export const optNumber = nullable(z.number());
 const optDate = nullable(DateTimeInput);
 const props = (label: string) =>
   z
@@ -173,6 +173,17 @@ export interface InsertWarning {
   chunk_id: string | null;
 }
 
+/**
+ * An insert warning not tied to a source or chunk.
+ *
+ * @param code (string): the warning code.
+ * @param message (string): the warning message.
+ * @return (InsertWarning): the warning.
+ */
+export function insertWarning(code: string, message: string): InsertWarning {
+  return { code, message, source_id: null, chunk_id: null };
+}
+
 export interface InsertResult {
   source_id: string | null;
   source_version: string | null;
@@ -196,9 +207,12 @@ export interface DeleteResult {
   deleted_preference_versions: number;
 }
 
+export type CypherRow = Record<string, JsonValue | bigint>;
+
 export interface CypherResult {
   columns: string[];
-  rows: Array<Record<string, JsonValue>>;
+  /** Row values; an integer beyond Number.MAX_SAFE_INTEGER, such as a HydraDB internal id, is a bigint (toJsonable renders it as a string). */
+  rows: CypherRow[];
   counters: Record<string, number>;
 }
 

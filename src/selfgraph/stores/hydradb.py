@@ -8,7 +8,7 @@ from typing import Any
 from ..errors import StoreError, TransientError
 from ..ids import quote_label
 from ..models import CypherResult
-from ._cypher import AutoCommitStore, count_of, records_to_result, where_equals
+from ._cypher import AutoCommitStore, bolt_driver, count_of, records_to_result, where_equals
 from ._docrows import delete_both_ways, docs, edge_row, first_doc, merged_current_edge, relation_ids_both_ways
 
 __all__ = ["HydraDBStore"]
@@ -67,11 +67,7 @@ class HydraDBStore(AutoCommitStore):
         database: str | None = None,
         **driver_kwargs: Any,
     ) -> None:
-        try:
-            from neo4j import AsyncGraphDatabase
-        except ImportError as exc:  # pragma: no cover
-            raise StoreError("the 'neo4j' package is required for HydraDBStore; install selfgraph[neo4j]") from exc
-        self._driver = AsyncGraphDatabase.driver(uri, auth=auth, **driver_kwargs)
+        self._driver = bolt_driver(uri, auth, **driver_kwargs)
         self._database = database or "default"
 
     def _session(self):

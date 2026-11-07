@@ -21,7 +21,7 @@ __all__ = [
     "dumps",
 ]
 
-STORES = ("neo4j", "cypher", "hydradb", "falkordb", "kuzu")
+STORES = ("neo4j", "cypher", "memgraph", "hydradb", "falkordb", "kuzu")
 
 
 @dataclass
@@ -79,10 +79,7 @@ def _build_store(settings: GraphSettings) -> GraphStore:
     if kind == "kuzu":
         from .stores.kuzu import KuzuStore
 
-        path = settings.uri
-        if not path:
-            path = os.path.join(os.path.expanduser("~"), ".selfgraph", "default.kuzu")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+        path = settings.uri or os.path.join(os.path.expanduser("~"), ".selfgraph", "default.kuzu")
         try:
             return KuzuStore(path)
         except StoreError as exc:
@@ -96,7 +93,7 @@ def _build_store(settings: GraphSettings) -> GraphStore:
         hint = "host:port" if kind == "falkordb" else "a Bolt URI"
         raise ValidationError(f"the {kind!r} store needs {hint} (--uri / SELFGRAPH_URI)")
     auth = _parse_auth(settings.auth)
-    if kind in ("neo4j", "cypher"):
+    if kind in ("neo4j", "cypher", "memgraph"):
         from .stores.cypher import CypherStore, Neo4jStore
 
         store_cls = Neo4jStore if kind == "neo4j" else CypherStore

@@ -1,4 +1,7 @@
+import pytest
+
 from selfgraph import ids
+from selfgraph.errors import ValidationError
 
 
 def test_entity_id_lowercases_and_hyphenates():
@@ -12,14 +15,12 @@ def test_derived_ids_are_deterministic():
     b = ids.relation_id("person:soham", "WORKS_AT", "company:hydradb")
     assert a == b
     assert a.startswith("relation:")
-    # Order matters.
     assert a != ids.relation_id("company:hydradb", "WORKS_AT", "person:soham")
 
 
 def test_preference_and_decision_ids():
     p = ids.preference_id("person:soham", "preference", "database", "company:hydradb")
     assert p.startswith("preference:")
-    # kind participates in the hash
     assert p != ids.preference_id("person:soham", "disinterest", "database", "company:hydradb")
 
     d = ids.decision_id("team:core", "Select db")
@@ -29,7 +30,6 @@ def test_preference_and_decision_ids():
 
 
 def test_hash_no_delimiter_collision():
-    # ("a","bc") must not collide with ("ab","c")
     assert ids.relation_id("a", "bc", "x") != ids.relation_id("ab", "c", "x")
 
 
@@ -40,5 +40,7 @@ def test_quote_label():
     assert ids.quote_label("we`ird") == "`we``ird`"
 
 
-def test_decision_id_distinguishes_none_from_empty():
-    assert ids.decision_id(None, "t") != ids.decision_id("", "t")
+def test_decision_id_rejects_empty_actor():
+    assert ids.decision_id(None, "t")
+    with pytest.raises(ValidationError):
+        ids.decision_id("", "t")

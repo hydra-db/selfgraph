@@ -1,7 +1,7 @@
-import type { CypherResult, JsonValue } from "../models.js";
+import type { CypherResult, CypherRow } from "../models.js";
 import type { EdgeRow, GraphPrimitives, Props } from "../protocols.js";
 
-type Row = Record<string, JsonValue>;
+type Row = CypherRow;
 type Run = (query: string, params: Props) => Promise<CypherResult>;
 
 const parseDoc = (doc: unknown): Props => JSON.parse(doc as string) as Props;

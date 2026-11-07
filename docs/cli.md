@@ -9,7 +9,7 @@ These come before the subcommand and pick the backend.
 
 | Flag | Meaning |
 |------|---------|
-| `--store` | `hydradb`, `neo4j`, `cypher`, `falkordb`, or `kuzu`. Defaults to embedded `kuzu` at `~/.selfgraph/default.kuzu`, or `hydradb` when `--uri` is given. |
+| `--store` | `hydradb`, `neo4j`, `cypher`, `memgraph`, `falkordb`, or `kuzu`. Defaults to embedded `kuzu` at `~/.selfgraph/default.kuzu`, or `hydradb` when `--uri` is given. |
 | `--uri` | Bolt URI for the Bolt stores; the file path for `kuzu`; `host:port` for `falkordb`. |
 | `--auth` | `user:password`, or a bare token with user `neo4j`. |
 | `--database` | Database name for Bolt stores. |
@@ -33,16 +33,21 @@ selfgraph version
 | `init` | Create the store's id constraints. |
 | `version` | Print the installed version. |
 | `mcp` | Run the MCP server over stdio. See [MCP](mcp.md). |
-| `query` | Run one Cypher statement. |
+| `query` | Run one Cypher statement. Unlike the MCP `run_cypher` tool, it can write. |
 | `retrieve` | Retrieve context for a query. |
 | `insert text` | Extract an ontology from text, with an LLM if one is configured, else spaCy or the regex fallback. |
 | `insert ontology` | Insert a ready ontology from a JSON file, or `-` for stdin. |
 | `entity` | `create`, `get`, `list`, `update`, `delete`. |
 | `relation` | `create`, `get`, `list`, `versions`, `update`, `delete`. |
-| `preference` | `create`, `get`, `list`, `delete`. |
-| `decision` | `create`, `get`, `list`, `delete`. |
+| `preference` | `create`, `get`, `list`, `versions`, `update`, `delete`. |
+| `decision` | `create`, `get`, `list`, `update`, `delete`. |
 
-Run any command with `--help` for its arguments.
+Run any command with `--help` for its arguments. Repeatable flags merge into what is
+stored: `entity update --alias` and `--prop` add, while `--remove-alias` and
+`--remove-prop` drop entries, and `--external-id SYSTEM=ID` sets an external id.
+`relation` and `preference` take `--event-time` as ISO 8601 text. `preference list`
+without a subject lists every subject, and `preference create` takes `--about` for
+the entity a preference is about. Its `value` must be an existing entity id.
 
 ## Bolt example
 

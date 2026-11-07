@@ -6,13 +6,15 @@ import { pySplit, pyStrip } from "../internal/py.js";
 import {
   DateTimeInput,
   DEFAULT_STATUS,
-  type ExtractionInstructions,
-  type ExtractionPrompts,
+  ExtractionInstructions,
+  ExtractionPrompts,
   type InsertWarning,
+  insertWarning,
   Kind,
   Ontology,
   type ParsedDocument,
   type ParsedOntology,
+  parseOrThrow,
   Status,
 } from "../models.js";
 import type { Extractor, LLMClient } from "../protocols.js";
@@ -244,6 +246,7 @@ export interface DefaultExtractorOptions {
 export class DefaultExtractor implements Extractor {
   private warnings: InsertWarning[] = [];
   private readonly catalogs: Partial<Record<ObjectType, string>>;
+  private readonly options: DefaultExtractorOptions;
 
   /**
    * Extract entities, relations, preferences, and decisions from text with an LLM, chunk by chunk.
@@ -253,8 +256,14 @@ export class DefaultExtractor implements Extractor {
    */
   constructor(
     private readonly llm: LLMClient,
-    private readonly options: DefaultExtractorOptions = {},
+    options: DefaultExtractorOptions = {},
   ) {
+    this.options = {
+      prompts: parseOrThrow(ExtractionPrompts.nullish(), options.prompts, "prompts"),
+      instructions: parseOrThrow(ExtractionInstructions.nullish(), options.instructions, "instructions"),
+      call_prompts: parseOrThrow(ExtractionPrompts.nullish(), options.call_prompts, "call prompts"),
+      call_instructions: parseOrThrow(ExtractionInstructions.nullish(), options.call_instructions, "call instructions"),
+    };
     const [entities, relations] = options.schema ? renderSchemaCatalog(options.schema) : ["", ""];
     this.catalogs = { entities, relations };
   }
@@ -265,12 +274,16 @@ export class DefaultExtractor implements Extractor {
     return out;
   }
 
-  private async call<T>(objectType: ObjectType, text: string, output: z.ZodType<T>): Promise<T> {
+  private messages(objectType: ObjectType, text: string): [string, string] {
     const template = effectivePrompt(objectType, this.options.prompts, this.options.call_prompts);
     let instruction = effectiveInstruction(objectType, this.options.instructions, this.options.call_instructions);
     const catalog = this.catalogs[objectType] ?? "";
     if (catalog) instruction = instruction ? `${instruction}\n\n${catalog}` : catalog;
-    const [system, user] = render(template, text, instruction);
+    return render(template, text, instruction);
+  }
+
+  private async call<T>(objectType: ObjectType, text: string, output: z.ZodType<T>): Promise<T> {
+    const [system, user] = this.messages(objectType, text);
     return this.llm.generate({ system, user, output });
   }
 
@@ -298,6 +311,7 @@ export class DefaultExtractor implements Extractor {
       step("decisions", DecisionsOut, (r) => rawDecisions.push(...r.decisions)),
     ];
 
+    for (const { kind } of steps) this.messages(kind, "");
     const calls = chunks.flatMap((chunk) => steps.map(({ kind, run }) => ({ chunk, kind, run })));
     const outcomes: Array<{ apply: () => void } | { error: unknown }> = [];
     let next = 0;
@@ -320,12 +334,12 @@ export class DefaultExtractor implements Extractor {
         outcome.apply();
         ok.add(chunk.index);
       } else {
-        this.warnings.push({
-          code: "extraction_partial_failure",
-          message: `${kind} extraction failed on chunk ${chunk.index}: ${errorMessage(outcome.error)}`,
-          source_id: null,
-          chunk_id: null,
-        });
+        this.warnings.push(
+          insertWarning(
+            "extraction_partial_failure",
+            `${kind} extraction failed on chunk ${chunk.index}: ${errorMessage(outcome.error)}`,
+          ),
+        );
       }
     });
 

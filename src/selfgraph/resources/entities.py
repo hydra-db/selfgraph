@@ -87,9 +87,9 @@ class Entities:
         change an entity's derived id.
 
         This is a read-modify-write, serialized per entity on the transactional backends
-        (Neo4j, Memgraph). The auto-commit backends (HydraDB, Kuzu, FalkorDB) cannot
-        serialize, so concurrent updates to one entity collapse to last-writer-wins and
-        the other updates' merged keys are lost; serialize writes yourself there.
+        (Neo4j, Memgraph). The auto-commit backends (HydraDB, Kuzu, FalkorDB) run one
+        write at a time per graph object, so concurrent updates in one process all apply;
+        writers in separate processes are not serialized there and can lose updates.
 
         @param id (str): the entity id.
         @param fields (Any): name, type, aliases, external_ids, properties, remove_aliases, remove_properties.

@@ -43,6 +43,10 @@ installed, and with a built-in regex pass otherwise. The regex pass finds fewer
 relations; `result.warnings` says which path ran. Both are fallbacks: they guess
 entity types from capitalization and patterns and can mislabel them (a company
 typed as a place) or link the wrong pair, so use an LLM when the graph matters.
+Every fallback entity is typed `Thing`, so it does not merge with an entity you
+created under a specific type. `instructions` and `prompts` apply only to LLM
+extraction; without an LLM they are ignored and a `prompts_ignored` warning says so.
+A prompt template missing `{text}` raises `PromptTemplateError` before any LLM call.
 
 ```bash
 pip install "selfgraph[ner]"

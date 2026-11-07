@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -73,6 +74,7 @@ class KuzuStore(AutoCommitStore):
         except ImportError as exc:  # pragma: no cover
             raise StoreError("the 'kuzu' package is required for KuzuStore; install 'selfgraph[kuzu]'") from exc
         if path not in _DATABASES:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             _DATABASES[path] = kuzu.Database(path, **db_kwargs)
         self._path = path
         self._db = _DATABASES[path]

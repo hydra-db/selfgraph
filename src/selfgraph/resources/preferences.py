@@ -104,10 +104,9 @@ class Preferences:
         """Create a new version of a preference with changed strength or properties.
 
         This is a read-modify-write, serialized per preference on the transactional
-        backends (Neo4j, Memgraph). The auto-commit backends (HydraDB, Kuzu, FalkorDB)
-        cannot serialize, so concurrent updates to one preference collapse to a single
-        last-writer-wins version and the other updates' data is lost; serialize writes
-        yourself there.
+        backends (Neo4j, Memgraph). The auto-commit backends (HydraDB, Kuzu, FalkorDB) run one
+        write at a time per graph object, so concurrent updates in one process all apply;
+        writers in separate processes are not serialized there and can lose updates.
 
         @param id (str): the preference id.
         @param strength (float | None): the new strength.

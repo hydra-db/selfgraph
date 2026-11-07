@@ -27,6 +27,7 @@ export type { InsertOntologyOptions, InsertTextOptions } from "./insert.js";
 export { buildLlmClient, type LLMArg } from "./llm/index.js";
 export {
   type CypherResult,
+  type CypherRow,
   DateTimeInput,
   type DecisionStep,
   type DecisionTrace,
@@ -106,4 +107,4 @@ export { CypherStore, type CypherStoreOptions, Neo4jStore } from "./stores/cyphe
 export { CypherPrimitives } from "./stores/cypherPrimitives.js";
 export { FalkorDBStore, type FalkorDBStoreOptions } from "./stores/falkordb.js";
 export { HydraDBStore, type HydraDBStoreOptions } from "./stores/hydradb.js";
-export { KuzuStore } from "./stores/kuzu.js";
+export { KuzuStore, type KuzuStoreOptions } from "./stores/kuzu.js";

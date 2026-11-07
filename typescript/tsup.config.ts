@@ -2,6 +2,7 @@ import { defineConfig } from "tsup";
 
 const shared = {
   target: "node20",
+  keepNames: true,
   sourcemap: true,
   splitting: true,
   shims: true,

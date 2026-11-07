@@ -144,13 +144,15 @@ class DefaultExtractor(_WarningSink):
             call_instructions=self._call_instructions,
         )
 
-    async def _call(self, object_type: str, text: str, output: type):
-        template = self._prompt(object_type)
+    def _messages(self, object_type: str, text: str) -> tuple[str, str]:
         instruction = self._instruction(object_type)
         catalog = self._catalogs.get(object_type, "")
         if catalog:
             instruction = f"{instruction}\n\n{catalog}" if instruction else catalog
-        system, user = render(template, text=text, instructions=instruction)
+        return render(self._prompt(object_type), text=text, instructions=instruction)
+
+    async def _call(self, object_type: str, text: str, output: type):
+        system, user = self._messages(object_type, text)
         return await self._llm.generate(system=system, user=user, output=output)
 
     async def extract(self, document: ParsedDocument) -> Ontology:
@@ -171,6 +173,8 @@ class DefaultExtractor(_WarningSink):
             ("decisions", _DecisionsOut, raw_decisions, "decisions"),
         ]
 
+        for kind, *_ in kinds:
+            self._messages(kind, "")
         gate = asyncio.Semaphore(_MAX_CONCURRENT_CALLS)
 
         async def run(chunk, kind: str, schema: type, attr: str) -> list | InsertWarning:

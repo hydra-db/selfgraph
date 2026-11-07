@@ -1,5 +1,5 @@
 import { blake2b } from "@noble/hashes/blake2.js";
-import neo4j, { type Driver, type Session } from "neo4j-driver";
+import type { Driver, Session } from "neo4j-driver";
 
 import { errorMessage, StoreError, TransientError } from "../errors.js";
 import { pyJsonDumps, pyRepr, pyStr, utf8 } from "../internal/py.js";
@@ -13,7 +13,7 @@ import {
   type Props,
   type UpsertNodeOptions,
 } from "../protocols.js";
-import { type BoltStoreOptions, boltAuth, errorCode, recordsToResult, toBoltParams } from "./bolt.js";
+import { type BoltStoreOptions, errorCode, openDriver, recordsToResult, toBoltParams } from "./bolt.js";
 import { AutoCommitStore, bindList, quoteLabel, toCount, whereEquals } from "./cypherPrimitives.js";
 import { deleteBothWays, docs, edgeRow, firstDoc, mergedCurrentEdge, relationIdsBothWays } from "./docRows.js";
 
@@ -107,7 +107,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   constructor(uri: string, options: HydraDBStoreOptions = {}) {
     super();
     const { auth, database, ...config } = options;
-    this.driver = neo4j.driver(uri, boltAuth(auth), config);
+    this.driver = openDriver(uri, auth, config);
     this.database = database || "default";
   }
 

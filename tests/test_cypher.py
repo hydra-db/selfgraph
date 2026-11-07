@@ -44,7 +44,7 @@ def test_raw_cypher_write_adds_no_version():
         )
     )
     versions = run(g.relations.versions(rel.id))
-    assert len(versions) == 1  # no new version from raw Cypher
+    assert len(versions) == 1
 
 
 def test_invalid_query_raises_store_error():
@@ -70,7 +70,7 @@ def test_multi_key_order_by():
 def test_not_equal_null_is_three_valued():
     g = new_graph()
     run(g.run_cypher("CREATE (n:Y {id:'a', status:'active'})"))
-    run(g.run_cypher("CREATE (n:Y {id:'b'})"))  # no status property
+    run(g.run_cypher("CREATE (n:Y {id:'b'})"))
     res = run(g.run_cypher("MATCH (n:Y) WHERE n.status <> 'archived' RETURN n.id AS id ORDER BY n.id"))
     assert [r["id"] for r in res.rows] == ["a"]  # null <> 'archived' is null, not true
 

@@ -1,5 +1,5 @@
 import { PY_WS_CLASS, pyStrip } from "../internal/py.js";
-import type { InsertWarning, ParsedDocument, ParsedOntology } from "../models.js";
+import { type InsertWarning, insertWarning, type ParsedDocument, type ParsedOntology } from "../models.js";
 import type { Extractor } from "../protocols.js";
 import { assembleOntology, FALLBACK_TYPE, type RawEntity, type RawRelation } from "./extractor.js";
 
@@ -42,12 +42,10 @@ export class BasicExtractor implements Extractor {
   async extract(document: ParsedDocument): Promise<ParsedOntology> {
     const { entities, relations } = regexExtract(document.text);
     this.warnings = [
-      {
-        code: "basic_extraction",
-        message: "extracted without an LLM using heuristic regex; pass llm= for model-based extraction",
-        source_id: null,
-        chunk_id: null,
-      },
+      insertWarning(
+        "basic_extraction",
+        "extracted without an LLM using heuristic regex; pass llm= for model-based extraction",
+      ),
     ];
     return assembleOntology(entities, relations, [], []);
   }

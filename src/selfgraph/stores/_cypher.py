@@ -6,8 +6,28 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
 
+from ..errors import StoreError
 from ..ids import quote_label, quote_reltype
 from ..models import CypherResult, JsonValue
+
+
+def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
+    """Open an async Bolt driver, turning a malformed URI or driver config into a StoreError.
+
+    @param uri (str): the Bolt URI.
+    @param auth (Any): the auth pair or token, or None.
+    @param kwargs (Any): extra driver config.
+    @return (Any): the driver.
+    """
+    try:
+        from neo4j import AsyncGraphDatabase
+    except ImportError as exc:  # pragma: no cover
+        raise StoreError("the 'neo4j' Bolt driver is required; pip install neo4j") from exc
+    try:
+        return AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        raise StoreError(f"cannot open a Bolt driver for {uri!r}: {exc}") from exc
+
 
 _IN_WRITE: ContextVar[bool] = ContextVar("selfgraph_in_write", default=False)
 

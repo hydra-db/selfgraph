@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ValidationError } from "../errors.js";
 import { comparePy, pyStrip } from "../internal/py.js";
-import type { CypherResult, JsonValue } from "../models.js";
+import type { CypherResult, CypherRow, JsonValue } from "../models.js";
 import {
   DEFAULT_MATCH_LIMIT,
   type EdgeRow,
@@ -366,10 +366,10 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
 /**
  * An edge from an r, from_e (from id), to_e (to id) and t (edge type) row.
  *
- * @param row (Record<string, JsonValue>): the row.
+ * @param row (CypherRow): the row.
  * @return (EdgeRow): the edge.
  */
-function edgeRow(row: Record<string, JsonValue>): EdgeRow {
+function edgeRow(row: CypherRow): EdgeRow {
   return {
     props: row.r as Props,
     from_id: row.from_e as string,

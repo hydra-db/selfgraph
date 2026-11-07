@@ -94,6 +94,5 @@ def test_list_relations_excludes_preference_edges():
     assert [r.type for r in listed.items] == ["WORKS_AT"]
     assert all(not r.from_entity.startswith("profile:") for r in listed.items)
 
-    # Preference versions are read via preferences.versions(id).
     run(g.preferences.update(pref.id, strength=0.5))
     assert [v.revision for v in run(g.preferences.versions(pref.id))] == [2, 1]

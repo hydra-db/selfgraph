@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +14,11 @@ from .runtime import STORES, GraphSettings, build_graph, dumps, settings_from_en
 __all__ = ["main", "build_parser"]
 
 
-def _kv(pairs: list[str] | None) -> dict[str, Any]:
+def _kv(pairs: list[str] | None, *, text: bool = False) -> dict[str, Any]:
     """Parse repeated key=value flags; each value is JSON if it parses, else text.
 
     @param pairs (list[str] | None): key=value strings to parse.
+    @param text (bool): keep every value as text instead of parsing JSON.
     @return (dict[str, Any]): the parsed mapping.
     """
     out: dict[str, Any] = {}
@@ -24,6 +26,9 @@ def _kv(pairs: list[str] | None) -> dict[str, Any]:
         key, sep, value = pair.partition("=")
         if not sep:
             raise ValidationError(f"expected key=value, got {pair!r}")
+        if text:
+            out[key] = value
+            continue
         try:
             out[key] = json.loads(value)
         except json.JSONDecodeError:
@@ -41,7 +46,10 @@ def _json_or_none(text: str | None) -> dict[str, Any] | None:
 
 
 def _read_json_arg(path: str) -> Any:
-    raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    try:
+        raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValidationError(f"cannot read {path!r}: {exc.strerror or exc}") from exc
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -88,6 +96,7 @@ async def _entity_create(graph, args):
         args.type,
         id=args.id,
         aliases=args.alias or None,
+        external_ids=_kv(args.external_id, text=True) or None,
         properties=_kv(args.prop) or None,
     )
 
@@ -108,8 +117,14 @@ async def _entity_update(graph, args):
         fields["type"] = args.type
     if args.alias:
         fields["aliases"] = args.alias
+    if args.external_id:
+        fields["external_ids"] = _kv(args.external_id, text=True)
     if args.prop:
         fields["properties"] = _kv(args.prop)
+    if args.remove_alias:
+        fields["remove_aliases"] = args.remove_alias
+    if args.remove_prop:
+        fields["remove_properties"] = args.remove_prop
     return await graph.entities.update(args.id, **fields)
 
 
@@ -124,6 +139,7 @@ async def _relation_create(graph, args):
         args.to_entity,
         id=args.id,
         properties=_kv(args.prop) or None,
+        event_time=args.event_time,
     )
 
 
@@ -150,6 +166,7 @@ async def _relation_update(graph, args):
         args.id,
         set_properties=_kv(args.set) or None,
         remove_properties=args.remove or (),
+        event_time=args.event_time,
     )
 
 
@@ -162,9 +179,12 @@ async def _preference_create(graph, args):
         args.subject,
         args.key,
         args.value,
+        id=args.id,
         kind=args.kind,
+        about_entity=args.about,
         strength=args.strength,
         properties=_kv(args.prop) or None,
+        event_time=args.event_time,
     )
 
 
@@ -178,8 +198,18 @@ async def _preference_list(graph, args):
     )
 
 
+async def _preference_versions(graph, args):
+    return await graph.preferences.versions(args.id)
+
+
 async def _preference_update(graph, args):
-    return await graph.preferences.update(args.id, strength=args.strength, properties=_kv(args.prop) or None)
+    return await graph.preferences.update(
+        args.id,
+        strength=args.strength,
+        properties=_kv(args.prop) or None,
+        remove_properties=args.remove_prop or (),
+        event_time=args.event_time,
+    )
 
 
 async def _preference_delete(graph, args):
@@ -246,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=STORES,
         help=(
-            "backend: hydradb, neo4j, cypher, falkordb, or kuzu "
+            "backend: hydradb, neo4j, cypher, memgraph, falkordb, or kuzu "
             "(default $SELFGRAPH_STORE, else embedded kuzu, or hydradb with --uri)"
         ),
     )
@@ -299,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     ec.add_argument("--type", required=True)
     ec.add_argument("--id")
     ec.add_argument("--alias", action="append", help="alias (repeatable)")
+    ec.add_argument("--external-id", action="append", metavar="SYSTEM=ID", help="external id (repeatable)")
     ec.add_argument("--prop", action="append", metavar="KEY=VALUE", help="property (repeatable)")
     ec.set_defaults(func=_entity_create)
     eg = ent.add_parser("get")
@@ -313,8 +344,11 @@ def build_parser() -> argparse.ArgumentParser:
     eu.add_argument("id")
     eu.add_argument("--name")
     eu.add_argument("--type")
-    eu.add_argument("--alias", action="append", help="replace aliases (repeatable)")
+    eu.add_argument("--alias", action="append", help="add an alias (repeatable)")
+    eu.add_argument("--external-id", action="append", metavar="SYSTEM=ID", help="set an external id (repeatable)")
     eu.add_argument("--prop", action="append", metavar="KEY=VALUE", help="set property (repeatable)")
+    eu.add_argument("--remove-alias", action="append", metavar="ALIAS", help="remove an alias (repeatable)")
+    eu.add_argument("--remove-prop", action="append", metavar="KEY", help="remove a property (repeatable)")
     eu.set_defaults(func=_entity_update)
     ed = ent.add_parser("delete")
     ed.add_argument("id")
@@ -329,6 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("to_entity", metavar="TO")
     rc.add_argument("--id")
     rc.add_argument("--prop", action="append", metavar="KEY=VALUE", help="property (repeatable)")
+    rc.add_argument("--event-time", type=datetime.fromisoformat, help="when the fact became true (ISO 8601)")
     rc.set_defaults(func=_relation_create)
     rg = rel.add_parser("get")
     rg.add_argument("id")
@@ -346,27 +381,31 @@ def build_parser() -> argparse.ArgumentParser:
     ru.add_argument("id")
     ru.add_argument("--set", action="append", metavar="KEY=VALUE", help="set property (repeatable)")
     ru.add_argument("--remove", action="append", metavar="KEY", help="remove property (repeatable)")
+    ru.add_argument("--event-time", type=datetime.fromisoformat, help="when the new version became true (ISO 8601)")
     ru.set_defaults(func=_relation_update)
     rd = rel.add_parser("delete")
     rd.add_argument("id")
     rd.set_defaults(func=_relation_delete)
 
-    pref = sub.add_parser("preference", help="create/get/list/delete preferences").add_subparsers(
+    pref = sub.add_parser("preference", help="create/get/list/versions/update/delete preferences").add_subparsers(
         dest="action", required=True
     )
     pc = pref.add_parser("create")
     pc.add_argument("subject", help="subject entity id")
     pc.add_argument("key")
-    pc.add_argument("value", help="value entity id")
+    pc.add_argument("value", help="value entity id (an existing entity, e.g. tool:hydradb)")
+    pc.add_argument("--id")
     pc.add_argument("--kind", choices=["preference", "disinterest"], default="preference")
+    pc.add_argument("--about", help="entity id the preference is about")
     pc.add_argument("--strength", type=float)
     pc.add_argument("--prop", action="append", metavar="KEY=VALUE", help="property (repeatable)")
+    pc.add_argument("--event-time", type=datetime.fromisoformat, help="when the preference became true (ISO 8601)")
     pc.set_defaults(func=_preference_create)
     pg = pref.add_parser("get")
     pg.add_argument("id")
     pg.set_defaults(func=_preference_get)
     pl = pref.add_parser("list")
-    pl.add_argument("subject", help="subject entity id")
+    pl.add_argument("subject", nargs="?", help="subject entity id (omit to list every subject)")
     pl.add_argument("--key")
     pl.add_argument("--kind", choices=["preference", "disinterest"])
     _add_list_paging(pl)
@@ -375,7 +414,12 @@ def build_parser() -> argparse.ArgumentParser:
     pu.add_argument("id")
     pu.add_argument("--strength", type=float)
     pu.add_argument("--prop", action="append", metavar="KEY=VALUE", help="set property (repeatable)")
+    pu.add_argument("--remove-prop", action="append", metavar="KEY", help="remove a property (repeatable)")
+    pu.add_argument("--event-time", type=datetime.fromisoformat, help="when the new version became true (ISO 8601)")
     pu.set_defaults(func=_preference_update)
+    pv = pref.add_parser("versions")
+    pv.add_argument("id")
+    pv.set_defaults(func=_preference_versions)
     pd = pref.add_parser("delete")
     pd.add_argument("id")
     pd.set_defaults(func=_preference_delete)

@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { errorMessage, StoreError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
@@ -49,12 +51,27 @@ interface KuzuConnection {
   close?(): Promise<void> | void;
 }
 
+export interface KuzuStoreOptions {
+  /** Buffer pool size in bytes; 0 lets Kuzu pick. */
+  buffer_pool_size?: number;
+  /** Largest size the database may grow to in bytes; set it to open many databases at once, since each reserves this much virtual memory (8 TB by default). */
+  max_db_size?: number;
+  compression?: boolean;
+  read_only?: boolean;
+}
+
 interface KuzuDatabase {
   close?(): Promise<void> | void;
 }
 
 interface KuzuModule {
-  Database: new (path: string) => KuzuDatabase;
+  Database: new (
+    path: string,
+    bufferManagerSize?: number,
+    enableCompression?: boolean,
+    readOnly?: boolean,
+    maxDBSize?: number,
+  ) => KuzuDatabase;
   Connection: new (db: KuzuDatabase) => KuzuConnection;
 }
 
@@ -111,7 +128,15 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     const kuzu = mod.default ?? mod;
     let db = DATABASES.get(this.path);
     if (db === undefined) {
-      db = new kuzu.Database(this.path);
+      mkdirSync(dirname(this.path), { recursive: true });
+      const o = this.options;
+      db = new kuzu.Database(
+        this.path,
+        o.buffer_pool_size ?? 0,
+        o.compression ?? true,
+        o.read_only ?? false,
+        o.max_db_size ?? 0,
+      );
       DATABASES.set(this.path, db);
     }
     OPEN_STORES.set(this.path, (OPEN_STORES.get(this.path) ?? 0) + 1);
@@ -123,8 +148,12 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
    * An embedded, in-process Kuzu graph over a generic single-table schema.
    *
    * @param path (string): the database directory or file.
+   * @param options (KuzuStoreOptions): Kuzu database settings, used when this process first opens the path.
    */
-  constructor(path = "selfgraph_kuzu") {
+  constructor(
+    path = "selfgraph_kuzu",
+    private readonly options: KuzuStoreOptions = {},
+  ) {
     super();
     this.path = path;
   }

@@ -30,7 +30,6 @@ def test_insert_ontology_dict():
     assert len(res.relations) == 1
     assert res.source_id == "meeting-42"
     assert res.source_version is not None
-    # relation got source-level evidence
     rel = res.relations[0]
     assert rel.evidence and rel.evidence[0].source_id == "meeting-42"
 
@@ -54,7 +53,7 @@ def test_insert_is_upsert_idempotent():
     }
     run(g.insert.ontology(payload))
     run(g.insert.ontology(payload))
-    assert len(run(g.relations.versions("relation:1"))) == 1  # no new version when unchanged
+    assert len(run(g.relations.versions("relation:1"))) == 1
     page = run(g.entities.list())
     assert len([e for e in page.items if e.id in ("person:soham", "company:hydradb")]) == 2
 
@@ -107,7 +106,7 @@ def test_entity_merge_rules():
     )
     e = run(g.entities.get("person:e"))
     assert set(e.aliases) == {"x", "y"}
-    assert e.properties == {"a": 2, "b": 3}  # new values win, merged key by key
+    assert e.properties == {"a": 2, "b": 3}
 
 
 def test_insert_derives_missing_ids():
@@ -145,7 +144,7 @@ def test_nan_property_is_rejected():
 def test_invalid_ontology_raises_selfgraph_error():
     g = new_graph()
     with pytest.raises(ValidationError):
-        run(g.insert.ontology({"entities": [{"type": "Person"}]}))  # missing name
+        run(g.insert.ontology({"entities": [{"type": "Person"}]}))
 
 
 def test_upsert_identical_entity_keeps_updated_at():

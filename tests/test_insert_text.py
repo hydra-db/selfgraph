@@ -62,11 +62,11 @@ def test_insert_text_full_pipeline():
     ids = {e.id for e in res.entities}
     assert "person:soham" in ids
     assert "company:hydradb" in ids
-    assert "thing:team" in ids  # referenced-only name becomes a Thing
+    assert "thing:team" in ids
 
     rel_types = {r.type for r in res.relations}
     assert "WORKS_AT" in rel_types
-    assert "SELECTED" in rel_types  # pulled in from the decision step
+    assert "SELECTED" in rel_types
 
     assert len(res.preferences) == 1
     assert res.preferences[0].key == "database"
@@ -133,7 +133,6 @@ def test_instructions_are_appended_to_prompt():
             instructions=ExtractionInstructions(preferences="Only explicit DB preferences."),
         )
     )
-    # find the preferences call and confirm the instruction text is present
     pref_calls = [c for c in llm.calls if c[0] == "_PreferencesOut"]
     assert pref_calls
     assert "Only explicit DB preferences." in pref_calls[0][2]

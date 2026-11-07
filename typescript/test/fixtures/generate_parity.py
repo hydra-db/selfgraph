@@ -412,14 +412,14 @@ def main():
             if t.strip(" !")
         ],
         "preference_id": [
-            [s, k, key, v, ids.preference_id(s, k, key, v)]
+            [s, k, key, v, attempt(ids.preference_id, s, k, key, v)]
             for s, k, key, v in [
                 ("person:jane", "preference", "database", "db:hydradb"),
                 ("x", "disinterest", "", "🚀"),
             ]
         ],
         "decision_id": [
-            [a, t, ids.decision_id(a, t)]
+            [a, t, attempt(ids.decision_id, a, t)]
             for a, t in [(None, "Pick DB"), ("", "Pick DB"), ("person:jane", "Pick DB"), ("a", "bc"), ("ab", "c")]
         ],
         "source_version_id": ids.source_version_id("notes", "abc"),
