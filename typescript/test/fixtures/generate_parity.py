@@ -3,6 +3,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel
+
 from selfgraph import _serde, ids
 from selfgraph.extraction import chunking
 from selfgraph.extraction.basic import _regex_extract
