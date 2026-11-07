@@ -7,7 +7,7 @@ them all.
 from selfgraph import SelfGraphError
 
 try:
-    await graph.entities.get("missing")
+    await graph.entities.delete("person:missing")
 except SelfGraphError as exc:
     print(exc)
 ```
@@ -23,6 +23,7 @@ except SelfGraphError as exc:
 | `ExtractionError` | Text extraction fails, or an LLM dependency is missing. |
 | `PromptTemplateError` | An extraction prompt template is malformed. |
 | `StoreError` | The backend rejects a query or a connection fails. |
+| `TransientError` | A `StoreError` from a write conflict on Neo4j or Memgraph that still failed after the SDK's retries; retry it. |
 
 Catch the specific class when you want to handle one case, and `SelfGraphError`
 when you want to handle all of them.

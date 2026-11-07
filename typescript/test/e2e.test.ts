@@ -114,6 +114,7 @@ describe.skipIf(!neo4jUp)("built MCP server over stdio", () => {
           "get_entity",
           "get_preference",
           "get_relation",
+          "get_schema",
           "insert_ontology",
           "insert_text",
           "list_decisions",

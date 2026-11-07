@@ -1,6 +1,6 @@
 # Backends
 
-All logic lives in Python. A store implements a small set of graph primitives, so
+All logic lives in the SDK. A store implements a small set of graph primitives, so
 the same graph runs on any backend. Pass a store to `SelfGraph(store=...)`.
 
 ```python
@@ -29,7 +29,8 @@ address space; pass `max_db_size` (in bytes), for example
 `KuzuStore("graph.kuzu", max_db_size=1 << 30)`, or close each graph when done.
 
 `HydraDBStore` authenticates with the token in the second slot of `auth`; the first
-slot can be any non-empty name.
+slot can be any non-empty name. HydraDB 0.3.0 must run on an S3-compatible object
+store such as MinIO.
 
 ## From settings
 

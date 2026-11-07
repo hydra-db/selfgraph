@@ -7,8 +7,8 @@ import type { CypherResult, ExtractionInstructions, ExtractionPrompts, JsonValue
 import type { Extractor, GraphStore } from "./protocols.js";
 import { Decisions, Entities, Preferences, Relations } from "./resources/index.js";
 import { type RetrieveOptions, retrieve } from "./retrieval.js";
-import { buildLlm, buildStore, DEFAULT_SETTINGS, type GraphSettings, settingsFromEnv } from "./runtime.js";
-import { asSchema, type ParsedSchema, type Schema, type SchemaMode } from "./schema.js";
+import { buildLlm, buildStore, DEFAULT_SETTINGS, type GraphSettings, readJson, settingsFromEnv } from "./runtime.js";
+import { asSchema, type ParsedSchema, requireSchemaMode, type Schema, type SchemaMode } from "./schema.js";
 import { pyTypeName, requireJsonMapping, requireText } from "./validate.js";
 
 export interface SelfGraphOptions {
@@ -45,6 +45,8 @@ export class SelfGraph {
   constructor(store: GraphStore, options: SelfGraphOptions = {}) {
     const namespace = options.namespace ?? DEFAULT_SETTINGS.namespace;
     requireText("namespace", namespace);
+    const schemaMode = options.schema_mode ?? "warn";
+    requireSchemaMode(schemaMode);
     this.store = store;
     this.namespace = namespace;
     this.schema = asSchema(options.schema);
@@ -59,7 +61,7 @@ export class SelfGraph {
       prompts: options.prompts ?? null,
       extractor: options.extractor ?? null,
       schema: this.schema,
-      schemaMode: options.schema_mode ?? "warn",
+      schemaMode,
     });
   }
 
@@ -76,7 +78,7 @@ export class SelfGraph {
   /**
    * Build a graph from store and LLM settings without importing a store class.
    *
-   * @param settings (Partial<GraphSettings>): store, uri, auth, database, namespace, and llm_* settings.
+   * @param settings (Partial<GraphSettings>): store, uri, auth, database, namespace, llm_*, schema, and schema_mode settings.
    * @return (SelfGraph): the constructed graph.
    */
   static connect(settings: Partial<GraphSettings> = {}): SelfGraph {
@@ -127,12 +129,14 @@ export class SelfGraph {
 /**
  * Construct a SelfGraph from settings; does not initialize the store.
  *
- * @param settings (GraphSettings): the resolved store and LLM configuration.
+ * @param settings (GraphSettings): the resolved store, LLM, and schema configuration.
  * @return (SelfGraph): the constructed graph.
  */
 export function buildGraph(settings: GraphSettings): SelfGraph {
   return new SelfGraph(buildStore(settings), {
     llm: buildLlm(settings),
     namespace: settings.namespace || DEFAULT_SETTINGS.namespace,
+    schema: typeof settings.schema === "string" ? (readJson(settings.schema) as Schema) : settings.schema,
+    schema_mode: (settings.schema_mode || "warn") as SchemaMode,
   });
 }

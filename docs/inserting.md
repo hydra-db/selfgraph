@@ -39,12 +39,12 @@ pip install "selfgraph[llm]"
 ### Without an LLM
 
 With no `llm`, `insert.text` extracts with spaCy when the `ner` extra is
-installed, and with a built-in regex pass otherwise. The regex pass finds fewer
-relations; `result.warnings` says which path ran. Both are fallbacks: they guess
-entity types from capitalization and patterns and can mislabel them (a company
-typed as a place) or link the wrong pair, so use an LLM when the graph matters.
-Every fallback entity is typed `Thing`, so it does not merge with an entity you
-created under a specific type. `instructions` and `prompts` apply only to LLM
+installed, and with a built-in regex pass otherwise; `result.warnings` says which
+path ran. spaCy maps its labels to types such as `Person`, `Organization`, and
+`Place`, and can mislabel them (a company typed as a place). The regex pass types
+every entity `Thing`, so it does not merge with an entity you created under a
+specific type, and finds fewer relations. Both can link the wrong pair, so use an
+LLM when the graph matters. `instructions` and `prompts` apply only to LLM
 extraction; without an LLM they are ignored and a `prompts_ignored` warning says so.
 A prompt template missing `{text}` raises `PromptTemplateError` before any LLM call.
 

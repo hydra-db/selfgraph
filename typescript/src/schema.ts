@@ -1,12 +1,21 @@
 import { z } from "zod";
 
+import { ValidationError } from "./errors.js";
 import { entityId, normalizeRelType } from "./ids.js";
 import { pyRepr } from "./internal/py.js";
-import { type InsertWarning, insertWarning, optNumber, optString, type ParsedOntology } from "./models.js";
+import {
+  type InsertWarning,
+  insertWarning,
+  optNumber,
+  optString,
+  type ParsedOntology,
+  parseOrThrow,
+} from "./models.js";
 
 const PropertyTypeSchema = z.enum(["string", "integer", "float", "boolean", "datetime", "json"]);
 export type PropertyType = z.infer<typeof PropertyTypeSchema>;
-export type SchemaMode = "off" | "warn" | "strict";
+export const SCHEMA_MODES = ["off", "warn", "strict"] as const;
+export type SchemaMode = (typeof SCHEMA_MODES)[number];
 
 export const PropertySpec = z.object({
   name: z.string(),
@@ -60,7 +69,18 @@ type ParsedEndpoint = z.output<typeof RelationEndpoint>;
  */
 export function asSchema(value: Schema | ParsedSchema | null | undefined): ParsedSchema | null {
   if (value === null || value === undefined) return null;
-  return Schema.parse(value);
+  return parseOrThrow(Schema, value, "schema");
+}
+
+/**
+ * Reject a schema mode other than off, warn, or strict.
+ *
+ * @param mode (unknown): the schema mode.
+ */
+export function requireSchemaMode(mode: unknown): void {
+  if (!(SCHEMA_MODES as readonly unknown[]).includes(mode)) {
+    throw new ValidationError(`schema_mode must be one of ${SCHEMA_MODES.join(", ")}, got ${pyRepr(mode)}`);
+  }
 }
 
 /**

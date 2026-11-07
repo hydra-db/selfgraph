@@ -1,7 +1,11 @@
-import pytest
-from helpers import FakeLLM, new_graph, run
+import json
 
+import pytest
+from helpers import FakeLLM, new_graph, run, store_settings
+
+import selfgraph.mcp.server as srv
 from selfgraph import Ontology, Schema, ValidationError
+from selfgraph.runtime import build_graph, settings_from_env
 from selfgraph.schema import as_schema, render_schema_catalog, validate_against_schema
 
 TYPES_SPEC = {
@@ -292,3 +296,37 @@ def test_schema_catalog_injected_into_extraction_prompt():
     prompts = "\n".join(system + user for _name, system, user in llm.calls)
     assert "Extract entities using these known types" in prompts
     assert "Known relationship types:" in prompts
+
+
+def test_invalid_schema_and_mode_raise_validation_error():
+    with pytest.raises(ValidationError, match="invalid schema"):
+        as_schema({"entities": [{"description": "no name"}]})
+    with pytest.raises(ValidationError, match="schema_mode"):
+        new_graph(schema_mode="loud")
+    g = new_graph()
+    with pytest.raises(ValidationError, match="schema_mode"):
+        run(g.insert.ontology({"entities": []}, schema=SPEC, schema_mode="loud"))
+
+
+def test_settings_load_schema_from_file_or_object(tmp_path, monkeypatch):
+    path = tmp_path / "schema.json"
+    path.write_text(json.dumps(SPEC), encoding="utf-8")
+    monkeypatch.setenv("SELFGRAPH_SCHEMA", str(path))
+    monkeypatch.setenv("SELFGRAPH_SCHEMA_MODE", "strict")
+    g = build_graph(settings_from_env(**vars(store_settings())))
+    assert g.schema == Schema.model_validate(SPEC)
+    with pytest.raises(ValidationError):
+        run(g.insert.ontology({"entities": [{"type": "Robot", "name": "R2"}]}))
+    assert build_graph(store_settings(schema=SPEC)).schema == Schema.model_validate(SPEC)
+    with pytest.raises(ValidationError, match="cannot read"):
+        build_graph(store_settings(schema=str(tmp_path / "missing.json")))
+
+
+def test_mcp_get_schema_tool():
+    srv.configure(store_settings(schema=SPEC))
+    got = run(srv.get_schema())
+    assert got["relations"][0]["from"]["types"] == ["Person"]
+    run(srv.close())
+    srv.configure(store_settings())
+    assert run(srv.get_schema()) is None
+    run(srv.close())

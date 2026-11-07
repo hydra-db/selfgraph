@@ -170,6 +170,12 @@ const READ_ONLY_MESSAGE =
 
 export const TOOLS: Tool[] = [
   tool({
+    name: "get_schema",
+    description: "Return the schema inserts are checked against (entity and relation types), or null when none is set.",
+    input: {},
+    run: async (g) => g.schema,
+  }),
+  tool({
     name: "insert_text",
     description:
       "Extract an ontology from text and merge it into the graph. Needs an LLM. Idempotent: ids are derived " +

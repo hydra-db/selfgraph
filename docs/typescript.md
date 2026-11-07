@@ -79,13 +79,18 @@ omitted field keeps its value and `null` clears it, as `None` does in Python.
   does not reassemble. `HydraDBStore` retries a failed handshake with jitter,
   which is safe because no query has run yet.
 
+## Schema
+
+Schema works as in Python; see [Schema](schema.md#typescript).
+
 ## CLI and MCP
 
 `npx @hydradb/selfgraph` takes the same flags, commands, and `SELFGRAPH_*`
 variables as the Python CLI and prints the same JSON. `npx @hydradb/selfgraph mcp`
-serves the same 26 tools. Installed, the command is `selfgraph`. To embed the
+serves the same 27 tools. Installed, the command is `selfgraph`. To embed the
 server in your own process, use
-`import { buildServer, TOOLS } from "@hydradb/selfgraph/mcp"`.
+`import { buildServer, TOOLS, close } from "@hydradb/selfgraph/mcp"`; `await close()`
+closes the tools' shared graph so the process can exit.
 
 ## Development
 

@@ -36,10 +36,17 @@ schema = Schema(
 graph = SelfGraph(store=store, schema=schema)
 ```
 
+`graph.schema` returns the graph-level schema, or `None`.
+
 An entity type may name a `parent`; endpoint checks follow the parent chain, so a
 `Manager` satisfies an endpoint that wants a `Person`. Property types are
-`string`, `integer`, `float`, `boolean`, `datetime`, or `json`. Aliases on a type
-or relation resolve to the canonical name during both extraction and validation.
+`string`, `integer`, `float`, `boolean`, `datetime`, or `json`; a `datetime` is
+any string, and its format is not checked.
+
+An alias of a type or relation passes validation as that type, but the stored
+type is not rewritten: an entity typed `org` counts as a `Company` and is still
+stored as type `org` with an `org:` id. Entity aliases are listed in the
+extraction prompt; relation aliases are not.
 
 ## Modes
 
@@ -65,12 +72,35 @@ A per-insert `schema` or `schema_mode` overrides the graph-level one.
 
 | Code | Raised when |
 |------|-------------|
-| `unknown_entity_type` | An entity's type is not in the schema. |
+| `unknown_entity_type` | An entity's type is not in the schema, and the schema lists at least one entity type. |
 | `missing_required_property` | A required property is absent. |
 | `property_type_mismatch` | A property value does not match its declared type. |
-| `unknown_relation_type` | A relation's type is not in the schema. |
+| `unknown_relation_type` | A relation's type is not in the schema, and the schema lists at least one relation type. |
 | `endpoint_type_violation` | A relation endpoint is not one of the allowed types. |
 | `cardinality_violation` | An endpoint's count in this insert is below `min_count` or above `max_count`. |
 
 Cardinality is counted per insert call, not across the whole graph. An empty
 schema, or one with no entities and no relations, reports nothing.
+
+## CLI and MCP
+
+`--schema` names a JSON file with the shape above, and `--schema-mode` sets the
+mode; `SELFGRAPH_SCHEMA` and `SELFGRAPH_SCHEMA_MODE` do the same from the
+environment. `selfgraph schema` prints the active schema, and the MCP server's
+`get_schema` tool returns it. `SelfGraph.connect(schema=...)` and `from_env`
+accept either a file path or the schema itself.
+
+## TypeScript
+
+The options and fields keep their Python names.
+
+```ts
+import { SelfGraph } from "@hydradb/selfgraph";
+
+const graph = new SelfGraph(store, { schema, schema_mode: "warn" });
+await graph.insert.ontology(ontology, { schema, schema_mode: "strict" });
+await graph.insert.text(text, { schema });
+```
+
+`schema` is a plain object with the shape above, using `from` for the source
+endpoint. `graph.schema` is the parsed graph-level schema, or `null`.

@@ -1,8 +1,10 @@
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
+from pydantic import ValidationError as PydanticValidationError
 
+from .errors import ValidationError
 from .ids import entity_id, normalize_rel_type
 from .models import InsertWarning, Ontology
 
@@ -15,6 +17,7 @@ __all__ = [
     "Schema",
     "SchemaMode",
     "as_schema",
+    "require_schema_mode",
     "validate_against_schema",
     "render_schema_catalog",
 ]
@@ -70,7 +73,19 @@ def as_schema(value: "Schema | Mapping | None") -> "Schema | None":
     """
     if value is None or isinstance(value, Schema):
         return value
-    return Schema.model_validate(value)
+    try:
+        return Schema.model_validate(value)
+    except PydanticValidationError as exc:
+        raise ValidationError(f"invalid schema: {exc}") from exc
+
+
+def require_schema_mode(mode: object) -> None:
+    """Reject a schema mode other than off, warn, or strict.
+
+    @param mode (object): the schema mode.
+    """
+    if mode not in get_args(SchemaMode):
+        raise ValidationError(f"schema_mode must be one of {', '.join(get_args(SchemaMode))}, got {mode!r}")
 
 
 def _entity_index(schema: Schema) -> dict[str, EntityType]:

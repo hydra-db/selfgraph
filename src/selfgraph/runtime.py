@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -12,6 +15,7 @@ from .client import SelfGraph
 from .errors import StoreError, ValidationError
 from .models import LLMConfig
 from .protocols import GraphStore
+from .schema import Schema
 
 __all__ = [
     "GraphSettings",
@@ -19,6 +23,7 @@ __all__ = [
     "settings_from_env",
     "to_jsonable",
     "dumps",
+    "read_json",
 ]
 
 STORES = ("neo4j", "cypher", "memgraph", "hydradb", "falkordb", "kuzu")
@@ -35,6 +40,8 @@ class GraphSettings:
     llm_model: str | None = None
     llm_api_key: str | None = None
     llm_base_url: str | None = None
+    schema: str | Schema | Mapping[str, Any] | None = None
+    schema_mode: str | None = None
 
 
 def settings_from_env(**overrides: Any) -> GraphSettings:
@@ -60,7 +67,25 @@ def settings_from_env(**overrides: Any) -> GraphSettings:
         llm_model=pick("llm_model", "SELFGRAPH_LLM_MODEL"),
         llm_api_key=pick("llm_api_key", "SELFGRAPH_LLM_API_KEY"),
         llm_base_url=pick("llm_base_url", "SELFGRAPH_LLM_BASE_URL"),
+        schema=pick("schema", "SELFGRAPH_SCHEMA"),
+        schema_mode=pick("schema_mode", "SELFGRAPH_SCHEMA_MODE"),
     )
+
+
+def read_json(path: str) -> Any:
+    """Read and parse a JSON file, or stdin when the path is '-'.
+
+    @param path (str): the file path, or '-'.
+    @return (Any): the parsed JSON.
+    """
+    try:
+        raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValidationError(f"cannot read {path!r}: {exc.strerror or exc}") from exc
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"invalid JSON in {path!r}: {exc}") from exc
 
 
 def _parse_auth(auth: str | None) -> tuple[str, str] | None:
@@ -126,13 +151,15 @@ def _build_llm(settings: GraphSettings) -> LLMConfig | None:
 def build_graph(settings: GraphSettings) -> SelfGraph:
     """Construct a SelfGraph from settings; does not call initialize.
 
-    @param settings (GraphSettings): the resolved store and LLM configuration.
+    @param settings (GraphSettings): the resolved store, LLM, and schema configuration.
     @return (SelfGraph): the constructed graph.
     """
     return SelfGraph(
         store=_build_store(settings),
         llm=_build_llm(settings),
         namespace=settings.namespace or "default",
+        schema=read_json(settings.schema) if isinstance(settings.schema, str) else settings.schema,
+        schema_mode=settings.schema_mode or "warn",
     )
 
 
@@ -147,7 +174,7 @@ def to_jsonable(obj: Any) -> Any:
     if obj is None or isinstance(obj, str | int | float | bool):
         return obj
     if isinstance(obj, BaseModel):
-        return to_jsonable(obj.model_dump(mode="json"))
+        return to_jsonable(obj.model_dump(mode="json", by_alias=True))
     if isinstance(obj, dict):
         return {k: to_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, list | tuple):

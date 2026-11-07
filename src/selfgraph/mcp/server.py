@@ -190,6 +190,12 @@ async def _graph_handle() -> SelfGraph:
     return _graph
 
 
+async def get_schema() -> dict[str, Any] | None:
+    """Return the schema inserts are checked against (entity and relation types), or null when none is set."""
+    g = await _graph_handle()
+    return to_jsonable(g.schema)
+
+
 async def insert_text(text: str, source_id: str | None = None) -> dict[str, Any]:
     """Extract an ontology from text and merge it into the graph. Needs an LLM.
 
@@ -528,6 +534,7 @@ async def retrieve(
 
 
 TOOLS = [
+    get_schema,
     insert_text,
     insert_ontology,
     create_entity,

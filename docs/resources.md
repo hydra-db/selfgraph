@@ -13,8 +13,8 @@ for one.
 An id defaults to `type:name` with the name canonicalized, so surface variants of
 one entity (`Acme`, `Acme, Inc.`) share an id. Compute the id a name will resolve
 to with `selfgraph.entity_id(type, name)`, which is useful when authoring relations
-that reference an entity by id. Deleting an entity also removes its relations and
-any decision trace that references it.
+that reference an entity by id. Deleting an entity also removes its relations, its
+preferences, and any decision trace that references it.
 
 ```python
 from selfgraph import entity_id

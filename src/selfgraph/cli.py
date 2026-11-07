@@ -5,11 +5,11 @@ import asyncio
 import json
 import sys
 from datetime import datetime
-from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from .errors import SelfGraphError, ValidationError
-from .runtime import STORES, GraphSettings, build_graph, dumps, settings_from_env
+from .runtime import STORES, GraphSettings, build_graph, dumps, read_json, settings_from_env
+from .schema import SchemaMode
 
 __all__ = ["main", "build_parser"]
 
@@ -45,17 +45,6 @@ def _json_or_none(text: str | None) -> dict[str, Any] | None:
         raise ValidationError(f"invalid JSON: {exc}") from exc
 
 
-def _read_json_arg(path: str) -> Any:
-    try:
-        raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ValidationError(f"cannot read {path!r}: {exc.strerror or exc}") from exc
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValidationError(f"invalid JSON in {path!r}: {exc}") from exc
-
-
 async def _init(graph, args):
     await graph.initialize()
     return {"ok": True, "store": args.store, "namespace": args.namespace}
@@ -65,6 +54,10 @@ async def _version(graph, args):
     import selfgraph
 
     return {"selfgraph": selfgraph.__version__}
+
+
+async def _schema(graph, args):
+    return graph.schema
 
 
 async def _query(graph, args):
@@ -87,7 +80,7 @@ async def _insert_text(graph, args):
 
 
 async def _insert_ontology(graph, args):
-    return await graph.insert.ontology(_read_json_arg(args.path), source_id=args.source_id)
+    return await graph.insert.ontology(read_json(args.path), source_id=args.source_id)
 
 
 async def _entity_create(graph, args):
@@ -288,12 +281,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-model", default=None)
     parser.add_argument("--llm-api-key", default=None)
     parser.add_argument("--llm-base-url", default=None)
+    parser.add_argument("--schema", default=None, help="schema JSON file applied to every insert")
+    parser.add_argument("--schema-mode", default=None, choices=get_args(SchemaMode), help="default warn")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="create the store's ID constraints").set_defaults(func=_init)
     sub.add_parser("version", help="print the installed version").set_defaults(func=_version)
     sub.add_parser("mcp", help="run the MCP server over stdio").set_defaults(func=None)
+    sub.add_parser("schema", help="print the active schema").set_defaults(func=_schema)
 
     q = sub.add_parser("query", help="run one Cypher statement")
     q.add_argument("cypher")
@@ -474,6 +470,8 @@ def _settings_from_args(args: argparse.Namespace) -> GraphSettings:
         llm_model=args.llm_model,
         llm_api_key=args.llm_api_key,
         llm_base_url=args.llm_base_url,
+        schema=args.schema,
+        schema_mode=args.schema_mode,
     )
 
 

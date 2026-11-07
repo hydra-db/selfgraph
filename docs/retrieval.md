@@ -64,10 +64,10 @@ print(result.rows)
 the dialect of the store you are on. The embedded backends do not expose label or
 relationship-typed Cypher. `KuzuStore` keeps everything in generic `N` and `R`
 tables with a JSON `doc` property, so you filter with `json_extract` rather than
-`MATCH (n:Person)`; `HydraDBStore` on HydraDB 0.2.0 supports only `MATCH ... RETURN`.
+`MATCH (n:Person)`; HydraDB runs a narrow openCypher subset.
 Cypher written for Neo4j will not run unchanged on Kuzu or HydraDB, so prefer the
 typed methods for code that must work across backends. See [Backends](backends.md).
 
-`result.counters` reports write counts only on the Bolt backends (Neo4j, Memgraph,
+`result.counters` reports write counts only on the server backends (Neo4j, Memgraph,
 FalkorDB, HydraDB), which return a query summary. The embedded Kuzu driver exposes
 no mutation counts, so `counters` is always empty there; use `result.rows` instead.

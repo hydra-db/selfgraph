@@ -16,15 +16,15 @@ match the surrounding code, and respect the invariants below.
 
 ## Architecture invariant
 
-Python owns all logic. Merge, versioning, ID derivation, and validation live in
+The SDK owns all logic. Merge, versioning, ID derivation, and validation live in
 `_ops.py` and the resource classes. A `GraphStore` implements graph primitives
 (`upsert_node`, `create_edge`, `get_node`, `match_nodes`, `match_edges`,
 `update_current_edge`, and so on); `_ops.py` calls only those and never writes
 dialect. Each backend translates the primitives to its own engine: `CypherStore`
 to standard openCypher over Bolt (with `Neo4jStore` adding Neo4j constraints),
 `FalkorDBStore` reusing the Cypher primitives over FalkorDB's Redis protocol,
-`KuzuStore` to embedded Kuzu over a generic single-table schema with json_extract
-filtering, `HydraDBStore` to HydraDB's dialect with integer surrogate keys and
+`KuzuStore` to embedded Kuzu over one generic node table and one rel table with
+json_extract filtering, `HydraDBStore` to HydraDB's dialect with integer surrogate keys and
 auto-commit. Never put business logic in a store, and never make `_ops` backend-aware.
 
 Where things live: `client.py` is the `SelfGraph` entry point. `insert.py` is the
@@ -59,9 +59,10 @@ Use short, one-line commit messages.
 
 Publishing a GitHub release runs `.github/workflows/publish.yml`, which picks the
 registry from the tag. A `vX.Y.Z` tag publishes the Python package to PyPI; bump
-`src/selfgraph/__init__.py` first. A `ts-vX.Y.Z` tag publishes `typescript/` to
-npm; bump `version` in `typescript/package.json` first, since the job fails when
-the tag and the version differ. Never publish by hand.
+`__version__` in `src/selfgraph/__init__.py` first. A `ts-vX.Y.Z` tag publishes
+`typescript/` to npm; bump `version` in `typescript/package.json` and
+`typescript/package-lock.json` first. Both jobs fail when the tag and the version
+differ. Never publish by hand.
 
 ## Do not
 

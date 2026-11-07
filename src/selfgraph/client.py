@@ -28,7 +28,7 @@ from .protocols import Extractor, GraphStore, LLMClient
 from .provenance import record_source
 from .resources import Decisions, Entities, Preferences, Relations
 from .retrieval import retrieve as _retrieve
-from .schema import Schema, SchemaMode, as_schema, validate_against_schema
+from .schema import Schema, SchemaMode, as_schema, require_schema_mode, validate_against_schema
 
 __all__ = ["SelfGraph"]
 
@@ -53,6 +53,7 @@ class SelfGraph:
         schema_mode: SchemaMode = "warn",
     ) -> None:
         _ops._require_text("namespace", namespace)
+        require_schema_mode(schema_mode)
         self.store = store
         self.namespace = namespace
         self._llm = resolve_llm(llm)
@@ -71,7 +72,7 @@ class SelfGraph:
 
     @property
     def schema(self) -> Schema | None:
-        """The active schema, exposed read-only for agents and the MCP server.
+        """The graph-level schema, read-only.
 
         @return (Schema | None): the schema, or None when none is set.
         """
@@ -92,7 +93,7 @@ class SelfGraph:
     def connect(cls, **settings: Any) -> SelfGraph:
         """Build a graph from store and LLM settings without importing a store class.
 
-        @param settings (Any): GraphSettings fields such as store, uri, auth, namespace, llm_provider, llm_model.
+        @param settings (Any): GraphSettings fields such as store, uri, namespace, llm_model, and schema.
         @return (SelfGraph): the constructed graph.
         """
         from .runtime import GraphSettings, build_graph
@@ -255,6 +256,7 @@ class SelfGraph:
         warnings = list(warnings or [])
         active_schema = schema if schema is not None else self._schema
         mode = schema_mode if schema_mode is not None else self._schema_mode
+        require_schema_mode(mode)
 
         async def _apply(tx: Any) -> InsertResult:
             _ops._require_datetime("event_time", default_event_time)

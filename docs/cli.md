@@ -15,6 +15,8 @@ These come before the subcommand and pick the backend.
 | `--database` | Database name for Bolt stores. |
 | `--namespace` | Graph namespace, default `default`. |
 | `--llm-provider`, `--llm-model`, `--llm-api-key`, `--llm-base-url` | LLM settings for `insert text`. |
+| `--schema` | A [schema](schema.md) JSON file applied to every insert. |
+| `--schema-mode` | `warn` (default), `strict`, or `off`. |
 
 Each flag falls back to its `SELFGRAPH_*` environment variable.
 
@@ -33,6 +35,7 @@ selfgraph version
 | `init` | Create the store's id constraints. |
 | `version` | Print the installed version. |
 | `mcp` | Run the MCP server over stdio. See [MCP](mcp.md). |
+| `schema` | Print the active schema, or `null`. |
 | `query` | Run one Cypher statement. Unlike the MCP `run_cypher` tool, it can write. |
 | `retrieve` | Retrieve context for a query. |
 | `insert text` | Extract an ontology from text, with an LLM if one is configured, else spaCy or the regex fallback. |

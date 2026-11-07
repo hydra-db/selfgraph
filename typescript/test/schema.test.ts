@@ -1,11 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
+import { buildGraph } from "../src/client.js";
 import { KuzuStore, type LLMClient, SelfGraph, ValidationError } from "../src/index.js";
+import { callTool, close, configure, TOOLS } from "../src/mcp.js";
 import { Ontology } from "../src/models.js";
+import { DEFAULT_SETTINGS } from "../src/runtime.js";
 import { asSchema, renderSchemaCatalog, Schema, validateAgainstSchema } from "../src/schema.js";
 
 const SPEC = {
@@ -286,5 +289,44 @@ describe("schema through the client", () => {
       expect(joined).toContain("Extract entities using these known types");
       expect(joined).toContain("Known relationship types:");
     });
+  });
+
+  it("rejects an invalid schema or schema mode with ValidationError", async () => {
+    expect(() => asSchema({ entities: [{ description: "no name" }] } as never)).toThrow(/invalid schema/);
+    expect(() => new SelfGraph(new KuzuStore(":memory:"), { schema_mode: "loud" as never })).toThrow(/schema_mode/);
+    await withGraph("d.kuzu", {}, async (graph) => {
+      await expect(
+        graph.insert.ontology({ entities: [] }, { schema: SPEC, schema_mode: "loud" as never }),
+      ).rejects.toThrow(/schema_mode/);
+    });
+  });
+
+  it("loads the schema setting from a file or an object", async () => {
+    const file = join(dir, "schema.json");
+    writeFileSync(file, JSON.stringify(SPEC));
+    const settings = { ...DEFAULT_SETTINGS, store: "kuzu", uri: join(dir, "e.kuzu"), schema_mode: "strict" };
+    const fromFile = buildGraph({ ...settings, schema: file });
+    try {
+      expect(fromFile.schema).toEqual(Schema.parse(SPEC));
+      await expect(fromFile.insert.ontology({ entities: [{ type: "Robot", name: "R2" }] })).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    } finally {
+      await fromFile.close();
+      await KuzuStore.closeDatabase(settings.uri);
+    }
+    expect(buildGraph({ ...settings, uri: ":memory:", schema: SPEC }).schema).toEqual(Schema.parse(SPEC));
+    expect(() => buildGraph({ ...settings, schema: join(dir, "missing.json") })).toThrow(/cannot read/);
+  });
+
+  it("serves the schema through the get_schema MCP tool", async () => {
+    const getSchema = TOOLS.find((t) => t.name === "get_schema")!;
+    await configure({ ...DEFAULT_SETTINGS, store: "kuzu", uri: join(dir, "f.kuzu"), schema: SPEC });
+    const got = (await callTool(getSchema, {})).result as { relations: Array<{ from: { types: string[] } }> };
+    expect(got.relations[0]!.from.types).toEqual(["Person"]);
+    await configure({ ...DEFAULT_SETTINGS, store: "kuzu", uri: join(dir, "f.kuzu") });
+    expect((await callTool(getSchema, {})).result).toBeNull();
+    await close();
+    await KuzuStore.closeDatabase(join(dir, "f.kuzu"));
   });
 });

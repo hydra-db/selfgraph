@@ -58,6 +58,12 @@ For a Bolt backend, pass its connection flags instead:
 The backend you name must be reachable when the client starts the server. A Kuzu
 file needs nothing running, which is why it is the simplest target.
 
+## Schema
+
+Pass `--schema` before `mcp` to check every insert tool against a
+[schema](schema.md#cli-and-mcp). The `get_schema` tool returns it, so an agent can
+read the expected types before it writes.
+
 ## Embedding
 
 `selfgraph.mcp.server.build_server()` returns the server for your own process. The

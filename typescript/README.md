@@ -14,6 +14,7 @@
 - Text-to-graph extraction with any LLM through the AI SDK, or without an LLM via a zero-dependency fallback.
 - Typed CRUD over entities, relations, preferences, and decision traces.
 - Bitemporal versioning, source provenance, and per-namespace isolation.
+- An optional schema that guides extraction and validates inserts, with warn, strict, or off modes ([docs](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md)).
 - Retrieval from keyword seeds and bounded BFS, DFS, or personalized PageRank, returning source passages and relationships, no vector store.
 - A CLI and an MCP server over the same API.
 - One storage interface across backends: Neo4j, Memgraph, FalkorDB, embedded Kuzu, HydraDB, or a custom store.
@@ -141,7 +142,7 @@ npx @hydradb/selfgraph --store neo4j --uri bolt://localhost:7687 --auth neo4j:pa
 npx @hydradb/selfgraph --store neo4j --uri bolt://localhost:7687 --auth neo4j:password mcp
 ```
 
-The CLI and the MCP server expose the same commands and 26 tools as the Python ones, read the same `SELFGRAPH_*` environment variables, and print the same JSON. A failing tool returns an MCP error result (`isError` set) whose content is `{error, error_type}`. The MCP `run_cypher` tool is read-only: it rejects any write, schema, transaction, or admin statement (a keyword guard, not a sandbox), while `graph.runCypher()` in code runs anything. `import { buildServer, TOOLS, close } from "@hydradb/selfgraph/mcp"` embeds the server in your own process; `await close()` closes the tools' shared graph so the process can exit.
+The CLI and the MCP server expose the same commands and 27 tools as the Python ones, read the same `SELFGRAPH_*` environment variables, and print the same JSON. A failing tool returns an MCP error result (`isError` set) whose content is `{error, error_type}`. The MCP `run_cypher` tool is read-only: it rejects any write, schema, transaction, or admin statement (a keyword guard, not a sandbox), while `graph.runCypher()` in code runs anything. `import { buildServer, TOOLS, close } from "@hydradb/selfgraph/mcp"` embeds the server in your own process; `await close()` closes the tools' shared graph so the process can exit.
 
 ## Known issues
 

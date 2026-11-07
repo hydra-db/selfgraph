@@ -21,7 +21,14 @@ import {
 import * as ops from "./ops.js";
 import type { Extractor, LLMClient } from "./protocols.js";
 import { recordSource } from "./provenance.js";
-import { asSchema, type ParsedSchema, type Schema, type SchemaMode, validateAgainstSchema } from "./schema.js";
+import {
+  asSchema,
+  type ParsedSchema,
+  requireSchemaMode,
+  type Schema,
+  type SchemaMode,
+  validateAgainstSchema,
+} from "./schema.js";
 import { isUnstorable, pyTypeName, requireJsonMapping, requireOptionalText } from "./validate.js";
 
 export interface InsertTextOptions {
@@ -104,6 +111,7 @@ export class Insert {
     const createdAt = new Date();
     const activeSchema = schema ?? this.setup.schema;
     const mode = schemaMode ?? this.setup.schemaMode;
+    requireSchemaMode(mode);
     return this.graph.write(async (tx, ns) => {
       await ops.validateOntology(tx, ns, ontology);
       const warnings = [...source.warnings];

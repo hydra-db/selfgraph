@@ -21,7 +21,7 @@ Each extra pulls in the dependencies for one feature.
 | `falkordb` | The FalkorDB backend. |
 | `kuzu` | The embedded Kuzu backend. |
 | `mcp` | The MCP server. |
-| `all` | Everything above except `ner`. |
+| `all` | Everything above. |
 
 ```bash
 pip install "selfgraph[kuzu]"          # embedded backend, no server

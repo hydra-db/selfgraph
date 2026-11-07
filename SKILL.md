@@ -29,7 +29,7 @@ pip install "selfgraph[falkordb,kuzu]"
 pip install "selfgraph[all]"
 ```
 
-Base install gives the Neo4j and openCypher backends, HydraDB, CRUD, ontology insert, and BM25 seeding (built in, no extra). Extras: `[llm]` adds LLM extraction for `insert.text`; `[ner]` adds LLM-free spaCy extraction; `[tokenizer]` adds token budgeting; `[falkordb]` and `[kuzu]` add those backends; `[all]` bundles llm, tokenizer, falkordb, kuzu, and mcp. A backend is required: a Bolt server (Neo4j, Memgraph), FalkorDB, HydraDB, or embedded Kuzu (no server).
+Base install gives the Neo4j and openCypher backends, HydraDB, CRUD, ontology insert, and BM25 seeding (built in, no extra). Extras: `[llm]` adds LLM extraction for `insert.text`; `[ner]` adds LLM-free spaCy extraction; `[tokenizer]` adds token budgeting; `[falkordb]` and `[kuzu]` add those backends; `[all]` bundles llm, ner, tokenizer, falkordb, kuzu, and mcp. A backend is required: a Bolt server (Neo4j, Memgraph), FalkorDB, HydraDB, or embedded Kuzu (no server).
 
 ## Quick Start
 
@@ -71,7 +71,7 @@ res = await graph.insert.text(
 )
 ```
 
-The result exposes `res.entities`, `res.relations`, `res.preferences`, `res.decisions`, and `res.warnings`. Extraction is non-deterministic and chunks the text, writing Source, Version, and Chunk provenance so `retrieve()` can ground answers in real passages. `source_id` is optional but enables provenance and retrievable passages.
+The result exposes `res.entities`, `res.relations`, `res.preferences`, `res.decisions`, and `res.warnings`. Extraction is non-deterministic and chunks the text, writing Source, SourceVersion, and Chunk provenance so `retrieve()` can ground answers in real passages. `source_id` is optional but enables provenance and retrievable passages.
 
 Without an LLM, `insert.text` falls back to `BasicExtractor`: spaCy NER plus subject-verb-object relations when the `ner` extra is installed, otherwise a zero-dependency regex heuristic. It is lower quality than LLM extraction and flags itself in `res.warnings`. For full control with no LLM, build the graph with `insert.ontology` or pass your own `extractor`.
 
@@ -119,7 +119,7 @@ for w in res.warnings:
     print(w.code, w.message)
 ```
 
-`schema_mode` is `"warn"` (default, violations go to `res.warnings` and the write proceeds), `"strict"` (any violation raises `ValidationError` before writing), or `"off"` (no checks, extraction catalog still used). A per-insert `schema` or `schema_mode` overrides the graph-level one. Entity types resolve aliases and follow `parent` for endpoint checks; cardinality is counted per insert, not across the graph. See `docs/schema.md`.
+`schema_mode` is `"warn"` (default, violations go to `res.warnings` and the write proceeds), `"strict"` (any violation raises `ValidationError` before writing), or `"off"` (no checks, extraction catalog still used). A per-insert `schema` or `schema_mode` overrides the graph-level one. An alias passes validation as its type but is stored as written, and endpoint checks follow `parent`; cardinality is counted per insert, not across the graph. See `docs/schema.md`.
 
 ## Entities
 
@@ -138,7 +138,7 @@ await graph.entities.update("company:acme", properties={"stage": "series-a"})
 await graph.entities.delete("company:acme")
 ```
 
-`create` takes `name` then `type`. If you omit `id` it is derived as `type:canonical-name`. `list` returns a `Page` with `items` and `next_cursor`. `delete` cascades to the entity's relations, preferences, and decision steps.
+`create` takes `name` then `type`. If you omit `id` it is derived as `type:canonical-name`. `list` returns a `Page` with `items` and `next_cursor`. `delete` cascades to the entity's relations, preferences, and the decision traces that reference it.
 
 ## Relations (versioned)
 
@@ -226,11 +226,11 @@ KuzuStore("selfgraph.kuzu")
 HydraDBStore("bolt://127.0.0.1:17687", auth=("neo4j", "<token>"), database="default")
 ```
 
-`CypherStore` works with any Bolt and openCypher database (Memgraph, Amazon Neptune, and others); `Neo4jStore` is a `CypherStore` that also creates Neo4j uniqueness constraints; `FalkorDBStore` runs over FalkorDB's Redis protocol (needs the `falkordb` extra); `KuzuStore` is an embedded in-process graph (needs the `kuzu` extra). All SDK logic is identical across backends. To target a store that is not Bolt or Cypher, implement the `GraphStore` primitives and pass your store to `SelfGraph(store=...)`. Raw Cypher via `await graph.run_cypher(query, params)` is a backend-specific escape hatch and is not portable across dialects.
+`CypherStore` works with any Bolt and openCypher database (Neo4j and Memgraph are tested); `Neo4jStore` is a `CypherStore` that also creates Neo4j uniqueness constraints; `FalkorDBStore` runs over FalkorDB's Redis protocol (needs the `falkordb` extra); `KuzuStore` is an embedded in-process graph (needs the `kuzu` extra); `HydraDBStore` takes the HydraDB token as the second slot of `auth`, and HydraDB 0.3.0 must run on an S3-compatible object store such as MinIO. All SDK logic is identical across backends. To target a store that is not Bolt or Cypher, implement the `GraphStore` primitives and pass your store to `SelfGraph(store=...)`. Raw Cypher via `await graph.run_cypher(query, params)` is a backend-specific escape hatch and is not portable across dialects.
 
 ## CLI and MCP
 
-The same API is available as a CLI and an MCP server with no Python needed:
+The same API is available as a CLI and an MCP server, with no code to write:
 
 ```bash
 selfgraph init
@@ -240,7 +240,7 @@ selfgraph retrieve "who led the acquisition"
 selfgraph mcp
 ```
 
-`selfgraph mcp` runs the MCP server over stdio with 26 tools. Configure via flags or `SELFGRAPH_*` environment variables (`SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`).
+`selfgraph mcp` runs the MCP server over stdio with 27 tools. Configure via flags or `SELFGRAPH_*` environment variables (`SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`, `SELFGRAPH_SCHEMA`, `SELFGRAPH_SCHEMA_MODE`). `get_schema` returns the active schema.
 
 ## TypeScript
 

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -5,6 +6,7 @@ import { ValidationError } from "./errors.js";
 import { pyRepr } from "./internal/py.js";
 import type { LLMConfig } from "./models.js";
 import type { GraphStore } from "./protocols.js";
+import type { ParsedSchema, Schema } from "./schema.js";
 import { CypherStore, Neo4jStore } from "./stores/cypher.js";
 import { FalkorDBStore } from "./stores/falkordb.js";
 import { HydraDBStore } from "./stores/hydradb.js";
@@ -22,6 +24,8 @@ export interface GraphSettings {
   llm_model: string | null;
   llm_api_key: string | null;
   llm_base_url: string | null;
+  schema: string | Schema | ParsedSchema | null;
+  schema_mode: string | null;
 }
 
 export const DEFAULT_SETTINGS: Readonly<GraphSettings> = Object.freeze({
@@ -34,6 +38,8 @@ export const DEFAULT_SETTINGS: Readonly<GraphSettings> = Object.freeze({
   llm_model: null,
   llm_api_key: null,
   llm_base_url: null,
+  schema: null,
+  schema_mode: null,
 });
 
 const ENV: Record<keyof GraphSettings, string> = {
@@ -46,6 +52,8 @@ const ENV: Record<keyof GraphSettings, string> = {
   llm_model: "SELFGRAPH_LLM_MODEL",
   llm_api_key: "SELFGRAPH_LLM_API_KEY",
   llm_base_url: "SELFGRAPH_LLM_BASE_URL",
+  schema: "SELFGRAPH_SCHEMA",
+  schema_mode: "SELFGRAPH_SCHEMA_MODE",
 };
 
 /**
@@ -65,6 +73,37 @@ export function settingsFromEnv(
     if (value != null) Object.assign(out, { [key]: value });
   }
   return out;
+}
+
+/**
+ * Parse JSON text, naming where it came from in the error.
+ *
+ * @param text (string): the JSON text.
+ * @param where (string): appended to "invalid JSON" in the error, e.g. " in 'graph.json'".
+ * @return (unknown): the parsed value.
+ */
+export function parseJson(text: string, where: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (exc) {
+    throw new ValidationError(`invalid JSON${where}: ${(exc as Error).message}`);
+  }
+}
+
+/**
+ * Read and parse a JSON file, or stdin when the path is "-".
+ *
+ * @param path (string): the file path, or "-".
+ * @return (unknown): the parsed JSON.
+ */
+export function readJson(path: string): unknown {
+  let raw: string;
+  try {
+    raw = readFileSync(path === "-" ? 0 : path, "utf8");
+  } catch (exc) {
+    throw new ValidationError(`cannot read ${pyRepr(path)}: ${(exc as Error).message}`);
+  }
+  return parseJson(raw, ` in ${pyRepr(path)}`);
 }
 
 function parseAuth(auth: string | null): [string, string] | null {

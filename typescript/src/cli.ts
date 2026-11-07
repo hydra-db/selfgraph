@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -17,7 +17,16 @@ import { DEFAULT_KIND, DEFAULT_STATUS, type JsonObject, Kind, type Ontology, Sta
 import { dumps } from "./output.js";
 import { DEFAULT_PAGE_LIMIT } from "./resources/common.js";
 import { RETRIEVE_DEFAULTS, STRATEGIES } from "./retrieval.js";
-import { DEFAULT_SETTINGS, type GraphSettings, STORES, settingsFromEnv, version } from "./runtime.js";
+import {
+  DEFAULT_SETTINGS,
+  type GraphSettings,
+  parseJson,
+  readJson,
+  STORES,
+  settingsFromEnv,
+  version,
+} from "./runtime.js";
+import { SCHEMA_MODES } from "./schema.js";
 
 type GlobalOptions = {
   store?: string;
@@ -29,6 +38,8 @@ type GlobalOptions = {
   llmModel?: string;
   llmApiKey?: string;
   llmBaseUrl?: string;
+  schema?: string;
+  schemaMode?: string;
 };
 
 const collect = (value: string, prev: string[]): string[] => [...prev, value];
@@ -42,14 +53,6 @@ function floatArg(value: string): number {
   const n = Number(value);
   if (value.trim() === "" || Number.isNaN(n)) throw new ValidationError(`invalid float value: ${pyRepr(value)}`);
   return n;
-}
-
-function parseJson(text: string, where: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch (exc) {
-    throw new ValidationError(`invalid JSON${where}: ${(exc as Error).message}`);
-  }
 }
 
 /**
@@ -96,6 +99,8 @@ function settingsOf(cmd: { optsWithGlobals(): GlobalOptions }): GraphSettings {
     llm_model: o.llmModel,
     llm_api_key: o.llmApiKey,
     llm_base_url: o.llmBaseUrl,
+    schema: o.schema,
+    schema_mode: o.schemaMode,
   });
 }
 
@@ -342,7 +347,9 @@ export function buildParser(): Command<[], GlobalOptions> {
     .option("--llm-provider <provider>", "an AI SDK provider, e.g. anthropic, openai, google, ollama")
     .option("--llm-model <model>")
     .option("--llm-api-key <key>")
-    .option("--llm-base-url <url>");
+    .option("--llm-base-url <url>")
+    .option("--schema <path>", "schema JSON file applied to every insert")
+    .addOption(new Option("--schema-mode <mode>", "default warn").choices(SCHEMA_MODES));
 
   program
     .command("init")
@@ -364,6 +371,10 @@ export function buildParser(): Command<[], GlobalOptions> {
     .command("mcp")
     .description("run the MCP server over stdio")
     .action((_o, cmd) => runStdio(settingsOf(cmd)));
+  program
+    .command("schema")
+    .description("print the active schema")
+    .action((_o, cmd) => emit(cmd, async (g) => g.schema));
   program
     .command("query <cypher>")
     .description("run one Cypher statement")
@@ -422,15 +433,7 @@ export function buildParser(): Command<[], GlobalOptions> {
     .description("insert a ready ontology (JSON file or '-' for stdin)")
     .option("--source-id <id>")
     .action((path, o, cmd) =>
-      emit(cmd, (g) => {
-        let raw: string;
-        try {
-          raw = readFileSync(path === "-" ? 0 : path, "utf8");
-        } catch (exc) {
-          throw new ValidationError(`cannot read ${pyRepr(path)}: ${(exc as Error).message}`);
-        }
-        return g.insert.ontology(parseJson(raw, ` in ${pyRepr(path)}`) as Ontology, { source_id: o.sourceId });
-      }),
+      emit(cmd, (g) => g.insert.ontology(readJson(path) as Ontology, { source_id: o.sourceId })),
     );
 
   entityCommands(program);
