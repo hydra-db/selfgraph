@@ -30,9 +30,12 @@ jobs:
             const author = pr.user.login;
             const number = pr.number;
 
-            const got = await github.rest.repos.getContent({
-              owner: context.repo.owner, repo: context.repo.repo, path: '.github/vouched.json', ref: context.payload.repository.default_branch });
-            const roster = JSON.parse(Buffer.from(got.data.content, 'base64').toString('utf8'));
+            let roster = { maintainers: [] };
+            try {
+              const got = await github.rest.repos.getContent({
+                owner: context.repo.owner, repo: context.repo.repo, path: '.github/vouched.json', ref: context.payload.repository.default_branch });
+              roster = JSON.parse(Buffer.from(got.data.content, 'base64').toString('utf8'));
+            } catch (e) { core.warning(`Could not read vouched.json, treating roster as empty: ${e.message}`); }
             // Anyone with write access (the backend team) counts as a maintainer.
             const isTeam = async (login) => (roster.maintainers || []).includes(login) ||
               ['admin', 'write'].includes(await github.rest.repos.getCollaboratorPermissionLevel({
@@ -77,9 +80,12 @@ jobs:
         with:
           script: |
             const MAX = parseInt(process.env.MAX_OPEN, 10);
-            const got = await github.rest.repos.getContent({
-              owner: context.repo.owner, repo: context.repo.repo, path: '.github/vouched.json', ref: context.payload.repository.default_branch });
-            const maintainers = (JSON.parse(Buffer.from(got.data.content, 'base64').toString('utf8')).maintainers) || [];
+            let maintainers = [];
+            try {
+              const got = await github.rest.repos.getContent({
+                owner: context.repo.owner, repo: context.repo.repo, path: '.github/vouched.json', ref: context.payload.repository.default_branch });
+              maintainers = (JSON.parse(Buffer.from(got.data.content, 'base64').toString('utf8')).maintainers) || [];
+            } catch (e) { core.warning(`Could not read vouched.json, treating roster as empty: ${e.message}`); }
 
             const prs = await github.paginate(github.rest.pulls.list, {
               owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100 });
