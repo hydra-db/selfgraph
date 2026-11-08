@@ -15,15 +15,7 @@ import {
   type UpsertNodeOptions,
 } from "../protocols.js";
 import { AutoCommitStore, bindList, quoteLabel, sortedEntries, toCount } from "./cypherPrimitives.js";
-import {
-  deleteBothWays,
-  docs,
-  edgeRow,
-  endpointsExist,
-  firstDoc,
-  mergedCurrentEdge,
-  relationIdsBothWays,
-} from "./docRows.js";
+import { docs, edgeRow, firstDoc, mergedCurrentEdge } from "./docRows.js";
 
 const SCHEMA = [
   "CREATE NODE TABLE IF NOT EXISTS N(pk STRING, id STRING, ns STRING, label STRING, doc STRING, PRIMARY KEY(pk))",
@@ -96,6 +88,9 @@ function normalize(value: unknown): unknown {
 const pk = (ns: string, id: string): string => `${ns}\x00${id}`;
 const jv = (value: unknown): string => pyJsonDumps(value, { ensureAscii: false, default: pyStr });
 
+const BY_SID = "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid";
+const BOTH_WAYS = ["(x:N {pk:$pk})-[r:R]->(o:N)", "(o:N)-[r:R]->(x:N {pk:$pk})"];
+
 function intLiteral(n: number): number {
   if (!Number.isFinite(n)) throw new StoreError(`expected an integer, got ${n}`);
   return Math.trunc(n);
@@ -114,6 +109,33 @@ function whereDocEquals(alias: string, equals: Props | null | undefined, where: 
     where.push(`json_extract(${alias}.doc, $k${i}) = $v${i}`);
     params[`k${i}`] = key;
     params[`v${i}`] = jv(value);
+  });
+}
+
+/**
+ * Add one membership clause per any_of entry, matching the id on the primary key and other keys inside the document.
+ *
+ * @param ns (string): the namespace the primary keys are scoped to.
+ * @param anyOf (Record<string, readonly unknown[]> | null | undefined): property name to the accepted values.
+ * @param where (string[]): the clauses to extend.
+ * @param params (Props): the parameters to extend.
+ */
+function whereDocAnyOf(
+  ns: string,
+  anyOf: Record<string, readonly unknown[]> | null | undefined,
+  where: string[],
+  params: Props,
+): void {
+  sortedEntries(anyOf).forEach(([key, values], i) => {
+    const list = values as unknown[];
+    if (key === "id") {
+      where.push(`n.pk IN $in${i}`);
+      params[`in${i}`] = list.map((v) => pk(ns, v as string));
+    } else {
+      where.push(`CAST(json_extract(n.doc, $ik${i}) AS STRING) IN $in${i}`);
+      params[`ik${i}`] = key;
+      params[`in${i}`] = list.map(jv);
+    }
   });
 }
 
@@ -254,11 +276,12 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
   async removeNodeLabel(): Promise<void> {}
 
   async matchNodes(ns: string, label: string, options: MatchNodesOptions = {}): Promise<Props[]> {
-    const { equals, skip = 0, limit = DEFAULT_MATCH_LIMIT } = options;
+    const { equals, any_of, skip = 0, limit = DEFAULT_MATCH_LIMIT } = options;
     if (skip > MAX_SKIP) return [];
     const where = ["n.ns = $ns", "n.label = $label"];
     const params: Props = { ns, label };
     whereDocEquals("n", equals, where, params);
+    whereDocAnyOf(ns, any_of, where, params);
     const res = await this._run(
       `MATCH (n:N) WHERE ${where.join(" AND ")} ` +
         `RETURN n.doc AS doc ORDER BY n.id SKIP ${intLiteral(skip)} LIMIT ${intLiteral(limit)}`,
@@ -271,6 +294,15 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     await this._run("MATCH (n:N {pk:$pk}) DETACH DELETE n", { pk: pk(ns, id) });
   }
 
+  async deleteNodesBy(ns: string, label: string, equals: Props): Promise<number> {
+    const where = ["n.ns = $ns", "n.label = $label"];
+    const params: Props = { ns, label };
+    whereDocEquals("n", equals, where, params);
+    const res = await this._run(`MATCH (n:N) WHERE ${where.join(" AND ")} RETURN n.pk AS pk`, params);
+    for (const row of res.rows) await this._run("MATCH (n:N {pk:$pk}) DETACH DELETE n", { pk: row.pk });
+    return res.rows.length;
+  }
+
   async createEdge(
     ns: string,
     type: string,
@@ -280,7 +312,8 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     toId: string,
     props: Props,
   ): Promise<boolean> {
-    if (!(await endpointsExist(this, ns, fromLabel, fromId, toLabel, toId))) return false;
+    if (!(await this.nodeExists(ns, fromLabel, fromId))) return false;
+    if (!(await this.nodeExists(ns, toLabel, toId))) return false;
     const sid = props.id ?? null;
     const rev = props.revision ?? null;
     const params = {
@@ -293,21 +326,17 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
       rev,
       doc: jv(props),
     };
-    const query =
+    const write =
       sid !== null && rev !== null
-        ? "MATCH (a:N {pk:$f}), (b:N {pk:$t}) " +
-          "MERGE (a)-[r:R {sid:$sid, ns:$ns, revision:$rev}]->(b) " +
-          "SET r.etype=$et, r.is_current=$isc, r.doc=$doc"
-        : "MATCH (a:N {pk:$f}), (b:N {pk:$t}) " +
-          "CREATE (a)-[r:R {sid:$sid, ns:$ns, etype:$et, is_current:$isc, revision:$rev, doc:$doc}]->(b)";
-    await this._run(query, params);
+        ? "MERGE (a)-[r:R {sid:$sid, ns:$ns, revision:$rev}]->(b) SET r.etype=$et, r.is_current=$isc, r.doc=$doc"
+        : "CREATE (a)-[r:R {sid:$sid, ns:$ns, etype:$et, is_current:$isc, revision:$rev, doc:$doc}]->(b)";
+    await this._run(`MATCH (a:N {pk:$f}), (b:N {pk:$t}) ${write}`, params);
     return true;
   }
 
   async getCurrentEdge(ns: string, id: string): Promise<EdgeRow | null> {
     const res = await this._run(
-      "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid AND r.is_current = true " +
-        "RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et",
+      `${BY_SID} AND r.is_current = true RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et`,
       { ns, sid: id },
     );
     const row = res.rows[0];
@@ -316,8 +345,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
 
   async listEdgeVersions(ns: string, id: string): Promise<EdgeRow[]> {
     const res = await this._run(
-      "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid " +
-        "RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
+      `${BY_SID} RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
       { ns, sid: id },
     );
     return res.rows.map(edgeRow);
@@ -326,24 +354,23 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
   async updateCurrentEdge(ns: string, id: string, props: Props): Promise<void> {
     const merged = await mergedCurrentEdge(this, ns, id, props);
     if (merged === null) return;
-    await this._run(
-      "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid AND r.is_current = true " +
-        "SET r.doc = $doc, r.is_current = $isc, r.revision = $rev",
-      { ns, sid: id, doc: jv(merged), isc: merged.is_current ?? null, rev: merged.revision ?? null },
-    );
+    await this._run(`${BY_SID} AND r.is_current = true SET r.doc = $doc, r.is_current = $isc, r.revision = $rev`, {
+      ns,
+      sid: id,
+      doc: jv(merged),
+      isc: merged.is_current ?? null,
+      rev: merged.revision ?? null,
+    });
   }
 
   private async countEdges(ns: string, id: string): Promise<number> {
-    const res = await this._run("MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid RETURN count(*) AS n", {
-      ns,
-      sid: id,
-    });
+    const res = await this._run(`${BY_SID} RETURN count(*) AS n`, { ns, sid: id });
     return toCount(res.rows);
   }
 
   async deleteEdges(ns: string, id: string): Promise<number> {
     const n = await this.countEdges(ns, id);
-    if (n) await this._run("MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid DELETE r", { ns, sid: id });
+    if (n) await this._run(`${BY_SID} DELETE r`, { ns, sid: id });
     return n;
   }
 
@@ -412,7 +439,12 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
       "r.revision IS NOT NULL",
       ...bindList(options.exclude_types, "ex", params, (p) => `r.etype <> ${p}`),
     ];
-    return relationIdsBothWays((q, p) => this._run(q, p), "x:N {pk:$pk}", "r:R", "o:N", where, params);
+    const out = new Set<string>();
+    for (const pattern of BOTH_WAYS) {
+      const res = await this._run(`MATCH ${pattern} WHERE ${where.join(" AND ")} RETURN DISTINCT r.sid AS rid`, params);
+      for (const r of res.rows) out.add(r.rid as string);
+    }
+    return [...out];
   }
 
   async childNodes(
@@ -423,7 +455,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     childLabel: string,
   ): Promise<Props[]> {
     const res = await this._run(
-      "MATCH (p:N {pk:$pk})-[r:R]->(c:N) " + "WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl RETURN c.doc AS doc",
+      "MATCH (p:N {pk:$pk})-[r:R]->(c:N) WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl RETURN c.doc AS doc",
       { pk: pk(ns, parentId), ns, et: edgeType, cl: childLabel },
     );
     return docs(res.rows);
@@ -448,6 +480,8 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
   }
 
   async deleteEdgesTouchingByType(ns: string, _label: string, id: string, type: string): Promise<void> {
-    await deleteBothWays((q, p) => this._run(q, p), "t:N {pk:$pk}", "r:R", "o:N", { pk: pk(ns, id), ns, et: type });
+    for (const pattern of BOTH_WAYS) {
+      await this._run(`MATCH ${pattern} WHERE r.ns = $ns AND r.etype = $et DELETE r`, { pk: pk(ns, id), ns, et: type });
+    }
   }
 }

@@ -1,12 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { GraphPrimitives, GraphStore } from "../src/index.js";
-import { ConflictError, ids, NotFoundError, SelfGraph, TransientError, ValidationError } from "../src/index.js";
+import {
+  ConflictError,
+  ids,
+  NotFoundError,
+  SelfGraph,
+  StoreError,
+  TransientError,
+  ValidationError,
+} from "../src/index.js";
 import { childEdgeId } from "../src/labels.js";
-import { reachable, STORE_SPECS, type StoreSpec, selectedStores, uniqueNs } from "./helpers.js";
-
-const specs = selectedStores();
-const live = new Map<string, boolean>();
-for (const spec of specs) live.set(spec.name, await reachable(spec));
+import { forEachStore, freshGraphs, STORE_SPECS, type StoreSpec, uniqueNs } from "./helpers.js";
 
 const NO_DELETES = {
   deleted_entities: 0,
@@ -46,6 +50,7 @@ function suite(spec: StoreSpec) {
   let graph: SelfGraph;
   let other: SelfGraph;
   const ns = uniqueNs(`ts_${spec.name}`);
+  const fresh = freshGraphs(spec, "fresh");
 
   beforeAll(async () => {
     graph = new SelfGraph(spec.make(), { namespace: ns });
@@ -113,7 +118,12 @@ function suite(spec: StoreSpec) {
       evidence: [{ source_id: "bio", quote: "worked at Bletchley" }],
     });
     expect(r1.type).toBe("WORKED_AT");
-    expect(r1.evidence[0]).toMatchObject({ source_id: "bio", source_version: "bio:manual", chunk_id: null });
+    expect(r1.source_count).toBe(1);
+    expect((await graph.relations.evidence(r1.id)).items[0]).toMatchObject({
+      source_id: "bio",
+      source_version: "bio:manual",
+      chunk_id: null,
+    });
     await expect(
       graph.relations.create("person:alan-turing", "WORKED_AT", "place:bletchley-park"),
     ).rejects.toBeInstanceOf(ConflictError);
@@ -229,13 +239,64 @@ function suite(spec: StoreSpec) {
     expect(await graph.decisions.get(t.id)).toBeNull();
   });
 
+  it("clears a preference's about_entity when that entity is deleted, and null keeps a field", async () => {
+    const g = fresh();
+    await g.entities.create("Soham", "Person");
+    await g.entities.create("HydraDB", "Company");
+    await g.entities.create("Graphs", "Topic");
+    await g.entities.create("A", "Person");
+    await g.entities.create("B", "Person");
+    const pref = await g.preferences.create("person:soham", "database", "company:hydradb", {
+      about_entity: "topic:graphs",
+      strength: 0.4,
+    });
+    expect((await g.entities.delete("topic:graphs")).deleted_preference_versions).toBe(0);
+    const current = (await g.preferences.get(pref.id))!;
+    expect(current.about_entity).toBeNull();
+    expect(current.revision).toBe(2);
+    expect(current.strength).toBe(0.4);
+    expect((await g.preferences.update(pref.id, { strength: null })).strength).toBe(0.4);
+    const rel = await g.relations.create("person:a", "KNOWS", "person:b", { event_time: "2025-01-02T00:00:00Z" });
+    const kept = await g.relations.update(rel.id, { event_time: null });
+    expect(kept.event_time).toEqual(rel.event_time);
+    expect(kept.revision).toBe(rel.revision);
+  });
+
+  it("fails every call after close with StoreError instead of reopening", async () => {
+    const g = fresh();
+    await g.entities.create("Before", "Thing");
+    await g.close();
+    await g.close();
+    for (const call of [() => g.entities.get("thing:before"), () => g.entities.create("After", "Thing")]) {
+      const err = await call().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StoreError);
+      expect(err).not.toBeInstanceOf(TransientError);
+      expect((err as Error).message).toMatch(/closed/);
+    }
+    await expect(g.initialize()).rejects.toBeInstanceOf(StoreError);
+  });
+
+  it.runIf(spec.name === "memgraph" || spec.name === "neo4j")(
+    "reports a Cypher syntax error as StoreError, not TransientError",
+    async () => {
+      const err = await graph.runCypher("RETURN").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StoreError);
+      expect(err).not.toBeInstanceOf(TransientError);
+    },
+  );
+
   it("extracts text without an LLM, with idempotent source provenance", async () => {
     const text = "Grace Hopper joined Remington Rand. Grace Hopper wrote COBOL.";
     const res = await graph.insert.text(text, { source_id: "notes", metadata: { author: "test" } });
     expect(res.warnings.map((w) => w.code)).toEqual(["basic_extraction"]);
     const grace = res.entities.find((e) => e.name === "Grace Hopper")!;
     expect(grace.id).toBe("thing:grace-hopper");
-    expect(grace.evidence[0]).toMatchObject({ source_id: "notes", source_version: res.source_version, chunk_id: null });
+    expect(grace.source_count).toBe(1);
+    expect((await graph.entities.evidence(grace.id)).items[0]).toMatchObject({
+      source_id: "notes",
+      source_version: res.source_version,
+      chunk_id: null,
+    });
 
     const again = await graph.insert.text(text, { source_id: "notes" });
     expect(again.source_version).toBe(res.source_version);
@@ -355,10 +416,7 @@ function suite(spec: StoreSpec) {
   });
 }
 
-for (const spec of specs) {
-  const run = live.get(spec.name) ? describe : describe.skip;
-  run(`store: ${spec.name}`, () => suite(spec));
-}
+await forEachStore("store", suite);
 
 describe("write retry", () => {
   it("retries a TransientError with backoff, then surfaces contention", async () => {

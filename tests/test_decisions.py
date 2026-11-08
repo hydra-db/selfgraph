@@ -53,7 +53,6 @@ def test_step_shows_current_relation_version():
     g = new_graph()
     r1, r2 = seed(g)
     dec = run(g.decisions.create("D", steps=[r1.id], id="decision:d"))
-    # endpoints never change across versions, so from/to stay stable
     run(g.relations.update(r1.id, set_properties={"note": "x"}))
     got = run(g.decisions.get(dec.id))
     assert got.steps[0].relation_id == r1.id

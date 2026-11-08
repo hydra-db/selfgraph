@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -32,54 +32,14 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
 _IN_WRITE: ContextVar[bool] = ContextVar("selfgraph_in_write", default=False)
 
 
-class AutoCommitStore:
-    async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
-        """Run one raw Cypher statement (backend-specific escape hatch).
-
-        @param query (str): the statement.
-        @param params (Mapping[str, JsonValue] | None): query parameters.
-        @return (CypherResult): the rows.
-        """
-        return await self._run(query, params)
-
-    async def lock_node(self, ns: str, label: str, id: str) -> None:
-        """No-op: writes are already serialized per store by transaction.
-
-        @param ns (str): namespace.
-        @param label (str): node label.
-        @param id (str): node id.
-        @return (None): nothing.
-        """
-        return None
-
-    @asynccontextmanager
-    async def transaction(self):
-        """Run one write at a time on this store, since an auto-commit backend cannot isolate a read-modify-write.
-
-        @return (AsyncIterator[AutoCommitStore]): this store, held until the write finishes.
-        """
-        if _IN_WRITE.get():
-            yield self
-            return
-        if "_write_lock" not in self.__dict__:
-            self._write_lock = asyncio.Lock()
-        async with self._write_lock:
-            token = _IN_WRITE.set(True)
-            try:
-                yield self
-            finally:
-                _IN_WRITE.reset(token)
-
-
-_COUNTER_NAMES = (
+WRITE_COUNTERS = (
     "nodes_created",
     "nodes_deleted",
     "relationships_created",
     "relationships_deleted",
     "properties_set",
-    "labels_added",
-    "labels_removed",
 )
+_COUNTER_NAMES = (*WRITE_COUNTERS, "labels_added", "labels_removed")
 
 
 def _to_json(value: Any) -> Any:
@@ -134,6 +94,108 @@ def where_equals(alias: str, equals: dict | None, where: list[str], params: dict
         params[f"eq{i}"] = value
 
 
+def where_any_of(alias: str, any_of: dict | None, where: list[str], params: dict) -> None:
+    """Add one alias.key IN $inN clause per membership-filter entry, in sorted key order, and bind its parameter.
+
+    @param alias (str): the node or relationship variable.
+    @param any_of (dict | None): property name to the list of accepted values.
+    @param where (list[str]): the clauses to extend.
+    @param params (dict): the parameters to extend.
+    @return (None): nothing.
+    """
+    for i, (key, values) in enumerate(sorted((any_of or {}).items())):
+        where.append(f"{alias}.{key} IN $in{i}")
+        params[f"in{i}"] = list(values)
+
+
+def bind_list(values: list[str], prefix: str, params: dict, clause: Callable[[str], str]) -> list[str]:
+    """Bind each value as $<prefix><i> and build one clause per value.
+
+    @param values (list[str]): the values to bind.
+    @param prefix (str): the parameter name prefix.
+    @param params (dict): the parameters to extend.
+    @param clause (Callable[[str], str]): builds the clause for one parameter reference.
+    @return (list[str]): the clauses, in value order.
+    """
+    out = []
+    for i, value in enumerate(values):
+        params[f"{prefix}{i}"] = value
+        out.append(clause(f"${prefix}{i}"))
+    return out
+
+
+class CypherRunner:
+    async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
+        raise NotImplementedError
+
+    async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
+        """Run one raw Cypher statement (backend-specific escape hatch).
+
+        @param query (str): the statement.
+        @param params (Mapping[str, JsonValue] | None): query parameters.
+        @return (CypherResult): the rows.
+        """
+        return await self._run(query, params)
+
+    async def upsert_nodes(
+        self, ns: str, label: str, rows: list[tuple[str, dict]], *, extra_label: str | None = None
+    ) -> None:
+        """Merge many nodes of one label by id and set their properties, optionally adding a second label.
+
+        @param ns (str): namespace.
+        @param label (str): the primary label matched on.
+        @param rows (list[tuple[str, dict]]): (node id, properties) pairs.
+        @param extra_label (str | None): an additional label to add to every node.
+        @return (None): nothing.
+        """
+        for id, props in rows:
+            await self.upsert_node(ns, label, id, props, extra_label=extra_label)
+
+    async def create_edges(
+        self, ns: str, from_label: str, to_label: str, rows: list[tuple[str, str, str, dict]]
+    ) -> None:
+        """Create or update many directed typed edges between existing nodes, skipping rows with a missing endpoint.
+
+        @param ns (str): namespace.
+        @param from_label (str): source node label.
+        @param to_label (str): destination node label.
+        @param rows (list[tuple[str, str, str, dict]]): (edge type, source id, destination id, properties) rows.
+        @return (None): nothing.
+        """
+        for type, from_id, to_id, props in rows:
+            await self.create_edge(ns, type, from_label, from_id, to_label, to_id, props)
+
+
+class AutoCommitStore(CypherRunner):
+    async def lock_node(self, ns: str, label: str, id: str) -> None:
+        """No-op: writes are already serialized per store by transaction.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param id (str): node id.
+        @return (None): nothing.
+        """
+        return None
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Run one write at a time on this store, since an auto-commit backend cannot isolate a read-modify-write.
+
+        @return (AsyncIterator[AutoCommitStore]): this store, held until the write finishes.
+        """
+        if _IN_WRITE.get():
+            yield self
+            return
+        if "_write_lock" not in self.__dict__:
+            self._write_lock = asyncio.Lock()
+        async with self._write_lock:
+            token = _IN_WRITE.set(True)
+            try:
+                yield self
+            finally:
+                _IN_WRITE.reset(token)
+
+
 def count_of(rows: list[dict]) -> int:
     """The n column of the first row as an int, or 0 when there is no row.
 
@@ -156,19 +218,7 @@ async def records_to_result(result) -> CypherResult:
     return CypherResult(columns=keys, rows=rows, counters={k: v for k, v in counters.items() if v})
 
 
-class CypherPrimitives:
-    async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
-        raise NotImplementedError
-
-    async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
-        """Run one raw Cypher statement (backend-specific escape hatch).
-
-        @param query (str): the statement.
-        @param params (Mapping[str, JsonValue] | None): query parameters.
-        @return (CypherResult): the rows.
-        """
-        return await self._run(query, params)
-
+class CypherPrimitives(CypherRunner):
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
         """Fetch a node's properties by label and id.
 
@@ -242,15 +292,17 @@ class CypherPrimitives:
         label: str,
         *,
         equals: dict | None = None,
+        any_of: dict | None = None,
         order_by: str = "id",
         skip: int = 0,
         limit: int = 1000,
     ) -> list[dict]:
-        """Return node property maps for a label, filtered by exact property matches.
+        """Return node property maps for a label, filtered by exact property matches and membership.
 
         @param ns (str): namespace.
         @param label (str): node label.
         @param equals (dict | None): property name to required value.
+        @param any_of (dict | None): property name to the list of accepted values.
         @param order_by (str): node property to order by.
         @param skip (int): rows to skip.
         @param limit (int): maximum rows.
@@ -259,6 +311,7 @@ class CypherPrimitives:
         where = ["n.ns = $ns"]
         params: dict[str, Any] = {"ns": ns, "skip": skip, "limit": limit}
         where_equals("n", equals, where, params)
+        where_any_of("n", any_of, where, params)
         query = f"MATCH (n:{label}) WHERE {' AND '.join(where)} RETURN n ORDER BY n.{order_by} SKIP $skip LIMIT $limit"
         res = await self._run(query, params)
         return [r["n"] for r in res.rows]
@@ -458,11 +511,12 @@ class CypherPrimitives:
         @param exclude_types (list[str]): edge types to skip.
         @return (list[str]): the edge ids.
         """
-        clauses = ["r.id IS NOT NULL", "r.revision IS NOT NULL"]
         params: dict[str, Any] = {"id": id, "ns": ns}
-        for i, t in enumerate(exclude_types):
-            clauses.append(f"type(r) <> $ex{i}")
-            params[f"ex{i}"] = t
+        clauses = [
+            "r.id IS NOT NULL",
+            "r.revision IS NOT NULL",
+            *bind_list(exclude_types, "ex", params, lambda p: f"type(r) <> {p}"),
+        ]
         res = await self._run(
             f"MATCH (x:{label} {{id:$id, ns:$ns}})-[r]-(o) WHERE {' AND '.join(clauses)} RETURN DISTINCT r.id AS rid",
             params,
@@ -519,10 +573,7 @@ class CypherPrimitives:
         @return (int): the count.
         """
         params: dict[str, Any] = {"id": id, "ns": ns}
-        ors = []
-        for i, t in enumerate(types):
-            ors.append(f"type(r) = $t{i}")
-            params[f"t{i}"] = t
+        ors = bind_list(types, "t", params, lambda p: f"type(r) = {p}")
         res = await self._run(
             f"MATCH (p)-[r]->(x:{label} {{id:$id, ns:$ns}}) WHERE {' OR '.join(ors)} RETURN count(r) AS n",
             params,

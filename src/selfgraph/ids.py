@@ -18,6 +18,7 @@ __all__ = [
     "source_node_id",
     "source_version_id",
     "chunk_id",
+    "evidence_id",
     "quote_label",
     "quote_reltype",
 ]
@@ -91,6 +92,16 @@ def _require_str(label: str, value: object) -> None:
         raise ValidationError(f"{label} must be a string, got {type(value).__name__}")
     if not value.strip():
         raise ValidationError(f"{label} cannot be empty")
+    _require_no_control(label, value)
+
+
+def _require_no_control(label: str, value: str) -> None:
+    """Reject text holding a control or surrogate character.
+
+    @param label (str): the field name for the error message.
+    @param value (str): the text to check.
+    @return (None): nothing; raises ValidationError when a control or surrogate character is present.
+    """
     if _has_control(value):
         raise ValidationError(f"{label} cannot contain control or surrogate characters")
 
@@ -322,6 +333,52 @@ def chunk_id(source_version: str, index: int) -> str:
     @return (str): the derived chunk id.
     """
     return f"{source_version}:chunk:{index}"
+
+
+def evidence_id(
+    target_id: str,
+    source_id: str,
+    source_version: str,
+    chunk_id: str | None,
+    quote: str | None,
+    start_offset: int | None,
+    end_offset: int | None,
+) -> str:
+    """The ID of one evidence record: a hash of the fact it supports and where in which source it was seen.
+
+    @param target_id (str): the id of the entity or relation the evidence supports.
+    @param source_id (str): the source id.
+    @param source_version (str): the source version id.
+    @param chunk_id (str | None): the chunk id, or None for source-level evidence.
+    @param quote (str | None): the quoted text, or None.
+    @param start_offset (int | None): the quote's start offset, or None.
+    @param end_offset (int | None): the quote's end offset, or None.
+    @return (str): the derived evidence id.
+    """
+    offsets = [None if o is None else str(o) for o in (start_offset, end_offset)]
+    return f"evidence:{_hash(target_id, source_id, source_version, chunk_id, quote, *offsets)}"
+
+
+RESERVED_ID_PREFIXES = frozenset({"relation", "preference", "decision", "profile", "source", "sv", "evidence"})
+
+
+def step_id(trace_id: str, order: int) -> str:
+    """The id of a decision step node: the trace id, then ":step:" and the step's order.
+
+    @param trace_id (str): the decision trace id.
+    @param order (int): the step's position in the trace.
+    @return (str): the step node id.
+    """
+    return f"{trace_id}:step:{order}"
+
+
+def trace_of_step(sid: str) -> str:
+    """The decision trace id a step node id belongs to.
+
+    @param sid (str): the step node id.
+    @return (str): the trace id.
+    """
+    return sid.rsplit(":step:", 1)[0]
 
 
 def quote_label(name: str) -> str:

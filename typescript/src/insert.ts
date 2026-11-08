@@ -4,10 +4,11 @@ import { BasicExtractor } from "./extraction/basic.js";
 import { DefaultExtractor } from "./extraction/extractor.js";
 import { pyStrip } from "./internal/py.js";
 import {
+  asInput,
   type DateTimeInput,
   type Evidence,
-  type ExtractionInstructions,
-  type ExtractionPrompts,
+  ExtractionInstructions,
+  ExtractionPrompts,
   type InsertResult,
   type InsertWarning,
   insertWarning,
@@ -23,11 +24,11 @@ import type { Extractor, LLMClient } from "./protocols.js";
 import { recordSource } from "./provenance.js";
 import {
   asSchema,
+  enforceSchema,
   type ParsedSchema,
   requireSchemaMode,
   type Schema,
   type SchemaMode,
-  validateAgainstSchema,
 } from "./schema.js";
 import { isUnstorable, pyTypeName, requireJsonMapping, requireOptionalText } from "./validate.js";
 
@@ -52,8 +53,6 @@ export interface ExtractionSetup {
   instructions: ExtractionInstructions | null;
   prompts: ExtractionPrompts | null;
   extractor: Extractor | null;
-  schema: ParsedSchema | null;
-  schemaMode: SchemaMode;
 }
 
 interface Provenance {
@@ -91,7 +90,7 @@ export class Insert {
       instructions,
       call_prompts: callPrompts,
       call_instructions: callInstructions,
-      schema: schema ?? this.setup.schema,
+      schema: schema ?? this.graph.schema,
     });
   }
 
@@ -109,42 +108,34 @@ export class Insert {
     schemaMode: SchemaMode | null,
   ): Promise<InsertResult> {
     const createdAt = new Date();
-    const activeSchema = schema ?? this.setup.schema;
-    const mode = schemaMode ?? this.setup.schemaMode;
+    const activeSchema = schema ?? this.graph.schema;
+    const mode = schemaMode ?? this.graph.schemaMode;
     requireSchemaMode(mode);
     return this.graph.write(async (tx, ns) => {
       await ops.validateOntology(tx, ns, ontology);
-      const warnings = [...source.warnings];
-      if (activeSchema !== null && mode !== "off") {
-        const schemaWarnings = validateAgainstSchema(ontology, activeSchema);
-        if (mode === "strict" && schemaWarnings.length) {
-          throw new ValidationError(schemaWarnings.map((w) => w.message).join("; "));
-        }
-        warnings.push(...schemaWarnings);
-      }
+      const warnings = [...source.warnings, ...(await enforceSchema(tx, ns, ontology, activeSchema, mode))];
       let sourceVersion: string | null = null;
       let baseEvidence: Evidence[] = [];
 
       if (source.source_id !== null) {
         [sourceVersion, baseEvidence] = await recordSource(tx, ns, {
+          ...source,
           source_id: source.source_id,
-          parsed_text: source.parsed_text,
-          media_type: source.media_type,
-          metadata: source.metadata,
           created_at: createdAt,
         });
       }
 
-      const entities = [];
-      for (const ent of ontology.entities) {
-        entities.push(await ops.upsertEntity(tx, ns, ent, [...baseEvidence], createdAt));
-      }
-
-      const relations = [];
-      for (const rel of ontology.relations) {
-        const evidence = [...baseEvidence, ...ops.evidenceFromInputs(rel.evidence, sourceVersion)];
-        relations.push(await ops.upsertRelation(tx, ns, rel, evidence, source.default_event_time, createdAt));
-      }
+      const entities = await ops.upsertEntities(tx, ns, ontology.entities, [...baseEvidence], createdAt);
+      const relations = await ops.upsertRelations(
+        tx,
+        ns,
+        ontology.relations.map(
+          (rel) =>
+            [rel, [...baseEvidence, ...ops.evidenceFromInputs(rel.evidence, source.source_id, sourceVersion)]] as const,
+        ),
+        source.default_event_time,
+        createdAt,
+      );
 
       const preferences = [];
       for (const pref of ontology.preferences) {
@@ -222,12 +213,14 @@ export class Insert {
       };
     }
     const activeSchema = asSchema(options.schema);
-    const extractor = this.extractorFor(options.instructions ?? null, options.prompts ?? null, activeSchema);
+    const callInstructions = asInput(ExtractionInstructions, options.instructions, "instructions");
+    const callPrompts = asInput(ExtractionPrompts, options.prompts, "prompts");
+    const extractor = this.extractorFor(callInstructions, callPrompts, activeSchema);
     const document: ParsedDocument = { text, media_type: "text/plain", metadata: {} };
     const ontology = await this.extract(extractor, document);
     const warnings: InsertWarning[] = extractor.popWarnings?.() ?? [];
     const { instructions, prompts } = this.setup;
-    const customized = options.instructions || options.prompts || instructions || prompts;
+    const customized = callInstructions || callPrompts || instructions || prompts;
     if (customized && !(extractor instanceof DefaultExtractor)) {
       warnings.push(
         insertWarning(

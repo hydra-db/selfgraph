@@ -31,7 +31,8 @@ def test_insert_ontology_dict():
     assert res.source_id == "meeting-42"
     assert res.source_version is not None
     rel = res.relations[0]
-    assert rel.evidence and rel.evidence[0].source_id == "meeting-42"
+    assert rel.source_count == 1
+    assert [e.source_id for e in run(g.relations.evidence(rel.id)).items] == ["meeting-42"]
 
 
 def test_insert_is_upsert_idempotent():
@@ -120,7 +121,6 @@ def test_insert_ontology_object_and_event_time_default():
     run(g.entities.create("A", "T", id="t:a"))
     run(g.entities.create("B", "T", id="t:b"))
     ont = Ontology.model_validate({"relations": [{"from_entity": "t:a", "type": "R", "to_entity": "t:b"}]})
-    # text-style default event_time would apply via insert.text; ontology insert has none
     res = run(g.insert.ontology(ont))
     assert res.relations[0].event_time is None
 

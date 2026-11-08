@@ -1,42 +1,44 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime
+from functools import partial
 from typing import Any, get_args
 
 from . import ids as _ids
 from ._serde import (
-    L_CHUNK,
+    EDGE_TYPES,
     L_ENTITY,
+    L_EVIDENCE,
     L_PROFILE,
-    L_SOURCE,
-    L_SOURCE_VERSION,
     L_STEP,
     L_TRACE,
-    R_AVOIDS,
+    LABELS,
+    PREFERENCE_EDGE_TYPES,
     R_CONSIDERED,
     R_FROM,
-    R_HAS_CHUNK,
     R_HAS_PROFILE,
     R_HAS_STEP,
-    R_HAS_VERSION,
     R_MADE_DECISION,
-    R_PREFERS,
     R_RESULTED_IN,
     R_TO,
     _dumps,
     _loads,
+    child_edge_id,
     decode_entity,
+    decode_evidence,
     decode_preference,
     decode_relation,
     decode_trace,
     encode_entity_props,
-    encode_evidence,
+    encode_evidence_props,
     encode_preference_props,
     encode_relation_props,
     encode_trace_props,
     now,
+    preference_edge_type,
+    preference_kind_of,
     to_iso,
 )
 from .errors import ConflictError, NotFoundError, TransientError, ValidationError
@@ -57,24 +59,13 @@ from .models import (
     Status,
 )
 
-_RESERVED_TYPES = frozenset({L_ENTITY, L_PROFILE, L_TRACE, L_STEP, L_SOURCE, L_SOURCE_VERSION, L_CHUNK})
-_RESERVED_TYPES_LOWER = frozenset(t.lower() for t in _RESERVED_TYPES)
-_RESERVED_RELTYPES = frozenset(
-    {
-        R_HAS_PROFILE,
-        R_PREFERS,
-        R_AVOIDS,
-        R_MADE_DECISION,
-        R_HAS_STEP,
-        R_FROM,
-        R_TO,
-        R_RESULTED_IN,
-        R_CONSIDERED,
-        R_HAS_VERSION,
-        R_HAS_CHUNK,
-    }
-)
-_RESERVED_ID_PREFIXES = frozenset({"profile", "decision", "relation", "preference", "sv", "source"})
+_RESERVED_LABELS = frozenset(t.lower() for t in LABELS)
+_NO_DELETES = {
+    "deleted_entities": 0,
+    "deleted_relation_versions": 0,
+    "deleted_decisions": 0,
+    "deleted_preference_versions": 0,
+}
 _ENTITY_UPDATE_FIELDS = frozenset(
     {"type", "name", "aliases", "external_ids", "properties", "remove_aliases", "remove_properties"}
 )
@@ -92,6 +83,10 @@ _DECISION_UPDATE_FIELDS = frozenset(
     }
 )
 _MAX_ID_BYTES = 1024
+_PAGE = 500
+_BATCH = 1000
+
+SchemaCheck = Callable[[Any, Ontology], Awaitable[None]]
 
 
 def _validate_entity_identity(eid: str, type: str, name: str) -> None:
@@ -108,7 +103,7 @@ def _validate_entity_identity(eid: str, type: str, name: str) -> None:
         raise ValidationError(
             "entity type and name cannot be empty; an entity needs both, e.g. type='Person', name='Jane Doe'"
         )
-    if type.strip().lower() in _RESERVED_TYPES_LOWER:
+    if type.strip().lower() in _RESERVED_LABELS:
         raise ValidationError(f"entity type {type!r} is reserved for internal use; choose another type")
     if "`" in type:
         raise ValidationError("entity type cannot contain a backtick")
@@ -121,12 +116,23 @@ def _validate_entity_identity(eid: str, type: str, name: str) -> None:
     prefix_part, name_part = eid.split(":", 1)
     if not prefix_part.strip() or not name_part.strip():
         raise ValidationError(f"entity id must be 'type:name' with a non-empty prefix and name, got {eid!r}")
-    if eid.split(":", 1)[0].lower() in _RESERVED_ID_PREFIXES:
-        raise ValidationError(f"entity id prefix {eid.split(':', 1)[0]!r} is reserved for internal use")
+    if prefix_part.lower() in _ids.RESERVED_ID_PREFIXES:
+        raise ValidationError(f"entity id prefix {prefix_part!r} is reserved for internal use")
     if len(eid.encode("utf-8")) > _MAX_ID_BYTES:
         raise ValidationError(
             f"entity id is too long ({len(eid.encode('utf-8'))} bytes); keep ids under {_MAX_ID_BYTES} bytes"
         )
+
+
+def _reject_reserved_rel_type(rtype: str, given: str) -> None:
+    """Reject a relation type that names one of SelfGraph's internal edge types.
+
+    @param rtype (str): the normalized relation type.
+    @param given (str): the type as the caller wrote it, for the message.
+    @return (None): nothing; raises ValidationError on a reserved type.
+    """
+    if rtype in EDGE_TYPES:
+        raise ValidationError(f"relation type {given!r} is reserved for internal use; choose another type")
 
 
 def _validate_strength(strength: float | None) -> None:
@@ -167,16 +173,6 @@ def _require_int(field: str, value: Any) -> None:
         raise ValidationError(f"{field} must be an integer, got {type(value).__name__}")
 
 
-def _require_id(kind: str, oid: Any) -> None:
-    """Validate a lookup id is a clean string, so a bad id gives a typed error not a backend fault.
-
-    @param kind (str): the object kind for the error message.
-    @param oid (Any): the id to check.
-    @return (None): nothing; raises ValidationError when the id is not a clean string.
-    """
-    _ids._require_str(f"{kind} id", oid)
-
-
 def _require_optional_text(field: str, value: Any) -> None:
     """Validate a value is a string or None.
 
@@ -207,15 +203,15 @@ def _require_datetime(field: str, value: Any) -> None:
         raise ValidationError(f"{field} is outside the representable datetime range") from exc
 
 
-def _validate_object_id(kind: str, oid: str, own_prefix: str, *, require_own: bool = False) -> None:
-    """Validate a caller-supplied id for a relation, preference, or decision.
+def _validate_own_id(kind: str, oid: str | None) -> None:
+    """Validate a caller-chosen relation, preference, or decision id, which must carry its own kind as prefix.
 
-    @param kind (str): the object kind for messages.
-    @param oid (str): the caller-supplied id.
-    @param own_prefix (str): this object's own namespace prefix.
-    @param require_own (bool): require the id to carry own_prefix (for node-backed decisions).
-    @return (None): nothing; raises ValidationError on a bad or colliding id.
+    @param kind (str): the object kind and required id prefix.
+    @param oid (str | None): the id, or None to skip the check.
+    @return (None): nothing; raises ValidationError on a bad id.
     """
+    if oid is None:
+        return
     if not isinstance(oid, str) or not oid:
         raise ValidationError(f"{kind} id must be a non-empty string, got {type(oid).__name__}")
     if _has_control(oid):
@@ -225,36 +221,26 @@ def _validate_object_id(kind: str, oid: str, own_prefix: str, *, require_own: bo
             f"{kind} id is too long ({len(oid.encode('utf-8'))} bytes); keep ids under {_MAX_ID_BYTES} bytes"
         )
     prefix = oid.split(":", 1)[0].lower() if ":" in oid else ""
-    if require_own and prefix != own_prefix:
-        raise ValidationError(f"{kind} id must start with '{own_prefix}:', got {oid!r}")
-    if require_own and not oid.split(":", 1)[1].strip():
-        raise ValidationError(f"{kind} id must have a non-empty name after '{own_prefix}:', got {oid!r}")
-    if not require_own and prefix in _RESERVED_ID_PREFIXES and prefix != own_prefix:
-        raise ValidationError(f"{kind} id prefix {prefix!r} is reserved for internal use")
+    if prefix != kind:
+        raise ValidationError(f"{kind} id must start with '{kind}:', got {oid!r}")
+    if not oid.split(":", 1)[1].strip():
+        raise ValidationError(f"{kind} id must have a non-empty name after '{kind}:', got {oid!r}")
 
 
 _KINDS = frozenset(get_args(Kind))
 _STATUSES = frozenset(get_args(Status))
 
 
-def _validate_kind(kind: str) -> None:
-    """Validate a preference kind is one of the allowed values.
+def _require_choice(field: str, value: Any, choices: frozenset[str]) -> None:
+    """Validate a value is one of the allowed strings.
 
-    @param kind (str): the kind to check.
-    @return (None): nothing; raises ValidationError on an unknown kind.
+    @param field (str): the field name for the error message.
+    @param value (Any): the value to check.
+    @param choices (frozenset[str]): the allowed values.
+    @return (None): nothing; raises ValidationError on any other value.
     """
-    if not isinstance(kind, str) or kind not in _KINDS:
-        raise ValidationError(f"preference kind must be one of {sorted(_KINDS)}, got {kind!r}")
-
-
-def _validate_status(status: str) -> None:
-    """Validate a decision status is one of the allowed values.
-
-    @param status (str): the status to check.
-    @return (None): nothing; raises ValidationError on an unknown status.
-    """
-    if not isinstance(status, str) or status not in _STATUSES:
-        raise ValidationError(f"decision status must be one of {sorted(_STATUSES)}, got {status!r}")
+    if not isinstance(value, str) or value not in choices:
+        raise ValidationError(f"{field} must be one of {sorted(choices)}, got {value!r}")
 
 
 def _require_list(name: str, value: Any) -> None:
@@ -359,12 +345,14 @@ def _require_clean_evidence(ev: EvidenceInput) -> None:
 def evidence_from_inputs(
     inputs: list[EvidenceInput] | tuple[EvidenceInput, ...],
     *,
+    source_id: str | None = None,
     source_version: str | None = None,
 ) -> list[Evidence]:
     """Turn caller-supplied EvidenceInput into stored Evidence.
 
     @param inputs (list[EvidenceInput] | tuple[EvidenceInput, ...]): evidence to convert.
-    @param source_version (str | None): when absent, synthesised as "<source_id>:manual" to populate the required field.
+    @param source_id (str | None): the source being inserted; only evidence citing it takes source_version.
+    @param source_version (str | None): the inserted source's version; other evidence gets "<source_id>:manual".
     @return (list[Evidence]): the stored evidence.
     """
     if isinstance(inputs, str | bytes) or not isinstance(inputs, Iterable):
@@ -376,7 +364,7 @@ def evidence_from_inputs(
                 f"evidence must be EvidenceInput objects (selfgraph.EvidenceInput(...)), got a {type(ev).__name__}"
             )
         _require_clean_evidence(ev)
-        sv = source_version or f"{ev.source_id}:manual"
+        sv = source_version if source_version and ev.source_id == source_id else f"{ev.source_id}:manual"
         out.append(
             Evidence(
                 source_id=ev.source_id,
@@ -390,16 +378,12 @@ def evidence_from_inputs(
     return out
 
 
-def _dedup_list(items: list[str]) -> list[str]:
-    if isinstance(items, str):
-        raise ValidationError(f"expected a list of strings, got a single string {items!r}")
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
+def _clean_text(value: Any) -> Any:
+    return _ids.normalize_text(value).strip() if isinstance(value, str) else value
+
+
+def _dedup_list(items: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(items))
 
 
 def _dedup_text_list(items: list[str]) -> list[str]:
@@ -411,30 +395,127 @@ def _dedup_text_list(items: list[str]) -> list[str]:
     return _dedup_list([_ids.normalize_text(item) if isinstance(item, str) else item for item in items])
 
 
-def _ev_key(e: Evidence) -> tuple:
-    return (e.source_id, e.source_version, e.chunk_id, e.quote, e.start_offset, e.end_offset)
+async def _paged(fetch: Callable[..., Any], cap: int | None = None, page: int = _PAGE) -> list:
+    """Call a skip/limit list function page by page until it runs dry or reaches the cap.
 
-
-def _merge_evidence(existing: list[Evidence], new: list[Evidence]) -> list[Evidence]:
-    out = list(existing)
-    keys = {_ev_key(e) for e in existing}
-    for e in new:
-        k = _ev_key(e)
-        if k not in keys:
-            keys.add(k)
-            out.append(e)
+    @param fetch (Callable[..., Awaitable[list]]): the list call, given skip and limit as keywords.
+    @param cap (int | None): the most rows to read, or None for all.
+    @param page (int): the rows to read per call.
+    @return (list): every row read, in store order.
+    """
+    out: list = []
+    while cap is None or len(out) < cap:
+        batch = await fetch(skip=len(out), limit=page)
+        out.extend(batch)
+        if len(batch) < page:
+            break
     return out
 
 
-async def entity_exists(runner: Any, ns: str, eid: str) -> bool:
-    """Report whether an entity exists.
+def _batches(items: list) -> list[list]:
+    """Split a list into consecutive batches of at most _BATCH items.
+
+    @param items (list): the items to split.
+    @return (list[list]): the batches, in order.
+    """
+    return [items[i : i + _BATCH] for i in range(0, len(items), _BATCH)]
+
+
+async def _nodes_by_id(runner: Any, ns: str, label: str, ids: list[str]) -> dict[str, dict]:
+    """Fetch the stored properties of many nodes of one label by id, a batch per query.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param eid (str): entity id.
-    @return (bool): True when it exists.
+    @param label (str): node label.
+    @param ids (list[str]): the node ids.
+    @return (dict[str, dict]): each found node's properties by id.
     """
-    return await runner.node_exists(ns, L_ENTITY, eid)
+    found: dict[str, dict] = {}
+    for batch in _batches(ids):
+        for props in await runner.match_nodes(ns, label, any_of={"id": batch}, limit=len(batch)):
+            found[props["id"]] = props
+    return found
+
+
+async def _plan_evidence(
+    runner: Any, ns: str, items: list[tuple[str, Evidence]], *, new_targets: set[str]
+) -> tuple[list[tuple[str, dict]], dict[str, int]]:
+    """Find which evidence records are not stored yet and how many distinct sources each target gains.
+
+    Records are looked up by id first; only a target missing a record is then checked for any record from that
+    source. A target with no stored version has no stored evidence, so targets in new_targets skip both lookups.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param items (list[tuple[str, Evidence]]): (target id, evidence) pairs to record.
+    @param new_targets (set[str]): targets known to have no stored evidence.
+    @return (tuple[list[tuple[str, dict]], dict[str, int]]): the records to write, and the sources gained per target.
+    """
+    pending: dict[str, tuple[str, Evidence]] = {}
+    for target, ev in items:
+        evid = _ids.evidence_id(
+            target, ev.source_id, ev.source_version, ev.chunk_id, ev.quote, ev.start_offset, ev.end_offset
+        )
+        pending.setdefault(evid, (target, ev))
+    known = [evid for evid, (target, _) in pending.items() if target not in new_targets]
+    stored_ids = set(await _nodes_by_id(runner, ns, L_EVIDENCE, known))
+    by_source: dict[str, dict[str, None]] = {}
+    for evid in known:
+        if evid not in stored_ids:
+            target, ev = pending[evid]
+            by_source.setdefault(ev.source_id, {})[target] = None
+    seen: set[tuple[str, str]] = set()
+    for source_id, targets in by_source.items():
+        for batch in _batches(list(targets)):
+            fetch = partial(
+                runner.match_nodes, ns, L_EVIDENCE, equals={"source_id": source_id}, any_of={"target_id": batch}
+            )
+            for props in await _paged(fetch, page=_BATCH):
+                seen.add((props["target_id"], source_id))
+    records: list[tuple[str, dict]] = []
+    gained: dict[str, int] = {}
+    for evid, (target, ev) in pending.items():
+        if evid in stored_ids:
+            continue
+        records.append((evid, encode_evidence_props(ns=ns, id=evid, target_id=target, evidence=ev)))
+        if (target, ev.source_id) not in seen:
+            seen.add((target, ev.source_id))
+            gained[target] = gained.get(target, 0) + 1
+    return records, gained
+
+
+async def _write_evidence(runner: Any, ns: str, records: list[tuple[str, dict]]) -> None:
+    if records:
+        await runner.upsert_nodes(ns, L_EVIDENCE, records)
+
+
+async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip: int, limit: int) -> list[Evidence]:
+    """List the evidence records supporting one entity or relation, ordered by evidence id.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param target_id (str): the entity or relation id.
+    @param kind (str): "entity" or "relation", for validation and the not-found error.
+    @param skip (int): rows to skip.
+    @param limit (int): maximum rows.
+    @return (list[Evidence]): the evidence; raises NotFoundError when the first page is empty and the target is unknown.
+    """
+    _ids._require_str(f"{kind} id", target_id)
+    rows = await runner.match_nodes(
+        ns, L_EVIDENCE, equals={"target_id": target_id}, order_by="id", skip=skip, limit=limit
+    )
+    if not rows and skip == 0:
+        if kind == "entity":
+            exists = await runner.node_exists(ns, L_ENTITY, target_id)
+        else:
+            exists = await relation_exists(runner, ns, target_id)
+        if not exists:
+            raise NotFoundError("Entity" if kind == "entity" else "Relation", target_id)
+    return [decode_evidence(r) for r in rows]
+
+
+async def _delete_evidence(runner: Any, ns: str, target_id: str) -> None:
+    await runner.delete_nodes_by(ns, L_EVIDENCE, equals={"target_id": target_id})
 
 
 async def _entity_known(runner: Any, ns: str, eid: str, known: set[str] | frozenset[str]) -> bool:
@@ -442,14 +523,35 @@ async def _entity_known(runner: Any, ns: str, eid: str, known: set[str] | frozen
         raise ValidationError(f"entity reference must be a string id, got {type(eid).__name__}")
     if _has_control(eid):
         raise ValidationError("entity reference cannot contain control or surrogate characters")
-    return eid in known or await entity_exists(runner, ns, eid)
+    return eid in known or await runner.node_exists(ns, L_ENTITY, eid)
 
 
 async def _require_entity(
-    runner: Any, ns: str, eid: str, *, context: str, known: set[str] | frozenset[str] = frozenset()
+    runner: Any, ns: str, eid: str | None, context: str, known: set[str] | frozenset[str] = frozenset()
 ) -> None:
-    if not await _entity_known(runner, ns, eid, known):
+    if eid is not None and not await _entity_known(runner, ns, eid, known):
         raise ValidationError(f"{context} references unknown entity {eid!r}")
+
+
+async def _require_preference_refs(
+    runner: Any, ns: str, value_entity: str, about_entity: str | None, known: set[str] | frozenset[str] = frozenset()
+) -> None:
+    await _require_entity(runner, ns, value_entity, "preference", known)
+    await _require_entity(runner, ns, about_entity, "preference about_entity", known)
+
+
+async def _require_trace_refs(
+    runner: Any,
+    ns: str,
+    actor_entity: str | None,
+    outcome_entity: str | None,
+    alternative_entities: Iterable[str],
+    known: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    await _require_entity(runner, ns, actor_entity, "decision actor_entity", known)
+    await _require_entity(runner, ns, outcome_entity, "decision outcome_entity", known)
+    for alt in alternative_entities:
+        await _require_entity(runner, ns, alt, "decision alternative_entity", known)
 
 
 async def validate_ontology(runner: Any, ns: str, ontology: Ontology) -> None:
@@ -469,11 +571,12 @@ async def validate_ontology(runner: Any, ns: str, ontology: Ontology) -> None:
         if not isinstance(collection, list | tuple):
             raise ValidationError(f"ontology {name} must be a list, got {type(collection).__name__}")
 
-    entities = {ent.id or _ids.entity_id(ent.type, ent.name) for ent in ontology.entities}
+    entity_ids = [ent.id or _ids.entity_id(ent.type, ent.name) for ent in ontology.entities]
+    entities = set(entity_ids)
     relations = {rel.id or _ids.relation_id(rel.from_entity, rel.type, rel.to_entity) for rel in ontology.relations}
 
-    for ent in ontology.entities:
-        _validate_entity_identity(ent.id or _ids.entity_id(ent.type, ent.name), ent.type, ent.name)
+    for eid, ent in zip(entity_ids, ontology.entities, strict=True):
+        _validate_entity_identity(eid, ent.type, ent.name)
 
     for item in (*ontology.entities, *ontology.relations, *ontology.preferences):
         if item.properties is None:
@@ -484,11 +587,9 @@ async def validate_ontology(runner: Any, ns: str, ontology: Ontology) -> None:
         _require_list("entity aliases", ent.aliases)
 
     for rel in ontology.relations:
-        if rel.id is not None:
-            _validate_object_id("relation", rel.id, "relation", require_own=True)
+        _validate_own_id("relation", rel.id)
         _require_datetime("relation event_time", rel.event_time)
-        if _ids.normalize_rel_type(rel.type) in _RESERVED_RELTYPES:
-            raise ValidationError(f"relation type {rel.type!r} is reserved for internal use; choose another type")
+        _reject_reserved_rel_type(_ids.normalize_rel_type(rel.type), rel.type)
         if not isinstance(rel.evidence, list | tuple):
             raise ValidationError(f"relation evidence must be a list, got {type(rel.evidence).__name__}")
         for ev in rel.evidence:
@@ -503,23 +604,19 @@ async def validate_ontology(runner: Any, ns: str, ontology: Ontology) -> None:
             )
 
     for pref in ontology.preferences:
-        if pref.id is not None:
-            _validate_object_id("preference", pref.id, "preference", require_own=True)
+        _validate_own_id("preference", pref.id)
         _require_datetime("preference event_time", pref.event_time)
-        _validate_kind(pref.kind)
+        _require_choice("preference kind", pref.kind, _KINDS)
         _require_text("preference key", pref.key)
         _validate_strength(pref.strength)
         if not await _entity_known(runner, ns, pref.subject_entity, entities):
             raise ValidationError(f"preference references unknown subject entity {pref.subject_entity!r}")
-        await _require_entity(runner, ns, pref.value_entity, context="preference", known=entities)
-        if pref.about_entity is not None:
-            await _require_entity(runner, ns, pref.about_entity, context="preference about_entity", known=entities)
+        await _require_preference_refs(runner, ns, pref.value_entity, pref.about_entity, entities)
 
     for dec in ontology.decisions:
-        if dec.id is not None:
-            _validate_object_id("decision", dec.id, "decision", require_own=True)
+        _validate_own_id("decision", dec.id)
         _require_datetime("decision event_time", dec.event_time)
-        _validate_status(dec.status)
+        _require_choice("decision status", dec.status, _STATUSES)
         _require_text("decision title", dec.title)
         _require_optional_text("decision summary", dec.summary)
         _require_optional_text("decision rationale", dec.rationale)
@@ -528,12 +625,7 @@ async def validate_ontology(runner: Any, ns: str, ontology: Ontology) -> None:
         for rel_id in dec.steps:
             if rel_id not in relations and await get_relation_current(runner, ns, rel_id) is None:
                 raise ValidationError(f"decision step references unknown relation {rel_id!r}")
-        if dec.actor_entity is not None:
-            await _require_entity(runner, ns, dec.actor_entity, context="decision actor_entity", known=entities)
-        if dec.outcome_entity is not None:
-            await _require_entity(runner, ns, dec.outcome_entity, context="decision outcome_entity", known=entities)
-        for alt in dec.alternative_entities:
-            await _require_entity(runner, ns, alt, context="decision alternative_entity", known=entities)
+        await _require_trace_refs(runner, ns, dec.actor_entity, dec.outcome_entity, dec.alternative_entities, entities)
 
 
 async def get_entity(runner: Any, ns: str, eid: str) -> Entity | None:
@@ -544,86 +636,106 @@ async def get_entity(runner: Any, ns: str, eid: str) -> Entity | None:
     @param eid (str): entity id.
     @return (Entity | None): the entity, or None.
     """
-    _require_id("entity", eid)
+    _ids._require_str("entity id", eid)
     props = await runner.get_node(ns, L_ENTITY, eid)
     return decode_entity(props) if props else None
 
 
-async def _write_entity(runner: Any, ns: str, eid: str, type: str, props: dict) -> None:
-    await runner.upsert_node(ns, L_ENTITY, eid, props, extra_label=type)
-
-
-async def upsert_entity(
+async def upsert_entities(
     runner: Any,
     ns: str,
-    ent: EntityInput,
+    ents: list[EntityInput],
     *,
     evidence: list[Evidence],
     created_at: datetime,
-) -> Entity:
-    """Insert-semantics upsert: keep the stored name, record a new surface form as an alias, and merge the rest.
+) -> list[Entity]:
+    """Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
+
+    Entities are read and written in batches; a repeated id merges into the earlier input, as sequential upserts would.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param ent (EntityInput): entity to upsert.
-    @param evidence (list[Evidence]): evidence to merge.
+    @param ents (list[EntityInput]): entities to upsert, in order.
+    @param evidence (list[Evidence]): evidence recorded for every entity.
     @param created_at (datetime): timestamp for created and updated fields.
-    @return (Entity): the stored entity.
+    @return (list[Entity]): each input's stored entity, in input order.
     """
-    etype = _ids.normalize_text(ent.type).strip() if isinstance(ent.type, str) else ent.type
-    ename = _ids.normalize_text(ent.name).strip() if isinstance(ent.name, str) else ent.name
-    eid = ent.id or _ids.entity_id(etype, ename)
-    _validate_entity_identity(eid, etype, ename)
-    await runner.lock_node(ns, L_ENTITY, eid)
-    existing = await get_entity(runner, ns, eid)
-    if existing is None:
-        props = encode_entity_props(
-            ns=ns,
-            id=eid,
-            type=etype,
-            name=ename,
-            aliases=_dedup_text_list(ent.aliases),
-            external_ids=dict(ent.external_ids),
-            properties=dict(ent.properties),
-            evidence=evidence,
-            created_at=created_at,
-            updated_at=created_at,
-        )
-        await _write_entity(runner, ns, eid, etype, props)
-        return decode_entity(props)
-
-    renamed = [ename] if ename != existing.name else []
-    merged_aliases = _dedup_text_list([*existing.aliases, *ent.aliases, *renamed])
-    merged_external = {**existing.external_ids, **ent.external_ids}
-    merged_properties = {**existing.properties, **_canon_props(ent.properties)}
-    merged_evidence = _merge_evidence(existing.evidence, evidence)
-
-    if (
-        etype == existing.type
-        and merged_aliases == existing.aliases
-        and merged_external == existing.external_ids
-        and merged_properties == existing.properties
-        and merged_evidence == existing.evidence
-    ):
-        return existing
-
-    props = encode_entity_props(
-        ns=ns,
-        id=eid,
-        type=etype,
-        name=existing.name,
-        aliases=merged_aliases,
-        external_ids=merged_external,
-        properties=merged_properties,
-        evidence=merged_evidence,
-        created_at=existing.created_at,
-        updated_at=created_at,
+    keyed = []
+    for ent in ents:
+        etype = _clean_text(ent.type)
+        ename = _clean_text(ent.name)
+        eid = ent.id or _ids.entity_id(etype, ename)
+        _validate_entity_identity(eid, etype, ename)
+        keyed.append((eid, etype, ename, ent))
+    eids = list(dict.fromkeys(eid for eid, *_ in keyed))
+    for eid in eids:
+        await runner.lock_node(ns, L_ENTITY, eid)
+    stored = {eid: decode_entity(p) for eid, p in (await _nodes_by_id(runner, ns, L_ENTITY, eids)).items()}
+    records, gained = await _plan_evidence(
+        runner, ns, [(eid, ev) for eid in eids for ev in evidence], new_targets=set(eids) - set(stored)
     )
-    await _precheck_write(runner, props)
-    if etype != existing.type:
-        await runner.remove_node_label(ns, L_ENTITY, eid, existing.type)
-    await _write_entity(runner, ns, eid, etype, props)
-    return decode_entity(props)
+
+    current: dict[str, Entity] = dict(stored)
+    writes: dict[str, dict] = {}
+    out: list[Entity] = []
+    for eid, etype, ename, ent in keyed:
+        prev = current.get(eid)
+        sources = (prev.source_count if prev is not None else 0) + gained.pop(eid, 0)
+        if prev is None:
+            props = encode_entity_props(
+                ns=ns,
+                id=eid,
+                type=etype,
+                name=ename,
+                aliases=_dedup_text_list(ent.aliases),
+                external_ids=dict(ent.external_ids),
+                properties=dict(ent.properties),
+                source_count=sources,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        else:
+            renamed = [ename] if ename != prev.name else []
+            merged_aliases = _dedup_text_list([*prev.aliases, *ent.aliases, *renamed])
+            merged_external = {**prev.external_ids, **ent.external_ids}
+            merged_properties = {**prev.properties, **_canon_props(ent.properties)}
+            if (
+                etype == prev.type
+                and merged_aliases == prev.aliases
+                and merged_external == prev.external_ids
+                and merged_properties == prev.properties
+                and sources == prev.source_count
+            ):
+                out.append(prev)
+                continue
+            props = encode_entity_props(
+                ns=ns,
+                id=eid,
+                type=etype,
+                name=prev.name,
+                aliases=merged_aliases,
+                external_ids=merged_external,
+                properties=merged_properties,
+                source_count=sources,
+                created_at=prev.created_at,
+                updated_at=created_at,
+            )
+        writes[eid] = props
+        current[eid] = decode_entity(props)
+        out.append(current[eid])
+
+    for props in writes.values():
+        await _precheck_write(runner, props)
+    for eid, props in writes.items():
+        if eid in stored and props["type"] != stored[eid].type:
+            await runner.remove_node_label(ns, L_ENTITY, eid, stored[eid].type)
+    by_type: dict[str, list[tuple[str, dict]]] = {}
+    for eid, props in writes.items():
+        by_type.setdefault(props["type"], []).append((eid, props))
+    for etype, rows in by_type.items():
+        await runner.upsert_nodes(ns, L_ENTITY, rows, extra_label=etype)
+    await _write_evidence(runner, ns, records)
+    return out
 
 
 async def create_entity(
@@ -636,6 +748,7 @@ async def create_entity(
     aliases: list[str] | None = None,
     external_ids: dict[str, str] | None = None,
     properties: dict[str, Any] | None = None,
+    schema_check: SchemaCheck | None = None,
 ) -> Entity:
     """Create one entity, failing if its id already exists.
 
@@ -647,23 +760,26 @@ async def create_entity(
     @param aliases (list[str] | None): aliases.
     @param external_ids (dict[str, str] | None): external ids.
     @param properties (dict[str, Any] | None): properties.
+    @param schema_check (SchemaCheck | None): checks the entity against the schema before the write.
     @return (Entity): the created entity.
     """
     _require_text("entity type", type)
     _require_text("entity name", name)
-    type = _ids.normalize_text(type).strip()
-    name = _ids.normalize_text(name).strip()
+    type = _clean_text(type)
+    name = _clean_text(name)
     eid = id or _ids.entity_id(type, name)
     _validate_entity_identity(eid, type, name)
     if aliases is not None:
         _require_list("aliases", aliases)
     if external_ids is not None:
         _require_str_mapping("external_ids", external_ids)
-    if properties is not None:
-        _require_json_mapping("properties", properties)
+    _require_json_mapping("properties", properties)
     await runner.lock_node(ns, L_ENTITY, eid)
-    if await entity_exists(runner, ns, eid):
+    if await runner.node_exists(ns, L_ENTITY, eid):
         raise ConflictError("Entity", eid)
+    if schema_check is not None:
+        subject = EntityInput(id=id, type=type, name=name, properties=properties or {})
+        await schema_check(runner, Ontology(entities=[subject]))
     ts = now()
     props = encode_entity_props(
         ns=ns,
@@ -673,15 +789,17 @@ async def create_entity(
         aliases=_dedup_text_list(aliases or []),
         external_ids=dict(external_ids or {}),
         properties=dict(properties or {}),
-        evidence=[],
+        source_count=0,
         created_at=ts,
         updated_at=ts,
     )
-    await _write_entity(runner, ns, eid, type, props)
+    await runner.upsert_node(ns, L_ENTITY, eid, props, extra_label=type)
     return decode_entity(props)
 
 
-async def update_entity(runner: Any, ns: str, eid: str, **fields: Any) -> Entity:
+async def update_entity(
+    runner: Any, ns: str, eid: str, *, schema_check: SchemaCheck | None = None, **fields: Any
+) -> Entity:
     """Update an entity's fields, replacing scalars and merging collections.
 
     Scalar fields (name, type) replace the stored value; collection fields
@@ -691,6 +809,7 @@ async def update_entity(runner: Any, ns: str, eid: str, **fields: Any) -> Entity
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param eid (str): entity id.
+    @param schema_check (SchemaCheck | None): checks the resulting entity against the schema before the write.
     @param fields (Any): fields to change (name, type, aliases, external_ids, properties).
     @return (Entity): the updated entity.
     """
@@ -715,26 +834,18 @@ async def update_entity(runner: Any, ns: str, eid: str, **fields: Any) -> Entity
     existing = await get_entity(runner, ns, eid)
     if existing is None:
         raise TransientError(f"entity {eid!r} was changed concurrently; retry")
-    new_type = _ids.normalize_text(fields["type"]).strip() if "type" in fields else existing.type
-    new_name = _ids.normalize_text(fields["name"]).strip() if "name" in fields else existing.name
+    new_type = _clean_text(fields["type"]) if "type" in fields else existing.type
+    new_name = _clean_text(fields["name"]) if "name" in fields else existing.name
     _validate_entity_identity(eid, new_type, new_name)
-    aliases = (
-        _dedup_text_list(existing.aliases + list(fields["aliases"]))
-        if "aliases" in fields
-        else _dedup_text_list(existing.aliases)
-    )
-    removed = {_ids.normalize_text(a) if isinstance(a, str) else a for a in fields.get("remove_aliases", ())}
-    aliases = [a for a in aliases if a not in removed]
-    properties = (
-        {**existing.properties, **_canon_props(fields["properties"])}
-        if "properties" in fields
-        else dict(existing.properties)
-    )
+    removed = set(_dedup_text_list(fields.get("remove_aliases", [])))
+    aliases = [a for a in _dedup_text_list([*existing.aliases, *fields.get("aliases", ())]) if a not in removed]
+    properties = {**existing.properties, **_canon_props(fields.get("properties"))}
     for key in fields.get("remove_properties", ()):
         properties.pop(key, None)
-    external_ids = (
-        {**existing.external_ids, **fields["external_ids"]} if "external_ids" in fields else existing.external_ids
-    )
+    external_ids = {**existing.external_ids, **fields.get("external_ids", {})}
+    if schema_check is not None:
+        subject = EntityInput(id=eid, type=new_type, name=new_name, properties=properties)
+        await schema_check(runner, Ontology(entities=[subject]))
     if (
         new_type == existing.type
         and new_name == existing.name
@@ -751,14 +862,14 @@ async def update_entity(runner: Any, ns: str, eid: str, **fields: Any) -> Entity
         aliases=aliases,
         external_ids=external_ids,
         properties=properties,
-        evidence=existing.evidence,
+        source_count=existing.source_count,
         created_at=existing.created_at,
         updated_at=now(),
     )
     await _precheck_write(runner, props)
     if new_type != existing.type:
         await runner.remove_node_label(ns, L_ENTITY, eid, existing.type)
-    await _write_entity(runner, ns, eid, new_type, props)
+    await runner.upsert_node(ns, L_ENTITY, eid, props, extra_label=new_type)
     return decode_entity(props)
 
 
@@ -785,20 +896,16 @@ async def list_entities(
     _require_optional_text("name filter", name)
     equals: dict[str, Any] = {}
     if type is not None:
-        equals["type"] = _ids.normalize_text(type).strip()
+        equals["type"] = _clean_text(type)
     if name is not None:
-        equals["name"] = _ids.normalize_text(name).strip()
+        equals["name"] = _clean_text(name)
     rows = await runner.match_nodes(ns, L_ENTITY, equals=equals, order_by="id", skip=skip, limit=limit)
     return [decode_entity(r) for r in rows]
 
 
-def _trace_of_step(sid: str) -> str:
-    """Derive the owning trace id from a decision step node id.
-
-    @param sid (str): the step node id, shaped ``<trace>:step:<order>``.
-    @return (str): the owning trace id.
-    """
-    return sid.rsplit(":step:", 1)[0]
+async def _delete_steps(runner: Any, ns: str, tid: str) -> None:
+    for step in await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP):
+        await runner.delete_node(ns, L_STEP, step["id"])
 
 
 async def _delete_trace_quietly(runner: Any, ns: str, tid: str) -> bool:
@@ -809,12 +916,22 @@ async def _delete_trace_quietly(runner: Any, ns: str, tid: str) -> bool:
     @param tid (str): trace id.
     @return (bool): True when a trace was removed.
     """
-    if not await trace_exists(runner, ns, tid):
+    if not await runner.node_exists(ns, L_TRACE, tid):
         return False
-    for step in await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP):
-        await runner.delete_node(ns, L_STEP, step["id"])
+    await _delete_steps(runner, ns, tid)
     await runner.delete_node(ns, L_TRACE, tid)
     return True
+
+
+async def _delete_traces(runner: Any, ns: str, tids: Iterable[str]) -> int:
+    """Delete each decision trace that still exists.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param tids (Iterable[str]): trace ids.
+    @return (int): how many traces were removed.
+    """
+    return sum([await _delete_trace_quietly(runner, ns, tid) for tid in tids])
 
 
 async def _traces_touching_relation(runner: Any, ns: str, rid: str) -> set[str]:
@@ -826,7 +943,7 @@ async def _traces_touching_relation(runner: Any, ns: str, rid: str) -> set[str]:
     @return (set[str]): owning trace ids.
     """
     steps = await runner.match_nodes(ns, L_STEP, equals={"relation_id": rid})
-    return {_trace_of_step(s["id"]) for s in steps}
+    return {_ids.trace_of_step(s["id"]) for s in steps}
 
 
 async def _traces_touching_entity(runner: Any, ns: str, eid: str) -> set[str]:
@@ -843,7 +960,7 @@ async def _traces_touching_entity(runner: Any, ns: str, eid: str) -> set[str]:
             tids.add(trace["id"])
     for key in ("from_entity", "to_entity"):
         for step in await runner.match_nodes(ns, L_STEP, equals={key: eid}):
-            tids.add(_trace_of_step(step["id"]))
+            tids.add(_ids.trace_of_step(step["id"]))
     return tids
 
 
@@ -884,26 +1001,20 @@ async def delete_entity(runner: Any, ns: str, eid: str) -> dict[str, int]:
     @param eid (str): entity id.
     @return (dict[str, int]): counts of what was removed.
     """
-    _require_id("entity", eid)
-    if not await entity_exists(runner, ns, eid):
+    _ids._require_str("entity id", eid)
+    if not await runner.node_exists(ns, L_ENTITY, eid):
         raise NotFoundError("Entity", eid)
-    counts = {
-        "deleted_entities": 0,
-        "deleted_relation_versions": 0,
-        "deleted_decisions": 0,
-        "deleted_preference_versions": 0,
-    }
+    counts = dict(_NO_DELETES)
     trace_ids = await _traces_touching_entity(runner, ns, eid)
 
     for rid in await runner.versioned_relation_ids(
-        ns, L_ENTITY, eid, exclude_types=[R_PREFERS, R_AVOIDS, R_HAS_PROFILE]
+        ns, L_ENTITY, eid, exclude_types=[*PREFERENCE_EDGE_TYPES, R_HAS_PROFILE]
     ):
         counts["deleted_relation_versions"] += await runner.delete_edges(ns, rid)
+        await _delete_evidence(runner, ns, rid)
         trace_ids |= await _traces_touching_relation(runner, ns, rid)
 
-    for tid in trace_ids:
-        if await _delete_trace_quietly(runner, ns, tid):
-            counts["deleted_decisions"] += 1
+    counts["deleted_decisions"] = await _delete_traces(runner, ns, trace_ids)
 
     for tid in await _traces_with_alternative(runner, ns, eid):
         if tid not in trace_ids:
@@ -913,8 +1024,24 @@ async def delete_entity(runner: Any, ns: str, eid: str) -> dict[str, int]:
         counts["deleted_preference_versions"] += await runner.count_out_edges(ns, L_PROFILE, profile["id"])
         await runner.delete_node(ns, L_PROFILE, profile["id"])
 
-    counts["deleted_preference_versions"] += await runner.count_in_edges_typed(ns, L_ENTITY, eid, [R_PREFERS, R_AVOIDS])
+    for pref in await runner.match_edges(ns, from_label=L_PROFILE, current_only=True, equals={"about_entity": eid}):
+        if pref["to_id"] != eid:
+            await update_preference(
+                runner,
+                ns,
+                pref["props"]["id"],
+                strength=None,
+                properties=None,
+                remove_properties=[],
+                event_time=None,
+                clear_about=True,
+            )
+
+    counts["deleted_preference_versions"] += await runner.count_in_edges_typed(
+        ns, L_ENTITY, eid, list(PREFERENCE_EDGE_TYPES)
+    )
     await runner.delete_node(ns, L_ENTITY, eid)
+    await _delete_evidence(runner, ns, eid)
     counts["deleted_entities"] = 1
     return counts
 
@@ -925,7 +1052,7 @@ def _is_relation_type(rtype: str) -> bool:
     @param rtype (str): the edge type.
     @return (bool): True when the edge is a user relation.
     """
-    return rtype not in _RESERVED_RELTYPES
+    return rtype not in EDGE_TYPES
 
 
 def _is_preference_type(rtype: str) -> bool:
@@ -934,7 +1061,16 @@ def _is_preference_type(rtype: str) -> bool:
     @param rtype (str): the edge type.
     @return (bool): True when the edge is a preference.
     """
-    return rtype in (R_PREFERS, R_AVOIDS)
+    return rtype in PREFERENCE_EDGE_TYPES
+
+
+def _relation_of(edge: dict) -> Relation:
+    return decode_relation(edge["props"], from_entity=edge["from_id"], to_entity=edge["to_id"], type=edge["type"])
+
+
+def _preference_of(edge: dict) -> Preference:
+    kind = preference_kind_of(edge["type"]) or "preference"
+    return decode_preference(edge["props"], value_entity=edge["to_id"], profile_id=edge["from_id"], kind=kind)
 
 
 async def _typed_edge_versions(runner: Any, ns: str, eid: str, keep: Callable[[str], bool]) -> list[dict]:
@@ -957,11 +1093,11 @@ async def get_relation_current(runner: Any, ns: str, rid: str) -> Relation | Non
     @param rid (str): relation id.
     @return (Relation | None): the current version, or None.
     """
-    _require_id("relation", rid)
+    _ids._require_str("relation id", rid)
     edge = await runner.get_current_edge(ns, rid)
     if edge is None or not _is_relation_type(edge["type"]):
         return None
-    return decode_relation(edge["props"], from_entity=edge["from_id"], to_entity=edge["to_id"], type=edge["type"])
+    return _relation_of(edge)
 
 
 async def relation_exists(runner: Any, ns: str, rid: str) -> bool:
@@ -984,27 +1120,64 @@ async def list_relation_versions(runner: Any, ns: str, rid: str, *, newest_first
     @param newest_first (bool): order newest first when True.
     @return (list[Relation]): the versions.
     """
-    _require_id("relation", rid)
+    _ids._require_str("relation id", rid)
     edges = await _typed_edge_versions(runner, ns, rid, _is_relation_type)
-    rels = [decode_relation(e["props"], from_entity=e["from_id"], to_entity=e["to_id"], type=e["type"]) for e in edges]
+    rels = [_relation_of(e) for e in edges]
     if newest_first:
         rels.reverse()
     return rels
 
 
-async def _create_relation_edge(runner: Any, ns: str, from_id: str, rtype: str, to_id: str, props: dict) -> None:
-    if rtype in _RESERVED_RELTYPES:
-        raise ValidationError(f"relation type {rtype!r} is reserved for internal use; choose another type")
-    ok = await runner.create_edge(ns, rtype, L_ENTITY, from_id, L_ENTITY, to_id, props)
-    if not ok:
+async def _write_relation_version(
+    runner: Any, ns: str, from_id: str, rtype: str, to_id: str, props: dict, *, retire: bool
+) -> Relation:
+    """Write a relation version as the current one, retiring the previous current version when there is one.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param from_id (str): source entity id.
+    @param rtype (str): relation type.
+    @param to_id (str): destination entity id.
+    @param props (dict): the encoded version.
+    @param retire (bool): True when an existing current version must be flipped first.
+    @return (Relation): the written version.
+    """
+    if retire:
+        await _precheck_write(runner, props)
+        await runner.update_current_edge(ns, props["id"], {"is_current": False})
+    _reject_reserved_rel_type(rtype, rtype)
+    if not await runner.create_edge(ns, rtype, L_ENTITY, from_id, L_ENTITY, to_id, props):
         raise ValidationError(
             f"relation endpoints not found (from={from_id!r}, to={to_id!r}); create both entities first, "
             "then reference them by id ('type:name')"
         )
+    return decode_relation(props, from_entity=from_id, to_entity=to_id, type=rtype)
 
 
-async def _flip_current(runner: Any, ns: str, rid: str) -> None:
-    await runner.update_current_edge(ns, rid, {"is_current": False})
+async def _lock_current(
+    runner: Any, ns: str, oid: str, kind: str, get: Callable[..., Any], exists: Callable[..., Any], lock_on: Callable
+) -> Any:
+    """Return the current version of a relation or preference, read again under its lock so no writer slips in.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param oid (str): the relation or preference id.
+    @param kind (str): "relation" or "preference", for the errors.
+    @param get (Callable[..., Any]): reads the current version, or None.
+    @param exists (Callable[..., Any]): reports whether any version exists.
+    @param lock_on (Callable): maps the current version to the (label, id) node to lock.
+    @return (Any): the current version, under the lock.
+    """
+    before = await get(runner, ns, oid)
+    if before is None:
+        if await exists(runner, ns, oid):
+            raise TransientError(f"{kind} {oid!r} has no current version right now (concurrent write); retry")
+        raise NotFoundError(kind.capitalize(), oid)
+    await runner.lock_node(ns, *lock_on(before))
+    current = await get(runner, ns, oid)
+    if current is None:
+        raise TransientError(f"{kind} {oid!r} was changed concurrently; retry")
+    return current
 
 
 async def _precheck_write(runner: Any, props: Mapping[str, Any]) -> None:
@@ -1023,75 +1196,129 @@ async def _precheck_write(runner: Any, props: Mapping[str, Any]) -> None:
         check(props)
 
 
-async def upsert_relation(
-    runner: Any,
-    ns: str,
-    rel: RelationInput,
-    *,
-    evidence: list[Evidence],
-    default_event_time: datetime | None,
-    created_at: datetime,
-) -> Relation:
-    """Insert-semantics upsert of a relation: merge properties, versioning on change.
+async def _current_relations(runner: Any, ns: str, keyed: list[tuple[str, RelationInput]]) -> dict[str, dict]:
+    """Fetch the current version of many relations, reading each batch of source entities' outgoing relations.
+
+    A derived relation id fixes its endpoints, so its stored version is among its source entity's relations; an
+    explicit id may name a relation between other entities, so one not found that way is looked up by id.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param rel (RelationInput): relation to upsert.
-    @param evidence (list[Evidence]): evidence to attach.
+    @param keyed (list[tuple[str, RelationInput]]): (relation id, input) pairs.
+    @return (dict[str, dict]): each found relation's current edge row by id.
+    """
+    wanted = {rid for rid, _ in keyed}
+    found: dict[str, dict] = {}
+    for batch in _batches(list(dict.fromkeys(rel.from_entity for _, rel in keyed))):
+        fetch = partial(
+            runner.match_edges, ns, from_label=L_ENTITY, to_label=L_ENTITY, from_in=batch, current_only=True
+        )
+        for edge in await _paged(fetch, page=_BATCH):
+            if edge["props"]["id"] in wanted and _is_relation_type(edge["type"]):
+                found[edge["props"]["id"]] = edge
+    for rid, rel in keyed:
+        if rel.id is not None and rid not in found:
+            edge = await runner.get_current_edge(ns, rid)
+            if edge is not None and _is_relation_type(edge["type"]):
+                found[rid] = edge
+    return found
+
+
+async def upsert_relations(
+    runner: Any,
+    ns: str,
+    items: list[tuple[RelationInput, list[Evidence]]],
+    *,
+    default_event_time: datetime | None,
+    created_at: datetime,
+) -> list[Relation]:
+    """Insert-semantics upsert of many relations: merge properties, versioning on change, recording evidence.
+
+    Relations are read and written in batches; a repeated id applies after the earlier input, as sequential
+    upserts would.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param items (list[tuple[RelationInput, list[Evidence]]]): relations to upsert with their evidence, in order.
     @param default_event_time (datetime | None): fallback event time.
     @param created_at (datetime): timestamp.
-    @return (Relation): the stored current version.
+    @return (list[Relation]): each input's stored current version, in input order.
     """
-    if rel.id is not None:
-        _validate_object_id("relation", rel.id, "relation", require_own=True)
-    rtype = _ids.normalize_rel_type(rel.type)
-    rid = rel.id or _ids.relation_id(rel.from_entity, rtype, rel.to_entity)
-    event_time = rel.event_time or default_event_time
-    await runner.lock_node(ns, L_ENTITY, rel.from_entity)
-    current = await get_relation_current(runner, ns, rid)
-
-    if current is None:
-        props = encode_relation_props(
-            ns=ns,
-            id=rid,
-            revision=1,
-            properties=dict(rel.properties),
-            event_time=event_time,
-            created_at=created_at,
-            is_current=True,
-            evidence=evidence,
-        )
-        await _create_relation_edge(runner, ns, rel.from_entity, rtype, rel.to_entity, props)
-        return decode_relation(props, from_entity=rel.from_entity, to_entity=rel.to_entity, type=rtype)
-
-    if rel.from_entity != current.from_entity or rtype != current.type or rel.to_entity != current.to_entity:
-        raise ValidationError(
-            f"relation {rid!r} already exists with different endpoints/type; "
-            "endpoints and type are immutable; create a new relation to change them"
-        )
-
-    merged_properties = {**current.properties, **_canon_props(rel.properties)}
-    unchanged = current.properties == merged_properties and to_iso(current.event_time) == to_iso(event_time)
-    if unchanged:
-        merged = _merge_evidence(current.evidence, evidence)
-        await runner.update_current_edge(ns, rid, {"evidence_json": encode_evidence(merged)})
-        current.evidence = merged
-        return current
-
-    props = encode_relation_props(
-        ns=ns,
-        id=rid,
-        revision=current.revision + 1,
-        properties=merged_properties,
-        event_time=event_time,
-        created_at=created_at,
-        is_current=True,
-        evidence=evidence,
+    keyed = []
+    for rel, evidence in items:
+        _validate_own_id("relation", rel.id)
+        rtype = _ids.normalize_rel_type(rel.type)
+        _reject_reserved_rel_type(rtype, rtype)
+        keyed.append((rel.id or _ids.relation_id(rel.from_entity, rtype, rel.to_entity), rtype, rel, evidence))
+    for from_entity in dict.fromkeys(rel.from_entity for _, _, rel, _ in keyed):
+        await runner.lock_node(ns, L_ENTITY, from_entity)
+    rids = list(dict.fromkeys(rid for rid, *_ in keyed))
+    stored = await _current_relations(runner, ns, [(rid, rel) for rid, _, rel, _ in keyed])
+    records, gained = await _plan_evidence(
+        runner,
+        ns,
+        [(rid, ev) for rid, _, _, evidence in keyed for ev in evidence],
+        new_targets=set(rids) - set(stored),
     )
-    await _precheck_write(runner, props)
-    await _flip_current(runner, ns, rid)
-    await _create_relation_edge(runner, ns, current.from_entity, current.type, current.to_entity, props)
-    return decode_relation(props, from_entity=current.from_entity, to_entity=current.to_entity, type=current.type)
+
+    current: dict[str, dict] = dict(stored)
+    writes: dict[tuple[str, int], dict] = {}
+    out: list[Relation] = []
+    for rid, rtype, rel, _ in keyed:
+        event_time = rel.event_time or default_event_time
+        edge = current.get(rid)
+        if edge is None:
+            props = encode_relation_props(
+                ns=ns,
+                id=rid,
+                revision=1,
+                properties=dict(rel.properties),
+                event_time=event_time,
+                created_at=created_at,
+                is_current=True,
+                source_count=gained.pop(rid, 0),
+            )
+            edge = {"props": props, "from_id": rel.from_entity, "to_id": rel.to_entity, "type": rtype}
+        else:
+            if rel.from_entity != edge["from_id"] or rtype != edge["type"] or rel.to_entity != edge["to_id"]:
+                raise ValidationError(
+                    f"relation {rid!r} already exists with different endpoints/type; "
+                    "endpoints and type are immutable; create a new relation to change them"
+                )
+            prev = _relation_of(edge)
+            sources = prev.source_count + gained.pop(rid, 0)
+            merged_properties = {**prev.properties, **_canon_props(rel.properties)}
+            if prev.properties == merged_properties and to_iso(prev.event_time) == to_iso(event_time):
+                if sources == prev.source_count:
+                    out.append(prev)
+                    continue
+                props = {**edge["props"], "source_count": sources}
+            else:
+                writes[(rid, prev.revision)] = {**edge["props"], "is_current": False}
+                props = encode_relation_props(
+                    ns=ns,
+                    id=rid,
+                    revision=prev.revision + 1,
+                    properties=merged_properties,
+                    event_time=event_time,
+                    created_at=created_at,
+                    is_current=True,
+                    source_count=sources,
+                )
+            edge = {**edge, "props": props}
+        writes[(rid, props["revision"])] = props
+        current[rid] = edge
+        out.append(_relation_of(edge))
+
+    for props in writes.values():
+        await _precheck_write(runner, props)
+    rows = []
+    for (rid, _), props in writes.items():
+        edge = current[rid]
+        rows.append((edge["type"], edge["from_id"], edge["to_id"], props))
+    await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
+    await _write_evidence(runner, ns, records)
+    return out
 
 
 async def create_relation(
@@ -1105,6 +1332,7 @@ async def create_relation(
     properties: dict[str, Any] | None,
     event_time: datetime | None,
     evidence: list[Evidence],
+    schema_check: SchemaCheck | None = None,
 ) -> Relation:
     """Create one relation version, failing if the id already exists.
 
@@ -1117,21 +1345,26 @@ async def create_relation(
     @param properties (dict[str, Any] | None): relation properties.
     @param event_time (datetime | None): valid time.
     @param evidence (list[Evidence]): evidence.
+    @param schema_check (SchemaCheck | None): checks the relation against the schema before the write.
     @return (Relation): the created relation.
     """
     _require_text("relation from_entity", from_entity)
     _require_text("relation type", type)
     _require_text("relation to_entity", to_entity)
-    if properties is not None:
-        _require_json_mapping("properties", properties)
+    _require_json_mapping("properties", properties)
     _require_datetime("event_time", event_time)
     rtype = _ids.normalize_rel_type(type)
+    _validate_own_id("relation", id)
     rid = id or _ids.relation_id(from_entity, rtype, to_entity)
-    if id is not None:
-        _validate_object_id("relation", id, "relation", require_own=True)
     await runner.lock_node(ns, L_ENTITY, from_entity)
     if await relation_exists(runner, ns, rid):
         raise ConflictError("Relation", rid)
+    if schema_check is not None:
+        subject = RelationInput(
+            id=id, from_entity=from_entity, type=rtype, to_entity=to_entity, properties=properties or {}
+        )
+        await schema_check(runner, Ontology(relations=[subject]))
+    records, gained = await _plan_evidence(runner, ns, [(rid, ev) for ev in evidence], new_targets={rid})
     props = encode_relation_props(
         ns=ns,
         id=rid,
@@ -1140,10 +1373,11 @@ async def create_relation(
         event_time=event_time,
         created_at=now(),
         is_current=True,
-        evidence=evidence,
+        source_count=gained.get(rid, 0),
     )
-    await _create_relation_edge(runner, ns, from_entity, rtype, to_entity, props)
-    return decode_relation(props, from_entity=from_entity, to_entity=to_entity, type=rtype)
+    rel = await _write_relation_version(runner, ns, from_entity, rtype, to_entity, props, retire=False)
+    await _write_evidence(runner, ns, records)
+    return rel
 
 
 async def update_relation(
@@ -1155,6 +1389,7 @@ async def update_relation(
     remove_properties: list[str],
     event_time: datetime | None,
     evidence: list[Evidence] | None,
+    schema_check: SchemaCheck | None = None,
 ) -> Relation:
     """Create a new version of a relation with changed properties.
 
@@ -1165,31 +1400,36 @@ async def update_relation(
     @param remove_properties (list[str]): property keys to drop.
     @param event_time (datetime | None): new valid time.
     @param evidence (list[Evidence] | None): evidence to merge.
+    @param schema_check (SchemaCheck | None): checks the resulting relation against the schema before the write.
     @return (Relation): the new current version.
     """
     _require_json_mapping("set_properties", set_properties)
     _require_list("remove_properties", remove_properties)
     _require_datetime("event_time", event_time)
-    current = await get_relation_current(runner, ns, rid)
-    if current is None:
-        if await relation_exists(runner, ns, rid):
-            raise TransientError(f"relation {rid!r} has no current version right now (concurrent write); retry")
-        raise NotFoundError("Relation", rid)
-    await runner.lock_node(ns, L_ENTITY, current.from_entity)
-    current = await get_relation_current(runner, ns, rid)
-    if current is None:
-        raise TransientError(f"relation {rid!r} was changed concurrently; retry")
-    new_props = dict(current.properties)
-    new_props.update(_canon_props(set_properties))
+    current = await _lock_current(
+        runner, ns, rid, "relation", get_relation_current, relation_exists, lambda rel: (L_ENTITY, rel.from_entity)
+    )
+    new_props = {**current.properties, **_canon_props(set_properties)}
     for key in remove_properties:
         new_props.pop(key, None)
+    if schema_check is not None:
+        subject = RelationInput(
+            id=rid,
+            from_entity=current.from_entity,
+            type=current.type,
+            to_entity=current.to_entity,
+            properties=new_props,
+        )
+        await schema_check(runner, Ontology(relations=[subject]))
     new_event_time = event_time if event_time is not None else current.event_time
-    new_evidence = current.evidence if evidence is None else _merge_evidence(current.evidence, evidence)
+    records, gained = await _plan_evidence(runner, ns, [(rid, ev) for ev in evidence or []], new_targets=set())
+    sources = current.source_count + gained.get(rid, 0)
 
     if new_props == current.properties and to_iso(new_event_time) == to_iso(current.event_time):
-        if new_evidence != current.evidence:
-            await runner.update_current_edge(ns, rid, {"evidence_json": encode_evidence(new_evidence)})
-            current.evidence = new_evidence
+        if sources != current.source_count:
+            await runner.update_current_edge(ns, rid, {"source_count": sources})
+            current.source_count = sources
+        await _write_evidence(runner, ns, records)
         return current
 
     props = encode_relation_props(
@@ -1200,12 +1440,13 @@ async def update_relation(
         event_time=new_event_time,
         created_at=now(),
         is_current=True,
-        evidence=new_evidence,
+        source_count=sources,
     )
-    await _precheck_write(runner, props)
-    await _flip_current(runner, ns, rid)
-    await _create_relation_edge(runner, ns, current.from_entity, current.type, current.to_entity, props)
-    return decode_relation(props, from_entity=current.from_entity, to_entity=current.to_entity, type=current.type)
+    rel = await _write_relation_version(
+        runner, ns, current.from_entity, current.type, current.to_entity, props, retire=True
+    )
+    await _write_evidence(runner, ns, records)
+    return rel
 
 
 async def list_relations(
@@ -1253,7 +1494,7 @@ async def list_relations(
         skip=skip,
         limit=limit,
     )
-    return [decode_relation(r["props"], from_entity=r["from_id"], to_entity=r["to_id"], type=r["type"]) for r in rows]
+    return [_relation_of(r) for r in rows]
 
 
 async def delete_relation(runner: Any, ns: str, rid: str) -> dict[str, int]:
@@ -1264,16 +1505,14 @@ async def delete_relation(runner: Any, ns: str, rid: str) -> dict[str, int]:
     @param rid (str): relation id.
     @return (dict[str, int]): counts of what was removed.
     """
-    _require_id("relation", rid)
+    _ids._require_str("relation id", rid)
     if not await relation_exists(runner, ns, rid):
         raise NotFoundError("Relation", rid)
     trace_ids = await _traces_touching_relation(runner, ns, rid)
     n = await runner.delete_edges(ns, rid)
-    deleted_decisions = 0
-    for tid in trace_ids:
-        if await _delete_trace_quietly(runner, ns, tid):
-            deleted_decisions += 1
-    return {"deleted_entities": 0, "deleted_relation_versions": n, "deleted_decisions": deleted_decisions}
+    await _delete_evidence(runner, ns, rid)
+    deleted_decisions = await _delete_traces(runner, ns, trace_ids)
+    return {**_NO_DELETES, "deleted_relation_versions": n, "deleted_decisions": deleted_decisions}
 
 
 async def _ensure_profile(runner: Any, ns: str, subject_id: str, created_at: datetime) -> str:
@@ -1289,17 +1528,36 @@ async def _ensure_profile(runner: Any, ns: str, subject_id: str, created_at: dat
         {"id": pid, "ns": ns, "subject_entity": subject_id, "created_at": to_iso(created_at)},
     )
     await runner.create_edge(
-        ns, R_HAS_PROFILE, L_ENTITY, subject_id, L_PROFILE, pid, {"ns": ns, "id": f"hasprofile:{pid}", "revision": 1}
+        ns,
+        R_HAS_PROFILE,
+        L_ENTITY,
+        subject_id,
+        L_PROFILE,
+        pid,
+        {"ns": ns, "id": child_edge_id(R_HAS_PROFILE, pid), "revision": 1},
     )
     return pid
 
 
-def _pref_edge_type(kind: str) -> str:
-    return R_AVOIDS if kind == "disinterest" else R_PREFERS
+async def _write_preference_version(
+    runner: Any, ns: str, profile_id: str, value_entity: str, kind: str, props: dict, *, retire: bool
+) -> Preference:
+    """Write a preference version as the current one, retiring the previous current version when there is one.
 
-
-def _kind_from_type(rtype: str) -> str:
-    return "disinterest" if rtype == R_AVOIDS else "preference"
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param profile_id (str): the subject's profile id.
+    @param value_entity (str): value entity id.
+    @param kind (str): preference or disinterest.
+    @param props (dict): the encoded version.
+    @param retire (bool): True when an existing current version must be flipped first.
+    @return (Preference): the written version.
+    """
+    if retire:
+        await _precheck_write(runner, props)
+        await runner.update_current_edge(ns, props["id"], {"is_current": False})
+    await runner.create_edge(ns, preference_edge_type(kind), L_PROFILE, profile_id, L_ENTITY, value_entity, props)
+    return decode_preference(props, value_entity=value_entity, profile_id=profile_id, kind=kind)
 
 
 async def get_preference(runner: Any, ns: str, pid: str) -> Preference | None:
@@ -1310,16 +1568,11 @@ async def get_preference(runner: Any, ns: str, pid: str) -> Preference | None:
     @param pid (str): preference id.
     @return (Preference | None): the current version, or None.
     """
-    _require_id("preference", pid)
+    _ids._require_str("preference id", pid)
     edge = await runner.get_current_edge(ns, pid)
     if edge is None or not _is_preference_type(edge["type"]):
         return None
-    return decode_preference(
-        edge["props"],
-        value_entity=edge["to_id"],
-        profile_id=edge["from_id"],
-        kind=_kind_from_type(edge["type"]),
-    )
+    return _preference_of(edge)
 
 
 async def preference_exists(runner: Any, ns: str, pid: str) -> bool:
@@ -1351,13 +1604,10 @@ async def upsert_preference(
     @return (Preference): the stored current version.
     """
     _validate_strength(pref.strength)
-    if pref.id is not None:
-        _validate_object_id("preference", pref.id, "preference", require_own=True)
+    _validate_own_id("preference", pref.id)
     pid = pref.id or _ids.preference_id(pref.subject_entity, pref.kind, pref.key, pref.value_entity)
     event_time = pref.event_time or default_event_time
-    await _require_entity(runner, ns, pref.value_entity, context="preference")
-    if pref.about_entity is not None:
-        await _require_entity(runner, ns, pref.about_entity, context="preference about_entity")
+    await _require_preference_refs(runner, ns, pref.value_entity, pref.about_entity)
     profile_id = await _ensure_profile(runner, ns, pref.subject_entity, created_at)
 
     await runner.lock_node(ns, L_PROFILE, profile_id)
@@ -1387,20 +1637,17 @@ async def upsert_preference(
         is_current=True,
     )
 
-    if current is not None:
-        unchanged = (
-            current.strength == pref.strength
-            and current.about_entity == pref.about_entity
-            and current.properties == merged_props
-            and to_iso(current.event_time) == to_iso(event_time)
-        )
-        if unchanged:
-            return current
-        await _precheck_write(runner, props)
-        await _flip_current(runner, ns, pid)
-
-    await runner.create_edge(ns, _pref_edge_type(pref.kind), L_PROFILE, profile_id, L_ENTITY, pref.value_entity, props)
-    return decode_preference(props, value_entity=pref.value_entity, profile_id=profile_id, kind=pref.kind)
+    if (
+        current is not None
+        and current.strength == pref.strength
+        and current.about_entity == pref.about_entity
+        and current.properties == merged_props
+        and to_iso(current.event_time) == to_iso(event_time)
+    ):
+        return current
+    return await _write_preference_version(
+        runner, ns, profile_id, pref.value_entity, pref.kind, props, retire=current is not None
+    )
 
 
 async def create_preference(
@@ -1432,21 +1679,17 @@ async def create_preference(
     @param event_time (datetime | None): valid time.
     @return (Preference): the created preference.
     """
-    _validate_kind(kind)
+    _require_choice("preference kind", kind, _KINDS)
     _validate_strength(strength)
     _require_text("preference subject_entity", subject_entity)
     _require_text("preference key", key)
     _require_text("preference value_entity", value_entity)
     key = _ids.normalize_text(key)
-    if properties is not None:
-        _require_json_mapping("properties", properties)
+    _require_json_mapping("properties", properties)
     _require_datetime("event_time", event_time)
-    if id is not None:
-        _validate_object_id("preference", id, "preference", require_own=True)
+    _validate_own_id("preference", id)
     pid = id or _ids.preference_id(subject_entity, kind, key, value_entity)
-    await _require_entity(runner, ns, value_entity, context="preference")
-    if about_entity is not None:
-        await _require_entity(runner, ns, about_entity, context="preference about_entity")
+    await _require_preference_refs(runner, ns, value_entity, about_entity)
     props = encode_preference_props(
         ns=ns,
         id=pid,
@@ -1465,8 +1708,7 @@ async def create_preference(
     await runner.lock_node(ns, L_PROFILE, profile_id)
     if await preference_exists(runner, ns, pid):
         raise ConflictError("Preference", pid)
-    await runner.create_edge(ns, _pref_edge_type(kind), L_PROFILE, profile_id, L_ENTITY, value_entity, props)
-    return decode_preference(props, value_entity=value_entity, profile_id=profile_id, kind=kind)
+    return await _write_preference_version(runner, ns, profile_id, value_entity, kind, props, retire=False)
 
 
 async def update_preference(
@@ -1478,6 +1720,7 @@ async def update_preference(
     properties: dict[str, Any] | None,
     remove_properties: list[str],
     event_time: datetime | None,
+    clear_about: bool = False,
 ) -> Preference:
     """Create a new version of a preference, merging properties like entities and relations.
 
@@ -1488,28 +1731,25 @@ async def update_preference(
     @param properties (dict[str, Any] | None): properties to merge in.
     @param remove_properties (list[str]): property keys to drop.
     @param event_time (datetime | None): new valid time.
+    @param clear_about (bool): drop the about entity, used when that entity is deleted.
     @return (Preference): the new current version.
     """
     _validate_strength(strength)
     _require_json_mapping("properties", properties)
     _require_list("remove_properties", remove_properties)
     _require_datetime("event_time", event_time)
-    current = await get_preference(runner, ns, pid)
-    if current is None:
-        if await preference_exists(runner, ns, pid):
-            raise TransientError(f"preference {pid!r} has no current version right now (concurrent write); retry")
-        raise NotFoundError("Preference", pid)
-    await runner.lock_node(ns, L_PROFILE, current.profile_id)
-    current = await get_preference(runner, ns, pid)
-    if current is None:
-        raise TransientError(f"preference {pid!r} was changed concurrently; retry")
+    current = await _lock_current(
+        runner, ns, pid, "preference", get_preference, preference_exists, lambda pref: (L_PROFILE, pref.profile_id)
+    )
     new_strength = strength if strength is not None else current.strength
     new_props = {**current.properties, **_canon_props(properties)}
     for prop_key in remove_properties:
         new_props.pop(prop_key, None)
     new_event_time = event_time if event_time is not None else current.event_time
+    new_about = None if clear_about else current.about_entity
     if (
         new_strength == current.strength
+        and new_about == current.about_entity
         and new_props == current.properties
         and to_iso(new_event_time) == to_iso(current.event_time)
     ):
@@ -1520,25 +1760,16 @@ async def update_preference(
         revision=current.revision + 1,
         subject_entity=current.subject_entity,
         key=current.key,
-        about_entity=current.about_entity,
+        about_entity=new_about,
         strength=new_strength,
         properties=new_props,
         event_time=new_event_time,
         created_at=now(),
         is_current=True,
     )
-    await _precheck_write(runner, props)
-    await _flip_current(runner, ns, pid)
-    await runner.create_edge(
-        ns,
-        _pref_edge_type(current.kind),
-        L_PROFILE,
-        current.profile_id,
-        L_ENTITY,
-        current.value_entity,
-        props,
+    return await _write_preference_version(
+        runner, ns, current.profile_id, current.value_entity, current.kind, props, retire=True
     )
-    return decode_preference(props, value_entity=current.value_entity, profile_id=current.profile_id, kind=current.kind)
 
 
 async def list_preference_versions(runner: Any, ns: str, pid: str, *, newest_first: bool) -> list[Preference]:
@@ -1550,12 +1781,9 @@ async def list_preference_versions(runner: Any, ns: str, pid: str, *, newest_fir
     @param newest_first (bool): order newest first when True.
     @return (list[Preference]): the versions.
     """
-    _require_id("preference", pid)
+    _ids._require_str("preference id", pid)
     edges = await _typed_edge_versions(runner, ns, pid, _is_preference_type)
-    prefs = [
-        decode_preference(e["props"], value_entity=e["to_id"], profile_id=e["from_id"], kind=_kind_from_type(e["type"]))
-        for e in edges
-    ]
+    prefs = [_preference_of(e) for e in edges]
     if newest_first:
         prefs.reverse()
     return prefs
@@ -1585,13 +1813,13 @@ async def list_preferences(
     _require_optional_text("subject_entity filter", subject_entity)
     _require_optional_text("key filter", key)
     if kind is not None:
-        _validate_kind(kind)
+        _require_choice("preference kind", kind, _KINDS)
     equals: dict[str, Any] = {}
     if subject_entity is not None:
         equals["subject_entity"] = subject_entity
     if key is not None:
         equals["key"] = _ids.normalize_text(key)
-    etype = _pref_edge_type(kind) if kind is not None else None
+    etype = preference_edge_type(kind) if kind is not None else None
     rows = await runner.match_edges(
         ns,
         from_label=L_PROFILE,
@@ -1603,10 +1831,7 @@ async def list_preferences(
         skip=skip,
         limit=limit,
     )
-    return [
-        decode_preference(r["props"], value_entity=r["to_id"], profile_id=r["from_id"], kind=_kind_from_type(r["type"]))
-        for r in rows
-    ]
+    return [_preference_of(r) for r in rows]
 
 
 async def delete_preference(runner: Any, ns: str, pid: str) -> dict[str, int]:
@@ -1617,16 +1842,10 @@ async def delete_preference(runner: Any, ns: str, pid: str) -> dict[str, int]:
     @param pid (str): preference id.
     @return (dict[str, int]): counts of what was removed.
     """
-    _require_id("preference", pid)
+    _ids._require_str("preference id", pid)
     if not await preference_exists(runner, ns, pid):
         raise NotFoundError("Preference", pid)
-    n = await runner.delete_edges(ns, pid)
-    return {
-        "deleted_entities": 0,
-        "deleted_relation_versions": 0,
-        "deleted_decisions": 0,
-        "deleted_preference_versions": n,
-    }
+    return {**_NO_DELETES, "deleted_preference_versions": await runner.delete_edges(ns, pid)}
 
 
 async def _read_steps(runner: Any, ns: str, tid: str) -> list[DecisionStep]:
@@ -1650,23 +1869,12 @@ async def get_trace(runner: Any, ns: str, tid: str) -> DecisionTrace | None:
     @param tid (str): trace id.
     @return (DecisionTrace | None): the trace, or None.
     """
-    _require_id("decision", tid)
+    _ids._require_str("decision id", tid)
     props = await runner.get_node(ns, L_TRACE, tid)
     if props is None:
         return None
     steps = await _read_steps(runner, ns, tid)
     return decode_trace(props, steps)
-
-
-async def trace_exists(runner: Any, ns: str, tid: str) -> bool:
-    """Report whether a decision trace exists.
-
-    @param runner (Any): graph runner.
-    @param ns (str): namespace.
-    @param tid (str): trace id.
-    @return (bool): True when it exists.
-    """
-    return await runner.node_exists(ns, L_TRACE, tid)
 
 
 async def _resolve_steps(runner: Any, ns: str, step_rel_ids: list[str]) -> list[DecisionStep]:
@@ -1698,7 +1906,7 @@ async def _write_trace_structure(
     for alt in alternative_entities:
         await runner.create_edge(ns, R_CONSIDERED, L_TRACE, tid, L_ENTITY, alt, {"ns": ns})
     for step in steps:
-        sid = f"{tid}:step:{step.order}"
+        sid = _ids.step_id(tid, step.order)
         await runner.upsert_node(
             ns,
             L_STEP,
@@ -1718,26 +1926,9 @@ async def _write_trace_structure(
 
 
 async def _clear_trace_structure(runner: Any, ns: str, tid: str) -> None:
-    for step in await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP):
-        await runner.delete_node(ns, L_STEP, step["id"])
+    await _delete_steps(runner, ns, tid)
     for rtype in (R_MADE_DECISION, R_RESULTED_IN, R_CONSIDERED):
         await runner.delete_edges_touching_by_type(ns, L_TRACE, tid, rtype)
-
-
-async def _validate_trace_refs(
-    runner: Any,
-    ns: str,
-    *,
-    actor_entity: str | None,
-    outcome_entity: str | None,
-    alternative_entities: list[str],
-) -> None:
-    if actor_entity is not None:
-        await _require_entity(runner, ns, actor_entity, context="decision actor_entity")
-    if outcome_entity is not None:
-        await _require_entity(runner, ns, outcome_entity, context="decision outcome_entity")
-    for alt in alternative_entities:
-        await _require_entity(runner, ns, alt, context="decision alternative_entity")
 
 
 async def upsert_trace(
@@ -1773,7 +1964,7 @@ async def upsert_trace(
     @param created_at (datetime): timestamp.
     @return (DecisionTrace): the stored trace.
     """
-    _validate_status(status)
+    _require_choice("decision status", status, _STATUSES)
     _require_text("decision title", title)
     title = _ids.normalize_text(title)
     if actor_entity is not None:
@@ -1783,17 +1974,10 @@ async def upsert_trace(
     _require_list("decision steps", step_rel_ids)
     _require_list("alternative_entities", alternative_entities)
     _require_datetime("event_time", event_time)
-    if tid is not None:
-        _validate_object_id("decision", tid, "decision", require_own=True)
-    alternative_entities = _dedup_list(list(alternative_entities))
+    _validate_own_id("decision", tid)
+    alternative_entities = _dedup_list(alternative_entities)
     tid = tid or _ids.decision_id(actor_entity, title)
-    await _validate_trace_refs(
-        runner,
-        ns,
-        actor_entity=actor_entity,
-        outcome_entity=outcome_entity,
-        alternative_entities=alternative_entities,
-    )
+    await _require_trace_refs(runner, ns, actor_entity, outcome_entity, alternative_entities)
     steps = await _resolve_steps(runner, ns, step_rel_ids)
     await runner.lock_node(ns, L_TRACE, tid)
     existing = await get_trace(runner, ns, tid)
@@ -1875,11 +2059,10 @@ async def create_trace(
     title = _ids.normalize_text(title)
     if actor_entity is not None:
         _require_text("decision actor_entity", actor_entity)
-    if id is not None:
-        _validate_object_id("decision", id, "decision", require_own=True)
+    _validate_own_id("decision", id)
     tid = id or _ids.decision_id(actor_entity, title)
     await runner.lock_node(ns, L_TRACE, tid)
-    if await trace_exists(runner, ns, tid):
+    if await runner.node_exists(ns, L_TRACE, tid):
         raise ConflictError("DecisionTrace", tid)
     return await upsert_trace(
         runner,
@@ -1914,30 +2097,19 @@ async def update_trace(runner: Any, ns: str, tid: str, **fields: Any) -> Decisio
     unknown = set(fields) - _DECISION_UPDATE_FIELDS
     if unknown:
         raise ValidationError(f"unknown decision update field(s): {sorted(unknown)}")
-    merged = {
-        "title": fields.get("title", existing.title),
-        "actor_entity": fields.get("actor_entity", existing.actor_entity),
-        "summary": fields.get("summary", existing.summary),
-        "rationale": fields.get("rationale", existing.rationale),
-        "outcome_entity": fields.get("outcome_entity", existing.outcome_entity),
-        "alternative_entities": fields.get("alternative_entities", existing.alternative_entities),
-        "status": fields.get("status", existing.status),
-        "event_time": fields.get("event_time", existing.event_time),
-    }
-    step_rel_ids = fields["steps"] if "steps" in fields else [s.relation_id for s in existing.steps]
     return await upsert_trace(
         runner,
         ns,
         tid=tid,
-        title=merged["title"],
-        step_rel_ids=step_rel_ids,
-        actor_entity=merged["actor_entity"],
-        summary=merged["summary"],
-        rationale=merged["rationale"],
-        outcome_entity=merged["outcome_entity"],
-        alternative_entities=merged["alternative_entities"],
-        status=merged["status"],
-        event_time=merged["event_time"],
+        title=fields.get("title", existing.title),
+        step_rel_ids=fields["steps"] if "steps" in fields else [s.relation_id for s in existing.steps],
+        actor_entity=fields.get("actor_entity", existing.actor_entity),
+        summary=fields.get("summary", existing.summary),
+        rationale=fields.get("rationale", existing.rationale),
+        outcome_entity=fields.get("outcome_entity", existing.outcome_entity),
+        alternative_entities=fields.get("alternative_entities", existing.alternative_entities),
+        status=fields.get("status", existing.status),
+        event_time=fields.get("event_time", existing.event_time),
         created_at=now(),
     )
 
@@ -1984,7 +2156,7 @@ async def delete_trace(runner: Any, ns: str, tid: str) -> dict[str, int]:
     @param tid (str): trace id.
     @return (dict[str, int]): counts of what was removed.
     """
-    _require_id("decision", tid)
+    _ids._require_str("decision id", tid)
     if not await _delete_trace_quietly(runner, ns, tid):
         raise NotFoundError("DecisionTrace", tid)
-    return {"deleted_entities": 0, "deleted_relation_versions": 0, "deleted_decisions": 1}
+    return {**_NO_DELETES, "deleted_decisions": 1}

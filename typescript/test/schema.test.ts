@@ -2,12 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { buildGraph } from "../src/client.js";
 import { KuzuStore, type LLMClient, SelfGraph, ValidationError } from "../src/index.js";
 import { callTool, close, configure, TOOLS } from "../src/mcp.js";
-import { Ontology } from "../src/models.js";
+import { EntityInput, Ontology, parseOrThrow, suggestKey } from "../src/models.js";
 import { DEFAULT_SETTINGS } from "../src/runtime.js";
 import { asSchema, renderSchemaCatalog, Schema, validateAgainstSchema } from "../src/schema.js";
 
@@ -328,5 +328,204 @@ describe("schema through the client", () => {
     expect((await callTool(getSchema, {})).result).toBeNull();
     await close();
     await KuzuStore.closeDatabase(join(dir, "f.kuzu"));
+  });
+
+  const writeSpec = {
+    entities: [
+      { name: "Person", properties: [{ name: "age", type: "integer" as const, required: true }] },
+      { name: "Manager", parent: "Person" },
+      { name: "Company" },
+    ],
+    relations: [
+      {
+        type: "WORKS_AT",
+        aliases: ["employed by"],
+        from: { types: ["Person"], max_count: 1 },
+        to: { types: ["Company"] },
+        properties: [{ name: "since", type: "integer" as const }],
+      },
+    ],
+  };
+
+  it("inherits required properties through parent types", () => {
+    const warnings = validateAgainstSchema(
+      Ontology.parse({ entities: [{ id: "manager:m", type: "Manager", name: "M" }] }),
+      Schema.parse(writeSpec),
+    );
+    expect(warnings.map((w) => w.message)).toEqual(["entity manager:m is missing required property 'age'"]);
+  });
+
+  it("counts relation aliases toward the canonical type for cardinality", () => {
+    const warnings = validateAgainstSchema(
+      Ontology.parse({
+        entities: [
+          { id: "person:p", type: "Person", name: "P", properties: { age: 1 } },
+          { id: "company:a", type: "Company", name: "A" },
+          { id: "company:b", type: "Company", name: "B" },
+        ],
+        relations: [
+          { from_entity: "person:p", type: "WORKS_AT", to_entity: "company:a" },
+          { from_entity: "person:p", type: "employed by", to_entity: "company:b" },
+        ],
+      }),
+      Schema.parse(writeSpec),
+    );
+    expect(warnings.map((w) => w.message)).toEqual(["person:p has 2 WORKS_AT (from) in this insert, above max 1"]);
+  });
+
+  it("checks the endpoint types of entities already in the graph on insert", async () => {
+    await withGraph("g.kuzu", { schema: writeSpec }, async (graph) => {
+      await graph.entities.create("Acme", "Company");
+      const result = await graph.insert.ontology({
+        entities: [{ type: "Company", name: "Beta" }],
+        relations: [{ from_entity: "company:acme", type: "WORKS_AT", to_entity: "company:beta" }],
+      });
+      expect(result.warnings.map((w) => w.message)).toEqual([
+        "relation company:acme -WORKS_AT-> company:beta from entity company:acme is not one of ['Person']",
+      ]);
+    });
+  });
+
+  it("rejects entity creates and updates in strict mode before writing", async () => {
+    await withGraph("h.kuzu", { schema: writeSpec, schema_mode: "strict" }, async (graph) => {
+      await expect(graph.entities.create("R2", "Robot")).rejects.toThrow(/^entity Robot:R2 has unknown type 'Robot'$/);
+      expect(await graph.entities.get("robot:r2")).toBeNull();
+      await expect(graph.entities.create("Jane", "Person")).rejects.toThrow(
+        /^entity Person:Jane is missing required property 'age'$/,
+      );
+      await expect(graph.entities.create("Jane", "Person", { properties: { age: "old" } })).rejects.toThrow(
+        /property 'age' should be integer/,
+      );
+      const jane = await graph.entities.create("Jane", "Person", { properties: { age: 30 } });
+      await expect(graph.entities.update(jane.id, { remove_properties: ["age"] })).rejects.toThrow(
+        /^entity person:jane is missing required property 'age'$/,
+      );
+      await graph.entities.create("Acme", "Company");
+      await expect(graph.entities.update("company:acme", { type: "Manager" })).rejects.toThrow(
+        /^entity company:acme is missing required property 'age'$/,
+      );
+      expect((await graph.entities.get(jane.id))?.properties).toEqual({ age: 30 });
+      expect((await graph.entities.get("company:acme"))?.type).toBe("Company");
+    });
+  });
+
+  it("rejects relation creates and updates in strict mode before writing", async () => {
+    await withGraph("i.kuzu", { schema: writeSpec, schema_mode: "strict" }, async (graph) => {
+      await graph.entities.create("Jane", "Person", { properties: { age: 30 } });
+      await graph.entities.create("Acme", "Company");
+      await expect(graph.relations.create("company:acme", "WORKS_AT", "person:jane")).rejects.toThrow(
+        "from entity company:acme is not one of ['Person']",
+      );
+      await expect(graph.relations.create("person:jane", "LIKES", "company:acme")).rejects.toThrow(
+        "has unknown type 'LIKES'",
+      );
+      expect((await graph.relations.list()).items).toEqual([]);
+      const rel = await graph.relations.create("person:jane", "employed by", "company:acme", {
+        properties: { since: 2020 },
+      });
+      await expect(graph.relations.update(rel.id, { set_properties: { since: "2020" } })).rejects.toThrow(
+        `relation ${rel.id} property 'since' should be integer`,
+      );
+      expect((await graph.relations.versions(rel.id)).map((r) => r.revision)).toEqual([1]);
+    });
+  });
+
+  it("writes and warns on stderr for each violation in warn mode", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await withGraph("j.kuzu", { schema: writeSpec }, async (graph) => {
+        await graph.entities.create("R2", "Robot");
+        await graph.entities.update("robot:r2", { properties: { x: 1 } });
+        await graph.relations.create("robot:r2", "WORKS_AT", "robot:r2");
+        expect((await graph.entities.get("robot:r2"))?.properties).toEqual({ x: 1 });
+      });
+      expect(warn.mock.calls).toEqual([
+        ["selfgraph: schema warning [unknown_entity_type]: entity Robot:R2 has unknown type 'Robot'"],
+        ["selfgraph: schema warning [unknown_entity_type]: entity robot:r2 has unknown type 'Robot'"],
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("skips write checks in off mode", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await withGraph("k.kuzu", { schema: writeSpec, schema_mode: "off" }, async (graph) => {
+        await graph.entities.create("R2", "Robot");
+        await graph.entities.update("robot:r2", { type: "Alien" });
+        expect((await graph.entities.get("robot:r2"))?.type).toBe("Alien");
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("rejects unknown instruction keys on insert.text", async () => {
+    await withGraph("l.kuzu", {}, async (graph) => {
+      await expect(graph.insert.text("Jane met Bob.", { instructions: { relatoins: "x" } as never })).rejects.toThrow(
+        "unknown key 'relatoins' in instructions; did you mean 'relations'?",
+      );
+    });
+  });
+});
+
+describe("unknown keys", () => {
+  const cases: Array<[() => unknown, string]> = [
+    [
+      () => parseOrThrow(Ontology, { entites: [] }, "ontology"),
+      "unknown key 'entites' in ontology; did you mean 'entities'?",
+    ],
+    [
+      () => parseOrThrow(Ontology, { entities: [{ type: "Person", nmae: "Jane" }] }, "ontology"),
+      "unknown key 'nmae' in ontology.entities[0]; did you mean 'name'?",
+    ],
+    [
+      () =>
+        parseOrThrow(
+          Ontology,
+          { relations: [{ from_entity: "a", type: "X", to_entity: "b", evidence: [{ source_id: "s", qoute: "q" }] }] },
+          "ontology",
+        ),
+      "unknown key 'qoute' in ontology.relations[0].evidence[0]; did you mean 'quote'?",
+    ],
+    [() => asSchema({ entity_types: [] } as never), "unknown key 'entity_types' in schema"],
+    [
+      () => asSchema({ relations: [{ type: "X", from: { type: ["A"] } }] } as never),
+      "unknown key 'type' in schema.relations[0].from; did you mean 'types'?",
+    ],
+    [
+      () => new SelfGraph(new KuzuStore(":memory:"), { instructions: { entites: "x" } as never }),
+      "unknown key 'entites' in instructions; did you mean 'entities'?",
+    ],
+    [
+      () =>
+        new SelfGraph(new KuzuStore(":memory:"), {
+          prompts: { entities: { system: "s", user: "{text}", versoin: "1" } } as never,
+        }),
+      "unknown key 'versoin' in prompts.entities; did you mean 'version'?",
+    ],
+    [() => parseOrThrow(EntityInput, { type: "T", name: "n", zz: 1 }, "entity"), "unknown key 'zz' in entity"],
+  ];
+
+  it("rejects them with the location and a close suggestion", () => {
+    for (const [build, message] of cases) {
+      let error: unknown;
+      try {
+        build();
+      } catch (exc) {
+        error = exc;
+      }
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as Error).message).toBe(message);
+    }
+  });
+
+  it("suggests within edit distance two and breaks ties by declared order", () => {
+    expect(suggestKey("nmae", ["id", "type", "name"])).toBe("name");
+    expect(suggestKey("ab", ["ax", "ay"])).toBe("ax");
+    expect(suggestKey("x", ["id"])).toBeNull();
+    expect(suggestKey("entity_types", ["name", "version", "entities", "relations"])).toBeNull();
   });
 });

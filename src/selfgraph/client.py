@@ -9,7 +9,7 @@ from typing import Any
 
 from . import _ops
 from ._serde import now
-from .errors import TransientError, ValidationError
+from .errors import CLOSED_MESSAGE, StoreError, TransientError, ValidationError
 from .extraction.extractor import DefaultExtractor
 from .insert import Insert
 from .llm.base import resolve_llm
@@ -23,12 +23,13 @@ from .models import (
     LLMConfig,
     Ontology,
     RetrievalResult,
+    as_input,
 )
 from .protocols import Extractor, GraphStore, LLMClient
 from .provenance import record_source
 from .resources import Decisions, Entities, Preferences, Relations
 from .retrieval import retrieve as _retrieve
-from .schema import Schema, SchemaMode, as_schema, require_schema_mode, validate_against_schema
+from .schema import Schema, SchemaMode, as_schema, enforce_schema, log_schema_warnings, require_schema_mode
 
 __all__ = ["SelfGraph"]
 
@@ -45,8 +46,8 @@ class SelfGraph:
         store: GraphStore,
         *,
         llm: LLMConfig | LLMClient | None = None,
-        instructions: ExtractionInstructions | None = None,
-        prompts: ExtractionPrompts | None = None,
+        instructions: ExtractionInstructions | Mapping[str, Any] | None = None,
+        prompts: ExtractionPrompts | Mapping[str, Any] | None = None,
         extractor: Extractor | None = None,
         namespace: str = "default",
         schema: Schema | Mapping[str, Any] | None = None,
@@ -57,12 +58,13 @@ class SelfGraph:
         self.store = store
         self.namespace = namespace
         self._llm = resolve_llm(llm)
-        self._instructions = instructions
-        self._prompts = prompts
+        self._instructions = as_input(ExtractionInstructions, instructions, "instructions")
+        self._prompts = as_input(ExtractionPrompts, prompts, "prompts")
         self._extractor = extractor
         self._schema = as_schema(schema)
         self._schema_mode: SchemaMode = schema_mode
         self._ready = False
+        self._closed = False
 
         self.entities = Entities(self)
         self.relations = Relations(self)
@@ -102,6 +104,8 @@ class SelfGraph:
 
     async def initialize(self) -> None:
         """Create the store's ID constraints and indexes."""
+        if self._closed:
+            raise StoreError(CLOSED_MESSAGE)
         await self.store.initialize()
         self._ready = True
 
@@ -110,6 +114,8 @@ class SelfGraph:
 
         @return (None): nothing.
         """
+        if self._closed:
+            raise StoreError(CLOSED_MESSAGE)
         if not self._ready:
             await self.initialize()
 
@@ -122,7 +128,10 @@ class SelfGraph:
         return self.store
 
     async def close(self) -> None:
-        """Close the underlying store connection if it has one."""
+        """Close the underlying store connection if it has one; later calls raise StoreError."""
+        if self._closed:
+            return
+        self._closed = True
         close = getattr(self.store, "close", None)
         if close is not None:
             await close()
@@ -181,8 +190,8 @@ class SelfGraph:
             raise ValidationError(f"query must be a string, got {type(query).__name__}")
         if not isinstance(strategy, str):
             raise ValidationError(f"strategy must be a string, got {type(strategy).__name__}")
-        for _name, _value in (("depth", depth), ("k", k), ("max_nodes", max_nodes), ("budget_tokens", budget_tokens)):
-            _ops._require_int(_name, _value)
+        for name, value in (("depth", depth), ("k", k), ("max_nodes", max_nodes), ("budget_tokens", budget_tokens)):
+            _ops._require_int(name, value)
         await self._ensure_ready()
         return await _retrieve(
             self,
@@ -216,6 +225,16 @@ class SelfGraph:
         @return (Any): the op's result.
         """
         return await self._in_tx(lambda tx: op(tx, self.namespace, *args, **kwargs))
+
+    async def _schema_check(self, runner: Any, ontology: Ontology) -> None:
+        """Check a single entity or relation write against the graph schema, logging warnings in warn mode.
+
+        @param runner (Any): graph runner.
+        @param ontology (Ontology): the one entity or relation about to be written.
+        """
+        log_schema_warnings(
+            await enforce_schema(runner, self.namespace, ontology, self._schema, self._schema_mode, cardinality=False)
+        )
 
     def _build_extractor(
         self,
@@ -261,11 +280,7 @@ class SelfGraph:
         async def _apply(tx: Any) -> InsertResult:
             _ops._require_datetime("event_time", default_event_time)
             await _ops.validate_ontology(tx, ns, ontology)
-            if active_schema is not None and mode != "off":
-                schema_warnings = validate_against_schema(ontology, active_schema)
-                if mode == "strict" and schema_warnings:
-                    raise ValidationError("; ".join(w.message for w in schema_warnings))
-                warnings.extend(schema_warnings)
+            warnings.extend(await enforce_schema(tx, ns, ontology, active_schema, mode))
             source_version: str | None = None
             base_evidence = []
 
@@ -280,24 +295,23 @@ class SelfGraph:
                     created_at=created_at,
                 )
 
-            entities = [
-                await _ops.upsert_entity(tx, ns, ent, evidence=list(base_evidence), created_at=created_at)
-                for ent in ontology.entities
-            ]
-
-            relations = []
-            for rel in ontology.relations:
-                evidence = list(base_evidence) + _ops.evidence_from_inputs(rel.evidence, source_version=source_version)
-                relations.append(
-                    await _ops.upsert_relation(
-                        tx,
-                        ns,
+            entities = await _ops.upsert_entities(
+                tx, ns, list(ontology.entities), evidence=list(base_evidence), created_at=created_at
+            )
+            relations = await _ops.upsert_relations(
+                tx,
+                ns,
+                [
+                    (
                         rel,
-                        evidence=evidence,
-                        default_event_time=default_event_time,
-                        created_at=created_at,
+                        list(base_evidence)
+                        + _ops.evidence_from_inputs(rel.evidence, source_id=source_id, source_version=source_version),
                     )
-                )
+                    for rel in ontology.relations
+                ],
+                default_event_time=default_event_time,
+                created_at=created_at,
+            )
 
             preferences = [
                 await _ops.upsert_preference(tx, ns, pref, default_event_time=default_event_time, created_at=created_at)

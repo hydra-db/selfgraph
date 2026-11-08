@@ -2,10 +2,10 @@ import { z } from "zod";
 
 import { ValidationError } from "./errors.js";
 import { normalizeRelType } from "./ids.js";
-import { pyStrip } from "./internal/py.js";
+import { comparePy, cpLen, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso } from "./internal/time.js";
 import { KINDS } from "./labels.js";
-import { hasControl, hasSurrogate, requireCleanJson } from "./validate.js";
+import { hasSurrogate, requireCleanJson, requireNoControl } from "./validate.js";
 
 export type JsonValue =
   | string
@@ -59,9 +59,9 @@ const nullable = <T extends z.ZodType>(schema: T) => schema.nullish().transform(
 export const optString = nullable(z.string());
 export const optNumber = nullable(z.number());
 const optDate = nullable(DateTimeInput);
-const props = (label: string) =>
+const props = <V extends z.ZodType<JsonValue>>(label: string, values: V = JsonValue as unknown as V) =>
   z
-    .record(z.string(), JsonValue)
+    .record(z.string(), values)
     .default({})
     .transform((value) => {
       requireCleanJson(label, value);
@@ -77,9 +77,9 @@ const entityText = z.string().transform((value) => {
   return pyStrip(value);
 });
 
-const noControl = (message: string) =>
+const noControl = (label: string) =>
   z.string().transform((value) => {
-    if (hasControl(value)) throw new ValidationError(message);
+    requireNoControl(label, value);
     return value;
   });
 
@@ -110,7 +110,7 @@ export interface Entity {
   aliases: string[];
   external_ids: Record<string, string>;
   properties: JsonObject;
-  evidence: Evidence[];
+  source_count: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -125,7 +125,7 @@ export interface Relation {
   event_time: Date | null;
   created_at: Date;
   is_current: boolean;
-  evidence: Evidence[];
+  source_count: number;
 }
 
 export interface Preference {
@@ -216,25 +216,19 @@ export interface CypherResult {
   counters: Record<string, number>;
 }
 
-export const EntityInput = z.object({
+export const EntityInput = z.strictObject({
   id: optString,
   type: entityText,
   name: entityText,
-  aliases: z.array(noControl("entity alias cannot contain control or surrogate characters")).default([]),
-  external_ids: z
-    .record(z.string(), z.string())
-    .default({})
-    .transform((value) => {
-      requireCleanJson("entity property and external id", value);
-      return value;
-    }),
+  aliases: z.array(noControl("entity alias")).default([]),
+  external_ids: props("entity property and external id", z.string()),
   properties: props("entity property and external id"),
 });
 export type EntityInput = DeepReadonly<z.input<typeof EntityInput>>;
 export type ParsedEntityInput = z.output<typeof EntityInput>;
 
-export const EvidenceInput = z.object({
-  source_id: noControl("evidence source_id cannot contain control or surrogate characters"),
+export const EvidenceInput = z.strictObject({
+  source_id: noControl("evidence source_id"),
   quote: nullable(z.string()).transform((value) => {
     if (value !== null && hasSurrogate(value)) {
       throw new ValidationError("evidence quote cannot contain unpaired surrogate characters");
@@ -252,7 +246,7 @@ export const EvidenceInput = z.object({
 export type EvidenceInput = DeepReadonly<z.input<typeof EvidenceInput>>;
 export type ParsedEvidenceInput = z.output<typeof EvidenceInput>;
 
-export const RelationInput = z.object({
+export const RelationInput = z.strictObject({
   id: optString,
   from_entity: z.string(),
   type: z.string().transform(normalizeRelType),
@@ -264,11 +258,11 @@ export const RelationInput = z.object({
 export type RelationInput = DeepReadonly<z.input<typeof RelationInput>>;
 export type ParsedRelationInput = z.output<typeof RelationInput>;
 
-export const PreferenceInput = z.object({
+export const PreferenceInput = z.strictObject({
   id: optString,
   subject_entity: z.string(),
   kind: Kind.default(DEFAULT_KIND),
-  key: noControl("preference key cannot contain control or surrogate characters"),
+  key: noControl("preference key"),
   value_entity: z.string(),
   about_entity: optString,
   strength: optNumber,
@@ -278,7 +272,7 @@ export const PreferenceInput = z.object({
 export type PreferenceInput = DeepReadonly<z.input<typeof PreferenceInput>>;
 export type ParsedPreferenceInput = z.output<typeof PreferenceInput>;
 
-export const DecisionTraceInput = z.object({
+export const DecisionTraceInput = z.strictObject({
   id: optString,
   title: z.string(),
   steps: z.array(z.string()),
@@ -293,7 +287,7 @@ export const DecisionTraceInput = z.object({
 export type DecisionTraceInput = DeepReadonly<z.input<typeof DecisionTraceInput>>;
 export type ParsedDecisionTraceInput = z.output<typeof DecisionTraceInput>;
 
-export const Ontology = z.object({
+export const Ontology = z.strictObject({
   entities: z.array(EntityInput).default([]),
   relations: z.array(RelationInput).default([]),
   preferences: z.array(PreferenceInput).default([]),
@@ -313,14 +307,14 @@ export const LLMConfig = z.object({
 export type LLMConfig = z.input<typeof LLMConfig>;
 export type ParsedLLMConfig = z.output<typeof LLMConfig>;
 
-export const PromptTemplate = z.object({
+export const PromptTemplate = z.strictObject({
   system: z.string(),
   user: z.string(),
   version: z.string(),
 });
 export type PromptTemplate = z.output<typeof PromptTemplate>;
 
-export const ExtractionInstructions = z.object({
+export const ExtractionInstructions = z.strictObject({
   entities: optString,
   relations: optString,
   preferences: optString,
@@ -328,7 +322,7 @@ export const ExtractionInstructions = z.object({
 });
 export type ExtractionInstructions = z.input<typeof ExtractionInstructions>;
 
-export const ExtractionPrompts = z.object({
+export const ExtractionPrompts = z.strictObject({
   entities: nullable(PromptTemplate),
   relations: nullable(PromptTemplate),
   preferences: nullable(PromptTemplate),
@@ -363,6 +357,114 @@ export interface RetrievalResult {
 }
 
 /**
+ * Count the single-character insertions, deletions, and substitutions that turn one string into another.
+ *
+ * @param a (string): the first string.
+ * @param b (string): the second string.
+ * @return (number): the Levenshtein distance.
+ */
+function editDistance(a: string, b: string): number {
+  const bs = Array.from(b);
+  let prev = Array.from({ length: bs.length + 1 }, (_, j) => j);
+  let i = 0;
+  for (const ca of a) {
+    i += 1;
+    const cur = [i];
+    bs.forEach((cb, j) => {
+      cur.push(Math.min(prev[j + 1]! + 1, cur[j]! + 1, prev[j]! + (ca === cb ? 0 : 1)));
+    });
+    prev = cur;
+  }
+  return prev[bs.length]!;
+}
+
+/**
+ * Pick the valid key closest to an unknown one: edit distance at most 2 and below the key's length, ties by order.
+ *
+ * @param key (string): the unknown key.
+ * @param valid (readonly string[]): the accepted keys in declared order.
+ * @return (string | null): the suggestion, or null when nothing is close.
+ */
+export function suggestKey(key: string, valid: readonly string[]): string | null {
+  let best: string | null = null;
+  let limit = Math.min(2, cpLen(key) - 1);
+  for (const candidate of valid) {
+    const distance = editDistance(key, candidate);
+    if (distance <= limit) {
+      best = candidate;
+      limit = distance - 1;
+    }
+  }
+  return best;
+}
+
+/**
+ * Strip optional, nullable, default, and transform wrappers off a zod schema.
+ *
+ * @param schema (z.core.$ZodType): the schema.
+ * @return (z.core.$ZodType): the innermost schema.
+ */
+function unwrapSchema(schema: z.core.$ZodType): z.core.$ZodType {
+  let current = schema;
+  for (;;) {
+    const def = current._zod.def as { type: string; innerType?: z.core.$ZodType; in?: z.core.$ZodType };
+    if (def.innerType) current = def.innerType;
+    else if (def.type === "pipe" && def.in) current = def.in;
+    else return current;
+  }
+}
+
+/**
+ * The declared keys of an object schema, or null when the schema is not an object.
+ *
+ * @param schema (z.core.$ZodType): the unwrapped schema.
+ * @return (Record<string, z.core.$ZodType> | null): the object's shape.
+ */
+function shapeOf(schema: z.core.$ZodType): Record<string, z.core.$ZodType> | null {
+  const def = schema._zod.def as { type: string; shape?: Record<string, z.core.$ZodType> };
+  return def.type === "object" && def.shape ? def.shape : null;
+}
+
+/**
+ * Walk raw input against an object schema and describe the first unknown key, depth first in declared order.
+ *
+ * @param schema (z.core.$ZodType): the schema the value should match.
+ * @param value (unknown): the raw input.
+ * @param where (string): the location of the value, for the message.
+ * @return (string | null): the error message, or null when every key is known.
+ */
+function unknownKey(schema: z.core.$ZodType, value: unknown, where: string): string | null {
+  const shape = shapeOf(unwrapSchema(schema));
+  if (shape === null || !isPlainObject(value)) return null;
+  const keys = Object.keys(shape);
+  const unknown = Object.keys(value)
+    .filter((k) => !keys.includes(k))
+    .sort(comparePy);
+  if (unknown.length) {
+    const suggestion = suggestKey(unknown[0]!, keys);
+    const hint = suggestion === null ? "" : `; did you mean ${pyRepr(suggestion)}?`;
+    return `unknown key ${pyRepr(unknown[0])} in ${where}${hint}`;
+  }
+  for (const key of keys) {
+    if (!Object.hasOwn(value, key)) continue;
+    const field = unwrapSchema(shape[key]!);
+    const def = field._zod.def as { type: string; element?: z.core.$ZodType };
+    if (def.type === "array" && def.element) {
+      const items = value[key];
+      if (!Array.isArray(items)) continue;
+      for (const [i, item] of items.entries()) {
+        const found = unknownKey(def.element, item, `${where}.${key}[${i}]`);
+        if (found !== null) return found;
+      }
+    } else {
+      const found = unknownKey(field, value[key], `${where}.${key}`);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+/**
  * Parse a value with a zod schema, raising SelfGraph's ValidationError on failure.
  *
  * @param schema (z.ZodType<T>): the schema.
@@ -371,10 +473,24 @@ export interface RetrievalResult {
  * @return (T): the parsed value.
  */
 export function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
+  const unknown = unknownKey(schema, value, what);
+  if (unknown !== null) throw new ValidationError(unknown);
   const result = schema.safeParse(value);
   if (result.success) return result.data;
   const detail = result.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
   throw new ValidationError(`invalid ${what}: ${detail}`, { cause: result.error });
+}
+
+/**
+ * Coerce an optional input argument: null and undefined stay null, anything else is parsed.
+ *
+ * @param schema (z.ZodType<T>): the schema.
+ * @param value (unknown): the argument.
+ * @param what (string): a label for the error message.
+ * @return (T | null): the parsed value, or null.
+ */
+export function asInput<T>(schema: z.ZodType<T>, value: unknown, what: string): T | null {
+  return value === null || value === undefined ? null : parseOrThrow(schema, value, what);
 }
 
 /**

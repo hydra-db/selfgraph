@@ -7,6 +7,7 @@ import {
   childEdgeId,
   EDGE_TYPES,
   L_ENTITY,
+  L_EVIDENCE,
   L_PROFILE,
   L_STEP,
   L_TRACE,
@@ -40,14 +41,16 @@ import {
   type Relation,
   Status,
 } from "./models.js";
-import type { EdgeRow, GraphPrimitives, Props } from "./protocols.js";
+import type { EdgeRow, EdgeWrite, GraphPrimitives, MatchNodesOptions, NodeRow, Props } from "./protocols.js";
+import type { SchemaSubject } from "./schema.js";
 import {
   decodeEntity,
+  decodeEvidence,
   decodePreference,
   decodeRelation,
   decodeTrace,
   encodeEntityProps,
-  encodeEvidence,
+  encodeEvidenceProps,
   encodePreferenceProps,
   encodeRelationProps,
   encodeTraceProps,
@@ -69,6 +72,7 @@ import {
 } from "./validate.js";
 
 type Runner = GraphPrimitives;
+export type SchemaCheck = (runner: Runner, subject: SchemaSubject) => Promise<void>;
 
 const NO_DELETES: Readonly<DeleteResult> = Object.freeze({
   deleted_entities: 0,
@@ -98,8 +102,8 @@ const DECISION_UPDATE_FIELDS = keysOf<UpdateTraceFields>({
   status: true,
   event_time: true,
 });
-const KINDS: readonly string[] = [...Kind.options].sort();
-const STATUSES: readonly string[] = Status.options;
+const KINDS: readonly Kind[] = [...Kind.options].sort();
+const STATUSES: readonly Status[] = [...Status.options].sort();
 const MAX_ID_BYTES = 1024;
 
 const byteLength = (s: string): number => utf8(s).length;
@@ -114,7 +118,7 @@ const idOf = (props: Props): string => props.id as string;
  * @param rtype (string): the normalized relation type.
  * @param given (string): the type as the caller wrote it, for the message.
  */
-function rejectReservedRelType(rtype: string, given: string): void {
+export function rejectReservedRelType(rtype: string, given: string): void {
   if (EDGE_TYPES.has(rtype)) {
     throw new ValidationError(`relation type ${pyRepr(given)} is reserved for internal use; choose another type`);
   }
@@ -127,7 +131,7 @@ function rejectReservedRelType(rtype: string, given: string): void {
  * @param type (unknown): the entity type, used as a backend label.
  * @param name (unknown): the entity name.
  */
-function validateEntityIdentity(eid: unknown, type: unknown, name: unknown): void {
+export function validateEntityIdentity(eid: unknown, type: unknown, name: unknown): void {
   if (typeof eid !== "string") throw new ValidationError(`entity id must be a string, got ${pyTypeName(eid)}`);
   if (typeof type !== "string" || typeof name !== "string" || !pyStrip(type) || !pyStrip(name)) {
     throw new ValidationError(
@@ -156,7 +160,7 @@ function validateEntityIdentity(eid: unknown, type: unknown, name: unknown): voi
   }
 }
 
-function validateStrength(strength: unknown): void {
+export function validateStrength(strength: unknown): void {
   if (strength === null || strength === undefined) return;
   if (typeof strength !== "number") {
     throw new ValidationError(`preference strength must be a number, got ${pyTypeName(strength)}`);
@@ -190,15 +194,16 @@ function validateOwnId(kind: string, oid: unknown): void {
   }
 }
 
-function validateKind(kind: unknown): asserts kind is Kind {
-  if (typeof kind !== "string" || !KINDS.includes(kind)) {
-    throw new ValidationError(`preference kind must be one of ${pyRepr(KINDS)}, got ${pyRepr(kind)}`);
-  }
-}
-
-function validateStatus(status: unknown): asserts status is Status {
-  if (typeof status !== "string" || !STATUSES.includes(status)) {
-    throw new ValidationError(`decision status must be one of ${pyRepr(STATUSES)}, got ${pyRepr(status)}`);
+/**
+ * Validate a value is one of the allowed strings.
+ *
+ * @param field (string): the field name for the error message.
+ * @param value (unknown): the value to check.
+ * @param choices (readonly T[]): the allowed values, sorted.
+ */
+function requireChoice<T extends string>(field: string, value: unknown, choices: readonly T[]): asserts value is T {
+  if (typeof value !== "string" || !(choices as readonly string[]).includes(value)) {
+    throw new ValidationError(`${field} must be one of ${pyRepr(choices)}, got ${pyRepr(value)}`);
   }
 }
 
@@ -236,11 +241,13 @@ function requireCleanEvidence(ev: unknown): void {
  * Turn caller-supplied evidence inputs into stored evidence.
  *
  * @param inputs (readonly ParsedEvidenceInput[]): the evidence to convert.
- * @param sourceVersion (string | null): when absent, synthesised as "<source_id>:manual".
+ * @param sourceId (string | null): the source being inserted; only evidence citing it takes sourceVersion.
+ * @param sourceVersion (string | null): the inserted source's version; other evidence gets "<source_id>:manual".
  * @return (Evidence[]): the stored evidence.
  */
 export function evidenceFromInputs(
   inputs: readonly ParsedEvidenceInput[],
+  sourceId: string | null = null,
   sourceVersion: string | null = null,
 ): Evidence[] {
   if (!Array.isArray(inputs)) {
@@ -250,7 +257,7 @@ export function evidenceFromInputs(
     requireCleanEvidence(ev);
     return evidenceOf({
       source_id: ev.source_id,
-      source_version: sourceVersion || `${ev.source_id}:manual`,
+      source_version: sourceVersion && ev.source_id === sourceId ? sourceVersion : `${ev.source_id}:manual`,
       quote: ev.quote,
       start_offset: ev.start_offset,
       end_offset: ev.end_offset,
@@ -263,21 +270,190 @@ const dedupList = (items: readonly string[]): string[] => [...new Set(items)];
 
 const dedupTextList = (items: readonly string[]): string[] => dedupList(items.map(ids.normalizeText));
 
-function evKey(e: Evidence): string {
-  return JSON.stringify([e.source_id, e.source_version, e.chunk_id, e.quote, e.start_offset, e.end_offset]);
-}
+const PAGE = 500;
+const BATCH = 1000;
 
-function mergeEvidence(existing: Evidence[], incoming: Evidence[]): Evidence[] {
-  const out = [...existing];
-  const keys = new Set(existing.map(evKey));
-  for (const e of incoming) {
-    const k = evKey(e);
-    if (!keys.has(k)) {
-      keys.add(k);
-      out.push(e);
-    }
+/**
+ * Call a skip/limit list function page by page until it runs dry or reaches the cap.
+ *
+ * @param fetch ((skip: number, limit: number) => Promise<T[]>): the list call.
+ * @param cap (number): the most rows to read.
+ * @param page (number): the rows to read per call.
+ * @return (T[]): every row read, in store order.
+ */
+export async function scan<T>(
+  fetch: (skip: number, limit: number) => Promise<T[]>,
+  cap = Number.POSITIVE_INFINITY,
+  page = PAGE,
+): Promise<T[]> {
+  const out: T[] = [];
+  while (out.length < cap) {
+    const batch = await fetch(out.length, page);
+    out.push(...batch);
+    if (batch.length < page) break;
   }
   return out;
+}
+
+/**
+ * Split a list into consecutive batches of at most BATCH items.
+ *
+ * @param items (readonly T[]): the items to split.
+ * @return (T[][]): the batches, in order.
+ */
+function batches<T>(items: readonly T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += BATCH) out.push(items.slice(i, i + BATCH));
+  return out;
+}
+
+/**
+ * Fetch the stored properties of many nodes of one label by id, a batch per query.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param label (string): the node label.
+ * @param nodeIds (readonly string[]): the node ids.
+ * @return (Map<string, Props>): each found node's properties by id.
+ */
+async function nodesById(
+  runner: Runner,
+  ns: string,
+  label: string,
+  nodeIds: readonly string[],
+): Promise<Map<string, Props>> {
+  const found = new Map<string, Props>();
+  for (const batch of batches(nodeIds)) {
+    for (const props of await runner.matchNodes(ns, label, { any_of: { id: batch }, limit: batch.length })) {
+      found.set(idOf(props), props);
+    }
+  }
+  return found;
+}
+
+/**
+ * A skip/limit node listing for scan, ordered by id.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param label (string): the node label.
+ * @param filters (Pick<MatchNodesOptions, "equals" | "any_of">): the filters forwarded to matchNodes.
+ * @return ((skip: number, limit: number) => Promise<Props[]>): the listing.
+ */
+export function nodeListing(
+  runner: Runner,
+  ns: string,
+  label: string,
+  filters: Pick<MatchNodesOptions, "equals" | "any_of">,
+): (skip: number, limit: number) => Promise<Props[]> {
+  return (skip, limit) => runner.matchNodes(ns, label, { ...filters, skip, limit });
+}
+
+/**
+ * Find which evidence records are not stored yet and how many distinct sources each target gains.
+ *
+ * Records are looked up by id first; only a target missing a record is then checked for any record from that
+ * source. A target with no stored version has no stored evidence, so targets in newTargets skip both lookups.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param items (ReadonlyArray<readonly [string, Evidence]>): (target id, evidence) pairs to record.
+ * @param newTargets (ReadonlySet<string>): targets known to have no stored evidence.
+ * @return ([NodeRow[], Map<string, number>]): the records to write, and the sources gained per target.
+ */
+async function planEvidence(
+  runner: Runner,
+  ns: string,
+  items: ReadonlyArray<readonly [string, Evidence]>,
+  newTargets: ReadonlySet<string>,
+): Promise<[NodeRow[], Map<string, number>]> {
+  const pending = new Map<string, readonly [string, Evidence]>();
+  for (const [target, ev] of items) {
+    const evid = ids.evidenceId(target, ev);
+    if (!pending.has(evid)) pending.set(evid, [target, ev]);
+  }
+  const known = [...pending].filter(([, [target]]) => !newTargets.has(target)).map(([evid]) => evid);
+  const stored = new Set((await nodesById(runner, ns, L_EVIDENCE, known)).keys());
+  const bySource = new Map<string, Set<string>>();
+  for (const evid of known) {
+    if (stored.has(evid)) continue;
+    const [target, ev] = pending.get(evid)!;
+    const targets = bySource.get(ev.source_id) ?? new Set<string>();
+    bySource.set(ev.source_id, targets.add(target));
+  }
+  const seen = new Set<string>();
+  const pair = (target: string, sourceId: string): string => JSON.stringify([target, sourceId]);
+  for (const [sourceId, targets] of bySource) {
+    for (const batch of batches([...targets])) {
+      const fetch = nodeListing(runner, ns, L_EVIDENCE, {
+        equals: { source_id: sourceId },
+        any_of: { target_id: batch },
+      });
+      for (const props of await scan(fetch, Number.POSITIVE_INFINITY, BATCH))
+        seen.add(pair(props.target_id as string, sourceId));
+    }
+  }
+  const records: NodeRow[] = [];
+  const gained = new Map<string, number>();
+  for (const [evid, [target, ev]] of pending) {
+    if (stored.has(evid)) continue;
+    records.push([evid, encodeEvidenceProps({ ns, id: evid, target_id: target, evidence: ev })]);
+    if (!seen.has(pair(target, ev.source_id))) {
+      seen.add(pair(target, ev.source_id));
+      gained.set(target, (gained.get(target) ?? 0) + 1);
+    }
+  }
+  return [records, gained];
+}
+
+async function writeEvidence(runner: Runner, ns: string, records: readonly NodeRow[]): Promise<void> {
+  if (records.length) await runner.upsertNodes(ns, L_EVIDENCE, records);
+}
+
+/**
+ * Take and remove a target's gained source count, so it applies to the first input naming the target.
+ *
+ * @param gained (Map<string, number>): sources gained per target.
+ * @param target (string): the entity or relation id.
+ * @return (number): the sources gained, or 0 once taken.
+ */
+function takeGained(gained: Map<string, number>, target: string): number {
+  const n = gained.get(target) ?? 0;
+  gained.delete(target);
+  return n;
+}
+
+/**
+ * List the evidence records supporting one entity or relation, ordered by evidence id.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param targetId (string): the entity or relation id.
+ * @param kind ("entity" | "relation"): which object the id names, for validation and the not-found error.
+ * @param skip (number): rows to skip.
+ * @param limit (number): maximum rows.
+ * @return (Evidence[]): the evidence; throws NotFoundError when the first page is empty and the target is unknown.
+ */
+export async function listEvidence(
+  runner: Runner,
+  ns: string,
+  targetId: string,
+  kind: "entity" | "relation",
+  skip: number,
+  limit: number,
+): Promise<Evidence[]> {
+  requireStr(`${kind} id`, targetId);
+  const rows = await runner.matchNodes(ns, L_EVIDENCE, { equals: { target_id: targetId }, skip, limit });
+  if (!rows.length && skip === 0) {
+    const exists =
+      kind === "entity" ? await runner.nodeExists(ns, L_ENTITY, targetId) : await relationExists(runner, ns, targetId);
+    if (!exists) throw new NotFoundError(kind === "entity" ? "Entity" : "Relation", targetId);
+  }
+  return rows.map(decodeEvidence);
+}
+
+async function deleteEvidence(runner: Runner, ns: string, targetId: string): Promise<void> {
+  await runner.deleteNodesBy(ns, L_EVIDENCE, { target_id: targetId });
 }
 
 const precheckWrite = (runner: Runner, props: Props): void => runner.checkDocSize?.(props);
@@ -369,7 +545,7 @@ export async function validateOntology(runner: Runner, ns: string, ontology: Par
   for (const pref of ontology.preferences) {
     validateOwnId("preference", pref.id);
     requireDatetime("preference event_time", pref.event_time);
-    validateKind(pref.kind);
+    requireChoice("preference kind", pref.kind, KINDS);
     requireText("preference key", pref.key);
     validateStrength(pref.strength);
     if (!(await entityKnown(runner, ns, pref.subject_entity, entities))) {
@@ -381,7 +557,7 @@ export async function validateOntology(runner: Runner, ns: string, ontology: Par
   for (const dec of ontology.decisions) {
     validateOwnId("decision", dec.id);
     requireDatetime("decision event_time", dec.event_time);
-    validateStatus(dec.status);
+    requireChoice("decision status", dec.status, STATUSES);
     requireText("decision title", dec.title);
     requireOptionalText("decision summary", dec.summary);
     requireOptionalText("decision rationale", dec.rationale);
@@ -402,102 +578,109 @@ export async function getEntity(runner: Runner, ns: string, eid: string): Promis
   return props ? decodeEntity(props) : null;
 }
 
-type EntityState = Pick<Entity, "type" | "name" | "aliases" | "external_ids" | "properties" | "evidence">;
-
 /**
- * Write a changed entity over an existing one, or return the existing one when nothing changed.
+ * Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
+ *
+ * Entities are read and written in batches; a repeated id merges into the earlier input, as sequential upserts would.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
- * @param existing (Entity): the stored entity.
- * @param next (EntityState): the new field values.
- * @param updatedAt (Date): the timestamp for the updated field.
- * @return (Entity): the stored entity.
- */
-async function rewriteEntity(
-  runner: Runner,
-  ns: string,
-  existing: Entity,
-  next: EntityState,
-  updatedAt: Date,
-): Promise<Entity> {
-  if (
-    next.type === existing.type &&
-    next.name === existing.name &&
-    deepEqual(next.aliases, existing.aliases) &&
-    deepEqual(next.external_ids, existing.external_ids) &&
-    deepEqual(next.properties, existing.properties) &&
-    deepEqual(next.evidence, existing.evidence)
-  ) {
-    return existing;
-  }
-  const props = encodeEntityProps({
-    ns,
-    id: existing.id,
-    ...next,
-    created_at: existing.created_at,
-    updated_at: updatedAt,
-  });
-  precheckWrite(runner, props);
-  if (next.type !== existing.type) await runner.removeNodeLabel(ns, L_ENTITY, existing.id, existing.type);
-  await runner.upsertNode(ns, L_ENTITY, existing.id, props, { extra_label: next.type });
-  return decodeEntity(props);
-}
-
-/**
- * Insert-semantics upsert: keep the stored name, record a new surface form as an alias, merge the rest, and replace the type.
- *
- * @param runner (Runner): the graph runner.
- * @param ns (string): the namespace.
- * @param ent (ParsedEntityInput): the entity to upsert.
- * @param evidence (Evidence[]): evidence to merge.
+ * @param ents (readonly ParsedEntityInput[]): the entities to upsert, in order.
+ * @param evidence (Evidence[]): evidence recorded for every entity.
  * @param createdAt (Date): the timestamp for the created and updated fields.
- * @return (Entity): the stored entity.
+ * @return (Entity[]): each input's stored entity, in input order.
  */
-export async function upsertEntity(
+export async function upsertEntities(
   runner: Runner,
   ns: string,
-  ent: ParsedEntityInput,
+  ents: readonly ParsedEntityInput[],
   evidence: Evidence[],
   createdAt: Date,
-): Promise<Entity> {
-  const etype = cleanText(ent.type);
-  const ename = cleanText(ent.name);
-  const eid = ent.id || ids.entityId(etype, ename);
-  validateEntityIdentity(eid, etype, ename);
-  await runner.lockNode(ns, L_ENTITY, eid);
-  const existing = await getEntity(runner, ns, eid);
-  if (existing === null) {
-    const props = encodeEntityProps({
-      ns,
-      id: eid,
-      type: etype,
-      name: ename,
-      aliases: dedupTextList(ent.aliases),
-      external_ids: { ...ent.external_ids },
-      properties: { ...ent.properties },
-      evidence,
-      created_at: createdAt,
-      updated_at: createdAt,
-    });
-    await runner.upsertNode(ns, L_ENTITY, eid, props, { extra_label: etype });
-    return decodeEntity(props);
-  }
-
-  return rewriteEntity(
+): Promise<Entity[]> {
+  const keyed = ents.map((ent) => {
+    const etype = cleanText(ent.type);
+    const ename = cleanText(ent.name);
+    const eid = ent.id || ids.entityId(etype, ename);
+    validateEntityIdentity(eid, etype, ename);
+    return { eid, etype, ename, ent };
+  });
+  const eids = [...new Set(keyed.map((k) => k.eid))];
+  for (const eid of eids) await runner.lockNode(ns, L_ENTITY, eid);
+  const stored = new Map<string, Entity>();
+  for (const [eid, props] of await nodesById(runner, ns, L_ENTITY, eids)) stored.set(eid, decodeEntity(props));
+  const [records, gained] = await planEvidence(
     runner,
     ns,
-    existing,
-    {
-      type: etype,
-      name: existing.name,
-      aliases: dedupTextList([...existing.aliases, ...ent.aliases, ...(ename === existing.name ? [] : [ename])]),
-      external_ids: { ...existing.external_ids, ...ent.external_ids },
-      properties: { ...existing.properties, ...canonProps(ent.properties) },
-      evidence: mergeEvidence(existing.evidence, evidence),
-    },
-    createdAt,
+    eids.flatMap((eid) => evidence.map((ev) => [eid, ev] as const)),
+    new Set(eids.filter((eid) => !stored.has(eid))),
   );
+
+  const current = new Map(stored);
+  const writes = new Map<string, Props>();
+  const out: Entity[] = [];
+  for (const { eid, etype, ename, ent } of keyed) {
+    const prev = current.get(eid);
+    const sources = (prev?.source_count ?? 0) + takeGained(gained, eid);
+    let props: Props;
+    if (prev === undefined) {
+      props = encodeEntityProps({
+        ns,
+        id: eid,
+        type: etype,
+        name: ename,
+        aliases: dedupTextList(ent.aliases),
+        external_ids: { ...ent.external_ids },
+        properties: { ...ent.properties },
+        source_count: sources,
+        created_at: createdAt,
+        updated_at: createdAt,
+      });
+    } else {
+      const aliases = dedupTextList([...prev.aliases, ...ent.aliases, ...(ename === prev.name ? [] : [ename])]);
+      const externalIds = { ...prev.external_ids, ...ent.external_ids };
+      const properties = { ...prev.properties, ...canonProps(ent.properties) };
+      if (
+        etype === prev.type &&
+        deepEqual(aliases, prev.aliases) &&
+        deepEqual(externalIds, prev.external_ids) &&
+        deepEqual(properties, prev.properties) &&
+        sources === prev.source_count
+      ) {
+        out.push(prev);
+        continue;
+      }
+      props = encodeEntityProps({
+        ns,
+        id: eid,
+        type: etype,
+        name: prev.name,
+        aliases,
+        external_ids: externalIds,
+        properties,
+        source_count: sources,
+        created_at: prev.created_at,
+        updated_at: createdAt,
+      });
+    }
+    writes.set(eid, props);
+    current.set(eid, decodeEntity(props));
+    out.push(current.get(eid)!);
+  }
+
+  for (const props of writes.values()) precheckWrite(runner, props);
+  for (const [eid, props] of writes) {
+    const before = stored.get(eid);
+    if (before !== undefined && props.type !== before.type)
+      await runner.removeNodeLabel(ns, L_ENTITY, eid, before.type);
+  }
+  const byType = new Map<string, NodeRow[]>();
+  for (const [eid, props] of writes) {
+    const rows = byType.get(props.type as string) ?? [];
+    byType.set(props.type as string, [...rows, [eid, props]]);
+  }
+  for (const [etype, rows] of byType) await runner.upsertNodes(ns, L_ENTITY, rows, { extra_label: etype });
+  await writeEvidence(runner, ns, records);
+  return out;
 }
 
 export interface CreateEntityArgs {
@@ -515,9 +698,15 @@ export interface CreateEntityArgs {
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param args (CreateEntityArgs): the entity fields.
+ * @param schemaCheck (SchemaCheck | undefined): checks the entity against the schema before the write.
  * @return (Entity): the created entity.
  */
-export async function createEntity(runner: Runner, ns: string, args: CreateEntityArgs): Promise<Entity> {
+export async function createEntity(
+  runner: Runner,
+  ns: string,
+  args: CreateEntityArgs,
+  schemaCheck?: SchemaCheck,
+): Promise<Entity> {
   requireText("entity type", args.type);
   requireText("entity name", args.name);
   const type = cleanText(args.type);
@@ -526,9 +715,11 @@ export async function createEntity(runner: Runner, ns: string, args: CreateEntit
   validateEntityIdentity(eid, type, name);
   if (args.aliases != null) requireList("aliases", args.aliases);
   if (args.external_ids != null) requireStrMapping("external_ids", args.external_ids);
-  if (args.properties != null) requireJsonMapping("properties", args.properties);
+  requireJsonMapping("properties", args.properties);
   await runner.lockNode(ns, L_ENTITY, eid);
   if (await runner.nodeExists(ns, L_ENTITY, eid)) throw new ConflictError("Entity", eid);
+  const properties = { ...(args.properties ?? {}) };
+  await schemaCheck?.(runner, { entities: [{ id: args.id || null, type, name, properties }], relations: [] });
   const ts = new Date();
   const props = encodeEntityProps({
     ns,
@@ -537,8 +728,8 @@ export async function createEntity(runner: Runner, ns: string, args: CreateEntit
     name,
     aliases: dedupTextList(args.aliases ?? []),
     external_ids: { ...(args.external_ids ?? {}) },
-    properties: { ...(args.properties ?? {}) },
-    evidence: [],
+    properties,
+    source_count: 0,
     created_at: ts,
     updated_at: ts,
   });
@@ -563,6 +754,7 @@ export interface UpdateEntityFields {
  * @param ns (string): the namespace.
  * @param eid (string): the entity id.
  * @param fields (UpdateEntityFields): the fields to change, plus remove_aliases and remove_properties.
+ * @param schemaCheck (SchemaCheck | undefined): checks the resulting entity against the schema before the write.
  * @return (Entity): the updated entity.
  */
 export async function updateEntity(
@@ -570,6 +762,7 @@ export async function updateEntity(
   ns: string,
   eid: string,
   fields: UpdateEntityFields,
+  schemaCheck?: SchemaCheck,
 ): Promise<Entity> {
   let existing = await getEntity(runner, ns, eid);
   if (existing === null) throw new NotFoundError("Entity", eid);
@@ -592,13 +785,32 @@ export async function updateEntity(
   const properties: JsonObject = { ...existing.properties, ...canonProps(fields.properties) };
   for (const key of fields.remove_properties ?? []) delete properties[key];
   const externalIds = { ...existing.external_ids, ...fields.external_ids };
-  return rewriteEntity(
-    runner,
+  await schemaCheck?.(runner, { entities: [{ id: eid, type, name, properties }], relations: [] });
+  if (
+    type === existing.type &&
+    name === existing.name &&
+    deepEqual(aliases, existing.aliases) &&
+    deepEqual(externalIds, existing.external_ids) &&
+    deepEqual(properties, existing.properties)
+  ) {
+    return existing;
+  }
+  const props = encodeEntityProps({
     ns,
-    existing,
-    { type, name, aliases, external_ids: externalIds, properties, evidence: existing.evidence },
-    new Date(),
-  );
+    id: eid,
+    type,
+    name,
+    aliases,
+    external_ids: externalIds,
+    properties,
+    source_count: existing.source_count,
+    created_at: existing.created_at,
+    updated_at: new Date(),
+  });
+  precheckWrite(runner, props);
+  if (type !== existing.type) await runner.removeNodeLabel(ns, L_ENTITY, eid, existing.type);
+  await runner.upsertNode(ns, L_ENTITY, eid, props, { extra_label: type });
+  return decodeEntity(props);
 }
 
 export async function listEntities(
@@ -688,6 +900,7 @@ export async function deleteEntity(runner: Runner, ns: string, eid: string): Pro
     exclude_types: [...PREFERENCE_EDGE_TYPES, R_HAS_PROFILE],
   })) {
     counts.deleted_relation_versions += await runner.deleteEdges(ns, rid);
+    await deleteEvidence(runner, ns, rid);
     for (const tid of await tracesTouchingRelation(runner, ns, rid)) traceIds.add(tid);
   }
 
@@ -702,8 +915,23 @@ export async function deleteEntity(runner: Runner, ns: string, eid: string): Pro
     await runner.deleteNode(ns, L_PROFILE, idOf(profile));
   }
 
+  for (const pref of await runner.matchEdges(ns, {
+    from_label: L_PROFILE,
+    current_only: true,
+    equals: { about_entity: eid },
+  })) {
+    if (pref.to_id !== eid) {
+      await updatePreference(runner, ns, idOf(pref.props), {
+        properties: null,
+        remove_properties: [],
+        clear_about: true,
+      });
+    }
+  }
+
   counts.deleted_preference_versions += await runner.countInEdgesTyped(ns, L_ENTITY, eid, PREFERENCE_EDGE_TYPES);
   await runner.deleteNode(ns, L_ENTITY, eid);
+  await deleteEvidence(runner, ns, eid);
   counts.deleted_entities = 1;
   return counts;
 }
@@ -747,24 +975,6 @@ export async function listRelationVersions(
   return rels;
 }
 
-async function createRelationEdge(
-  runner: Runner,
-  ns: string,
-  fromId: string,
-  rtype: string,
-  toId: string,
-  props: Props,
-): Promise<void> {
-  rejectReservedRelType(rtype, rtype);
-  const ok = await runner.createEdge(ns, rtype, L_ENTITY, fromId, L_ENTITY, toId, props);
-  if (!ok) {
-    throw new ValidationError(
-      `relation endpoints not found (from=${pyRepr(fromId)}, to=${pyRepr(toId)}); create both entities first, ` +
-        "then reference them by id ('type:name')",
-    );
-  }
-}
-
 /**
  * Write a relation version as the current one, retiring the previous current version when there is one.
  *
@@ -786,82 +996,159 @@ async function writeRelationVersion(
     precheckWrite(runner, props);
     await runner.updateCurrentEdge(ns, idOf(props), { is_current: false });
   }
-  await createRelationEdge(runner, ns, ends.from_entity, ends.type, ends.to_entity, props);
+  rejectReservedRelType(ends.type, ends.type);
+  if (!(await runner.createEdge(ns, ends.type, L_ENTITY, ends.from_entity, L_ENTITY, ends.to_entity, props))) {
+    throw new ValidationError(
+      `relation endpoints not found (from=${pyRepr(ends.from_entity)}, to=${pyRepr(ends.to_entity)}); ` +
+        "create both entities first, then reference them by id ('type:name')",
+    );
+  }
   return decodeRelation(props, ends);
 }
 
 /**
- * Insert-semantics upsert of a relation: merge properties, versioning on change.
+ * Fetch the current version of many relations, reading each batch of source entities' outgoing relations.
+ *
+ * A derived relation id fixes its endpoints, so its stored version is among its source entity's relations; an
+ * explicit id may name a relation between other entities, so one not found that way is looked up by id.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
- * @param rel (ParsedRelationInput): the relation to upsert.
- * @param evidence (Evidence[]): evidence to attach.
- * @param defaultEventTime (Date | null): the fallback event time.
- * @param createdAt (Date): the timestamp.
- * @return (Relation): the stored current version.
+ * @param keyed (ReadonlyArray<readonly [string, ParsedRelationInput]>): (relation id, input) pairs.
+ * @return (Map<string, EdgeRow>): each found relation's current edge row by id.
  */
-export async function upsertRelation(
+async function currentRelations(
   runner: Runner,
   ns: string,
-  rel: ParsedRelationInput,
-  evidence: Evidence[],
+  keyed: ReadonlyArray<readonly [string, ParsedRelationInput]>,
+): Promise<Map<string, EdgeRow>> {
+  const wanted = new Set(keyed.map(([rid]) => rid));
+  const found = new Map<string, EdgeRow>();
+  for (const batch of batches([...new Set(keyed.map(([, rel]) => rel.from_entity))])) {
+    const fetch = (skip: number, limit: number) =>
+      runner.matchEdges(ns, {
+        from_label: L_ENTITY,
+        to_label: L_ENTITY,
+        from_in: batch,
+        current_only: true,
+        skip,
+        limit,
+      });
+    for (const edge of await scan(fetch, Number.POSITIVE_INFINITY, BATCH)) {
+      if (wanted.has(idOf(edge.props)) && isRelationType(edge.type)) found.set(idOf(edge.props), edge);
+    }
+  }
+  for (const [rid, rel] of keyed) {
+    if (!rel.id || found.has(rid)) continue;
+    const edge = await runner.getCurrentEdge(ns, rid);
+    if (edge !== null && isRelationType(edge.type)) found.set(rid, edge);
+  }
+  return found;
+}
+
+/**
+ * Insert-semantics upsert of many relations: merge properties, versioning on change, recording evidence.
+ *
+ * Relations are read and written in batches; a repeated id applies after the earlier input, as sequential
+ * upserts would.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param items (ReadonlyArray<readonly [ParsedRelationInput, Evidence[]]>): relations with their evidence, in order.
+ * @param defaultEventTime (Date | null): the fallback event time.
+ * @param createdAt (Date): the timestamp.
+ * @return (Relation[]): each input's stored current version, in input order.
+ */
+export async function upsertRelations(
+  runner: Runner,
+  ns: string,
+  items: ReadonlyArray<readonly [ParsedRelationInput, Evidence[]]>,
   defaultEventTime: Date | null,
   createdAt: Date,
-): Promise<Relation> {
-  validateOwnId("relation", rel.id);
-  const rtype = ids.normalizeRelType(rel.type);
-  const rid = rel.id || ids.relationId(rel.from_entity, rtype, rel.to_entity);
-  const eventTime = rel.event_time || defaultEventTime;
-  await runner.lockNode(ns, L_ENTITY, rel.from_entity);
-  const current = await getRelationCurrent(runner, ns, rid);
-
-  if (current === null) {
-    const props = encodeRelationProps({
-      ns,
-      id: rid,
-      revision: 1,
-      properties: { ...rel.properties },
-      event_time: eventTime,
-      created_at: createdAt,
-      is_current: true,
-      evidence,
-    });
-    return writeRelationVersion(
-      runner,
-      ns,
-      { from_entity: rel.from_entity, type: rtype, to_entity: rel.to_entity },
-      props,
-      false,
-    );
-  }
-
-  if (rel.from_entity !== current.from_entity || rtype !== current.type || rel.to_entity !== current.to_entity) {
-    throw new ValidationError(
-      `relation ${pyRepr(rid)} already exists with different endpoints/type; ` +
-        "endpoints and type are immutable; create a new relation to change them",
-    );
-  }
-
-  const mergedProperties = { ...current.properties, ...canonProps(rel.properties) };
-  if (deepEqual(current.properties, mergedProperties) && toIso(current.event_time) === toIso(eventTime)) {
-    const merged = mergeEvidence(current.evidence, evidence);
-    await runner.updateCurrentEdge(ns, rid, { evidence_json: encodeEvidence(merged) });
-    current.evidence = merged;
-    return current;
-  }
-
-  const props = encodeRelationProps({
-    ns,
-    id: rid,
-    revision: current.revision + 1,
-    properties: mergedProperties,
-    event_time: eventTime,
-    created_at: createdAt,
-    is_current: true,
-    evidence,
+): Promise<Relation[]> {
+  const keyed = items.map(([rel, evidence]) => {
+    validateOwnId("relation", rel.id);
+    const rtype = ids.normalizeRelType(rel.type);
+    rejectReservedRelType(rtype, rtype);
+    return { rid: rel.id || ids.relationId(rel.from_entity, rtype, rel.to_entity), rtype, rel, evidence };
   });
-  return writeRelationVersion(runner, ns, current, props, true);
+  for (const from of new Set(keyed.map((k) => k.rel.from_entity))) await runner.lockNode(ns, L_ENTITY, from);
+  const rids = [...new Set(keyed.map((k) => k.rid))];
+  const stored = await currentRelations(
+    runner,
+    ns,
+    keyed.map((k) => [k.rid, k.rel] as const),
+  );
+  const [records, gained] = await planEvidence(
+    runner,
+    ns,
+    keyed.flatMap((k) => k.evidence.map((ev) => [k.rid, ev] as const)),
+    new Set(rids.filter((rid) => !stored.has(rid))),
+  );
+
+  const current = new Map(stored);
+  const writes = new Map<string, readonly [string, Props]>();
+  const out: Relation[] = [];
+  for (const { rid, rtype, rel } of keyed) {
+    const eventTime = rel.event_time || defaultEventTime;
+    let edge = current.get(rid);
+    let props: Props;
+    if (edge === undefined) {
+      props = encodeRelationProps({
+        ns,
+        id: rid,
+        revision: 1,
+        properties: { ...rel.properties },
+        event_time: eventTime,
+        created_at: createdAt,
+        is_current: true,
+        source_count: takeGained(gained, rid),
+      });
+      edge = { props, from_id: rel.from_entity, to_id: rel.to_entity, type: rtype };
+    } else {
+      if (rel.from_entity !== edge.from_id || rtype !== edge.type || rel.to_entity !== edge.to_id) {
+        throw new ValidationError(
+          `relation ${pyRepr(rid)} already exists with different endpoints/type; ` +
+            "endpoints and type are immutable; create a new relation to change them",
+        );
+      }
+      const prev = relationOf(edge);
+      const sources = prev.source_count + takeGained(gained, rid);
+      const mergedProperties = { ...prev.properties, ...canonProps(rel.properties) };
+      if (deepEqual(prev.properties, mergedProperties) && toIso(prev.event_time) === toIso(eventTime)) {
+        if (sources === prev.source_count) {
+          out.push(prev);
+          continue;
+        }
+        props = { ...edge.props, source_count: sources };
+      } else {
+        writes.set(JSON.stringify([rid, prev.revision]), [rid, { ...edge.props, is_current: false }]);
+        props = encodeRelationProps({
+          ns,
+          id: rid,
+          revision: prev.revision + 1,
+          properties: mergedProperties,
+          event_time: eventTime,
+          created_at: createdAt,
+          is_current: true,
+          source_count: sources,
+        });
+      }
+      edge = { ...edge, props };
+    }
+    writes.set(JSON.stringify([rid, props.revision]), [rid, props]);
+    current.set(rid, edge);
+    out.push(relationOf(edge));
+  }
+
+  for (const [, props] of writes.values()) precheckWrite(runner, props);
+  const rows: EdgeWrite[] = [...writes.values()].map(([rid, props]) => {
+    const edge = current.get(rid)!;
+    return [edge.type, edge.from_id, edge.to_id, props];
+  });
+  await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
+  await writeEvidence(runner, ns, records);
+  return out;
 }
 
 export interface CreateRelationArgs {
@@ -880,36 +1167,47 @@ export interface CreateRelationArgs {
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param args (CreateRelationArgs): the relation fields.
+ * @param schemaCheck (SchemaCheck | undefined): checks the relation against the schema before the write.
  * @return (Relation): the created relation.
  */
-export async function createRelation(runner: Runner, ns: string, args: CreateRelationArgs): Promise<Relation> {
+export async function createRelation(
+  runner: Runner,
+  ns: string,
+  args: CreateRelationArgs,
+  schemaCheck?: SchemaCheck,
+): Promise<Relation> {
   requireText("relation from_entity", args.from_entity);
   requireText("relation type", args.type);
   requireText("relation to_entity", args.to_entity);
-  if (args.properties != null) requireJsonMapping("properties", args.properties);
+  requireJsonMapping("properties", args.properties);
   requireDatetime("event_time", args.event_time);
   validateOwnId("relation", args.id);
   const rtype = ids.normalizeRelType(args.type);
   const rid = args.id || ids.relationId(args.from_entity, rtype, args.to_entity);
   await runner.lockNode(ns, L_ENTITY, args.from_entity);
   if (await relationExists(runner, ns, rid)) throw new ConflictError("Relation", rid);
+  const properties = { ...(args.properties ?? {}) };
+  const ends = { from_entity: args.from_entity, type: rtype, to_entity: args.to_entity };
+  await schemaCheck?.(runner, { entities: [], relations: [{ id: args.id || null, ...ends, properties }] });
+  const [records, gained] = await planEvidence(
+    runner,
+    ns,
+    args.evidence.map((ev) => [rid, ev] as const),
+    new Set([rid]),
+  );
   const props = encodeRelationProps({
     ns,
     id: rid,
     revision: 1,
-    properties: { ...(args.properties ?? {}) },
+    properties,
     event_time: args.event_time ?? null,
     created_at: new Date(),
     is_current: true,
-    evidence: args.evidence,
+    source_count: gained.get(rid) ?? 0,
   });
-  return writeRelationVersion(
-    runner,
-    ns,
-    { from_entity: args.from_entity, type: rtype, to_entity: args.to_entity },
-    props,
-    false,
-  );
+  const rel = await writeRelationVersion(runner, ns, ends, props, false);
+  await writeEvidence(runner, ns, records);
+  return rel;
 }
 
 export interface UpdateRelationArgs {
@@ -919,52 +1217,37 @@ export interface UpdateRelationArgs {
   evidence?: Evidence[] | null;
 }
 
-interface VersionedKind<T> {
-  kind: string;
-  objectType: string;
-  current: (runner: Runner, ns: string, id: string) => Promise<T | null>;
-  exists: (runner: Runner, ns: string, id: string) => Promise<boolean>;
-  lock: (runner: Runner, ns: string, current: T) => Promise<void>;
-}
-
-const RELATION_VERSIONS: VersionedKind<Relation> = {
-  kind: "relation",
-  objectType: "Relation",
-  current: getRelationCurrent,
-  exists: relationExists,
-  lock: (runner, ns, rel) => runner.lockNode(ns, L_ENTITY, rel.from_entity),
-};
-
-const PREFERENCE_VERSIONS: VersionedKind<Preference> = {
-  kind: "preference",
-  objectType: "Preference",
-  current: getPreference,
-  exists: preferenceExists,
-  lock: (runner, ns, pref) => runner.lockNode(ns, L_PROFILE, pref.profile_id),
-};
-
 /**
- * The current version of a relation or preference, read again after locking it so a concurrent writer cannot slip in.
+ * Return the current version of a relation or preference, read again under its lock so no writer slips in.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param id (string): the relation or preference id.
- * @param versions (VersionedKind<T>): how to read, test, and lock that kind.
+ * @param kind ("relation" | "preference"): the object kind, for the errors.
+ * @param get ((runner: Runner, ns: string, id: string) => Promise<T | null>): reads the current version, or null.
+ * @param exists ((runner: Runner, ns: string, id: string) => Promise<boolean>): reports whether any version exists.
+ * @param lockOn ((current: T) => [string, string]): maps the current version to the (label, id) node to lock.
  * @return (T): the current version, under the lock.
  */
-async function lockCurrent<T>(runner: Runner, ns: string, id: string, versions: VersionedKind<T>): Promise<T> {
-  const before = await versions.current(runner, ns, id);
+async function lockCurrent<T>(
+  runner: Runner,
+  ns: string,
+  id: string,
+  kind: "relation" | "preference",
+  get: (runner: Runner, ns: string, id: string) => Promise<T | null>,
+  exists: (runner: Runner, ns: string, id: string) => Promise<boolean>,
+  lockOn: (current: T) => [string, string],
+): Promise<T> {
+  const before = await get(runner, ns, id);
   if (before === null) {
-    if (await versions.exists(runner, ns, id)) {
-      throw new TransientError(
-        `${versions.kind} ${pyRepr(id)} has no current version right now (concurrent write); retry`,
-      );
+    if (await exists(runner, ns, id)) {
+      throw new TransientError(`${kind} ${pyRepr(id)} has no current version right now (concurrent write); retry`);
     }
-    throw new NotFoundError(versions.objectType, id);
+    throw new NotFoundError(kind === "relation" ? "Relation" : "Preference", id);
   }
-  await versions.lock(runner, ns, before);
-  const current = await versions.current(runner, ns, id);
-  if (current === null) throw new TransientError(`${versions.kind} ${pyRepr(id)} was changed concurrently; retry`);
+  await runner.lockNode(ns, ...lockOn(before));
+  const current = await get(runner, ns, id);
+  if (current === null) throw new TransientError(`${kind} ${pyRepr(id)} was changed concurrently; retry`);
   return current;
 }
 
@@ -974,7 +1257,8 @@ async function lockCurrent<T>(runner: Runner, ns: string, id: string, versions: 
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rid (string): the relation id.
- * @param args (UpdateRelationArgs): the properties to set and remove, a new valid time, and evidence to merge.
+ * @param args (UpdateRelationArgs): the properties to set and remove, a new valid time, and evidence to add.
+ * @param schemaCheck (SchemaCheck | undefined): checks the resulting relation against the schema before the write.
  * @return (Relation): the current version.
  */
 export async function updateRelation(
@@ -982,21 +1266,37 @@ export async function updateRelation(
   ns: string,
   rid: string,
   args: UpdateRelationArgs,
+  schemaCheck?: SchemaCheck,
 ): Promise<Relation> {
   requireJsonMapping("set_properties", args.set_properties);
   requireList("remove_properties", args.remove_properties);
   requireDatetime("event_time", args.event_time);
-  const current = await lockCurrent(runner, ns, rid, RELATION_VERSIONS);
+  const current = await lockCurrent(runner, ns, rid, "relation", getRelationCurrent, relationExists, (rel) => [
+    L_ENTITY,
+    rel.from_entity,
+  ]);
   const newProps: JsonObject = { ...current.properties, ...canonProps(args.set_properties) };
   for (const key of args.remove_properties) delete newProps[key];
+  const { from_entity, type, to_entity } = current;
+  await schemaCheck?.(runner, {
+    entities: [],
+    relations: [{ id: rid, from_entity, type, to_entity, properties: newProps }],
+  });
   const newEventTime = args.event_time ?? current.event_time;
-  const newEvidence = args.evidence == null ? current.evidence : mergeEvidence(current.evidence, args.evidence);
+  const [records, gained] = await planEvidence(
+    runner,
+    ns,
+    (args.evidence ?? []).map((ev) => [rid, ev] as const),
+    new Set(),
+  );
+  const sources = current.source_count + (gained.get(rid) ?? 0);
 
   if (deepEqual(newProps, current.properties) && toIso(newEventTime) === toIso(current.event_time)) {
-    if (!deepEqual(newEvidence, current.evidence)) {
-      await runner.updateCurrentEdge(ns, rid, { evidence_json: encodeEvidence(newEvidence) });
-      current.evidence = newEvidence;
+    if (sources !== current.source_count) {
+      await runner.updateCurrentEdge(ns, rid, { source_count: sources });
+      current.source_count = sources;
     }
+    await writeEvidence(runner, ns, records);
     return current;
   }
 
@@ -1008,9 +1308,11 @@ export async function updateRelation(
     event_time: newEventTime,
     created_at: new Date(),
     is_current: true,
-    evidence: newEvidence,
+    source_count: sources,
   });
-  return writeRelationVersion(runner, ns, current, props, true);
+  const rel = await writeRelationVersion(runner, ns, current, props, true);
+  await writeEvidence(runner, ns, records);
+  return rel;
 }
 
 export async function listRelations(
@@ -1059,6 +1361,7 @@ export async function deleteRelation(runner: Runner, ns: string, rid: string): P
   if (!(await relationExists(runner, ns, rid))) throw new NotFoundError("Relation", rid);
   const traceIds = await tracesTouchingRelation(runner, ns, rid);
   const deletedVersions = await runner.deleteEdges(ns, rid);
+  await deleteEvidence(runner, ns, rid);
   const deletedDecisions = await deleteTraces(runner, ns, traceIds);
   return { ...NO_DELETES, deleted_relation_versions: deletedVersions, deleted_decisions: deletedDecisions };
 }
@@ -1216,13 +1519,13 @@ export interface CreatePreferenceArgs {
  * @return (Preference): the created preference.
  */
 export async function createPreference(runner: Runner, ns: string, args: CreatePreferenceArgs): Promise<Preference> {
-  validateKind(args.kind);
+  requireChoice("preference kind", args.kind, KINDS);
   validateStrength(args.strength);
   requireText("preference subject_entity", args.subject_entity);
   requireText("preference key", args.key);
   requireText("preference value_entity", args.value_entity);
   const key = ids.normalizeText(args.key);
-  if (args.properties != null) requireJsonMapping("properties", args.properties);
+  requireJsonMapping("properties", args.properties);
   requireDatetime("event_time", args.event_time);
   validateOwnId("preference", args.id);
   const pid = args.id || ids.preferenceId(args.subject_entity, args.kind, key, args.value_entity);
@@ -1253,6 +1556,7 @@ export interface UpdatePreferenceArgs {
   properties?: JsonObject | null;
   remove_properties: readonly string[];
   event_time?: Date | null;
+  clear_about?: boolean;
 }
 
 /**
@@ -1261,7 +1565,7 @@ export interface UpdatePreferenceArgs {
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param pid (string): the preference id.
- * @param args (UpdatePreferenceArgs): the new strength, properties to merge and remove, and valid time.
+ * @param args (UpdatePreferenceArgs): the new strength, properties to merge and remove, valid time, and whether to drop the about entity.
  * @return (Preference): the current version.
  */
 export async function updatePreference(
@@ -1274,13 +1578,18 @@ export async function updatePreference(
   requireJsonMapping("properties", args.properties);
   requireList("remove_properties", args.remove_properties);
   requireDatetime("event_time", args.event_time);
-  const current = await lockCurrent(runner, ns, pid, PREFERENCE_VERSIONS);
+  const current = await lockCurrent(runner, ns, pid, "preference", getPreference, preferenceExists, (pref) => [
+    L_PROFILE,
+    pref.profile_id,
+  ]);
   const newStrength = args.strength ?? current.strength;
   const newProps: JsonObject = { ...current.properties, ...canonProps(args.properties) };
   for (const key of args.remove_properties) delete newProps[key];
   const newEventTime = args.event_time ?? current.event_time;
+  const newAbout = args.clear_about ? null : current.about_entity;
   if (
     newStrength === current.strength &&
+    newAbout === current.about_entity &&
     deepEqual(newProps, current.properties) &&
     toIso(newEventTime) === toIso(current.event_time)
   ) {
@@ -1292,7 +1601,7 @@ export async function updatePreference(
     revision: current.revision + 1,
     subject_entity: current.subject_entity,
     key: current.key,
-    about_entity: current.about_entity,
+    about_entity: newAbout,
     strength: newStrength,
     properties: newProps,
     event_time: newEventTime,
@@ -1321,7 +1630,7 @@ export async function listPreferences(
 ): Promise<Preference[]> {
   requireOptionalText("subject_entity filter", args.subject_entity);
   requireOptionalText("key filter", args.key);
-  if (args.kind != null) validateKind(args.kind);
+  if (args.kind != null) requireChoice("preference kind", args.kind, KINDS);
   const equals: Props = {};
   if (args.subject_entity != null) equals.subject_entity = args.subject_entity;
   if (args.key != null) equals.key = ids.normalizeText(args.key);
@@ -1436,7 +1745,7 @@ export interface UpsertTraceArgs {
  * @return (DecisionTrace): the stored trace.
  */
 export async function upsertTrace(runner: Runner, ns: string, args: UpsertTraceArgs): Promise<DecisionTrace> {
-  validateStatus(args.status);
+  requireChoice("decision status", args.status, STATUSES);
   requireText("decision title", args.title);
   const title = ids.normalizeText(args.title);
   if (args.actor_entity !== null) requireText("decision actor_entity", args.actor_entity);

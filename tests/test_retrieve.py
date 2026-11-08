@@ -100,7 +100,6 @@ def test_retrieve_includes_source_passage():
     passage = "Soham praised HydraDB for its bitemporal provenance ledger."
     run(g.insert.text(passage, source_id="m1"))
     res = run(g.retrieve("Soham HydraDB"))
-    # the answer phrase lives only in the passage, not in any triple or entity label
     assert "bitemporal provenance ledger" in res.context
 
 

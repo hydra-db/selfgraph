@@ -3,7 +3,14 @@ import { ValidationError } from "./errors.js";
 import { Insert } from "./insert.js";
 import { pyStrip } from "./internal/py.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
-import type { CypherResult, ExtractionInstructions, ExtractionPrompts, JsonValue, RetrievalResult } from "./models.js";
+import {
+  asInput,
+  type CypherResult,
+  ExtractionInstructions,
+  ExtractionPrompts,
+  type JsonValue,
+  type RetrievalResult,
+} from "./models.js";
 import type { Extractor, GraphStore } from "./protocols.js";
 import { Decisions, Entities, Preferences, Relations } from "./resources/index.js";
 import { type RetrieveOptions, retrieve } from "./retrieval.js";
@@ -50,18 +57,16 @@ export class SelfGraph {
     this.store = store;
     this.namespace = namespace;
     this.schema = asSchema(options.schema);
-    this.graph = new GraphAccess(store, namespace);
+    this.graph = new GraphAccess(store, namespace, this.schema, schemaMode);
     this.entities = new Entities(this.graph);
     this.relations = new Relations(this.graph);
     this.preferences = new Preferences(this.graph);
     this.decisions = new Decisions(this.graph);
     this.insert = new Insert(this.graph, {
       llm: resolveLlm(options.llm),
-      instructions: options.instructions ?? null,
-      prompts: options.prompts ?? null,
+      instructions: asInput(ExtractionInstructions, options.instructions, "instructions"),
+      prompts: asInput(ExtractionPrompts, options.prompts, "prompts"),
       extractor: options.extractor ?? null,
-      schema: this.schema,
-      schemaMode,
     });
   }
 
@@ -92,8 +97,11 @@ export class SelfGraph {
     await this.graph.initialize();
   }
 
+  /**
+   * Close the store connection; later calls fail with StoreError rather than reopening it.
+   */
   async close(): Promise<void> {
-    await this.store.close?.();
+    await this.graph.close();
   }
 
   async [asyncDispose](): Promise<void> {
@@ -133,9 +141,11 @@ export class SelfGraph {
  * @return (SelfGraph): the constructed graph.
  */
 export function buildGraph(settings: GraphSettings): SelfGraph {
+  const namespace = settings.namespace ?? DEFAULT_SETTINGS.namespace;
+  requireText("namespace", namespace);
   return new SelfGraph(buildStore(settings), {
     llm: buildLlm(settings),
-    namespace: settings.namespace || DEFAULT_SETTINGS.namespace,
+    namespace,
     schema: typeof settings.schema === "string" ? (readJson(settings.schema) as Schema) : settings.schema,
     schema_mode: (settings.schema_mode || "warn") as SchemaMode,
   });

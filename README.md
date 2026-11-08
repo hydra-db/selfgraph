@@ -78,7 +78,7 @@ asyncio.run(main())
 
 `async with` initializes the store on entry and closes it on exit; it also initializes lazily on first use, so a bare `SelfGraph(...)` works too. Prefer synchronous code? `SyncSelfGraph` has the same API without `await`.
 
-Add an LLM and a server when you want text extraction at scale:
+With an LLM and a server:
 
 ```python
 from selfgraph import LLMConfig, Neo4jStore, SelfGraph
@@ -108,7 +108,7 @@ KuzuStore("selfgraph.kuzu")
 HydraDBStore("bolt://127.0.0.1:17687", auth=("neo4j", "<token>"))
 ```
 
-`CypherStore` covers the Bolt and openCypher family (Neo4j and Memgraph are tested); `FalkorDBStore` runs over FalkorDB's Redis protocol; `KuzuStore` is an embedded, in-process graph; `HydraDBStore` targets HydraDB. To add another database, implement the `GraphStore` primitives and pass your store to `SelfGraph(store=...)`.
+`CypherStore` covers the Bolt and openCypher family (Neo4j and Memgraph are tested); `FalkorDBStore` runs over FalkorDB's Redis protocol; `KuzuStore` is an embedded, in-process graph; `HydraDBStore` targets HydraDB 0.4.0 or newer. To add another database, implement the `GraphStore` primitives and pass your store to `SelfGraph(store=...)`.
 
 The CLI and the MCP server wrap the same API:
 

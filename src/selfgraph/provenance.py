@@ -11,6 +11,7 @@ from ._serde import (
     L_SOURCE_VERSION,
     R_HAS_CHUNK,
     R_HAS_VERSION,
+    child_edge_id,
     to_iso,
 )
 from .extraction.chunking import chunk_text
@@ -27,22 +28,16 @@ async def record_source(
     metadata: dict[str, Any] | None,
     created_at: datetime,
 ) -> tuple[str, list[Evidence]]:
-    """Write the source/version/chunk structure and return the source version with base evidence.
+    """Write the source, content-addressed version, and chunks; return the version id and its base evidence.
 
-    ``base_evidence`` is a single source-level :class:`Evidence` that extracted
-    objects link to by default. The default extractor links objects at source
-    granularity (chunk_id=None); chunk nodes are stored for traversal, and
-    chunk-level Evidence is produced when a custom extractor supplies offsets on a
-    relation's EvidenceInput.
-
-    @param runner (Any): the Cypher runner used to write nodes and relationships.
+    @param runner (Any): the graph runner used to write nodes and relationships.
     @param ns (str): the namespace the source belongs to.
     @param source_id (str): the stable id of the source.
     @param parsed_text (str): the parsed document text to chunk and record.
     @param media_type (str): the media type of the source content.
     @param metadata (dict[str, Any] | None): optional metadata stored on the version.
     @param created_at (datetime): the insert timestamp stored on the version node.
-    @return (tuple[str, list[Evidence]]): the source version id and base evidence.
+    @return (tuple[str, list[Evidence]]): the source version id and one source-level evidence (chunk_id None).
     """
     sv = _ids.source_version_id(source_id, _ids.content_hash(parsed_text.encode("utf-8")))
     source_node = _ids.source_node_id(source_id)
@@ -68,27 +63,31 @@ async def record_source(
         source_node,
         L_SOURCE_VERSION,
         sv,
-        {"ns": ns, "id": f"hasversion:{sv}", "revision": 1},
+        {"ns": ns, "id": child_edge_id(R_HAS_VERSION, sv), "revision": 1},
     )
 
+    chunks = []
     for chunk in chunk_text(parsed_text):
         cid = _ids.chunk_id(sv, chunk.index)
-        await runner.upsert_node(
-            ns,
-            L_CHUNK,
-            cid,
-            {
-                "id": cid,
-                "ns": ns,
-                "index": chunk.index,
-                "text": chunk.text,
-                "start_offset": chunk.start_offset,
-                "end_offset": chunk.end_offset,
-            },
+        chunks.append(
+            (
+                cid,
+                {
+                    "id": cid,
+                    "ns": ns,
+                    "index": chunk.index,
+                    "text": chunk.text,
+                    "start_offset": chunk.start_offset,
+                    "end_offset": chunk.end_offset,
+                },
+            )
         )
-        await runner.create_edge(
-            ns, R_HAS_CHUNK, L_SOURCE_VERSION, sv, L_CHUNK, cid, {"ns": ns, "id": f"haschunk:{cid}", "revision": 1}
-        )
+    await runner.upsert_nodes(ns, L_CHUNK, chunks)
+    await runner.create_edges(
+        ns,
+        L_SOURCE_VERSION,
+        L_CHUNK,
+        [(R_HAS_CHUNK, sv, cid, {"ns": ns, "id": child_edge_id(R_HAS_CHUNK, cid), "revision": 1}) for cid, _ in chunks],
+    )
 
-    base = [Evidence(source_id=source_id, source_version=sv, chunk_id=None)]
-    return sv, base
+    return sv, [Evidence(source_id=source_id, source_version=sv, chunk_id=None)]

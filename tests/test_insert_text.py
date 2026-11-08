@@ -1,5 +1,5 @@
 import pytest
-from helpers import FakeLLM, new_graph, run
+from helpers import FakeLLM, new_graph, run, unique_ns
 
 from selfgraph import (
     EntityInput,
@@ -55,7 +55,6 @@ def _full_responses():
 def test_insert_text_full_pipeline():
     llm = FakeLLM(_full_responses())
     g = new_graph(llm=llm)
-    run(g.initialize())
 
     res = run(g.insert.text("Soham prefers HydraDB. The team selected it.", source_id="m1"))
 
@@ -94,7 +93,6 @@ def test_noise_entities_are_filtered():
         ),
     }
     g = new_graph(llm=FakeLLM(responses))
-    run(g.initialize())
     res = run(g.insert.text("Acme gained 74."))
     ids = {e.id for e in res.entities}
     assert "company:acme" in ids
@@ -104,7 +102,6 @@ def test_noise_entities_are_filtered():
 
 def test_insert_text_without_llm_uses_basic_extractor():
     g = new_graph()
-    run(g.initialize())
     res = run(g.insert.text("Acme acquired Globex."))
     ids = {e.id for e in res.entities}
     assert "thing:acme" in ids
@@ -118,7 +115,6 @@ def test_custom_extractor_bypasses_llm():
             return Ontology(entities=[EntityInput(type="Person", name="Zed")])
 
     g = new_graph(extractor=MyExtractor())
-    run(g.initialize())
     res = run(g.insert.text("anything"))
     assert [e.id for e in res.entities] == ["person:zed"]
 
@@ -126,7 +122,6 @@ def test_custom_extractor_bypasses_llm():
 def test_instructions_are_appended_to_prompt():
     llm = FakeLLM(_full_responses())
     g = new_graph(llm=llm)
-    run(g.initialize())
     run(
         g.insert.text(
             "text",
@@ -150,7 +145,6 @@ def test_prompt_missing_text_variable_raises():
 def test_custom_prompts_override_default():
     llm = FakeLLM(_full_responses())
     g = new_graph(llm=llm)
-    run(g.initialize())
     run(
         g.insert.text(
             "text",
@@ -170,8 +164,38 @@ def test_partial_extraction_failure_becomes_warning():
         "_PreferencesOut": RuntimeError("preferences model exploded"),
     }
     g = new_graph(llm=FakeLLM(responses))
-    run(g.initialize())
     res = run(g.insert.text("Zed exists."))
     assert [e.id for e in res.entities] == ["person:zed"]
     assert res.warnings
     assert any("preferences" in w.message for w in res.warnings)
+
+
+def test_invalid_extracted_items_are_dropped_with_warnings():
+    responses = _full_responses()
+    responses["_RelationsOut"].relations += [
+        _RelOut(from_name="Soham", type="", to_name="HydraDB"),
+        _RelOut(from_name="Soham", type="PREFERS", to_name="HydraDB"),
+    ]
+    responses["_PreferencesOut"].preferences.append(
+        _PrefOut(subject_name="Soham", key="editor", value_name="HydraDB", strength=2.0)
+    )
+    g = new_graph(llm=FakeLLM(responses), namespace=unique_ns("drop"))
+    res = run(g.insert.text("Soham prefers HydraDB. The team selected it.", source_id="m-drop"))
+    assert {r.type for r in res.relations} == {"WORKS_AT", "SELECTED"}
+    assert [p.key for p in res.preferences] == ["database"]
+    assert len(res.decisions) == 1
+    dropped = [w.message for w in res.warnings if w.code == "extraction_partial_failure"]
+    assert len(dropped) == 3
+    assert any("preference strength" in m for m in dropped)
+    assert any("reserved" in m for m in dropped)
+
+
+def test_prompt_text_is_never_resubstituted():
+    from selfgraph.extraction.prompts import render
+
+    slotted = PromptTemplate(system="s", user="{instructions}|{text}", version="v1")
+    _, user = render(slotted, text="doc {instructions} {text}", instructions="be brief {text}")
+    assert user == "be brief {text}|doc {instructions} {text}"
+    appended = PromptTemplate(system="s", user="T:{text}", version="v2")
+    _, user = render(appended, text="doc {instructions}", instructions="extra")
+    assert user == "T:doc {instructions}\n\nAdditional instructions:\nextra"

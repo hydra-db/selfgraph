@@ -21,7 +21,6 @@ def test_create_preference_makes_profile():
     assert pref.profile_id == "profile:person:soham"
     assert pref.revision == 1 and pref.is_current
 
-    # The profile keeps preference edges off the subject: no WORKS_AT-style leak.
     if RAW_CYPHER:
         rows = run(g.run_cypher("MATCH (s {id:'person:soham'})-[:HAS_PROFILE]->(p:Profile) RETURN p.id AS id"))
         assert rows.rows and rows.rows[0]["id"] == "profile:person:soham"
@@ -88,11 +87,15 @@ def test_list_relations_excludes_preference_edges():
     g = new_graph()
     seed(g)
     run(g.relations.create("person:soham", "WORKS_AT", "company:hydradb"))
-    pref = run(g.preferences.create("person:soham", "database", "company:hydradb"))
-
+    run(g.preferences.create("person:soham", "database", "company:hydradb"))
     listed = run(g.relations.list())
     assert [r.type for r in listed.items] == ["WORKS_AT"]
     assert all(not r.from_entity.startswith("profile:") for r in listed.items)
 
-    run(g.preferences.update(pref.id, strength=0.5))
-    assert [v.revision for v in run(g.preferences.versions(pref.id))] == [2, 1]
+
+def test_update_with_none_keeps_strength():
+    g = new_graph()
+    seed(g)
+    pref = run(g.preferences.create("person:soham", "none-keeps", "company:neo4j", strength=0.3))
+    same = run(g.preferences.update(pref.id, strength=None))
+    assert same.strength == 0.3 and same.revision == pref.revision

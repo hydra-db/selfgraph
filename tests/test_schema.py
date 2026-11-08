@@ -1,10 +1,11 @@
 import json
 
 import pytest
-from helpers import FakeLLM, new_graph, run, store_settings
+from helpers import FakeLLM, make_store, new_graph, run, store_settings, unique_ns
 
 import selfgraph.mcp.server as srv
-from selfgraph import Ontology, Schema, ValidationError
+from selfgraph import EntityInput, Ontology, Schema, SyncSelfGraph, ValidationError
+from selfgraph.models import suggest_key
 from selfgraph.runtime import build_graph, settings_from_env
 from selfgraph.schema import as_schema, render_schema_catalog, validate_against_schema
 
@@ -46,8 +47,12 @@ SPEC = {
 }
 
 
-def codes(schema, ont):
-    return [w.code for w in validate_against_schema(Ontology.model_validate(ont), schema)]
+def warnings(spec, ont):
+    return validate_against_schema(Ontology.model_validate(ont), Schema.model_validate(spec))
+
+
+def codes(spec, ont):
+    return [w.code for w in warnings(spec, ont)]
 
 
 def test_parse_fills_defaults_and_keeps_aliases():
@@ -67,10 +72,9 @@ def test_as_schema_passthrough_and_null():
 
 
 def test_clean_ontology_through_aliases_and_parent():
-    schema = Schema.model_validate(SPEC)
     assert (
         codes(
-            schema,
+            SPEC,
             {
                 "entities": [
                     {"id": "manager:m", "type": "Manager", "name": "M", "properties": {"age": 30}},
@@ -84,19 +88,13 @@ def test_clean_ontology_through_aliases_and_parent():
 
 
 def test_unknown_entity_type_message():
-    schema = Schema.model_validate(SPEC)
-    warnings = validate_against_schema(
-        Ontology.model_validate({"entities": [{"id": "thing:x", "type": "Alien", "name": "X"}]}), schema
-    )
-    assert len(warnings) == 1
-    assert warnings[0].code == "unknown_entity_type"
-    assert warnings[0].message == "entity thing:x has unknown type 'Alien'"
+    got = warnings(SPEC, {"entities": [{"id": "thing:x", "type": "Alien", "name": "X"}]})
+    assert [(w.code, w.message) for w in got] == [("unknown_entity_type", "entity thing:x has unknown type 'Alien'")]
 
 
 def test_missing_required_then_type_mismatch_order():
-    schema = Schema.model_validate(SPEC)
     assert codes(
-        schema,
+        SPEC,
         {
             "entities": [
                 {"id": "person:p", "type": "Person", "name": "P", "properties": {"score": "high"}},
@@ -107,9 +105,8 @@ def test_missing_required_then_type_mismatch_order():
 
 
 def test_unknown_relation_type():
-    schema = Schema.model_validate(SPEC)
     assert codes(
-        schema,
+        SPEC,
         {
             "entities": [{"id": "person:p", "type": "Person", "name": "P", "properties": {"age": 1}}],
             "relations": [{"from_entity": "person:p", "type": "LIKES", "to_entity": "person:p"}],
@@ -118,9 +115,8 @@ def test_unknown_relation_type():
 
 
 def test_endpoint_type_violation():
-    schema = Schema.model_validate(SPEC)
     assert codes(
-        schema,
+        SPEC,
         {
             "entities": [{"id": "company:c", "type": "Company", "name": "C"}],
             "relations": [{"from_entity": "company:c", "type": "WORKS_AT", "to_entity": "company:c"}],
@@ -129,9 +125,8 @@ def test_endpoint_type_violation():
 
 
 def test_cardinality_above_max():
-    schema = Schema.model_validate(SPEC)
     assert codes(
-        schema,
+        SPEC,
         {
             "entities": [
                 {"id": "person:p", "type": "Person", "name": "P", "properties": {"age": 1}},
@@ -146,35 +141,29 @@ def test_cardinality_above_max():
 
 
 def test_cardinality_below_min():
-    schema = Schema.model_validate(
+    got = warnings(
         {
             "entities": [{"name": "Person"}, {"name": "Company"}],
             "relations": [
                 {"type": "WORKS_AT", "from": {"types": ["Person"], "min_count": 2}, "to": {"types": ["Company"]}}
             ],
-        }
+        },
+        {
+            "entities": [
+                {"id": "person:p", "type": "Person", "name": "P"},
+                {"id": "company:c", "type": "Company", "name": "C"},
+            ],
+            "relations": [{"from_entity": "person:p", "type": "WORKS_AT", "to_entity": "company:c"}],
+        },
     )
-    warnings = validate_against_schema(
-        Ontology.model_validate(
-            {
-                "entities": [
-                    {"id": "person:p", "type": "Person", "name": "P"},
-                    {"id": "company:c", "type": "Company", "name": "C"},
-                ],
-                "relations": [{"from_entity": "person:p", "type": "WORKS_AT", "to_entity": "company:c"}],
-            }
-        ),
-        schema,
-    )
-    assert [w.code for w in warnings] == ["cardinality_violation"]
-    assert "below min 2" in warnings[0].message
+    assert [w.code for w in got] == ["cardinality_violation"]
+    assert "below min 2" in got[0].message
 
 
 def test_empty_schema_checks_nothing():
-    schema = Schema.model_validate({})
     assert (
         codes(
-            schema,
+            {},
             {
                 "entities": [{"id": "thing:x", "type": "Whatever", "name": "X"}],
                 "relations": [{"from_entity": "thing:x", "type": "ANYTHING", "to_entity": "thing:x"}],
@@ -218,10 +207,9 @@ def test_insert_warn_writes_strict_rejects_off_silent():
 
 
 def test_property_types_accept_valid_values_floats_ints_and_none():
-    schema = Schema.model_validate(TYPES_SPEC)
     assert (
         codes(
-            schema,
+            TYPES_SPEC,
             {
                 "entities": [
                     {
@@ -239,32 +227,26 @@ def test_property_types_accept_valid_values_floats_ints_and_none():
 
 
 def test_property_type_mismatches_reject_bad_types_and_bool_as_integer():
-    schema = Schema.model_validate(TYPES_SPEC)
-    warnings = validate_against_schema(
-        Ontology.model_validate(
-            {
-                "entities": [
-                    {
-                        "id": "thing:x",
-                        "type": "Thing",
-                        "name": "X",
-                        "properties": {"b": "yes", "f": "big", "i": True, "s": 5, "j": 42},
-                    }
-                ]
-            }
-        ),
-        schema,
+    got = codes(
+        TYPES_SPEC,
+        {
+            "entities": [
+                {
+                    "id": "thing:x",
+                    "type": "Thing",
+                    "name": "X",
+                    "properties": {"b": "yes", "f": "big", "i": True, "s": 5, "j": 42},
+                }
+            ]
+        },
     )
-    assert [w.code for w in warnings] == ["property_type_mismatch"] * 4
+    assert got == ["property_type_mismatch"] * 4
 
 
 def test_empty_endpoint_accepts_any_entity_type():
-    schema = Schema.model_validate(
-        {"entities": [{"name": "Person"}, {"name": "Company"}], "relations": [{"type": "RELATES_TO"}]}
-    )
     assert (
         codes(
-            schema,
+            {"entities": [{"name": "Person"}, {"name": "Company"}], "relations": [{"type": "RELATES_TO"}]},
             {
                 "entities": [
                     {"id": "person:p", "type": "Person", "name": "P"},
@@ -330,3 +312,189 @@ def test_mcp_get_schema_tool():
     srv.configure(store_settings())
     assert run(srv.get_schema()) is None
     run(srv.close())
+
+
+def test_sync_graph_exposes_schema():
+    g = SyncSelfGraph(store=make_store(), schema=SPEC)
+    try:
+        assert g.schema == Schema.model_validate(SPEC)
+    finally:
+        g.close()
+
+
+WRITE_SPEC = {
+    "entities": [
+        {"name": "Person", "properties": [{"name": "age", "type": "integer", "required": True}]},
+        {"name": "Manager", "parent": "Person"},
+        {"name": "Company"},
+    ],
+    "relations": [
+        {
+            "type": "WORKS_AT",
+            "aliases": ["employed by"],
+            "from": {"types": ["Person"], "max_count": 1},
+            "to": {"types": ["Company"]},
+            "properties": [{"name": "since", "type": "integer"}],
+        }
+    ],
+}
+
+
+def schema_graph(mode):
+    return new_graph(schema=WRITE_SPEC, schema_mode=mode, namespace=unique_ns(f"schema-{mode}"))
+
+
+def test_required_properties_are_inherited_through_parents():
+    got = warnings(WRITE_SPEC, {"entities": [{"id": "manager:m", "type": "Manager", "name": "M"}]})
+    assert [w.message for w in got] == ["entity manager:m is missing required property 'age'"]
+
+
+def test_relation_aliases_count_toward_the_canonical_type_for_cardinality():
+    got = warnings(
+        WRITE_SPEC,
+        {
+            "entities": [
+                {"id": "person:p", "type": "Person", "name": "P", "properties": {"age": 1}},
+                {"id": "company:a", "type": "Company", "name": "A"},
+                {"id": "company:b", "type": "Company", "name": "B"},
+            ],
+            "relations": [
+                {"from_entity": "person:p", "type": "WORKS_AT", "to_entity": "company:a"},
+                {"from_entity": "person:p", "type": "employed by", "to_entity": "company:b"},
+            ],
+        },
+    )
+    assert [w.message for w in got] == ["person:p has 2 WORKS_AT (from) in this insert, above max 1"]
+
+
+def test_insert_checks_endpoint_types_of_entities_already_in_the_graph():
+    g = schema_graph("warn")
+    run(g.entities.create("Acme", "Company"))
+    result = run(
+        g.insert.ontology(
+            {
+                "entities": [{"type": "Company", "name": "Beta"}],
+                "relations": [{"from_entity": "company:acme", "type": "WORKS_AT", "to_entity": "company:beta"}],
+            }
+        )
+    )
+    assert [w.message for w in result.warnings] == [
+        "relation company:acme -WORKS_AT-> company:beta from entity company:acme is not one of ['Person']"
+    ]
+
+
+def test_strict_rejects_entity_create_and_update_before_writing():
+    g = schema_graph("strict")
+    with pytest.raises(ValidationError, match=r"^entity Robot:R2 has unknown type 'Robot'$"):
+        run(g.entities.create("R2", "Robot"))
+    assert run(g.entities.get("robot:r2")) is None
+    with pytest.raises(ValidationError, match=r"^entity Person:Jane is missing required property 'age'$"):
+        run(g.entities.create("Jane", "Person"))
+    with pytest.raises(ValidationError, match="property 'age' should be integer"):
+        run(g.entities.create("Jane", "Person", properties={"age": "old"}))
+    jane = run(g.entities.create("Jane", "Person", properties={"age": 30}))
+    with pytest.raises(ValidationError, match=r"^entity person:jane is missing required property 'age'$"):
+        run(g.entities.update(jane.id, remove_properties=["age"]))
+    run(g.entities.create("Acme", "Company"))
+    with pytest.raises(ValidationError, match=r"^entity company:acme is missing required property 'age'$"):
+        run(g.entities.update("company:acme", type="Manager"))
+    assert run(g.entities.get(jane.id)).properties == {"age": 30}
+    assert run(g.entities.get("company:acme")).type == "Company"
+
+
+def test_strict_rejects_relation_create_and_update_before_writing():
+    g = schema_graph("strict")
+    run(g.entities.create("Jane", "Person", properties={"age": 30}))
+    run(g.entities.create("Acme", "Company"))
+    with pytest.raises(ValidationError, match="from entity company:acme is not one of \\['Person'\\]"):
+        run(g.relations.create("company:acme", "WORKS_AT", "person:jane"))
+    with pytest.raises(ValidationError, match="has unknown type 'LIKES'"):
+        run(g.relations.create("person:jane", "LIKES", "company:acme"))
+    assert run(g.relations.list()).items == []
+    rel = run(g.relations.create("person:jane", "employed by", "company:acme", properties={"since": 2020}))
+    with pytest.raises(ValidationError, match=f"^relation {rel.id} property 'since' should be integer$"):
+        run(g.relations.update(rel.id, set_properties={"since": "2020"}))
+    assert [r.revision for r in run(g.relations.versions(rel.id))] == [1]
+
+
+def test_warn_mode_writes_and_logs_each_violation(caplog):
+    g = schema_graph("warn")
+    with caplog.at_level("WARNING", logger="selfgraph"):
+        run(g.entities.create("R2", "Robot"))
+        run(g.entities.update("robot:r2", properties={"x": 1}))
+        run(g.relations.create("robot:r2", "WORKS_AT", "robot:r2"))
+    assert run(g.entities.get("robot:r2")).properties == {"x": 1}
+    assert [r.getMessage() for r in caplog.records] == [
+        "schema warning [unknown_entity_type]: entity Robot:R2 has unknown type 'Robot'",
+        "schema warning [unknown_entity_type]: entity robot:r2 has unknown type 'Robot'",
+    ]
+
+
+def test_off_mode_skips_write_checks(caplog):
+    g = schema_graph("off")
+    with caplog.at_level("WARNING", logger="selfgraph"):
+        run(g.entities.create("R2", "Robot"))
+        run(g.entities.update("robot:r2", type="Alien"))
+    assert run(g.entities.get("robot:r2")).type == "Alien"
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize(
+    ("build", "message"),
+    [
+        (
+            lambda: Ontology.model_validate({"entites": []}),
+            "unknown key 'entites' in ontology; did you mean 'entities'?",
+        ),
+        (
+            lambda: Ontology.model_validate({"entities": [{"type": "Person", "nmae": "Jane"}]}),
+            "unknown key 'nmae' in ontology.entities[0]; did you mean 'name'?",
+        ),
+        (
+            lambda: Ontology.model_validate(
+                {
+                    "relations": [
+                        {
+                            "from_entity": "a",
+                            "type": "X",
+                            "to_entity": "b",
+                            "evidence": [{"source_id": "s", "qoute": "q"}],
+                        }
+                    ]
+                }
+            ),
+            "unknown key 'qoute' in ontology.relations[0].evidence[0]; did you mean 'quote'?",
+        ),
+        (lambda: as_schema({"entity_types": []}), "unknown key 'entity_types' in schema"),
+        (
+            lambda: as_schema({"relations": [{"type": "X", "from": {"type": ["A"]}}]}),
+            "unknown key 'type' in schema.relations[0].from; did you mean 'types'?",
+        ),
+        (
+            lambda: new_graph(instructions={"entites": "x"}),
+            "unknown key 'entites' in instructions; did you mean 'entities'?",
+        ),
+        (
+            lambda: new_graph(prompts={"entities": {"system": "s", "user": "{text}", "versoin": "1"}}),
+            "unknown key 'versoin' in prompts.entities; did you mean 'version'?",
+        ),
+        (lambda: EntityInput(type="T", name="n", zz=1), "unknown key 'zz' in entity"),
+    ],
+)
+def test_unknown_keys_are_rejected_with_location_and_suggestion(build, message):
+    with pytest.raises(ValidationError) as exc:
+        build()
+    assert str(exc.value) == message
+
+
+def test_insert_text_rejects_unknown_instruction_keys():
+    g = new_graph()
+    with pytest.raises(ValidationError, match="unknown key 'relatoins' in instructions; did you mean 'relations'"):
+        run(g.insert.text("Jane met Bob.", instructions={"relatoins": "x"}))
+
+
+def test_suggest_key_needs_distance_two_and_breaks_ties_by_order():
+    assert suggest_key("nmae", ["id", "type", "name"]) == "name"
+    assert suggest_key("ab", ["ax", "ay"]) == "ax"
+    assert suggest_key("x", ["id"]) is None
+    assert suggest_key("entity_types", ["name", "version", "entities", "relations"]) is None

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import re
+
 from ..errors import PromptTemplateError
 from ..models import ExtractionInstructions, ExtractionPrompts, PromptTemplate
 
 __all__ = ["DEFAULT_PROMPTS", "render", "effective_prompt", "effective_instruction"]
+
+_PLACEHOLDER = re.compile(r"\{(text|instructions)\}")
 
 
 _ENTITY_SYSTEM = (
@@ -72,9 +76,7 @@ def effective_prompt(
     @return (PromptTemplate): the resolved template.
     """
     for source in (call_prompts, client_prompts, DEFAULT_PROMPTS):
-        if source is None:
-            continue
-        template = getattr(source, object_type)
+        template = None if source is None else getattr(source, object_type)
         if template is not None:
             return template
     raise PromptTemplateError(f"no prompt template for {object_type!r}")
@@ -94,9 +96,7 @@ def effective_instruction(
     @return (str | None): the resolved instruction text, if any.
     """
     for source in (call_instructions, client_instructions):
-        if source is None:
-            continue
-        value = getattr(source, object_type)
+        value = None if source is None else getattr(source, object_type)
         if value is not None:
             return value
     return None
@@ -113,9 +113,7 @@ def render(template: PromptTemplate, *, text: str, instructions: str | None) -> 
     if "{text}" not in template.user:
         raise PromptTemplateError(f"prompt {template.version!r} is missing required variable {{text}}")
     extra = instructions or ""
-    user = template.user.replace("{text}", text)
-    if "{instructions}" in user:
-        user = user.replace("{instructions}", extra)
-    elif extra:
+    user = _PLACEHOLDER.sub(lambda m: text if m.group(1) == "text" else extra, template.user)
+    if extra and "{instructions}" not in template.user:
         user = f"{user}\n\nAdditional instructions:\n{extra}"
     return template.system, user

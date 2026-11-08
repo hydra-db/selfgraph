@@ -8,6 +8,7 @@ import {
   contentHash,
   decisionId,
   entityId,
+  evidenceId,
   normalizeRelType,
   preferenceId,
   relationId,
@@ -91,6 +92,9 @@ describe("ids match Python byte for byte", () => {
     expect(sourceVersionId("notes", "abc")).toBe(fx.source_version_id);
     expect(sourceNodeId("notes")).toBe(fx.source_node_id);
     for (const [text, expected] of Object.entries(fx.content_hash)) expect(contentHash(utf8(text))).toBe(expected);
+  });
+  it("evidence_id", () => {
+    for (const [target, ev, expected] of fx.evidence_id) expect(evidenceId(target, ev)).toBe(expected);
   });
   it("quote_label", () => {
     for (const [input, expected] of Object.entries(fx.quote_label)) expect(quoteLabel(input)).toBe(expected);

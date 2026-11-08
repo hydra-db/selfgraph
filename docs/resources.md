@@ -14,7 +14,9 @@ An id defaults to `type:name` with the name canonicalized, so surface variants o
 one entity (`Acme`, `Acme, Inc.`) share an id. Compute the id a name will resolve
 to with `selfgraph.entity_id(type, name)`, which is useful when authoring relations
 that reference an entity by id. Deleting an entity also removes its relations, its
-preferences, and any decision trace that references it.
+preferences, its evidence, and any decision trace that references it. A decision that only
+considered it as an alternative drops that alternative, and a preference that is
+only about it gets a new version without `about_entity`.
 
 ```python
 from selfgraph import entity_id
@@ -30,15 +32,29 @@ jane = await graph.entities.create(
 )
 
 await graph.entities.get("company:acme")
+await graph.entities.evidence("company:acme", limit=50)   # Page of Evidence
 await graph.entities.update("company:acme", name="Acme Inc")
 await graph.entities.delete("company:acme")
 ```
 
+## Evidence
+
+Each piece of evidence is its own record: one per entity or relation, source,
+source version, chunk, and quote, so re-inserting the same source adds nothing. An
+entity or relation does not hold its evidence list; it carries `source_count`, the
+number of distinct sources behind it, which retrieval uses to damp generic
+entities. Page through the records with `entities.evidence(id, cursor=None,
+limit=50)` or `relations.evidence(id, ...)`, which return a `Page` like `list`
+(ordered by evidence id) and raise `NotFoundError` for an unknown id. Deleting an
+entity or relation deletes its evidence. The CLI has `entity evidence ID` and
+`relation evidence ID`, and the MCP server has `entity_evidence` and
+`relation_evidence`.
+
 ## Relations
 
 A relation connects two entities and carries properties. Updating a relation
-writes a new version and keeps the old one. Evidence passed to `update` is added to
-the relation's evidence; it never replaces or clears it.
+writes a new version and keeps the old one. Evidence passed to `update` adds
+evidence records to the relation; it never replaces or clears them.
 
 Some relation types are reserved for the edges SelfGraph writes itself and are
 rejected: `PREFERS`, `AVOIDS`, `HAS_PROFILE`, `MADE_DECISION`, `HAS_STEP`, `FROM`,
@@ -56,6 +72,7 @@ rel = await graph.relations.create(
 
 await graph.relations.update("rel-id", set_properties={"title": "Chair"})
 await graph.relations.versions("rel-id")        # newest first
+await graph.relations.evidence("rel-id")        # Page of Evidence, all versions
 await graph.relations.get("rel-id")             # current version
 ```
 

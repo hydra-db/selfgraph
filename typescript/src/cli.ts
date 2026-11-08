@@ -22,11 +22,15 @@ import {
   type GraphSettings,
   parseJson,
   readJson,
+  readText,
   STORES,
   settingsFromEnv,
+  storeKind,
   version,
 } from "./runtime.js";
 import { SCHEMA_MODES } from "./schema.js";
+
+const JSON_VALUE = "; VALUE is parsed as JSON when valid (so 12345 is a number), else kept as text";
 
 type GlobalOptions = {
   store?: string;
@@ -122,11 +126,11 @@ async function emit(cmd: { optsWithGlobals(): GlobalOptions }, call: (graph: Sel
 function paging<A extends unknown[], O extends OptionValues, G extends OptionValues>(cmd: Command<A, O, G>) {
   return cmd
     .option("--cursor <cursor>", "opaque cursor from a previous page's next_cursor")
-    .option("--limit <n>", `max items (default ${DEFAULT_PAGE_LIMIT})`, intArg, DEFAULT_PAGE_LIMIT);
+    .option("--limit <n>", "max items", intArg, DEFAULT_PAGE_LIMIT);
 }
 
 function entityCommands(program: Command<[], GlobalOptions>): void {
-  const ent = program.command("entity").description("create/get/list/delete entities");
+  const ent = program.command("entity").description("create/get/list/evidence/update/delete entities");
   ent
     .command("create")
     .requiredOption("--name <name>")
@@ -134,7 +138,7 @@ function entityCommands(program: Command<[], GlobalOptions>): void {
     .option("--id <id>")
     .option("--alias <alias>", "alias (repeatable)", collect, [])
     .option("--external-id <SYSTEM=ID>", "external id (repeatable)", collect, [])
-    .option("--prop <KEY=VALUE>", "property (repeatable)", collect, [])
+    .option("--prop <KEY=VALUE>", `property (repeatable)${JSON_VALUE}`, collect, [])
     .action((o, cmd) =>
       emit(cmd, (g) =>
         g.entities.create(o.name, o.type, {
@@ -149,13 +153,16 @@ function entityCommands(program: Command<[], GlobalOptions>): void {
   paging(ent.command("list").option("--type <type>").option("--name <name>")).action((o, cmd) =>
     emit(cmd, (g) => g.entities.list({ type: o.type, name: o.name, cursor: o.cursor, limit: o.limit })),
   );
+  paging(ent.command("evidence <id>").description("list the evidence supporting an entity")).action((id, o, cmd) =>
+    emit(cmd, (g) => g.entities.evidence(id, { cursor: o.cursor, limit: o.limit })),
+  );
   ent
     .command("update <id>")
     .option("--name <name>")
     .option("--type <type>")
     .option("--alias <alias>", "add an alias (repeatable)", collect, [])
     .option("--external-id <SYSTEM=ID>", "set an external id (repeatable)", collect, [])
-    .option("--prop <KEY=VALUE>", "set property (repeatable)", collect, [])
+    .option("--prop <KEY=VALUE>", `set property (repeatable)${JSON_VALUE}`, collect, [])
     .option("--remove-alias <alias>", "remove an alias (repeatable)", collect, [])
     .option("--remove-prop <KEY>", "remove a property (repeatable)", collect, [])
     .action((id, o, cmd) =>
@@ -175,11 +182,11 @@ function entityCommands(program: Command<[], GlobalOptions>): void {
 }
 
 function relationCommands(program: Command<[], GlobalOptions>): void {
-  const rel = program.command("relation").description("create/get/list/versions/delete relations");
+  const rel = program.command("relation").description("create/get/list/versions/evidence/update/delete relations");
   rel
     .command("create <FROM> <TYPE> <TO>")
     .option("--id <id>")
-    .option("--prop <KEY=VALUE>", "property (repeatable)", collect, [])
+    .option("--prop <KEY=VALUE>", `property (repeatable)${JSON_VALUE}`, collect, [])
     .option("--event-time <iso>", "when the fact became true (ISO 8601)")
     .action((from, type, to, o, cmd) =>
       emit(cmd, (g) =>
@@ -193,10 +200,13 @@ function relationCommands(program: Command<[], GlobalOptions>): void {
     ),
   );
   rel.command("versions <id>").action((id, _o, cmd) => emit(cmd, (g) => g.relations.versions(id)));
+  paging(rel.command("evidence <id>").description("list the evidence supporting a relation")).action((id, o, cmd) =>
+    emit(cmd, (g) => g.relations.evidence(id, { cursor: o.cursor, limit: o.limit })),
+  );
   rel
     .command("update <id>")
     .description("make a new version with changed properties")
-    .option("--set <KEY=VALUE>", "set property (repeatable)", collect, [])
+    .option("--set <KEY=VALUE>", `set property (repeatable)${JSON_VALUE}`, collect, [])
     .option("--remove <KEY>", "remove property (repeatable)", collect, [])
     .option("--event-time <iso>", "when the new version became true (ISO 8601)")
     .action((id, o, cmd) =>
@@ -220,7 +230,7 @@ function preferenceCommands(program: Command<[], GlobalOptions>): void {
     .addOption(new Option("--kind <kind>").choices(Kind.options).default(DEFAULT_KIND))
     .option("--about <id>", "entity id the preference is about")
     .option("--strength <x>", "strength", floatArg)
-    .option("--prop <KEY=VALUE>", "property (repeatable)", collect, [])
+    .option("--prop <KEY=VALUE>", `property (repeatable)${JSON_VALUE}`, collect, [])
     .option("--event-time <iso>", "when the preference became true (ISO 8601)")
     .action((subject, key, value, o, cmd) =>
       emit(cmd, (g) =>
@@ -249,7 +259,7 @@ function preferenceCommands(program: Command<[], GlobalOptions>): void {
   pref
     .command("update <id>")
     .option("--strength <x>", "strength", floatArg)
-    .option("--prop <KEY=VALUE>", "set property (repeatable)", collect, [])
+    .option("--prop <KEY=VALUE>", `set property (repeatable)${JSON_VALUE}`, collect, [])
     .option("--remove-prop <KEY>", "remove a property (repeatable)", collect, [])
     .option("--event-time <iso>", "when the new version became true (ISO 8601)")
     .action((id, o, cmd) =>
@@ -278,6 +288,7 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
     .option("--outcome <id>", "outcome entity id")
     .option("--alternative <id>", "alternative entity id (repeatable)", collect, [])
     .addOption(new Option("--status <status>").choices(Status.options).default(DEFAULT_STATUS))
+    .option("--event-time <iso>", "when the decision was made (ISO 8601)")
     .action((title, o, cmd) =>
       emit(cmd, (g) =>
         g.decisions.create(title, {
@@ -289,6 +300,7 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
           outcome_entity: o.outcome,
           alternative_entities: o.alternative,
           status: o.status,
+          event_time: o.eventTime,
         }),
       ),
     );
@@ -310,6 +322,8 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
     .option("--step <relation-id>", "replace steps (repeatable, ordered)", collect, [])
     .option("--actor <id>", "actor entity id")
     .option("--outcome <id>", "outcome entity id")
+    .option("--alternative <id>", "replace alternative entity ids (repeatable)", collect, [])
+    .option("--event-time <iso>", "when the decision was made (ISO 8601)")
     .action((id, o, cmd) =>
       emit(cmd, (g) =>
         g.decisions.update(id, {
@@ -320,6 +334,8 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
           ...(o.actor !== undefined && { actor_entity: o.actor }),
           ...(o.outcome !== undefined && { outcome_entity: o.outcome }),
           ...(o.step.length && { steps: o.step }),
+          ...(o.alternative.length && { alternative_entities: o.alternative }),
+          ...(o.eventTime !== undefined && { event_time: o.eventTime }),
         }),
       ),
     );
@@ -358,7 +374,7 @@ export function buildParser(): Command<[], GlobalOptions> {
       emit(cmd, async (g) => {
         await g.initialize();
         const s = settingsOf(cmd);
-        return { ok: true, store: s.store, namespace: s.namespace };
+        return { ok: true, store: storeKind(s), namespace: s.namespace };
       }),
     );
   program
@@ -377,8 +393,8 @@ export function buildParser(): Command<[], GlobalOptions> {
     .action((_o, cmd) => emit(cmd, async (g) => g.schema));
   program
     .command("query <cypher>")
-    .description("run one Cypher statement")
-    .option("--param <KEY=VALUE>", "query parameter (repeatable)", collect, [])
+    .description("run one raw Cypher statement; it can write and is not scoped to the namespace")
+    .option("--param <KEY=VALUE>", `query parameter (repeatable)${JSON_VALUE}`, collect, [])
     .action((cypher, o, cmd) => emit(cmd, (g) => g.runCypher(cypher, kv(o.param))));
   program
     .command("retrieve <query>")
@@ -388,20 +404,10 @@ export function buildParser(): Command<[], GlobalOptions> {
         .choices(STRATEGIES)
         .default(RETRIEVE_DEFAULTS.strategy),
     )
-    .option("--depth <n>", `traversal hops (default ${RETRIEVE_DEFAULTS.depth})`, intArg, RETRIEVE_DEFAULTS.depth)
-    .option("--k <n>", `seed count (default ${RETRIEVE_DEFAULTS.k})`, intArg, RETRIEVE_DEFAULTS.k)
-    .option(
-      "--max-nodes <n>",
-      `entity cap (default ${RETRIEVE_DEFAULTS.max_nodes})`,
-      intArg,
-      RETRIEVE_DEFAULTS.max_nodes,
-    )
-    .option(
-      "--budget-tokens <n>",
-      `context budget (default ${RETRIEVE_DEFAULTS.budget_tokens})`,
-      intArg,
-      RETRIEVE_DEFAULTS.budget_tokens,
-    )
+    .option("--depth <n>", "traversal hops", intArg, RETRIEVE_DEFAULTS.depth)
+    .option("--k <n>", "seed count", intArg, RETRIEVE_DEFAULTS.k)
+    .option("--max-nodes <n>", "entity cap", intArg, RETRIEVE_DEFAULTS.max_nodes)
+    .option("--budget-tokens <n>", "context budget", intArg, RETRIEVE_DEFAULTS.budget_tokens)
     .action((query, o, cmd) =>
       emit(cmd, (g) =>
         g.retrieve(query, {
@@ -417,13 +423,15 @@ export function buildParser(): Command<[], GlobalOptions> {
   const insert = program.command("insert").description("insert text or an ontology");
   insert
     .command("text <text>")
-    .description("extract an ontology from text (LLM if configured, else regex)")
+    .description("extract an ontology from text (LLM if configured, else regex); text '-' reads stdin")
     .option("--source-id <id>")
+    .option("--event-time <iso>", "when the text's facts became true (ISO 8601)")
     .option("--metadata <json>", "JSON object of source metadata")
     .action((text, o, cmd) =>
       emit(cmd, (g) =>
-        g.insert.text(text, {
+        g.insert.text(text === "-" ? readText("-") : text, {
           source_id: o.sourceId,
+          event_time: o.eventTime,
           metadata: o.metadata === undefined ? null : (parseJson(o.metadata, "") as JsonObject),
         }),
       ),

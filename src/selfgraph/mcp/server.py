@@ -4,13 +4,17 @@ import functools
 import inspect
 import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any
 
 from pydantic import NonNegativeInt, PositiveInt
+from pydantic_core import core_schema
 
+from .._serde import from_iso
 from ..client import SelfGraph
 from ..errors import SelfGraphError, ValidationError
-from ..runtime import GraphSettings, build_graph, settings_from_env, to_jsonable
+from ..resources._common import DEFAULT_PAGE_LIMIT
+from ..runtime import GraphSettings, build_graph, present, settings_from_env, to_jsonable
 
 __all__ = ["configure", "close", "build_server", "run_stdio", "TOOLS"]
 
@@ -18,11 +22,12 @@ _settings: GraphSettings | None = None
 _graph: SelfGraph | None = None
 
 _WRITE_CLAUSE = re.compile(
-    r"\b(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP|ALTER|RENAME|TRUNCATE|FOREACH|COPY|LOAD|IMPORT|EXPORT|"
-    r"INSTALL|UNINSTALL|ATTACH|USE|CALL|COMMENT|BEGIN|COMMIT|ROLLBACK|CHECKPOINT|GRANT|REVOKE|DENY)\b",
+    r"\b(CREATE|INSERT|MERGE|DELETE|DETACH|SET|REMOVE|DROP|ALTER|RENAME|TRUNCATE|FOREACH|COPY|LOAD|IMPORT|"
+    r"EXPORT|INSTALL|UNINSTALL|ATTACH|USE|CALL|COMMENT|BEGIN|COMMIT|ROLLBACK|CHECKPOINT|GRANT|REVOKE|DENY|"
+    r"TERMINATE)\b",
     re.IGNORECASE,
 )
-_ALIAS = re.compile(r"\bAS\s+\w+", re.IGNORECASE)
+_UNICODE_ESCAPE = re.compile(r"(?<!\\)(?:\\\\)*\\[uU]")
 _MAP_KEY = re.compile(r"([{,]\s*)[A-Za-z_]\w*(\s*:)")
 _PROP_OR_LABEL = re.compile(r"[.:]\s*\w+")
 _PARAM = re.compile(r"\$\w+")
@@ -96,19 +101,19 @@ def _blank_lexical_tokens(query: str) -> str:
 
 
 def _strip_safe_tokens(query: str) -> str:
-    """Blank keyword-safe tokens (literals, comments, aliases, map keys, properties, labels) before the write scan.
+    """Blank keyword-safe tokens (literals, comments, params, map keys, properties, labels) before the write scan.
 
-    Lexical tokens are blanked by a char scan that matches engine lexing exactly; aliases, map keys, and
-    property or label accesses are then blanked so a bare reserved word in those positions does not read as a
-    clause. Blanking can only hide a keyword that was never executable, so it over-blocks an exotic read at
-    worst and never lets a real write slip through.
+    Lexical tokens are blanked by a char scan that matches engine lexing exactly; map keys and property or
+    label accesses are then blanked so a bare reserved word in those positions does not read as a clause.
+    Aliases are not blanked: the word after AS can be a variable named 'as' followed by a real clause, so a
+    write keyword used as an alias must be backtick-quoted. Blanking can only hide a keyword that was never
+    executable, so it over-blocks an exotic read at worst and never lets a real write slip through.
 
     @param query (str): the raw Cypher statement.
     @return (str): the query with keyword-safe tokens blanked so the write scan sees only clause keywords.
     """
     q = _blank_lexical_tokens(query)
     q = _PARAM.sub(_BLANK, q)
-    q = _ALIAS.sub(" ", q)
     q = _MAP_KEY.sub(r"\1\2", q)
     return _PROP_OR_LABEL.sub(" ", q)
 
@@ -116,18 +121,22 @@ def _strip_safe_tokens(query: str) -> str:
 def _is_blocked_query(query: str) -> bool:
     """Report whether a raw Cypher query is a write, schema, transaction, or admin statement run_cypher must reject.
 
-    A query is blocked when a write or schema clause appears anywhere, or when its first significant token is
-    not a known read opener. The opener check rejects every statement-initial admin, transaction, or DDL command
-    (TERMINATE, ANALYZE, FREE, STORAGE, BEGIN, and so on) without enumerating each engine's admin vocabulary.
+    A query is blocked when it holds a unicode escape anywhere (Neo4j decodes them before lexing, so one can
+    spell a keyword or close a literal or comment the guard blanked), when a backslash or a write or schema
+    clause appears outside literals, or when any ';'-separated statement does not begin with a known read
+    opener. The opener check rejects every statement-initial admin, transaction, or DDL command (ANALYZE, FREE,
+    STORAGE, and so on) without enumerating each engine's admin vocabulary.
 
     @param query (str): the raw Cypher statement.
     @return (bool): True when the query must be rejected as not read-only.
     """
-    stripped = _strip_safe_tokens(query)
-    if _WRITE_CLAUSE.search(stripped):
+    if _UNICODE_ESCAPE.search(query):
         return True
-    head = _LEADING_BLANK.sub("", stripped)
-    return bool(head) and _READ_OPENERS.match(head) is None
+    stripped = _strip_safe_tokens(query)
+    if "\\" in stripped or _WRITE_CLAUSE.search(stripped):
+        return True
+    heads = (_LEADING_BLANK.sub("", statement) for statement in stripped.split(";"))
+    return any(head and _READ_OPENERS.match(head) is None for head in heads)
 
 
 def _tool(fn: Callable[..., Awaitable[Any]], tool_error: type[Exception]) -> Callable[..., Awaitable[Any]]:
@@ -148,6 +157,33 @@ def _tool(fn: Callable[..., Awaitable[Any]], tool_error: type[Exception]) -> Cal
             raise tool_error(f"InternalError: {type(exc).__name__}: {exc}") from exc
 
     return wrapper
+
+
+class _Unset:
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source: Any, handler: Any) -> core_schema.CoreSchema:
+        """Describe the sentinel as null, so a tool schema advertises the same null default as a None default.
+
+        @param source (Any): the annotated source type.
+        @param handler (Any): pydantic's schema handler.
+        @return (core_schema.CoreSchema): a null schema that serializes the sentinel as null.
+        """
+        return core_schema.none_schema(serialization=core_schema.plain_serializer_function_ser_schema(lambda _: None))
+
+
+_UNSET: Any = _Unset()
+
+
+def _event_time(value: str | None) -> datetime | None:
+    """Parse an optional ISO 8601 event time given to a tool.
+
+    @param value (str | None): the ISO 8601 text, or None.
+    @return (datetime | None): the parsed time, or None.
+    """
+    try:
+        return from_iso(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"invalid event_time: {exc}") from exc
 
 
 def configure(settings: GraphSettings | None = None) -> None:
@@ -196,14 +232,20 @@ async def get_schema() -> dict[str, Any] | None:
     return to_jsonable(g.schema)
 
 
-async def insert_text(text: str, source_id: str | None = None) -> dict[str, Any]:
-    """Extract an ontology from text and merge it into the graph. Needs an LLM.
+async def insert_text(
+    text: str, source_id: str | None = None, event_time: str | None = None, metadata: dict | None = None
+) -> dict[str, Any]:
+    """Extract an ontology from text and merge it into the graph. Uses the configured LLM, or with none
+    configured falls back to a built-in LLM-free extractor (coarser). event_time (ISO 8601) is the default
+    valid time for what is extracted; metadata is stored on the source.
 
     Idempotent: ids are derived deterministically from content, so re-inserting the
     same text converges on the same graph instead of duplicating it. Safe to retry.
     """
     g = await _graph_handle()
-    return to_jsonable(await g.insert.text(text, source_id=source_id))
+    return to_jsonable(
+        await g.insert.text(text, source_id=source_id, event_time=_event_time(event_time), metadata=metadata)
+    )
 
 
 async def insert_ontology(ontology: dict, source_id: str | None = None) -> dict[str, Any]:
@@ -245,11 +287,20 @@ async def get_entity(id: str) -> dict[str, Any] | None:
 
 
 async def list_entities(
-    type: str | None = None, name: str | None = None, limit: PositiveInt = 50, cursor: str | None = None
+    type: str | None = None, name: str | None = None, limit: PositiveInt = DEFAULT_PAGE_LIMIT, cursor: str | None = None
 ) -> dict[str, Any]:
     """List entities, optionally filtered by type and/or name. Paged via next_cursor."""
     g = await _graph_handle()
     return to_jsonable(await g.entities.list(type=type, name=name, limit=limit, cursor=cursor))
+
+
+async def entity_evidence(
+    id: str, limit: PositiveInt = DEFAULT_PAGE_LIMIT, cursor: str | None = None
+) -> dict[str, Any]:
+    """List the evidence (source, version, chunk, quote, offsets, confidence) supporting an entity. Paged via
+    next_cursor."""
+    g = await _graph_handle()
+    return to_jsonable(await g.entities.evidence(id, limit=limit, cursor=cursor))
 
 
 async def update_entity(
@@ -264,21 +315,15 @@ async def update_entity(
 ) -> dict[str, Any]:
     """Update an entity. aliases/properties/external_ids merge in; remove_aliases/remove_properties drop keys."""
     g = await _graph_handle()
-    fields: dict[str, Any] = {}
-    if name is not None:
-        fields["name"] = name
-    if type is not None:
-        fields["type"] = type
-    if aliases is not None:
-        fields["aliases"] = aliases
-    if external_ids is not None:
-        fields["external_ids"] = external_ids
-    if properties is not None:
-        fields["properties"] = properties
-    if remove_aliases is not None:
-        fields["remove_aliases"] = remove_aliases
-    if remove_properties is not None:
-        fields["remove_properties"] = remove_properties
+    fields = present(
+        name=name,
+        type=type,
+        aliases=aliases,
+        external_ids=external_ids,
+        properties=properties,
+        remove_aliases=remove_aliases,
+        remove_properties=remove_properties,
+    )
     return to_jsonable(await g.entities.update(id, **fields))
 
 
@@ -294,12 +339,18 @@ async def create_relation(
     to_entity: str,
     id: str | None = None,
     properties: dict | None = None,
+    event_time: str | None = None,
 ) -> dict[str, Any]:
     """Create a directed, versioned relationship between two entities. from_entity and
     to_entity are existing entity ids ('type:name'); create the entities first. The type
-    normalizes to UPPER_SNAKE, so 'works at' and 'WORKS_AT' are the same relation."""
+    normalizes to UPPER_SNAKE, so 'works at' and 'WORKS_AT' are the same relation.
+    event_time (ISO 8601) is when the fact became true."""
     g = await _graph_handle()
-    return to_jsonable(await g.relations.create(from_entity, type, to_entity, id=id, properties=properties))
+    return to_jsonable(
+        await g.relations.create(
+            from_entity, type, to_entity, id=id, properties=properties, event_time=_event_time(event_time)
+        )
+    )
 
 
 async def get_relation(id: str) -> dict[str, Any] | None:
@@ -312,7 +363,7 @@ async def list_relations(
     from_entity: str | None = None,
     type: str | None = None,
     to_entity: str | None = None,
-    limit: PositiveInt = 50,
+    limit: PositiveInt = DEFAULT_PAGE_LIMIT,
     cursor: str | None = None,
 ) -> dict[str, Any]:
     """List current relationships, optionally filtered by endpoints and/or type."""
@@ -323,12 +374,21 @@ async def list_relations(
 
 
 async def update_relation(
-    id: str, set_properties: dict | None = None, remove_properties: list[str] | None = None
+    id: str,
+    set_properties: dict | None = None,
+    remove_properties: list[str] | None = None,
+    event_time: str | None = None,
 ) -> dict[str, Any]:
-    """Create a new version of a relationship with changed properties."""
+    """Create a new version of a relationship with changed properties. event_time (ISO 8601) is when the new
+    version became true; omit it to keep the current one."""
     g = await _graph_handle()
     return to_jsonable(
-        await g.relations.update(id, set_properties=set_properties, remove_properties=remove_properties or ())
+        await g.relations.update(
+            id,
+            set_properties=set_properties,
+            remove_properties=remove_properties or (),
+            event_time=_event_time(event_time),
+        )
     )
 
 
@@ -336,6 +396,15 @@ async def relation_versions(id: str, newest_first: bool = True) -> list[dict[str
     """Return every version of a relationship, newest first by default."""
     g = await _graph_handle()
     return to_jsonable(await g.relations.versions(id, newest_first=newest_first))
+
+
+async def relation_evidence(
+    id: str, limit: PositiveInt = DEFAULT_PAGE_LIMIT, cursor: str | None = None
+) -> dict[str, Any]:
+    """List the evidence (source, version, chunk, quote, offsets, confidence) supporting a relationship across all
+    its versions. Paged via next_cursor."""
+    g = await _graph_handle()
+    return to_jsonable(await g.relations.evidence(id, limit=limit, cursor=cursor))
 
 
 async def delete_relation(id: str) -> dict[str, Any]:
@@ -353,9 +422,11 @@ async def create_preference(
     about_entity: str | None = None,
     strength: float | None = None,
     properties: dict | None = None,
+    event_time: str | None = None,
 ) -> dict[str, Any]:
     """Record that an entity prefers or avoids a value (kind: preference|disinterest).
-    Omit id to derive one; a manual id must start with 'preference:'."""
+    Omit id to derive one; a manual id must start with 'preference:'. event_time (ISO 8601)
+    is when the preference became true."""
     g = await _graph_handle()
     return to_jsonable(
         await g.preferences.create(
@@ -367,6 +438,7 @@ async def create_preference(
             about_entity=about_entity,
             strength=strength,
             properties=properties,
+            event_time=_event_time(event_time),
         )
     )
 
@@ -375,7 +447,7 @@ async def list_preferences(
     subject_entity: str | None = None,
     key: str | None = None,
     kind: str | None = None,
-    limit: PositiveInt = 50,
+    limit: PositiveInt = DEFAULT_PAGE_LIMIT,
     cursor: str | None = None,
 ) -> dict[str, Any]:
     """List current preferences, optionally scoped to one subject entity. Paged via next_cursor."""
@@ -394,12 +466,18 @@ async def update_preference(
     strength: float | None = None,
     properties: dict | None = None,
     remove_properties: list[str] | None = None,
+    event_time: str | None = None,
 ) -> dict[str, Any]:
-    """Update a preference (new version). properties merge in; remove_properties drop keys."""
+    """Update a preference (new version). properties merge in; remove_properties drop keys. event_time
+    (ISO 8601) is when the new version became true; omit it to keep the current one."""
     g = await _graph_handle()
     return to_jsonable(
         await g.preferences.update(
-            id, strength=strength, properties=properties, remove_properties=remove_properties or ()
+            id,
+            strength=strength,
+            properties=properties,
+            remove_properties=remove_properties or (),
+            event_time=_event_time(event_time),
         )
     )
 
@@ -426,9 +504,11 @@ async def create_decision(
     outcome_entity: str | None = None,
     alternative_entities: list[str] | None = None,
     status: str = "completed",
+    event_time: str | None = None,
 ) -> dict[str, Any]:
     """Record a decision trace. steps are ids of relations that already exist (relation:..., from
-    create_relation or list_relations), in order; they are the path that led to the outcome."""
+    create_relation or list_relations), in order; they are the path that led to the outcome.
+    event_time (ISO 8601) is when the decision was made."""
     g = await _graph_handle()
     return to_jsonable(
         await g.decisions.create(
@@ -441,6 +521,7 @@ async def create_decision(
             outcome_entity=outcome_entity,
             alternative_entities=alternative_entities or (),
             status=status,  # type: ignore[arg-type]
+            event_time=_event_time(event_time),
         )
     )
 
@@ -449,32 +530,26 @@ async def update_decision(
     id: str,
     title: str | None = None,
     steps: list[str] | None = None,
-    actor_entity: str | None = None,
-    summary: str | None = None,
-    rationale: str | None = None,
-    outcome_entity: str | None = None,
+    actor_entity: str | None = _UNSET,
+    summary: str | None = _UNSET,
+    rationale: str | None = _UNSET,
+    outcome_entity: str | None = _UNSET,
     alternative_entities: list[str] | None = None,
     status: str | None = None,
+    event_time: str | None = _UNSET,
 ) -> dict[str, Any]:
-    """Update fields of a decision trace, creating a new version."""
+    """Update fields of a decision trace in place; it keeps no version history. An omitted field keeps its
+    value; an explicit null clears actor_entity, summary, rationale, outcome_entity, or event_time (ISO 8601)."""
     g = await _graph_handle()
-    fields: dict[str, Any] = {}
-    if title is not None:
-        fields["title"] = title
-    if steps is not None:
-        fields["steps"] = steps
-    if actor_entity is not None:
-        fields["actor_entity"] = actor_entity
-    if summary is not None:
-        fields["summary"] = summary
-    if rationale is not None:
-        fields["rationale"] = rationale
-    if outcome_entity is not None:
-        fields["outcome_entity"] = outcome_entity
-    if alternative_entities is not None:
-        fields["alternative_entities"] = alternative_entities
-    if status is not None:
-        fields["status"] = status
+    nullable = {
+        "actor_entity": actor_entity,
+        "summary": summary,
+        "rationale": rationale,
+        "outcome_entity": outcome_entity,
+        "event_time": event_time if event_time is _UNSET else _event_time(event_time),
+    }
+    fields = present(title=title, steps=steps, alternative_entities=alternative_entities, status=status)
+    fields.update({k: v for k, v in nullable.items() if v is not _UNSET})
     return to_jsonable(await g.decisions.update(id, **fields))
 
 
@@ -493,7 +568,7 @@ async def get_decision(id: str) -> dict[str, Any] | None:
 async def list_decisions(
     actor_entity: str | None = None,
     status: str | None = None,
-    limit: PositiveInt = 50,
+    limit: PositiveInt = DEFAULT_PAGE_LIMIT,
     cursor: str | None = None,
 ) -> dict[str, Any]:
     """List decision traces, optionally filtered by actor and/or status."""
@@ -502,17 +577,19 @@ async def list_decisions(
 
 
 async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
-    """Run a read Cypher statement and return its rows; a keyword scan rejects writes but is a guard, not a sandbox."""
+    """Run a read Cypher statement and return its rows; a keyword scan rejects writes but is a guard, not a sandbox.
+    Not scoped to the namespace: it sees every namespace on the server, so filter on the ns property yourself."""
     if not isinstance(query, str):
         raise ValidationError(f"query must be a string, got {type(query).__name__}")
     if _is_blocked_query(query):
         raise ValidationError(
             "run_cypher is read-only: it runs a single read that begins with MATCH, OPTIONAL MATCH, WITH, "
             "UNWIND, RETURN, SHOW, EXPLAIN, or PROFILE and contains no write, schema, transaction, or I/O "
-            "clause (CREATE, MERGE, SET, DELETE, DETACH, REMOVE, DROP, ALTER, RENAME, TRUNCATE, FOREACH, CALL, "
-            "LOAD, COPY, IMPORT, EXPORT, INSTALL, UNINSTALL, ATTACH, USE, COMMENT, GRANT, REVOKE, DENY, and "
-            "transaction or admin commands such as BEGIN, COMMIT, TERMINATE). Use the typed resources or insert "
-            "for writes."
+            "clause (CREATE, INSERT, MERGE, SET, DELETE, DETACH, REMOVE, DROP, ALTER, RENAME, TRUNCATE, FOREACH, "
+            "CALL, LOAD, COPY, IMPORT, EXPORT, INSTALL, UNINSTALL, ATTACH, USE, COMMENT, GRANT, REVOKE, DENY, and "
+            "transaction or admin commands such as BEGIN, COMMIT, TERMINATE), even as a bare alias or variable "
+            "name (backtick-quote it), and no unicode escape (pass such text as a parameter). Use the typed "
+            "resources or insert for writes."
         )
     g = await _graph_handle()
     return to_jsonable(await g.run_cypher(query, params))
@@ -540,6 +617,7 @@ TOOLS = [
     create_entity,
     get_entity,
     list_entities,
+    entity_evidence,
     update_entity,
     delete_entity,
     create_relation,
@@ -547,6 +625,7 @@ TOOLS = [
     list_relations,
     update_relation,
     relation_versions,
+    relation_evidence,
     delete_relation,
     create_preference,
     list_preferences,
@@ -588,10 +667,8 @@ def _server_class():
 def build_server(name: str = "selfgraph"):
     """Create an MCP server with every tool registered. Requires selfgraph[mcp].
 
-    Both the MCPServer (mcp >= 2) and legacy FastMCP (mcp 1.x) classes expose
-    the same .tool() decorator and stdio .run().
-
     @param name (str): the server name.
+    @return (MCPServer | FastMCP): the server.
     """
     server_class, tool_error = _server_class()
     server = server_class(name)

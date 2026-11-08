@@ -5,16 +5,18 @@ from typing import Any
 
 from ..errors import StoreError, TransientError
 from ..models import CypherResult
-from ._cypher import AutoCommitStore, CypherPrimitives
+from ._cypher import WRITE_COUNTERS, AutoCommitStore, CypherPrimitives
 
 __all__ = ["FalkorDBStore"]
 
-_COUNTERS = (
-    "nodes_created",
-    "nodes_deleted",
-    "relationships_created",
-    "relationships_deleted",
-    "properties_set",
+_TRANSIENT_MARKERS = (
+    "max pending queries",
+    "too many connections",
+    "timeout",
+    "timed out",
+    "busy",
+    "deadlock",
+    "try again",
 )
 
 
@@ -75,23 +77,12 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
             res = await self._graph.query(query, dict(params or {}))
         except Exception as exc:  # noqa: BLE001
             lowered = str(exc).lower()
-            if any(
-                k in lowered
-                for k in (
-                    "max pending queries",
-                    "too many connections",
-                    "timeout",
-                    "timed out",
-                    "busy",
-                    "deadlock",
-                    "try again",
-                )
-            ):
+            if any(k in lowered for k in _TRANSIENT_MARKERS):
                 raise TransientError(f"FalkorDB transient error: {exc}") from exc
             raise StoreError(f"FalkorDB query failed: {exc}") from exc
         columns = [head[-1] for head in (res.header or [])]
         rows = [{col: _to_json(val) for col, val in zip(columns, row, strict=False)} for row in (res.result_set or [])]
-        counters = {name: int(getattr(res, name, 0) or 0) for name in _COUNTERS}
+        counters = {name: int(getattr(res, name, 0) or 0) for name in WRITE_COUNTERS}
         return CypherResult(columns=columns, rows=rows, counters={k: v for k, v in counters.items() if v})
 
     async def initialize(self) -> None:

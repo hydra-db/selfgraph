@@ -4,8 +4,6 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError as PydanticValidationError
-
 from ._ops import _require_json_mapping, _require_optional_text
 from ._serde import now
 from .errors import ExtractionError, SelfGraphError, ValidationError
@@ -19,6 +17,7 @@ from .models import (
     JsonValue,
     Ontology,
     ParsedDocument,
+    as_input,
 )
 from .schema import Schema, SchemaMode, as_schema
 
@@ -26,15 +25,6 @@ if TYPE_CHECKING:
     from .client import SelfGraph
 
 __all__ = ["Insert"]
-
-
-def _drain_warnings(extractor):
-    """Collect per-chunk extraction warnings from an extractor that reports them.
-
-    @param extractor: the extractor to drain warnings from.
-    """
-    drain = getattr(extractor, "pop_warnings", None)
-    return drain() if callable(drain) else []
 
 
 class Insert:
@@ -56,8 +46,8 @@ class Insert:
         source_id: str | None = None,
         event_time: datetime | None = None,
         metadata: dict[str, JsonValue] | None = None,
-        instructions: ExtractionInstructions | None = None,
-        prompts: ExtractionPrompts | None = None,
+        instructions: ExtractionInstructions | Mapping[str, Any] | None = None,
+        prompts: ExtractionPrompts | Mapping[str, Any] | None = None,
         schema: Schema | Mapping[str, Any] | None = None,
         schema_mode: SchemaMode | None = None,
     ) -> InsertResult:
@@ -74,10 +64,13 @@ class Insert:
                 warnings=[InsertWarning(code="empty_text", message="text was empty; nothing was ingested")],
             )
         active_schema = as_schema(schema)
+        instructions = as_input(ExtractionInstructions, instructions, "instructions")
+        prompts = as_input(ExtractionPrompts, prompts, "prompts")
         extractor = self._c._build_extractor(instructions, prompts, schema=active_schema)
         document = ParsedDocument(text=text, media_type="text/plain")
         ontology = await self._extract(extractor, document)
-        warnings = _drain_warnings(extractor)
+        drain = getattr(extractor, "pop_warnings", None)
+        warnings = drain() if callable(drain) else []
         customized = instructions or prompts or self._c._instructions or self._c._prompts
         if customized and not isinstance(extractor, DefaultExtractor):
             warnings.append(
@@ -118,15 +111,8 @@ class Insert:
         @return (InsertResult): the inserted entities, relations, preferences, and decisions.
         """
         _require_optional_text("source_id", source_id)
-        if isinstance(ontology, Ontology):
-            ont = ontology
-        else:
-            try:
-                ont = Ontology.model_validate(ontology)
-            except PydanticValidationError as exc:
-                raise ValidationError(f"invalid ontology: {exc}") from exc
         return await self._c._apply_ontology(
-            ont,
+            as_input(Ontology, ontology, "ontology"),
             source_id=source_id,
             parsed_text=None,
             media_type=None,

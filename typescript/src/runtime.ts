@@ -91,40 +91,64 @@ export function parseJson(text: string, where: string): unknown {
 }
 
 /**
+ * Read a UTF-8 text file, or stdin when the path is "-".
+ *
+ * @param path (string): the file path, or "-".
+ * @return (string): the text.
+ */
+export function readText(path: string): string {
+  try {
+    return readFileSync(path === "-" ? 0 : path, "utf8");
+  } catch (exc) {
+    throw new ValidationError(`cannot read ${pyRepr(path)}: ${(exc as Error).message}`);
+  }
+}
+
+/**
  * Read and parse a JSON file, or stdin when the path is "-".
  *
  * @param path (string): the file path, or "-".
  * @return (unknown): the parsed JSON.
  */
 export function readJson(path: string): unknown {
-  let raw: string;
-  try {
-    raw = readFileSync(path === "-" ? 0 : path, "utf8");
-  } catch (exc) {
-    throw new ValidationError(`cannot read ${pyRepr(path)}: ${(exc as Error).message}`);
-  }
-  return parseJson(raw, ` in ${pyRepr(path)}`);
+  return parseJson(readText(path), ` in ${pyRepr(path)}`);
 }
 
-function parseAuth(auth: string | null): [string, string] | null {
+/**
+ * Split "user:password" auth; a bare token is the password for defaultUser.
+ *
+ * @param auth (string | null): the auth setting.
+ * @param defaultUser (string): the user for a bare token.
+ * @return ([string, string] | null): the user and password, or null without auth.
+ */
+function parseAuth(auth: string | null, defaultUser = "neo4j"): [string, string] | null {
   if (!auth) return null;
   const i = auth.indexOf(":");
-  if (i < 0) return ["neo4j", auth];
+  if (i < 0) return [defaultUser, auth];
   return [auth.slice(0, i), auth.slice(i + 1)];
 }
 
 const boltOptions = (settings: GraphSettings) => ({ auth: parseAuth(settings.auth), database: settings.database });
 
 /**
- * A FalkorDB store from "host:port" or a redis:// URL.
+ * A FalkorDB store from "host:port" or a redis:// URL; auth, else the URL credentials, logs in.
  *
  * @param uri (string): the address.
+ * @param settings (GraphSettings): the resolved auth and database settings.
  * @return (GraphStore): the store.
  */
-function falkorStore(uri: string): GraphStore {
+function falkorStore(uri: string, settings: GraphSettings): GraphStore {
   const url = new URL(uri.includes("://") ? uri : `redis://${uri}`);
   const host = url.hostname.replace(/^\[|\]$/g, "") || "localhost";
-  return new FalkorDBStore(host, url.port ? Number(url.port) : 6379);
+  const [username, password] = parseAuth(settings.auth, "") ?? [
+    decodeURIComponent(url.username),
+    decodeURIComponent(url.password),
+  ];
+  return new FalkorDBStore(host, url.port ? Number(url.port) : 6379, {
+    graph: settings.database || "selfgraph",
+    ...(username ? { username } : {}),
+    ...(password ? { password } : {}),
+  });
 }
 
 const SERVER_STORES: Record<string, { address: string; build: (uri: string, settings: GraphSettings) => GraphStore }> =
@@ -139,13 +163,23 @@ const SERVER_STORES: Record<string, { address: string; build: (uri: string, sett
 export const STORES: readonly string[] = [...Object.keys(SERVER_STORES), "kuzu"];
 
 /**
+ * The store name the settings resolve to: the named store, else hydradb with a URI, else kuzu.
+ *
+ * @param settings (GraphSettings): the resolved store configuration.
+ * @return (string): the lowercase store name.
+ */
+export function storeKind(settings: GraphSettings): string {
+  return (settings.store || (settings.uri ? "hydradb" : "kuzu")).toLowerCase();
+}
+
+/**
  * Construct the store the settings name without connecting; unnamed, a URI means HydraDB and no URI an embedded Kuzu file under ~/.selfgraph.
  *
  * @param settings (GraphSettings): the resolved store configuration.
  * @return (GraphStore): the store.
  */
 export function buildStore(settings: GraphSettings): GraphStore {
-  const kind = (settings.store || (settings.uri ? "hydradb" : "kuzu")).toLowerCase();
+  const kind = storeKind(settings);
   if (kind === "kuzu") {
     return new KuzuStore(settings.uri || join(homedir(), ".selfgraph", "default.kuzu"));
   }

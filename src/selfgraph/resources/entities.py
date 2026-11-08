@@ -1,22 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .. import _ops
-from ..models import DeleteResult, Entity, JsonValue, Page
-from ._common import make_page, page_offset, paginate
-
-if TYPE_CHECKING:
-    from ..client import SelfGraph
+from ..models import DeleteResult, Entity, Evidence, JsonValue, Page
+from ._common import DEFAULT_PAGE_LIMIT, Resource, paginate
 
 __all__ = ["Entities"]
 
 
-class Entities:
-    def __init__(self, client: SelfGraph) -> None:
-        self._c = client
-
+class Entities(Resource):
     async def create(
         self,
         name: str,
@@ -45,6 +39,7 @@ class Entities:
             aliases=aliases,
             external_ids=external_ids,
             properties=properties,
+            schema_check=self._c._schema_check,
         )
 
     async def get(self, id: str) -> Entity | None:
@@ -56,20 +51,23 @@ class Entities:
         type: str | None = None,
         name: str | None = None,
         cursor: str | None = None,
-        limit: int = 50,
+        limit: int = DEFAULT_PAGE_LIMIT,
     ) -> Page[Entity]:
-        offset = page_offset(cursor, limit)
-        rows = await _ops.list_entities(
-            await self._c._reader(),
-            self._c.namespace,
-            type=type,
-            name=name,
-            skip=offset,
-            limit=limit + 1,
-        )
-        return make_page(rows, offset, limit)
+        return await self._page(_ops.list_entities, type=type, name=name, cursor=cursor, limit=limit)
 
-    def iterate(self, *, type: str | None = None, name: str | None = None, limit: int = 50) -> AsyncIterator[Entity]:
+    async def evidence(self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page[Evidence]:
+        """List the evidence records supporting an entity, one per source, version, chunk, and quote.
+
+        @param id (str): the entity id.
+        @param cursor (str | None): the cursor from a previous page, or None to start.
+        @param limit (int): page size.
+        @return (Page[Evidence]): evidence ordered by evidence id; raises NotFoundError for an unknown entity.
+        """
+        return await self._page(_ops.list_evidence, id, kind="entity", cursor=cursor, limit=limit)
+
+    def iterate(
+        self, *, type: str | None = None, name: str | None = None, limit: int = DEFAULT_PAGE_LIMIT
+    ) -> AsyncIterator[Entity]:
         """Yield every entity across pages, following the list cursor.
 
         @param type (str | None): filter by type.
@@ -95,7 +93,7 @@ class Entities:
         @param fields (Any): name, type, aliases, external_ids, properties, remove_aliases, remove_properties.
         @return (Entity): the updated entity.
         """
-        return await self._c._write(_ops.update_entity, id, **fields)
+        return await self._c._write(_ops.update_entity, id, schema_check=self._c._schema_check, **fields)
 
     async def delete(self, id: str) -> DeleteResult:
         """Delete an entity, its relations, and any decision trace that references it.
@@ -103,5 +101,4 @@ class Entities:
         @param id (str): the entity id.
         @return (DeleteResult): counts of entities, relation versions, and decisions removed.
         """
-        counts = await self._c._write(_ops.delete_entity, id)
-        return DeleteResult(**counts)
+        return DeleteResult(**await self._c._write(_ops.delete_entity, id))

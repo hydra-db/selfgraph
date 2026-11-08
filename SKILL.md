@@ -1,6 +1,6 @@
 ---
 name: selfgraph
-description: Use the SelfGraph SDK (Python or TypeScript) to build and query a knowledge graph from text. Use this when a task needs to turn documents or notes into a graph of entities and relationships, extract structured facts with an LLM, give an agent persistent memory (entity preferences and bitemporal decision traces), version facts as they change over time, or retrieve graph-grounded context (source passages plus relationships) for RAG and question answering. Covers ingestion (insert.text and insert.ontology), typed CRUD over entities, relations, preferences, and decisions, keyword plus graph retrieval, and running against any graph backend (Neo4j, Memgraph, FalkorDB, Kuzu, HydraDB). Reach for this whenever the task mentions a knowledge graph, graph memory, entity or relationship extraction, or graph RAG with SelfGraph.
+description: Use the SelfGraph SDK (Python or TypeScript) to build and query a knowledge graph from text. Use this when a task needs to turn documents or notes into a graph of entities and relationships, extract structured facts with an LLM, give an agent persistent memory (entity preferences and decision traces), version facts as they change over time, or retrieve graph-grounded context (source passages plus relationships) for RAG and question answering. Covers ingestion (insert.text and insert.ontology), typed CRUD over entities, relations, preferences, and decisions, keyword plus graph retrieval, and running against any graph backend (Neo4j, Memgraph, FalkorDB, Kuzu, HydraDB). Reach for this whenever the task mentions a knowledge graph, graph memory, entity or relationship extraction, or graph RAG with SelfGraph.
 ---
 
 # SelfGraph
@@ -9,13 +9,11 @@ description: Use the SelfGraph SDK (Python or TypeScript) to build and query a k
 
 SelfGraph is a Python and TypeScript SDK that turns unstructured text into a queryable, versioned knowledge graph. The SDK owns all the logic (merge, versioning, id derivation, validation); a pluggable store backend holds the graph (Neo4j, Memgraph, FalkorDB, embedded Kuzu, or HydraDB).
 
-Use it to ingest text, read and write typed facts, and retrieve LLM-ready context grounded in the source.
-
 Properties to rely on:
 
 - Every method is async, so always `await` SDK calls.
 - Ids are deterministic and every insert is an idempotent upsert, so re-inserting the same fact does not duplicate it or bump a version.
-- Versioning is bitemporal: changing a relation's or preference's properties creates a new revision and history is preserved.
+- Relations and preferences are versioned: changing their properties creates a new revision and keeps the history. Decisions are updated in place.
 - Every graph has a `namespace` (default `"default"`) for multi-tenant isolation.
 - Core dependencies are only `pydantic` and `neo4j`; everything else is an optional extra.
 
@@ -101,7 +99,7 @@ The payload may also carry `preferences` and `decisions`. Use this when you alre
 
 ## Schema (optional)
 
-Pass a `schema` to the graph or to a single insert to declare the entity and relation types you expect. It is advisory and SDK-only: it writes nothing to the backend. It guides `insert.text` extraction by adding your types to the prompt, and it validates every insert.
+Pass a `schema` to the graph or to a single insert to declare the entity and relation types you expect. It is advisory and SDK-only: it writes nothing to the backend. It guides `insert.text` extraction by adding your types to the prompt, and it validates every write: inserts and entity and relation `create` and `update` (so the CLI and MCP tools too).
 
 ```python
 from selfgraph import Schema
@@ -119,7 +117,9 @@ for w in res.warnings:
     print(w.code, w.message)
 ```
 
-`schema_mode` is `"warn"` (default, violations go to `res.warnings` and the write proceeds), `"strict"` (any violation raises `ValidationError` before writing), or `"off"` (no checks, extraction catalog still used). A per-insert `schema` or `schema_mode` overrides the graph-level one. An alias passes validation as its type but is stored as written, and endpoint checks follow `parent`; cardinality is counted per insert, not across the graph. See `docs/schema.md`.
+`schema_mode` is `"warn"` (default, violations go to `res.warnings`, or for a `create` or `update` to the `selfgraph` logger, and the write proceeds), `"strict"` (any violation raises `ValidationError` before writing), or `"off"` (no checks, extraction catalog still used). A per-insert `schema` or `schema_mode` overrides the graph-level one; `create` and `update` use the graph-level one and are checked on the state they would produce. An alias passes validation as its type but is stored as written and counts toward its canonical type for cardinality. A child type inherits its `parent`'s properties, endpoint checks follow `parent` and cover entities already in the graph, and cardinality is counted per insert, not across the graph. See `docs/schema.md`.
+
+Inputs reject unknown keys: an ontology and its items, a schema, and `instructions` and `prompts` raise `ValidationError` naming the key, its location, and the closest valid key, e.g. `unknown key 'entites' in ontology; did you mean 'entities'?`.
 
 ## Entities
 
@@ -176,7 +176,7 @@ await graph.preferences.delete(pref_id)
 
 `create` takes `subject_entity`, `key`, then `value_entity`. `kind` is `"preference"` or `"disinterest"`.
 
-## Decision traces (bitemporal rationale)
+## Decision traces
 
 ```python
 await graph.decisions.create(
@@ -226,11 +226,11 @@ KuzuStore("selfgraph.kuzu")
 HydraDBStore("bolt://127.0.0.1:17687", auth=("neo4j", "<token>"), database="default")
 ```
 
-`CypherStore` works with any Bolt and openCypher database (Neo4j and Memgraph are tested); `Neo4jStore` is a `CypherStore` that also creates Neo4j uniqueness constraints; `FalkorDBStore` runs over FalkorDB's Redis protocol (needs the `falkordb` extra); `KuzuStore` is an embedded in-process graph (needs the `kuzu` extra); `HydraDBStore` takes the HydraDB token as the second slot of `auth`, and HydraDB 0.3.0 must run on an S3-compatible object store such as MinIO. All SDK logic is identical across backends. To target a store that is not Bolt or Cypher, implement the `GraphStore` primitives and pass your store to `SelfGraph(store=...)`. Raw Cypher via `await graph.run_cypher(query, params)` is a backend-specific escape hatch and is not portable across dialects.
+`CypherStore` works with any Bolt and openCypher database (Neo4j and Memgraph are tested); `Neo4jStore` is a `CypherStore` that also creates Neo4j uniqueness constraints; `FalkorDBStore` runs over FalkorDB's Redis protocol (needs the `falkordb` extra); `KuzuStore` is an embedded in-process graph (needs the `kuzu` extra); `HydraDBStore` takes the HydraDB token as the second slot of `auth`, and HydraDB 0.4.0 or newer is required. All SDK logic is identical across backends. To target a store that is not Bolt or Cypher, implement the `GraphStore` primitives and pass your store to `SelfGraph(store=...)`. Raw Cypher via `await graph.run_cypher(query, params)` is a backend-specific escape hatch and is not portable across dialects.
 
 ## CLI and MCP
 
-The same API is available as a CLI and an MCP server, with no code to write:
+The same API is available as a CLI and an MCP server:
 
 ```bash
 selfgraph init
@@ -240,7 +240,7 @@ selfgraph retrieve "who led the acquisition"
 selfgraph mcp
 ```
 
-`selfgraph mcp` runs the MCP server over stdio with 27 tools. Configure via flags or `SELFGRAPH_*` environment variables (`SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`, `SELFGRAPH_SCHEMA`, `SELFGRAPH_SCHEMA_MODE`). `get_schema` returns the active schema.
+`selfgraph mcp` runs the MCP server over stdio with 29 tools. Configure via flags or `SELFGRAPH_*` environment variables (`SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`, `SELFGRAPH_SCHEMA`, `SELFGRAPH_SCHEMA_MODE`). `get_schema` returns the active schema. Relation, preference, and decision write tools take an optional ISO 8601 `event_time`; `insert_text` also takes `metadata`. `run_cypher` is read-only (it rejects writes, `INSERT`, bare write-keyword aliases, and `\u` escapes) and is not scoped to the namespace, so filter on `ns`.
 
 ## TypeScript
 
@@ -256,13 +256,12 @@ await graph.runCypher("MATCH (n) RETURN count(n) AS n");
 await graph.close();
 ```
 
-Optional features are peer packages: `kuzu`, `falkordb`, `ai` plus an `@ai-sdk/*` provider for `insert.text`, `js-tiktoken`, and `@modelcontextprotocol/sdk`. `llm` takes an `LLMConfig`, an AI SDK model object, or an `LLMClient`. There is no spaCy path and no sync client. In an update, an omitted field keeps its value and `null` clears it. See `docs/typescript.md`.
+Optional features are peer packages: `kuzu`, `falkordb`, `ai` plus an `@ai-sdk/*` provider for `insert.text`, `js-tiktoken`, and `@modelcontextprotocol/sdk`. `llm` takes an `LLMConfig`, an AI SDK model object, or an `LLMClient`. There is no spaCy path and no sync client. In an update, an omitted field keeps its value; `null` clears a decision field but keeps a relation or preference field. See `docs/typescript.md`.
 
 ## Rules and gotchas
 
-- Await every call. `async with SelfGraph(...)` manages setup and teardown; a bare `SelfGraph(...)` still initializes lazily. `SyncSelfGraph` is the same API without `await`.
+- `SyncSelfGraph` is the same API without `await`.
 - `insert.text` works best with an LLM (the `[llm]` extra plus `LLMConfig` or a custom extractor); without one it falls back to spaCy or a regex pass, which mislabel more. `insert.ontology` needs neither.
 - Ids are derived when omitted (`type:canonical-name` for entities, a hash for relations). Pass explicit ids when you need to reference a fact later, such as decision `steps`.
-- Re-inserting unchanged facts is a no-op; changing relation or preference properties makes a new revision, readable via `relations.versions(id)`.
 - Keep one `namespace` per tenant; reads and writes never cross namespaces.
 - Out of scope by design: embeddings, vector or semantic search, and GraphRAG. Retrieval is lexical (keyword and BM25) plus graph traversal only.

@@ -29,8 +29,7 @@ address space; pass `max_db_size` (in bytes), for example
 `KuzuStore("graph.kuzu", max_db_size=1 << 30)`, or close each graph when done.
 
 `HydraDBStore` authenticates with the token in the second slot of `auth`; the first
-slot can be any non-empty name. HydraDB 0.3.0 must run on an S3-compatible object
-store such as MinIO.
+slot can be any non-empty name. HydraDB 0.4.0 or newer is required.
 
 ## From settings
 
@@ -47,13 +46,17 @@ SelfGraph.connect(store="kuzu", uri="graph.kuzu")
 SelfGraph.connect(store="neo4j", uri="bolt://localhost:7687", auth="neo4j:password")
 ```
 
-For `kuzu`, `uri` is the file path.
+For `kuzu`, `uri` is the file path. For `falkordb`, `uri` is `host:port` or
+`redis://user:password@host:port`, `auth` (`user:password`, or a bare password)
+wins over credentials in the URI, and `database` names the FalkorDB graph, default
+`selfgraph`. An unset `namespace` means `default`; an empty or blank one is a
+`ValidationError`, as it is for `SelfGraph(namespace="")`.
 
 ## Concurrency
 
-IDs are deterministic and inserts are idempotent upserts, so re-running the same
-insert never duplicates data. Under concurrent writers the guarantees differ by
-backend.
+IDs are deterministic and inserts are idempotent upserts, so re-running an insert
+never duplicates data and reconciles a partial earlier write. Under concurrent
+writers the guarantees differ by backend.
 
 The auto-commit backends (HydraDB, Kuzu, FalkorDB) run one write at a time per
 graph object, so concurrent writers in one process behave like the transactional
@@ -78,16 +81,7 @@ A multi-item insert validates every reference before writing anything. On the
 transactional Bolt backends (Neo4j, Memgraph) the whole batch then commits or rolls
 back as one unit. The auto-commit backends (HydraDB, Kuzu, FalkorDB) apply writes
 incrementally, so a failure partway through a batch can leave earlier writes in
-place. IDs are deterministic, so re-running the same insert reconciles a partial
-write rather than duplicating it.
-
-Decision traces are mutated in place (no revision history), unlike relations and
-preferences which keep every version.
-
-On HydraDB an entity's type is stored as the `type` property rather than a second
-node label (its upsert accepts only one label), so a raw `MATCH (:Person)` matches
-nothing there; filter on the property instead, for example `MATCH (n {type:
-'Person'})`. The typed `entities.list(type=...)` works on every backend.
+place.
 
 ## A custom backend
 
@@ -104,11 +98,17 @@ differs:
 
 - Neo4j, Memgraph, and FalkorDB store nodes under their labels (`Entity`, plus the
   entity type) with the SelfGraph id in `n.id`. Rows include internal fields such as
-  `_lock` and JSON-encoded `evidence_json`.
+  `_lock`. Evidence records are separate `Evidence` nodes keyed by `target_id`.
 - Kuzu stores every node in one table `N` and every edge in one table `R`, with the
   record as JSON in `doc`; query `MATCH (n:N) WHERE n.label = 'Entity' RETURN n.doc`.
   Kuzu rejects a parameter the statement does not use.
 - HydraDB runs a narrow openCypher subset: reliably `MATCH (n:Label) ... RETURN
   n.prop` with a predicate. There `n.id` is HydraDB's internal integer key; the
-  SelfGraph id is `n.sid`.
+  SelfGraph id is `n.sid`. An entity's type is the `type` property, not a second
+  label, so filter with `MATCH (n {type: 'Person'})` rather than `MATCH (:Person)`.
+
+Cypher written for one backend will not run unchanged on another, so prefer the
+typed methods for code that must work across backends. `result.counters` reports
+write counts only on the server backends; Kuzu exposes none, so it is always empty
+there.
 

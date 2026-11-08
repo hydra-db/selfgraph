@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from selfgraph import EvidenceInput, Ontology, Schema, SelfGraph, ids
+from selfgraph import EvidenceInput, Ontology, Schema, SelfGraph, ValidationError, ids
 from selfgraph.runtime import to_jsonable
 from selfgraph.schema import validate_against_schema
 
@@ -26,6 +26,7 @@ SCHEMA_SPEC = {
     "relations": [
         {
             "type": "WORKS_AT",
+            "aliases": ["employed by"],
             "from": {"types": ["Person"], "max_count": 1},
             "to": {"types": ["Company"], "min_count": 1},
         },
@@ -54,17 +55,70 @@ SCHEMA_CASES = [
             {"id": "relation:r4", "from_entity": "person:p", "type": "LIKES", "to_entity": "company:c"},
         ],
     },
+    {
+        "entities": [{"id": "manager:z", "type": "Manager", "name": "Z"}],
+        "relations": [
+            {"from_entity": "manager:z", "type": "WORKS_AT", "to_entity": "org:o"},
+            {"from_entity": "manager:z", "type": "employed by", "to_entity": "org:o2"},
+            {"from_entity": "company:stored", "type": "KNOWS", "to_entity": "manager:z"},
+        ],
+    },
+]
+
+GRAPH_TYPES = {"company:stored": "Company", "org:o": "org"}
+
+UNKNOWN_KEY_CASES = [
+    ["ontology", {"entites": []}],
+    ["ontology", {"entities": [{"type": "P", "nmae": "x"}]}],
+    ["ontology", {"entities": [{"type": "P", "name": "x", "b": 1, "a": 2}]}],
+    [
+        "ontology",
+        {
+            "relations": [
+                {"from_entity": "a", "type": "X", "to_entity": "b", "evidence": [{"source_id": "s", "qoute": "q"}]}
+            ]
+        },
+    ],
+    ["ontology", {"decisions": [{"title": "t", "steps": [], "stauts": "active"}]}],
+    ["ontology", {"preferences": [{"subject_entity": "a", "key": "k", "value_entity": "b", "strenght": 1}]}],
+    ["schema", {"entity_types": []}],
+    ["schema", {"entities": [{"name": "A", "properties": [{"name": "x", "requird": True}]}]}],
+    ["schema", {"relations": [{"type": "X", "from": {"type": ["A"]}}]}],
+    ["schema", {"relations": [{"type": "X", "to": {"max": 1}}]}],
 ]
 
 
-def schema_warnings():
-    """Validate each schema case and return its warnings as code and message pairs.
+def unknown_key_error(kind, value):
+    """Parse a value with an unknown key and return the error message.
 
-    @return (list): one list of {code, message} per case.
+    @param kind (str): "ontology" or "schema".
+    @param value (dict): the raw input.
+    @return (str): the ValidationError message.
+    """
+    try:
+        (Ontology if kind == "ontology" else Schema).model_validate(value)
+    except ValidationError as exc:
+        return str(exc)
+    return "no error"
+
+
+def schema_warnings():
+    """Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
+
+    @return (dict): one list of {code, message} per case, and one message per unknown-key case.
     """
     schema = Schema.model_validate(SCHEMA_SPEC)
     cases = [Ontology.model_validate(case) for case in SCHEMA_CASES]
-    return [[{"code": w.code, "message": w.message} for w in validate_against_schema(ont, schema)] for ont in cases]
+    return {
+        "warnings": [
+            [
+                {"code": w.code, "message": w.message}
+                for w in validate_against_schema(ont, schema, graph_types=GRAPH_TYPES)
+            ]
+            for ont in cases
+        ],
+        "unknown_keys": [unknown_key_error(kind, value) for kind, value in UNKNOWN_KEY_CASES],
+    }
 
 
 STORES = {
@@ -177,12 +231,34 @@ async def write(graph):
             ],
         )
     )
+    out["rel_evidence"] = to_jsonable(
+        await graph.relations.update(
+            ids.relation_id("thing:grace-hopper", "PIONEERED", "thing:cobol"),
+            evidence=[EvidenceInput(source_id="manual2", quote="again", confidence=0.5)],
+        )
+    )
     await graph.entities.create("Temp Thing", "Thing", properties={"k": "v"})
     await graph.relations.create("thing:temp-thing", "TOUCHES", "company:acme")
     await graph.preferences.create("thing:temp-thing", "color", "company:acme", strength=1.0)
     out["ent_delete"] = to_jsonable(await graph.entities.delete("thing:temp-thing"))
     out["rel_delete"] = to_jsonable(await graph.relations.delete(ids.relation_id(ZOE, "KNOWS", "person:jane-doe")))
     return out
+
+
+async def all_evidence(list_fn, oid):
+    """Read every page of an entity's or relation's evidence, two items at a time.
+
+    @param list_fn (Callable): entities.evidence or relations.evidence.
+    @param oid (str): the entity or relation id.
+    @return (list): all the evidence.
+    """
+    out, cursor = [], None
+    while True:
+        page = await list_fn(oid, cursor=cursor, limit=2)
+        out.extend(page.items)
+        if page.next_cursor is None:
+            return out
+        cursor = page.next_cursor
 
 
 async def dump(graph, ns):
@@ -200,6 +276,9 @@ async def dump(graph, ns):
     sources = await store.match_nodes(ns, "Source")
     decisions = [d async for d in graph.decisions.iterate()]
     raw_entities = {e.id: await store.get_node(ns, "Entity", e.id) for e in entities}
+    evidence = {e.id: await all_evidence(graph.entities.evidence, e.id) for e in entities}
+    evidence.update({rid: await all_evidence(graph.relations.evidence, rid) for rid in relations})
+    raw_evidence = await store.match_nodes(ns, "Evidence")
     source_versions = await store.match_nodes(ns, "SourceVersion")
     chunks = {
         sv["id"]: await store.child_nodes(ns, "SourceVersion", sv["id"], "HAS_CHUNK", "Chunk", order_by="index")
@@ -221,6 +300,8 @@ async def dump(graph, ns):
             "sources": sorted(sources, key=lambda s: s["id"]),
             "decisions": decisions,
             "raw_entities": raw_entities,
+            "evidence": evidence,
+            "raw_evidence": sorted(raw_evidence, key=lambda r: r["id"]),
             "source_versions": sorted(source_versions, key=lambda s: s["id"]),
             "chunks": dict(sorted(chunks.items())),
             "retrieval": {"seeds": retrieval.seeds, "context": retrieval.context},

@@ -21,6 +21,7 @@ L_STEP = "DecisionStep"
 L_SOURCE = "Source"
 L_SOURCE_VERSION = "SourceVersion"
 L_CHUNK = "Chunk"
+L_EVIDENCE = "Evidence"
 
 R_HAS_PROFILE = "HAS_PROFILE"
 R_PREFERS = "PREFERS"
@@ -33,6 +34,54 @@ R_RESULTED_IN = "RESULTED_IN"
 R_CONSIDERED = "CONSIDERED"
 R_HAS_VERSION = "HAS_VERSION"
 R_HAS_CHUNK = "HAS_CHUNK"
+
+LABELS = (L_ENTITY, L_PROFILE, L_TRACE, L_STEP, L_SOURCE, L_SOURCE_VERSION, L_CHUNK, L_EVIDENCE)
+EDGE_TYPES = frozenset(
+    {
+        R_HAS_PROFILE,
+        R_PREFERS,
+        R_AVOIDS,
+        R_MADE_DECISION,
+        R_HAS_STEP,
+        R_FROM,
+        R_TO,
+        R_RESULTED_IN,
+        R_CONSIDERED,
+        R_HAS_VERSION,
+        R_HAS_CHUNK,
+    }
+)
+_PREFERENCE_EDGES = {"preference": R_PREFERS, "disinterest": R_AVOIDS}
+PREFERENCE_EDGE_TYPES = tuple(_PREFERENCE_EDGES.values())
+_KIND_OF_EDGE = {etype: kind for kind, etype in _PREFERENCE_EDGES.items()}
+
+
+def preference_edge_type(kind: str) -> str:
+    """The edge type that stores a preference of the given kind.
+
+    @param kind (str): the preference kind.
+    @return (str): R_PREFERS or R_AVOIDS.
+    """
+    return _PREFERENCE_EDGES[kind]
+
+
+def preference_kind_of(etype: str) -> str | None:
+    """The preference kind an edge type stores, or None when the edge is not a preference.
+
+    @param etype (str): the edge type.
+    @return (str | None): the kind.
+    """
+    return _KIND_OF_EDGE.get(etype)
+
+
+def child_edge_id(edge_type: str, child_id: str) -> str:
+    """The id of the internal edge that links a parent node to its profile, version, or chunk child.
+
+    @param edge_type (str): R_HAS_PROFILE, R_HAS_VERSION, or R_HAS_CHUNK; its lowercased letters prefix the id.
+    @param child_id (str): the child node id.
+    @return (str): the edge id, e.g. "hasversion:<child_id>".
+    """
+    return f"{edge_type.replace('_', '').lower()}:{child_id}"
 
 
 def now() -> datetime:
@@ -73,13 +122,12 @@ def _loads(value: Any, fallback: Any) -> Any:
         return fallback
 
 
-def encode_evidence(evidence: list[Evidence]) -> str:
-    return _dumps([e.model_dump() for e in evidence])
+def encode_evidence_props(*, ns: str, id: str, target_id: str, evidence: Evidence) -> dict[str, Any]:
+    return {"id": id, "ns": ns, "target_id": target_id, **evidence.model_dump()}
 
 
-def decode_evidence(value: Any) -> list[Evidence]:
-    raw = _loads(value, [])
-    return [Evidence.model_validate(item) for item in raw]
+def decode_evidence(props: dict[str, Any]) -> Evidence:
+    return Evidence.model_validate({k: props.get(k) for k in Evidence.model_fields})
 
 
 def encode_entity_props(
@@ -91,7 +139,7 @@ def encode_entity_props(
     aliases: list[str],
     external_ids: dict[str, str],
     properties: dict[str, Any],
-    evidence: list[Evidence],
+    source_count: int,
     created_at: datetime,
     updated_at: datetime,
 ) -> dict[str, Any]:
@@ -103,7 +151,7 @@ def encode_entity_props(
         "aliases": list(aliases),
         "external_ids_json": _dumps(external_ids),
         "properties_json": _dumps(properties),
-        "evidence_json": encode_evidence(evidence),
+        "source_count": source_count,
         "created_at": to_iso(created_at),
         "updated_at": to_iso(updated_at),
     }
@@ -117,7 +165,7 @@ def decode_entity(props: dict[str, Any]) -> Entity:
         aliases=list(props.get("aliases") or []),
         external_ids=_loads(props.get("external_ids_json"), {}),
         properties=_loads(props.get("properties_json"), {}),
-        evidence=decode_evidence(props.get("evidence_json")),
+        source_count=int(props.get("source_count") or 0),
         created_at=from_iso(props["created_at"]),
         updated_at=from_iso(props["updated_at"]),
     )
@@ -132,7 +180,7 @@ def encode_relation_props(
     event_time: datetime | None,
     created_at: datetime,
     is_current: bool,
-    evidence: list[Evidence],
+    source_count: int,
 ) -> dict[str, Any]:
     return {
         "id": id,
@@ -142,7 +190,7 @@ def encode_relation_props(
         "created_at": to_iso(created_at),
         "event_time": to_iso(event_time),
         "properties_json": _dumps(properties),
-        "evidence_json": encode_evidence(evidence),
+        "source_count": source_count,
     }
 
 
@@ -157,7 +205,7 @@ def decode_relation(props: dict[str, Any], *, from_entity: str, to_entity: str, 
         event_time=from_iso(props.get("event_time")),
         created_at=from_iso(props["created_at"]),
         is_current=bool(props["is_current"]),
-        evidence=decode_evidence(props.get("evidence_json")),
+        source_count=int(props.get("source_count") or 0),
     )
 
 

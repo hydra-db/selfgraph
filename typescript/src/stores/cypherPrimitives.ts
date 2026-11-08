@@ -5,9 +5,11 @@ import type { CypherResult, CypherRow, JsonValue } from "../models.js";
 import {
   DEFAULT_MATCH_LIMIT,
   type EdgeRow,
+  type EdgeWrite,
   type GraphPrimitives,
   type MatchEdgesOptions,
   type MatchNodesOptions,
+  type NodeRow,
   type Props,
   type UpsertNodeOptions,
 } from "../protocols.js";
@@ -54,15 +56,14 @@ export function sortedEntries(equals: Props | null | undefined): Array<[string, 
 }
 
 /**
- * The count column of the first row as an integer, or 0 when there is no row.
+ * The n column of the first row as an integer, or 0 when there is no row.
  *
  * @param rows (CypherResult["rows"]): the rows of a count query.
- * @param column (string): the count column.
  * @return (number): the count.
  */
-export function toCount(rows: CypherResult["rows"], column = "n"): number {
+export function toCount(rows: CypherResult["rows"]): number {
   const row = rows[0];
-  return row ? Math.trunc(Number(row[column])) : 0;
+  return row ? Math.trunc(Number(row.n)) : 0;
 }
 
 /**
@@ -73,10 +74,30 @@ export function toCount(rows: CypherResult["rows"], column = "n"): number {
  * @param where (string[]): the clauses to extend.
  * @param params (Props): the parameters to extend.
  */
-export function whereEquals(alias: string, equals: Props | null | undefined, where: string[], params: Props): void {
+function whereEquals(alias: string, equals: Props | null | undefined, where: string[], params: Props): void {
   sortedEntries(equals).forEach(([key, value], i) => {
     where.push(`${alias}.${key} = $eq${i}`);
     params[`eq${i}`] = value;
+  });
+}
+
+/**
+ * Add one `alias.key IN $inN` clause per membership-filter entry, in sorted key order, and bind its parameter.
+ *
+ * @param alias (string): the node or relationship variable.
+ * @param anyOf (Record<string, readonly unknown[]> | null | undefined): property name to the accepted values.
+ * @param where (string[]): the clauses to extend.
+ * @param params (Props): the parameters to extend.
+ */
+function whereAnyOf(
+  alias: string,
+  anyOf: Record<string, readonly unknown[]> | null | undefined,
+  where: string[],
+  params: Props,
+): void {
+  sortedEntries(anyOf).forEach(([key, values], i) => {
+    where.push(`${alias}.${key} IN $in${i}`);
+    params[`in${i}`] = [...(values as unknown[])];
   });
 }
 
@@ -113,6 +134,32 @@ abstract class CypherRunner {
 
   async runCypher(query: string, params?: Record<string, JsonValue> | null): Promise<CypherResult> {
     return this._run(query, params);
+  }
+
+  abstract upsertNode(ns: string, label: string, id: string, props: Props, options?: UpsertNodeOptions): Promise<void>;
+
+  abstract createEdge(
+    ns: string,
+    type: string,
+    fromLabel: string,
+    fromId: string,
+    toLabel: string,
+    toId: string,
+    props: Props,
+  ): Promise<boolean>;
+
+  async upsertNodes(
+    ns: string,
+    label: string,
+    rows: readonly NodeRow[],
+    options: UpsertNodeOptions = {},
+  ): Promise<void> {
+    for (const [id, props] of rows) await this.upsertNode(ns, label, id, props, options);
+  }
+
+  async createEdges(ns: string, fromLabel: string, toLabel: string, rows: readonly EdgeWrite[]): Promise<void> {
+    for (const [type, fromId, toId, props] of rows)
+      await this.createEdge(ns, type, fromLabel, fromId, toLabel, toId, props);
   }
 }
 
@@ -192,10 +239,11 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
   }
 
   async matchNodes(ns: string, label: string, options: MatchNodesOptions = {}): Promise<Props[]> {
-    const { equals, skip = 0, limit = DEFAULT_MATCH_LIMIT } = options;
+    const { equals, any_of, skip = 0, limit = DEFAULT_MATCH_LIMIT } = options;
     const where = ["n.ns = $ns"];
     const params: Props = { ns, skip, limit };
     whereEquals("n", equals, where, params);
+    whereAnyOf("n", any_of, where, params);
     const query = `MATCH (n:${label}) WHERE ${where.join(" AND ")} RETURN n ORDER BY n.id SKIP $skip LIMIT $limit`;
     const res = await this._run(query, params);
     return res.rows.map((r) => r.n as Props);
@@ -203,6 +251,16 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
 
   async deleteNode(ns: string, label: string, id: string): Promise<void> {
     await this._run(`MATCH (n:${label} {id:$id, ns:$ns}) DETACH DELETE n`, { id, ns });
+  }
+
+  async deleteNodesBy(ns: string, label: string, equals: Props): Promise<number> {
+    const where = ["n.ns = $ns"];
+    const params: Props = { ns };
+    whereEquals("n", equals, where, params);
+    const count = await this._run(`MATCH (n:${label}) WHERE ${where.join(" AND ")} RETURN count(n) AS n`, params);
+    const n = toCount(count.rows);
+    if (n) await this._run(`MATCH (n:${label}) WHERE ${where.join(" AND ")} DETACH DELETE n`, params);
+    return n;
   }
 
   async createEdge(

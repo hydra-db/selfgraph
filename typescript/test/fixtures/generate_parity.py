@@ -183,6 +183,23 @@ CYPHER = [
     "MATCH (n) RETURN n; CREATE (m)",
     "USE other MATCH (n) RETURN n",
     "MATCH (n) RETURN n UNION MATCH (m) CREATE (x) RETURN m",
+    "MATCH (n) WITH n LIMIT 1 INSERT (m:X) RETURN 1",
+    "WITH 1 AS x \\u0043REATE (m:X) RETURN 1",
+    "WITH 1 AS x \\U00000043REATE (m:X) RETURN 1",
+    "WITH 1 AS x // \\u000a CREATE (m:X) RETURN 1",
+    "WITH 1 AS x /* \\u002a/ CREATE (m:X) /* */ RETURN 1",
+    "MATCH (n) WHERE n.x = 'a\\u0027 CREATE (m:X) //' RETURN 1",
+    "RETURN `a\\u0060 AS y",
+    "RETURN '\\\\\\u0027' AS x",
+    "RETURN '\\\\u0027' AS x",
+    "MATCH (n) WHERE n.path = 'C:\\\\users' RETURN n",
+    "WITH 1 AS x \\ CREATE (m:X) RETURN 1",
+    "UNWIND [1] AS as WITH as CREATE (m:X) RETURN 1",
+    "MATCH (n) WHERE n:as CREATE (m:X) RETURN 1",
+    "MATCH (n) RETURN n AS `create`",
+    "SHOW TRANSACTIONS YIELD transactionId AS t TERMINATE TRANSACTIONS t YIELD transactionId AS z RETURN z",
+    "RETURN 1; ANALYZE GRAPH",
+    "RETURN 1; MATCH (n) RETURN n;",
     "",
     "   ",
     "foo",
@@ -252,6 +269,12 @@ FUZZ_ATOMS = [
     "n.x = 1",
     "-->",
     "\x00",
+    "INSERT",
+    "TERMINATE",
+    "as",
+    "\\u0043REATE",
+    "\\\\u",
+    "\\",
 ]
 
 
@@ -282,24 +305,33 @@ FOLD_TEXTS = [
     "ŉ ǰ ΐ",
 ]
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+EVIDENCE_KEY = ("source_id", "source_version", "chunk_id", "quote", "start_offset", "end_offset")
+EVIDENCE_CASES = [
+    ("person:jane", Evidence(source_id="notes", source_version="sv:abc")),
+    ("person:jane", Evidence(source_id="notes", source_version="sv:abc", chunk_id="sv:abc:chunk:0")),
+    (
+        "relation:r1",
+        Evidence(source_id="m", source_version="m:manual", quote="Zoë 北京 🚀", start_offset=0, end_offset=12),
+    ),
+    ("relation:r1", Evidence(source_id="m", source_version="m:manual", quote="", start_offset=None, end_offset=0)),
+    ("t:x", Evidence(source_id="a", source_version="bc", confidence=0.5)),
+]
 
 
 def ent(eid, name, sources=(), aliases=(), props=None):
-    ev = [Evidence(source_id=s, source_version=f"{s}:v") for s in sources]
     return Entity(
         id=eid,
         type="Thing",
         name=name,
         aliases=list(aliases),
         properties=props or {},
-        evidence=ev,
+        source_count=len(set(sources)),
         created_at=T0,
         updated_at=T0,
     )
 
 
 def rel(a, b, sources=(), rid=None):
-    ev = [Evidence(source_id=s, source_version=f"{s}:v") for s in sources]
     return Relation(
         id=rid or f"r:{a}>{b}",
         revision=1,
@@ -308,7 +340,7 @@ def rel(a, b, sources=(), rid=None):
         to_entity=b,
         created_at=T0,
         is_current=True,
-        evidence=ev,
+        source_count=len(set(sources)),
     )
 
 
@@ -477,6 +509,10 @@ def main():
                 "١٢٣",
             ]
         },
+        "evidence_id": [
+            [target, ev.model_dump(), ids.evidence_id(target, *[ev.model_dump()[k] for k in EVIDENCE_KEY])]
+            for target, ev in EVIDENCE_CASES
+        ],
         "sk": [
             [ns, sid, str(_sk(ns, sid))]
             for ns, sid in [("default", "person:jane"), ("x", "🚀"), ("default", "a|WORKS_AT|b|None|None")]

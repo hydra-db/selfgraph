@@ -32,19 +32,19 @@ export function evidenceOf(e: Partial<Evidence> & Pick<Evidence, "source_id" | "
   };
 }
 
-export function encodeEvidence(evidence: Evidence[]): string {
-  return dumps(evidence.map(evidenceOf));
+export function encodeEvidenceProps(args: { ns: string; id: string; target_id: string; evidence: Evidence }): Props {
+  return { id: args.id, ns: args.ns, target_id: args.target_id, ...evidenceOf(args.evidence) };
 }
 
-function decodeEvidence(value: unknown): Evidence[] {
-  const raw = loads<unknown[]>(value, []);
-  return raw.map((item) => EvidenceSchema.parse(item));
+export function decodeEvidence(props: Props): Evidence {
+  return EvidenceSchema.parse(evidenceOf(props as unknown as Evidence));
 }
 
 const str = (v: unknown): string => v as string;
 const optStr = (v: unknown): string | null => (v === undefined || v === null ? null : (v as string));
 const optNum = (v: unknown): number | null => (v === undefined || v === null ? null : Number(v));
 const date = (v: unknown): Date => fromIso(v)!;
+const count = (v: unknown): number => Math.trunc(Number(v ?? 0)) || 0;
 
 export function encodeEntityProps(args: {
   ns: string;
@@ -54,7 +54,7 @@ export function encodeEntityProps(args: {
   aliases: string[];
   external_ids: Record<string, string>;
   properties: JsonObject;
-  evidence: Evidence[];
+  source_count: number;
   created_at: Date;
   updated_at: Date;
 }): Props {
@@ -66,7 +66,7 @@ export function encodeEntityProps(args: {
     aliases: [...args.aliases],
     external_ids_json: dumps(args.external_ids),
     properties_json: dumps(args.properties),
-    evidence_json: encodeEvidence(args.evidence),
+    source_count: args.source_count,
     created_at: toIso(args.created_at),
     updated_at: toIso(args.updated_at),
   };
@@ -80,7 +80,7 @@ export function decodeEntity(props: Props): Entity {
     aliases: [...((props.aliases as string[] | null | undefined) ?? [])],
     external_ids: loads(props.external_ids_json, {}),
     properties: loads(props.properties_json, {}),
-    evidence: decodeEvidence(props.evidence_json),
+    source_count: count(props.source_count),
     created_at: date(props.created_at),
     updated_at: date(props.updated_at),
   };
@@ -94,7 +94,7 @@ export function encodeRelationProps(args: {
   event_time: Date | null;
   created_at: Date;
   is_current: boolean;
-  evidence: Evidence[];
+  source_count: number;
 }): Props {
   return {
     id: args.id,
@@ -104,7 +104,7 @@ export function encodeRelationProps(args: {
     created_at: toIso(args.created_at),
     event_time: toIso(args.event_time),
     properties_json: dumps(args.properties),
-    evidence_json: encodeEvidence(args.evidence),
+    source_count: args.source_count,
   };
 }
 
@@ -119,7 +119,7 @@ export function decodeRelation(props: Props, edge: { from_entity: string; to_ent
     event_time: fromIso(props.event_time),
     created_at: date(props.created_at),
     is_current: Boolean(props.is_current),
-    evidence: decodeEvidence(props.evidence_json),
+    source_count: count(props.source_count),
   };
 }
 

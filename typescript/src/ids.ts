@@ -3,9 +3,10 @@ import { bytesToHex, concatBytes } from "@noble/hashes/utils.js";
 
 import { ValidationError } from "./errors.js";
 import { cpLen, PY_WORD_CLASS, PY_WS_CLASS, pyCollapseWs, pySplit, pyStrip, utf8 } from "./internal/py.js";
+import type { Evidence } from "./models.js";
 import { requireStr } from "./validate.js";
 
-const ID_PREFIXES = ["relation", "preference", "decision", "profile", "source", "sv"] as const;
+const ID_PREFIXES = ["relation", "preference", "decision", "profile", "source", "sv", "evidence"] as const;
 
 export const RESERVED_ID_PREFIXES: ReadonlySet<string> = new Set(ID_PREFIXES);
 
@@ -224,6 +225,29 @@ export function contentHash(content: Uint8Array): string {
  */
 export function chunkId(sourceVersion: string, index: number): string {
   return `${sourceVersion}:chunk:${index}`;
+}
+
+/**
+ * The id of one evidence record: a hash of the fact it supports and where in which source it was seen.
+ *
+ * @param targetId (string): the id of the entity or relation the evidence supports.
+ * @param ev (Evidence): the evidence.
+ * @return (string): the evidence id.
+ */
+export function evidenceId(targetId: string, ev: Evidence): string {
+  const offset = (o: number | null): string | null => (o === null ? null : String(o));
+  return tagged(
+    "evidence",
+    hashParts(
+      targetId,
+      ev.source_id,
+      ev.source_version,
+      ev.chunk_id,
+      ev.quote,
+      offset(ev.start_offset),
+      offset(ev.end_offset),
+    ),
+  );
 }
 
 /**

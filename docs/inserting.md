@@ -36,6 +36,10 @@ Install the extra:
 pip install "selfgraph[llm]"
 ```
 
+The LLM can return an item that cannot be stored, such as a preference strength
+above 1 or an empty or reserved relation type. That item is dropped with an
+`extraction_partial_failure` warning and the rest of the text is still inserted.
+
 ### Without an LLM
 
 With no `llm`, `insert.text` extracts with spaCy when the `ner` extra is
@@ -74,11 +78,27 @@ await graph.insert.ontology({
 Use this when you already have structured data, or to seed a graph without an LLM
 or any extraction dependency.
 
+## Unknown keys
+
+An ontology, its entities, relations, evidence, preferences, and decisions, a
+schema, and `instructions` and `prompts` reject any key they do not define, so a
+typo fails loudly instead of silently dropping data. The `ValidationError` names
+the key and where it is, and suggests the closest valid key when one is within
+two edits:
+
+```text
+unknown key 'entites' in ontology; did you mean 'entities'?
+unknown key 'nmae' in ontology.entities[0]; did you mean 'name'?
+```
+
+When an object has several unknown keys, the first in sorted order is reported.
+
 ## Validating against a schema
 
 Pass a `schema` to the graph or to a single insert to guide extraction and check
 what you write. By default violations come back in `result.warnings` and the write
-still happens; `schema_mode="strict"` rejects them instead. See [Schema](schema.md).
+still happens; `schema_mode="strict"` rejects them instead. The graph-level schema
+also checks entity and relation `create` and `update`. See [Schema](schema.md).
 
 ## Idempotence
 

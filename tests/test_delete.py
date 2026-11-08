@@ -1,4 +1,4 @@
-from helpers import new_graph, run, skip_on_generic
+from helpers import new_graph, run, skip_on_generic, unique_ns
 
 
 def build(g):
@@ -26,7 +26,6 @@ def test_entity_delete_cascades():
     r1, r2, pref, dec = build(g)
     dr = run(g.entities.delete("person:soham"))
     assert dr.deleted_entities == 1
-    # r1 has 2 versions; the preference version is counted separately
     assert dr.deleted_relation_versions >= 2
     assert dr.deleted_preference_versions >= 1
     assert dr.deleted_decisions == 1
@@ -35,7 +34,6 @@ def test_entity_delete_cascades():
     assert run(g.relations.get(r1.id)) is None
     assert run(g.preferences.get(pref.id)) is None
     assert run(g.relations.get(r2.id)) is not None
-
     assert run(g.decisions.get(dec.id)) is None
 
 
@@ -46,3 +44,19 @@ def test_entity_delete_removes_profile():
     run(g.entities.delete("person:soham"))
     rows = run(g.run_cypher("MATCH (p:Profile {id:'profile:person:soham'}) RETURN p.id AS id"))
     assert rows.rows == []
+
+
+def test_entity_delete_clears_preference_about_entity():
+    g = new_graph(namespace=unique_ns("about"))
+    run(g.entities.create("Soham", "Person", id="person:soham"))
+    run(g.entities.create("HydraDB", "Company", id="company:hydradb"))
+    run(g.entities.create("Graphs", "Topic", id="topic:graphs"))
+    pref = run(
+        g.preferences.create("person:soham", "database", "company:hydradb", about_entity="topic:graphs", strength=0.4)
+    )
+    dr = run(g.entities.delete("topic:graphs"))
+    assert dr.deleted_preference_versions == 0
+    current = run(g.preferences.get(pref.id))
+    assert current.about_entity is None
+    assert current.revision == 2 and current.strength == 0.4
+    assert run(g.preferences.update(pref.id, strength=0.6)).about_entity is None

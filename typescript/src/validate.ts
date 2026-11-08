@@ -73,6 +73,16 @@ export function requireCleanJson(name: string, value: unknown, depth = 0): void 
 export function requireStr(label: string, value: unknown): asserts value is string {
   if (typeof value !== "string") throw new ValidationError(`${label} must be a string, got ${pyTypeName(value)}`);
   if (!pyStrip(value)) throw new ValidationError(`${label} cannot be empty`);
+  requireNoControl(label, value);
+}
+
+/**
+ * Reject text holding a control or surrogate character.
+ *
+ * @param label (string): the field name for the error message.
+ * @param value (string): the text to check.
+ */
+export function requireNoControl(label: string, value: string): void {
   if (hasControl(value)) throw new ValidationError(`${label} cannot contain control or surrogate characters`);
 }
 
@@ -128,7 +138,7 @@ export function requireText(field: string, value: unknown): asserts value is str
   if (typeof value !== "string" || !pyStrip(value)) {
     throw new ValidationError(`${field} must be a non-empty string, got ${pyTypeName(value)}`);
   }
-  if (hasControl(value)) throw new ValidationError(`${field} cannot contain control or surrogate characters`);
+  requireNoControl(field, value);
 }
 
 /**
@@ -153,7 +163,7 @@ export function requireOptionalText(field: string, value: unknown): void {
   if (value === null || value === undefined) return;
   if (typeof value !== "string")
     throw new ValidationError(`${field} must be a string or None, got ${pyTypeName(value)}`);
-  if (hasControl(value)) throw new ValidationError(`${field} cannot contain control or surrogate characters`);
+  requireNoControl(field, value);
 }
 
 /**

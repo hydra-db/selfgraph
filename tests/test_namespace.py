@@ -1,7 +1,7 @@
 import pytest
 from helpers import make_store, new_graph, run
 
-from selfgraph import SelfGraph, ValidationError
+from selfgraph import SelfGraph, StoreError, SyncSelfGraph, TransientError, ValidationError
 
 
 def test_namespaces_isolate_reads_and_writes():
@@ -35,3 +35,21 @@ def test_transaction_rolls_back_on_error():
             )
         )
     assert run(g.entities.get("t:b")) is None
+
+
+def test_calls_after_close_raise_store_error():
+    g = new_graph()
+    run(g.close())
+    run(g.close())
+    for call in (g.entities.get("person:x"), g.entities.create("X", "Person"), g.initialize()):
+        with pytest.raises(StoreError, match="closed") as err:
+            run(call)
+        assert not isinstance(err.value, TransientError)
+
+
+def test_sync_graph_after_close_raises_store_error():
+    g = SyncSelfGraph(store=make_store())
+    g.close()
+    g.close()
+    with pytest.raises(StoreError, match="closed"):
+        g.entities.get("person:x")

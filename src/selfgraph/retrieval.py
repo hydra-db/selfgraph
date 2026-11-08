@@ -8,7 +8,8 @@ from functools import partial
 from typing import TYPE_CHECKING
 
 from . import _ops
-from ._serde import L_CHUNK, L_SOURCE_VERSION, R_HAS_CHUNK
+from ._ops import _paged
+from ._serde import L_CHUNK, L_EVIDENCE, L_SOURCE_VERSION, R_HAS_CHUNK, preference_edge_type
 from .errors import ValidationError
 from .extraction.chunking import count_tokens
 from .ids import normalize_text
@@ -74,7 +75,7 @@ _BM25_K1 = 2.0
 _BM25_B = 1.0
 _GREP_WEIGHT = 1.0
 _GREP_MIN_ASCII = 3
-_STRATEGIES = ("bfs", "dfs", "ppr")
+STRATEGIES = ("bfs", "dfs", "ppr")
 _POOL_FACTOR = 4
 _PPR_DAMPING = 0.5
 _PPR_MAX_ITERATIONS = 50
@@ -161,22 +162,6 @@ def _grep_score(terms: set[str], text: str) -> int:
     return sum(1 for t in terms if (len(t) >= _GREP_MIN_ASCII or not t.isascii()) and t in text)
 
 
-async def _paged(fetch, cap: int | None = None) -> list:
-    """Call a skip/limit list function page by page until it runs dry or reaches the cap.
-
-    @param fetch (Callable[..., Awaitable[list]]): the list call, given skip and limit as keywords.
-    @param cap (int | None): the most rows to read, or None for all.
-    @return (list): every row read, in store order.
-    """
-    out: list = []
-    while cap is None or len(out) < cap:
-        batch = await fetch(skip=len(out), limit=_PAGE)
-        out.extend(batch)
-        if len(batch) < _PAGE:
-            break
-    return out
-
-
 def _select_seeds(entities: list[Entity], query_tokens: set[str], k: int) -> list[tuple[Entity, float]]:
     """Rank entities by BM25 plus a grep boost, divided by the log of their distinct source count.
 
@@ -195,8 +180,7 @@ def _select_seeds(entities: list[Entity], query_tokens: set[str], k: int) -> lis
     for i, entity in enumerate(entities):
         score = bm25[i] + _GREP_WEIGHT * _grep_score(query_tokens, _fold(texts[i]))
         if score > 0:
-            sources = len({ev.source_id for ev in entity.evidence})
-            scored.append((entity, score / math.log(math.e + sources)))
+            scored.append((entity, score / math.log(math.e + entity.source_count)))
     scored.sort(key=lambda pair: (-pair[1], pair[0].id))
     return scored[:k]
 
@@ -328,7 +312,7 @@ def _ppr_rank(seeds: list[tuple[Entity, float]], nodes, relations: list[Relation
     edges: dict[str, dict[str, float]] = {n: {} for n in nodes}
     for r in relations:
         if r.from_entity in nodes and r.to_entity in nodes and r.from_entity != r.to_entity:
-            weight = float(max(1, len({ev.source_id for ev in r.evidence})))
+            weight = float(max(1, r.source_count))
             edges[r.from_entity][r.to_entity] = edges[r.from_entity].get(r.to_entity, 0.0) + weight
             edges[r.to_entity][r.from_entity] = edges[r.to_entity].get(r.from_entity, 0.0) + weight
     mass = dict.fromkeys(nodes, 0.0) | teleport
@@ -375,7 +359,7 @@ async def _collect_passages(
 
     @param graph (SelfGraph): the open graph to read.
     @param ns (str): the namespace to read.
-    @param entities (list[Entity]): the collected entities carrying source evidence.
+    @param entities (list[Entity]): the collected entities.
     @param dist (dict[str, int]): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
     @param query_tokens (set[str]): the content tokens from the query.
     @return (list[str]): passage texts, most query-relevant first.
@@ -383,13 +367,21 @@ async def _collect_passages(
     far = len(dist) + 1
     sv_dist: dict[str, int] = {}
     for e in sorted(entities, key=lambda e: dist.get(e.id, far)):
-        for ev in e.evidence:
-            if ev.source_version not in sv_dist:
-                sv_dist[ev.source_version] = dist.get(e.id, far)
-            if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
-                break
         if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
             break
+        if not e.source_count:
+            continue
+        fetch = partial(graph.store.match_nodes, ns, L_EVIDENCE, equals={"target_id": e.id})
+        skip = 0
+        while len(sv_dist) < _MAX_PASSAGE_SOURCES:
+            rows = await fetch(skip=skip, limit=_PAGE)
+            for row in rows:
+                sv_dist.setdefault(row["source_version"], dist.get(e.id, far))
+                if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
+                    break
+            if len(rows) < _PAGE:
+                break
+            skip += len(rows)
 
     candidates: list[tuple[float, int, str]] = []
     for sv, d in sv_dist.items():
@@ -482,7 +474,7 @@ def _assemble(
             break
 
     for p in sorted(preferences, key=lambda p: dist.get(p.subject_entity, far)):
-        verb = "prefers" if p.kind == "preference" else "avoids"
+        verb = preference_edge_type(p.kind).lower()
         subject = names.get(p.subject_entity, p.subject_entity)
         value = names.get(p.value_entity, p.value_entity)
         line = f"{subject} {verb} {value} ({p.key})"
@@ -530,8 +522,8 @@ async def retrieve(
     @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
     """
     strategy = strategy.lower()
-    if strategy not in _STRATEGIES:
-        raise ValidationError(f"strategy must be one of {', '.join(_STRATEGIES)}, got {strategy!r}")
+    if strategy not in STRATEGIES:
+        raise ValidationError(f"strategy must be one of {', '.join(STRATEGIES)}, got {strategy!r}")
     if depth < 0 or k < 1 or max_nodes < 1 or budget_tokens < 1:
         raise ValidationError("depth must be >= 0 and k, max_nodes, budget_tokens must be >= 1")
 

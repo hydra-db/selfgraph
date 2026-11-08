@@ -7,7 +7,13 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from .. import ids as _ids
-from ..errors import ExtractionError
+from .._ops import (
+    _reject_reserved_rel_type,
+    _require_optional_text,
+    _validate_entity_identity,
+    _validate_strength,
+)
+from ..errors import ExtractionError, ValidationError
 from ..models import (
     DecisionTraceInput,
     EntityInput,
@@ -82,6 +88,7 @@ class _DecisionsOut(BaseModel):
 
 _log = logging.getLogger("selfgraph")
 _MAX_CONCURRENT_CALLS = 8
+_FALLBACK_TYPE = "Thing"
 
 
 def _norm(name: str) -> str:
@@ -102,9 +109,23 @@ def _is_noise_name(name: str) -> bool:
     return not any(c.isalpha() for c in text)
 
 
+def _dropped(warnings: list[InsertWarning], kind: str, exc: ValidationError) -> None:
+    """Record that one invalid extracted item was dropped instead of failing the whole insert.
+
+    @param warnings (list[InsertWarning]): the warning list to append to.
+    @param kind (str): the kind of item dropped.
+    @param exc (ValidationError): why the item was invalid.
+    @return (None): nothing.
+    """
+    warnings.append(InsertWarning(code="extraction_partial_failure", message=f"dropped an extracted {kind}: {exc}"))
+
+
 class _WarningSink:
     def pop_warnings(self) -> list[InsertWarning]:
-        """Return and clear warnings accumulated during the last ``extract`` call."""
+        """Return and clear warnings accumulated during the last ``extract`` call.
+
+        @return (list[InsertWarning]): the warnings.
+        """
         out = self._warnings
         self._warnings = []
         return out
@@ -130,30 +151,15 @@ class DefaultExtractor(_WarningSink):
         entity_catalog, relation_catalog = render_schema_catalog(schema) if schema is not None else ("", "")
         self._catalogs = {"entities": entity_catalog, "relations": relation_catalog}
 
-    def _prompt(self, object_type: str):
-        return effective_prompt(
-            object_type,
-            client_prompts=self._client_prompts,
-            call_prompts=self._call_prompts,
-        )
-
-    def _instruction(self, object_type: str):
-        return effective_instruction(
-            object_type,
-            client_instructions=self._client_instructions,
-            call_instructions=self._call_instructions,
-        )
-
     def _messages(self, object_type: str, text: str) -> tuple[str, str]:
-        instruction = self._instruction(object_type)
+        template = effective_prompt(object_type, client_prompts=self._client_prompts, call_prompts=self._call_prompts)
+        instruction = effective_instruction(
+            object_type, client_instructions=self._client_instructions, call_instructions=self._call_instructions
+        )
         catalog = self._catalogs.get(object_type, "")
         if catalog:
             instruction = f"{instruction}\n\n{catalog}" if instruction else catalog
-        return render(self._prompt(object_type), text=text, instructions=instruction)
-
-    async def _call(self, object_type: str, text: str, output: type):
-        system, user = self._messages(object_type, text)
-        return await self._llm.generate(system=system, user=user, output=output)
+        return render(template, text=text, instructions=instruction)
 
     async def extract(self, document: ParsedDocument) -> Ontology:
         self._warnings = []
@@ -167,20 +173,21 @@ class DefaultExtractor(_WarningSink):
         raw_decisions: list[_DecOut] = []
 
         kinds = [
-            ("entities", _EntitiesOut, raw_entities, "entities"),
-            ("relations", _RelationsOut, raw_relations, "relations"),
-            ("preferences", _PreferencesOut, raw_preferences, "preferences"),
-            ("decisions", _DecisionsOut, raw_decisions, "decisions"),
+            ("entities", _EntitiesOut, raw_entities),
+            ("relations", _RelationsOut, raw_relations),
+            ("preferences", _PreferencesOut, raw_preferences),
+            ("decisions", _DecisionsOut, raw_decisions),
         ]
 
         for kind, *_ in kinds:
             self._messages(kind, "")
         gate = asyncio.Semaphore(_MAX_CONCURRENT_CALLS)
 
-        async def run(chunk, kind: str, schema: type, attr: str) -> list | InsertWarning:
+        async def run(chunk, kind: str, schema: type) -> list | InsertWarning:
             async with gate:
                 try:
-                    return getattr(await self._call(kind, chunk.text, schema), attr)
+                    system, user = self._messages(kind, chunk.text)
+                    return getattr(await self._llm.generate(system=system, user=user, output=schema), kind)
                 except Exception as exc:  # noqa: BLE001
                     return InsertWarning(
                         code="extraction_partial_failure",
@@ -188,14 +195,12 @@ class DefaultExtractor(_WarningSink):
                     )
 
         outcomes = iter(
-            await asyncio.gather(
-                *(run(chunk, kind, schema, attr) for chunk in chunks for kind, schema, _, attr in kinds)
-            )
+            await asyncio.gather(*(run(chunk, kind, schema) for chunk in chunks for kind, schema, _ in kinds))
         )
         succeeded = 0
         for _chunk in chunks:
             chunk_ok = False
-            for _kind, _schema, sink, _attr in kinds:
+            for _kind, _schema, sink in kinds:
                 outcome = next(outcomes)
                 if isinstance(outcome, InsertWarning):
                     self._warnings.append(outcome)
@@ -211,7 +216,7 @@ class DefaultExtractor(_WarningSink):
                 f"first: {self._warnings[0].message}"
             )
 
-        ontology = self._assemble(raw_entities, raw_relations, raw_preferences, raw_decisions)
+        ontology = self._assemble(raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings)
         _log.debug(
             "LLM extraction: %d entities, %d relations from %d chunks (%d warnings)",
             len(ontology.entities),
@@ -227,11 +232,32 @@ class DefaultExtractor(_WarningSink):
         raw_relations: list[_RelOut],
         raw_preferences: list[_PrefOut],
         raw_decisions: list[_DecOut],
+        warnings: list[InsertWarning] | None = None,
     ) -> Ontology:
+        """Resolve extracted names to ids and assemble a deduplicated ontology, dropping invalid items.
+
+        @param raw_entities (list[EntityInput]): the extracted entities.
+        @param raw_relations (list[_RelOut]): the extracted relations, by name.
+        @param raw_preferences (list[_PrefOut]): the extracted preferences, by name.
+        @param raw_decisions (list[_DecOut]): the extracted decisions, by name.
+        @param warnings (list[InsertWarning] | None): receives one warning per dropped invalid item.
+        @return (Ontology): the assembled ontology.
+        """
+        sink = warnings if warnings is not None else []
         registry: dict[str, EntityInput] = {}
+        rejected: set[str] = set()
+
+        def admit(ent: EntityInput) -> bool:
+            try:
+                _validate_entity_identity(_ids.entity_id(ent.type, ent.name), ent.type, ent.name)
+            except ValidationError as exc:
+                _dropped(sink, "entity", exc)
+                return False
+            return True
+
         for ent in raw_entities:
             key = _norm(ent.name)
-            if key not in registry and not _is_noise_name(ent.name):
+            if key not in registry and not _is_noise_name(ent.name) and admit(ent):
                 registry[key] = ent
 
         def resolve(name: str | None) -> str | None:
@@ -242,9 +268,12 @@ class DefaultExtractor(_WarningSink):
                 (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)), None
             )
             if ent is None:
-                if _is_noise_name(name):
+                if _is_noise_name(name) or key in rejected:
                     return None
-                ent = EntityInput(type="Thing", name=name.strip())
+                ent = EntityInput(type=_FALLBACK_TYPE, name=name.strip())
+                if not admit(ent):
+                    rejected.add(key)
+                    return None
                 registry[key] = ent
             return _ids.entity_id(ent.type, ent.name)
 
@@ -252,6 +281,7 @@ class DefaultExtractor(_WarningSink):
 
         def add_relation(from_id: str, rtype: str, to_id: str, props=None, event_time=None) -> str:
             rid = _ids.relation_id(from_id, rtype, to_id)
+            _reject_reserved_rel_type(_ids.normalize_rel_type(rtype), rtype)
             if rid not in relations:
                 relations[rid] = RelationInput(
                     from_entity=from_id,
@@ -266,7 +296,10 @@ class DefaultExtractor(_WarningSink):
             from_id = resolve(rel.from_name)
             to_id = resolve(rel.to_name)
             if from_id and to_id:
-                add_relation(from_id, rel.type, to_id, rel.properties, rel.event_time)
+                try:
+                    add_relation(from_id, rel.type, to_id, rel.properties, rel.event_time)
+                except ValidationError as exc:
+                    _dropped(sink, "relation", exc)
 
         preferences: dict[str, PreferenceInput] = {}
         for pref in raw_preferences:
@@ -274,7 +307,12 @@ class DefaultExtractor(_WarningSink):
             value_id = resolve(pref.value_name)
             if not (subject_id and value_id):
                 continue
-            pid = _ids.preference_id(subject_id, pref.kind, pref.key, value_id)
+            try:
+                _validate_strength(pref.strength)
+                pid = _ids.preference_id(subject_id, pref.kind, pref.key, value_id)
+            except ValidationError as exc:
+                _dropped(sink, "preference", exc)
+                continue
             if pid not in preferences:
                 preferences[pid] = PreferenceInput(
                     subject_entity=subject_id,
@@ -293,8 +331,17 @@ class DefaultExtractor(_WarningSink):
                 from_id = resolve(step.from_name)
                 to_id = resolve(step.to_name)
                 if from_id and to_id:
-                    step_ids.append(add_relation(from_id, step.type, to_id))
-            tid = _ids.decision_id(actor_id, dec.title)
+                    try:
+                        step_ids.append(add_relation(from_id, step.type, to_id))
+                    except ValidationError as exc:
+                        _dropped(sink, "decision step", exc)
+            try:
+                _require_optional_text("decision summary", dec.summary)
+                _require_optional_text("decision rationale", dec.rationale)
+                tid = _ids.decision_id(actor_id, dec.title)
+            except ValidationError as exc:
+                _dropped(sink, "decision", exc)
+                continue
             if tid not in decisions:
                 decisions[tid] = DecisionTraceInput(
                     title=dec.title,

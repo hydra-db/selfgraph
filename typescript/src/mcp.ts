@@ -14,11 +14,12 @@ import { type GraphSettings, settingsFromEnv, version } from "./runtime.js";
 const WB_START = `(?<![${PY_WORD_CLASS}])`;
 const WB_END = `(?![${PY_WORD_CLASS}])`;
 const WRITE_CLAUSE = new RegExp(
-  `${WB_START}(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP|ALTER|RENAME|TRUNCATE|FOREACH|COPY|LOAD|IMPORT|EXPORT|` +
-    `INSTALL|UNINSTALL|ATTACH|USE|CALL|COMMENT|BEGIN|COMMIT|ROLLBACK|CHECKPOINT|GRANT|REVOKE|DENY)${WB_END}`,
+  `${WB_START}(CREATE|INSERT|MERGE|DELETE|DETACH|SET|REMOVE|DROP|ALTER|RENAME|TRUNCATE|FOREACH|COPY|LOAD|IMPORT|` +
+    `EXPORT|INSTALL|UNINSTALL|ATTACH|USE|CALL|COMMENT|BEGIN|COMMIT|ROLLBACK|CHECKPOINT|GRANT|REVOKE|DENY|` +
+    `TERMINATE)${WB_END}`,
   "iu",
 );
-const ALIAS = new RegExp(`${WB_START}AS[${PY_WS_CLASS}]+[${PY_WORD_CLASS}]+`, "giu");
+const UNICODE_ESCAPE = /(?<!\\)(?:\\\\)*\\[uU]/u;
 const MAP_KEY = new RegExp(`([{,][${PY_WS_CLASS}]*)[A-Za-z_][${PY_WORD_CLASS}]*([${PY_WS_CLASS}]*:)`, "gu");
 const PROP_OR_LABEL = new RegExp(`[.:][${PY_WS_CLASS}]*[${PY_WORD_CLASS}]+`, "gu");
 const PARAM = new RegExp(`\\$[${PY_WORD_CLASS}]+`, "gu");
@@ -95,24 +96,23 @@ function blankLexicalTokens(query: string): string {
 }
 
 function stripSafeTokens(query: string): string {
-  return blankLexicalTokens(query)
-    .replace(PARAM, BLANK)
-    .replace(ALIAS, " ")
-    .replace(MAP_KEY, "$1$2")
-    .replace(PROP_OR_LABEL, " ");
+  return blankLexicalTokens(query).replace(PARAM, BLANK).replace(MAP_KEY, "$1$2").replace(PROP_OR_LABEL, " ");
 }
 
 /**
- * Report whether run_cypher must reject a query: a write clause appears anywhere, or the first significant token is not a known read opener.
+ * Report whether run_cypher must reject a query: a unicode escape appears anywhere (Neo4j decodes them before lexing), a backslash or write clause appears outside literals, or a ';'-separated statement does not begin with a known read opener.
  *
  * @param query (string): the raw Cypher statement.
  * @return (boolean): true when the query must be rejected.
  */
 export function isBlockedQuery(query: string): boolean {
+  if (UNICODE_ESCAPE.test(query)) return true;
   const stripped = stripSafeTokens(query);
-  if (WRITE_CLAUSE.test(stripped)) return true;
-  const head = stripped.replace(LEADING_BLANK, "");
-  return head.length > 0 && !READ_OPENERS.test(head);
+  if (stripped.includes("\\") || WRITE_CLAUSE.test(stripped)) return true;
+  return stripped.split(";").some((statement) => {
+    const head = statement.replace(LEADING_BLANK, "");
+    return head.length > 0 && !READ_OPENERS.test(head);
+  });
 }
 
 type Shape = Record<string, z.ZodType>;
@@ -160,13 +160,30 @@ function present<A extends Record<string, unknown>, K extends keyof A & string>(
   };
 }
 
+/**
+ * Pick the named arguments that were given, keeping an explicit null so it clears the field in the SDK call.
+ *
+ * @param args (A): the tool arguments.
+ * @param keys (readonly K[]): the argument names to pick.
+ * @return ({ [P in K]?: A[P] }): the given arguments.
+ */
+function given<A extends Record<string, unknown>, K extends keyof A & string>(
+  args: A,
+  keys: readonly K[],
+): { [P in K]?: A[P] } {
+  return Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]])) as {
+    [P in K]?: A[P];
+  };
+}
+
 const READ_ONLY_MESSAGE =
   "run_cypher is read-only: it runs a single read that begins with MATCH, OPTIONAL MATCH, WITH, " +
   "UNWIND, RETURN, SHOW, EXPLAIN, or PROFILE and contains no write, schema, transaction, or I/O " +
-  "clause (CREATE, MERGE, SET, DELETE, DETACH, REMOVE, DROP, ALTER, RENAME, TRUNCATE, FOREACH, CALL, " +
-  "LOAD, COPY, IMPORT, EXPORT, INSTALL, UNINSTALL, ATTACH, USE, COMMENT, GRANT, REVOKE, DENY, and " +
-  "transaction or admin commands such as BEGIN, COMMIT, TERMINATE). Use the typed resources or insert " +
-  "for writes.";
+  "clause (CREATE, INSERT, MERGE, SET, DELETE, DETACH, REMOVE, DROP, ALTER, RENAME, TRUNCATE, FOREACH, " +
+  "CALL, LOAD, COPY, IMPORT, EXPORT, INSTALL, UNINSTALL, ATTACH, USE, COMMENT, GRANT, REVOKE, DENY, and " +
+  "transaction or admin commands such as BEGIN, COMMIT, TERMINATE), even as a bare alias or variable " +
+  "name (backtick-quote it), and no unicode escape (pass such text as a parameter). Use the typed " +
+  "resources or insert for writes.";
 
 export const TOOLS: Tool[] = [
   tool({
@@ -178,11 +195,13 @@ export const TOOLS: Tool[] = [
   tool({
     name: "insert_text",
     description:
-      "Extract an ontology from text and merge it into the graph. Needs an LLM. Idempotent: ids are derived " +
+      "Extract an ontology from text and merge it into the graph. Uses the configured LLM, or with none " +
+      "configured falls back to a built-in LLM-free extractor (coarser). event_time (ISO 8601) is the default " +
+      "valid time for what is extracted; metadata is stored on the source. Idempotent: ids are derived " +
       "deterministically from content, so re-inserting the same text converges on the same graph instead of " +
       "duplicating it. Safe to retry.",
-    input: { text: str, source_id: optStr },
-    run: (g, a) => g.insert.text(a.text, { source_id: a.source_id }),
+    input: { text: str, source_id: optStr, event_time: optStr, metadata: optObj },
+    run: (g, a) => g.insert.text(a.text, { source_id: a.source_id, event_time: a.event_time, metadata: a.metadata }),
   }),
   tool({
     name: "insert_ontology",
@@ -225,6 +244,14 @@ export const TOOLS: Tool[] = [
     run: (g, a) => g.entities.list({ type: a.type, name: a.name, limit: a.limit, cursor: a.cursor }),
   }),
   tool({
+    name: "entity_evidence",
+    description:
+      "List the evidence (source, version, chunk, quote, offsets, confidence) supporting an entity. Paged via " +
+      "next_cursor.",
+    input: { id: str, limit, cursor },
+    run: (g, a) => g.entities.evidence(a.id, { limit: a.limit, cursor: a.cursor }),
+  }),
+  tool({
     name: "update_entity",
     description:
       "Update an entity. aliases/properties/external_ids merge in; remove_aliases/remove_properties drop keys.",
@@ -255,9 +282,14 @@ export const TOOLS: Tool[] = [
     description:
       "Create a directed, versioned relationship between two entities. from_entity and to_entity are existing " +
       "entity ids ('type:name'); create the entities first. The type normalizes to UPPER_SNAKE, so 'works at' " +
-      "and 'WORKS_AT' are the same relation.",
-    input: { from_entity: str, type: str, to_entity: str, id: optStr, properties: optObj },
-    run: (g, a) => g.relations.create(a.from_entity, a.type, a.to_entity, { id: a.id, properties: a.properties }),
+      "and 'WORKS_AT' are the same relation. event_time (ISO 8601) is when the fact became true.",
+    input: { from_entity: str, type: str, to_entity: str, id: optStr, properties: optObj, event_time: optStr },
+    run: (g, a) =>
+      g.relations.create(a.from_entity, a.type, a.to_entity, {
+        id: a.id,
+        properties: a.properties,
+        event_time: a.event_time,
+      }),
   }),
   tool({
     name: "get_relation",
@@ -280,16 +312,30 @@ export const TOOLS: Tool[] = [
   }),
   tool({
     name: "update_relation",
-    description: "Create a new version of a relationship with changed properties.",
-    input: { id: str, set_properties: optObj, remove_properties: optList },
+    description:
+      "Create a new version of a relationship with changed properties. event_time (ISO 8601) is when the new " +
+      "version became true; omit it to keep the current one.",
+    input: { id: str, set_properties: optObj, remove_properties: optList, event_time: optStr },
     run: (g, a) =>
-      g.relations.update(a.id, { set_properties: a.set_properties, remove_properties: a.remove_properties ?? [] }),
+      g.relations.update(a.id, {
+        set_properties: a.set_properties,
+        remove_properties: a.remove_properties ?? [],
+        event_time: a.event_time,
+      }),
   }),
   tool({
     name: "relation_versions",
     description: "Return every version of a relationship, newest first by default.",
     input: { id: str, newest_first: newestFirst },
     run: (g, a) => g.relations.versions(a.id, { newest_first: a.newest_first }),
+  }),
+  tool({
+    name: "relation_evidence",
+    description:
+      "List the evidence (source, version, chunk, quote, offsets, confidence) supporting a relationship across " +
+      "all its versions. Paged via next_cursor.",
+    input: { id: str, limit, cursor },
+    run: (g, a) => g.relations.evidence(a.id, { limit: a.limit, cursor: a.cursor }),
   }),
   tool({
     name: "delete_relation",
@@ -301,7 +347,7 @@ export const TOOLS: Tool[] = [
     name: "create_preference",
     description:
       "Record that an entity prefers or avoids a value (kind: preference|disinterest). Omit id to derive one; " +
-      "a manual id must start with 'preference:'.",
+      "a manual id must start with 'preference:'. event_time (ISO 8601) is when the preference became true.",
     input: {
       subject_entity: str,
       key: str,
@@ -311,6 +357,7 @@ export const TOOLS: Tool[] = [
       about_entity: optStr,
       strength: z.number().nullish(),
       properties: optObj,
+      event_time: optStr,
     },
     run: (g, a) =>
       g.preferences.create(a.subject_entity, a.key, a.value_entity, {
@@ -319,6 +366,7 @@ export const TOOLS: Tool[] = [
         about_entity: a.about_entity,
         strength: a.strength,
         properties: a.properties,
+        event_time: a.event_time,
       }),
   }),
   tool({
@@ -341,13 +389,22 @@ export const TOOLS: Tool[] = [
   }),
   tool({
     name: "update_preference",
-    description: "Update a preference (new version). properties merge in; remove_properties drop keys.",
-    input: { id: str, strength: z.number().nullish(), properties: optObj, remove_properties: optList },
+    description:
+      "Update a preference (new version). properties merge in; remove_properties drop keys. event_time " +
+      "(ISO 8601) is when the new version became true; omit it to keep the current one.",
+    input: {
+      id: str,
+      strength: z.number().nullish(),
+      properties: optObj,
+      remove_properties: optList,
+      event_time: optStr,
+    },
     run: (g, a) =>
       g.preferences.update(a.id, {
         strength: a.strength,
         properties: a.properties,
         remove_properties: a.remove_properties ?? [],
+        event_time: a.event_time,
       }),
   }),
   tool({
@@ -366,7 +423,8 @@ export const TOOLS: Tool[] = [
     name: "create_decision",
     description:
       "Record a decision trace. steps are ids of relations that already exist (relation:..., from " +
-      "create_relation or list_relations), in order; they are the path that led to the outcome.",
+      "create_relation or list_relations), in order; they are the path that led to the outcome. event_time " +
+      "(ISO 8601) is when the decision was made.",
     input: {
       title: str,
       steps: z.array(z.string()),
@@ -377,6 +435,7 @@ export const TOOLS: Tool[] = [
       outcome_entity: optStr,
       alternative_entities: optList,
       status: z.string().default(DEFAULT_STATUS),
+      event_time: optStr,
     },
     run: (g, a) =>
       g.decisions.create(a.title, {
@@ -388,11 +447,14 @@ export const TOOLS: Tool[] = [
         outcome_entity: a.outcome_entity,
         alternative_entities: a.alternative_entities ?? [],
         status: a.status as Status,
+        event_time: a.event_time,
       }),
   }),
   tool({
     name: "update_decision",
-    description: "Update fields of a decision trace, creating a new version.",
+    description:
+      "Update fields of a decision trace in place; it keeps no version history. An omitted field keeps its " +
+      "value; an explicit null clears actor_entity, summary, rationale, outcome_entity, or event_time (ISO 8601).",
     input: {
       id: str,
       title: optStr,
@@ -403,18 +465,12 @@ export const TOOLS: Tool[] = [
       outcome_entity: optStr,
       alternative_entities: optList,
       status: optStr,
+      event_time: optStr,
     },
     run: (g, a) =>
       g.decisions.update(a.id, {
-        ...present(a, [
-          "title",
-          "steps",
-          "actor_entity",
-          "summary",
-          "rationale",
-          "outcome_entity",
-          "alternative_entities",
-        ]),
+        ...present(a, ["title", "steps", "alternative_entities"]),
+        ...given(a, ["actor_entity", "summary", "rationale", "outcome_entity", "event_time"]),
         ...(a.status != null && { status: a.status as Status }),
       }),
   }),
@@ -440,7 +496,8 @@ export const TOOLS: Tool[] = [
   tool({
     name: "run_cypher",
     description:
-      "Run a read Cypher statement and return its rows; a keyword scan rejects writes but is a guard, not a sandbox.",
+      "Run a read Cypher statement and return its rows; a keyword scan rejects writes but is a guard, not a sandbox. " +
+      "Not scoped to the namespace: it sees every namespace on the server, so filter on the ns property yourself.",
     input: { query: str, params: optObj },
     run: async (g, a) => {
       if (isBlockedQuery(a.query)) throw new ValidationError(READ_ONLY_MESSAGE);

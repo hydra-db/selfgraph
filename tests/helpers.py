@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -24,21 +25,19 @@ TEST_STORE = (
     .lower()
 )
 HYDRADB = TEST_STORE == "hydradb"
-skip_on_hydradb = pytest.mark.skipif(HYDRADB, reason="raw Cypher is Neo4j dialect")
 CYPHER = TEST_STORE in ("cypher", "memgraph")
 FALKORDB = TEST_STORE == "falkordb"
+KUZU = TEST_STORE == "kuzu"
+RAW_CYPHER = not (HYDRADB or KUZU)
 NEO4J_URI = _env("SG_NEO4J_URI", "NEO4J_URI", default="bolt://127.0.0.1:7687")
 CYPHER_URI = _env("SG_MEMGRAPH_URI", "CYPHER_URI", default="bolt://127.0.0.1:7688")
 FALKOR_HOST = _env("FALKOR_HOST", default="localhost")
 FALKOR_PORT = int(_env("SG_FALKOR_PORT", "FALKOR_PORT", default="6380"))
-KUZU = TEST_STORE == "kuzu"
 KUZU_PATH = _env("KUZU_PATH", default="/tmp/selfgraph_kuzu_test")
-skip_on_falkordb = pytest.mark.skipif(FALKORDB, reason="raw Cypher delete semantics are Neo4j dialect")
-RAW_CYPHER = not (HYDRADB or KUZU)
-skip_on_generic = pytest.mark.skipif(HYDRADB or KUZU, reason="raw Cypher is the Neo4j dialect, not a generic backend")
 HYDRADB_URI = _env("SG_HYDRADB_URI", "HYDRADB_URI", default="bolt://127.0.0.1:17687")
 HYDRADB_TOKEN = _env("SG_HYDRADB_TOKEN", "HYDRADB_TOKEN", default="local-dev-auth-token-32-characters-long")
-
+skip_on_falkordb = pytest.mark.skipif(FALKORDB, reason="raw Cypher delete semantics are Neo4j dialect")
+skip_on_generic = pytest.mark.skipif(not RAW_CYPHER, reason="raw Cypher is the Neo4j dialect, not a generic backend")
 
 _LOOP = None
 
@@ -55,7 +54,7 @@ def run(coro):
     return _LOOP.run_until_complete(coro)
 
 
-def _neo4j_auth():
+def neo4j_auth():
     password = os.environ.get("SG_NEO4J_PASSWORD")
     if password:
         return ("neo4j", password)
@@ -67,19 +66,19 @@ def _neo4j_auth():
 
 
 def _auth_str():
-    auth = _neo4j_auth()
+    auth = neo4j_auth()
     return f"{auth[0]}:{auth[1]}" if auth else None
 
 
 def make_store():
-    if TEST_STORE == "hydradb":
+    if HYDRADB:
         from selfgraph import HydraDBStore
 
         return HydraDBStore(HYDRADB_URI, auth=("neo4j", HYDRADB_TOKEN), database="default")
     if CYPHER:
         from selfgraph import CypherStore
 
-        return CypherStore(CYPHER_URI, auth=_neo4j_auth())
+        return CypherStore(CYPHER_URI, auth=neo4j_auth())
     if FALKORDB:
         from selfgraph import FalkorDBStore
 
@@ -88,13 +87,13 @@ def make_store():
         from selfgraph import KuzuStore
 
         return KuzuStore(KUZU_PATH)
-    return Neo4jStore(NEO4J_URI, auth=_neo4j_auth())
+    return Neo4jStore(NEO4J_URI, auth=neo4j_auth())
 
 
 def store_settings(**over):
     from selfgraph.runtime import GraphSettings
 
-    if TEST_STORE == "hydradb":
+    if HYDRADB:
         return GraphSettings(store="hydradb", uri=HYDRADB_URI, auth=f"neo4j:{HYDRADB_TOKEN}", **over)
     if CYPHER:
         return GraphSettings(store="cypher", uri=CYPHER_URI, auth=_auth_str(), **over)
@@ -103,6 +102,15 @@ def store_settings(**over):
     if KUZU:
         return GraphSettings(store="kuzu", uri=KUZU_PATH, **over)
     return GraphSettings(store="neo4j", uri=NEO4J_URI, auth=_auth_str(), **over)
+
+
+def unique_ns(prefix: str) -> str:
+    """Return a namespace no other test run shares.
+
+    @param prefix (str): a readable prefix.
+    @return (str): the namespace.
+    """
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
 def new_graph(**kwargs) -> SelfGraph:

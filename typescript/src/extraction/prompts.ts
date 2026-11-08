@@ -4,6 +4,8 @@ import type { ExtractionInstructions, ExtractionPrompts, PromptTemplate } from "
 
 export type ObjectType = "entities" | "relations" | "preferences" | "decisions";
 
+const PLACEHOLDER = /\{(text|instructions)\}/g;
+
 const ENTITY_SYSTEM =
   "You extract entities for a knowledge graph. An entity is a distinct real-world " +
   "thing: a person, company, product, place, concept, or document. For each entity " +
@@ -100,8 +102,7 @@ export function render(template: PromptTemplate, text: string, instructions: str
     throw new PromptTemplateError(`prompt ${pyRepr(template.version)} is missing required variable {text}`);
   }
   const extra = instructions || "";
-  let user = template.user.split("{text}").join(text);
-  if (user.includes("{instructions}")) user = user.split("{instructions}").join(extra);
-  else if (extra) user = `${user}\n\nAdditional instructions:\n${extra}`;
+  let user = template.user.replace(PLACEHOLDER, (_, name: string) => (name === "text" ? text : extra));
+  if (extra && !template.user.includes("{instructions}")) user = `${user}\n\nAdditional instructions:\n${extra}`;
   return [template.system, user];
 }

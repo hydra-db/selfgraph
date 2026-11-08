@@ -3,14 +3,13 @@ from __future__ import annotations
 import re
 
 from ..models import EntityInput, InsertWarning, Ontology, ParsedDocument
-from .extractor import DefaultExtractor, _RelOut, _WarningSink
+from .extractor import _FALLBACK_TYPE, DefaultExtractor, _RelOut, _WarningSink
 
 __all__ = ["BasicExtractor"]
 
 _SPACY = None
 _SPACY_READY = False
 _SPACY_HAS_LIB = False
-_FALLBACK_TYPE = "Thing"
 _TYPE_MAP = {
     "PERSON": "Person",
     "ORG": "Organization",

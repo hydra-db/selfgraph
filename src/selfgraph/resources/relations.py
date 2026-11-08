@@ -2,23 +2,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from .. import _ops
 from ..errors import ValidationError
-from ..models import DeleteResult, EvidenceInput, JsonValue, Page, Relation
-from ._common import make_page, page_offset, paginate
-
-if TYPE_CHECKING:
-    from ..client import SelfGraph
+from ..models import DeleteResult, Evidence, EvidenceInput, JsonValue, Page, Relation
+from ._common import DEFAULT_PAGE_LIMIT, Resource, paginate
 
 __all__ = ["Relations"]
 
 
-class Relations:
-    def __init__(self, client: SelfGraph) -> None:
-        self._c = client
-
+class Relations(Resource):
     async def create(
         self,
         from_entity: str,
@@ -39,6 +32,7 @@ class Relations:
             properties=properties,
             event_time=event_time,
             evidence=_ops.evidence_from_inputs(evidence),
+            schema_check=self._c._schema_check,
         )
 
     async def get(self, id: str) -> Relation | None:
@@ -51,19 +45,11 @@ class Relations:
         type: str | None = None,
         to_entity: str | None = None,
         cursor: str | None = None,
-        limit: int = 50,
+        limit: int = DEFAULT_PAGE_LIMIT,
     ) -> Page[Relation]:
-        offset = page_offset(cursor, limit)
-        rows = await _ops.list_relations(
-            await self._c._reader(),
-            self._c.namespace,
-            from_entity=from_entity,
-            type=type,
-            to_entity=to_entity,
-            skip=offset,
-            limit=limit + 1,
+        return await self._page(
+            _ops.list_relations, from_entity=from_entity, type=type, to_entity=to_entity, cursor=cursor, limit=limit
         )
-        return make_page(rows, offset, limit)
 
     def iterate(
         self,
@@ -71,7 +57,7 @@ class Relations:
         from_entity: str | None = None,
         type: str | None = None,
         to_entity: str | None = None,
-        limit: int = 50,
+        limit: int = DEFAULT_PAGE_LIMIT,
     ) -> AsyncIterator[Relation]:
         """Yield every relation across pages, following the list cursor.
 
@@ -106,7 +92,7 @@ class Relations:
         @param set_properties (Mapping[str, JsonValue] | None): properties to set.
         @param remove_properties (Iterable[str]): property keys to drop.
         @param event_time (datetime | None): the new valid time.
-        @param evidence (Iterable[EvidenceInput] | None): evidence to attach.
+        @param evidence (Iterable[EvidenceInput] | None): evidence records to add; existing evidence is kept.
         @return (Relation): the new current version.
         """
         if extra:
@@ -118,7 +104,18 @@ class Relations:
             remove_properties=remove_properties,
             event_time=event_time,
             evidence=None if evidence is None else _ops.evidence_from_inputs(evidence),
+            schema_check=self._c._schema_check,
         )
+
+    async def evidence(self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page[Evidence]:
+        """List the evidence records supporting a relation across all its versions.
+
+        @param id (str): the relation id.
+        @param cursor (str | None): the cursor from a previous page, or None to start.
+        @param limit (int): page size.
+        @return (Page[Evidence]): evidence ordered by evidence id; raises NotFoundError for an unknown relation.
+        """
+        return await self._page(_ops.list_evidence, id, kind="relation", cursor=cursor, limit=limit)
 
     async def versions(self, id: str, *, newest_first: bool = True) -> list[Relation]:
         reader = await self._c._reader()
@@ -130,5 +127,4 @@ class Relations:
         @param id (str): the relation id.
         @return (DeleteResult): counts of relation versions and decisions removed.
         """
-        counts = await self._c._write(_ops.delete_relation, id)
-        return DeleteResult(**counts)
+        return DeleteResult(**await self._c._write(_ops.delete_relation, id))

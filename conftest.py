@@ -3,57 +3,49 @@ import sys
 
 import pytest
 
-_SRC = os.path.join(os.path.dirname(__file__), "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
+_ROOT = os.path.dirname(__file__)
+for _path in (os.path.join(_ROOT, "src"), os.path.join(_ROOT, "tests")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-
-def _env(*names, default=None):
-    for name in names:
-        value = os.environ.get(name)
-        if value:
-            return value
-    return default
-
-
-_TEST_STORE = (
-    (os.environ.get("SELFGRAPH_TEST_STORE") or _env("SELFGRAPH_TEST_STORES", default="neo4j").split(",")[0])
-    .strip()
-    .lower()
+from helpers import (  # noqa: E402
+    CYPHER_URI,
+    FALKOR_HOST,
+    FALKOR_PORT,
+    HYDRADB_TOKEN,
+    HYDRADB_URI,
+    KUZU_PATH,
+    NEO4J_URI,
+    TEST_STORE,
+    neo4j_auth,
 )
-_CYPHER = _TEST_STORE in ("cypher", "memgraph")
-_URI = (
-    _env("SG_MEMGRAPH_URI", "CYPHER_URI", default="bolt://127.0.0.1:7688")
-    if _CYPHER
-    else _env("SG_NEO4J_URI", "NEO4J_URI", default="bolt://127.0.0.1:7687")
-)
-_HYDRADB_URI = _env("SG_HYDRADB_URI", "HYDRADB_URI", default="bolt://127.0.0.1:17687")
-_HYDRADB_TOKEN = _env("SG_HYDRADB_TOKEN", "HYDRADB_TOKEN", default="local-dev-auth-token-32-characters-long")
-_LABELS = ("Entity", "Profile", "DecisionTrace", "DecisionStep", "Source", "SourceVersion", "Chunk")
+
+_LABELS = ("Entity", "Profile", "DecisionTrace", "DecisionStep", "Source", "SourceVersion", "Chunk", "Evidence")
+_HYDRADB_DELETE_BATCH = 1024
 
 
-def _auth():
-    password = os.environ.get("SG_NEO4J_PASSWORD")
-    if password:
-        return ("neo4j", password)
-    raw = os.environ.get("NEO4J_AUTH")
-    if not raw:
-        return None
-    user, _, password = raw.partition(":")
-    return (user, password)
+def _wipe_bolt(uri, auth, database=None):
+    from neo4j import GraphDatabase
 
-
-def _wipe_hydradb(session):
-    for label in _LABELS:
-        ids = [r["id"] for r in session.run(f"MATCH (n:{label}) RETURN n.id AS id")]
-        for node_id in ids:
-            session.run(f"MATCH (n:{label} {{id:$id}}) DETACH DELETE n", id=node_id)
+    driver = GraphDatabase.driver(uri, auth=auth)
+    try:
+        with driver.session(database=database) as session:
+            if TEST_STORE != "hydradb":
+                session.run("MATCH (n) DETACH DELETE n")
+                return
+            for label in _LABELS:
+                ids = [r["id"] for r in session.run(f"MATCH (n:{label}) RETURN n.id AS id")]
+                for start in range(0, len(ids), _HYDRADB_DELETE_BATCH):
+                    batch = ids[start : start + _HYDRADB_DELETE_BATCH]
+                    session.run("MATCH (n) WHERE n.id IN $ids DETACH DELETE n", ids=batch)
+    finally:
+        driver.close()
 
 
 def _wipe_kuzu():
     from selfgraph.stores.kuzu import _SCHEMA, KuzuStore
 
-    store = KuzuStore(os.environ.get("KUZU_PATH", "/tmp/selfgraph_kuzu_test"))
+    store = KuzuStore(KUZU_PATH)
     for stmt in _SCHEMA:
         try:
             store._conn.execute(stmt)
@@ -65,9 +57,7 @@ def _wipe_kuzu():
 def _wipe_falkordb():
     from falkordb import FalkorDB
 
-    db = FalkorDB(
-        host=_env("FALKOR_HOST", default="localhost"), port=int(_env("SG_FALKOR_PORT", "FALKOR_PORT", default="6380"))
-    )
+    db = FalkorDB(host=FALKOR_HOST, port=FALKOR_PORT)
     for name in ("selfgraph_test", "selfgraph"):
         try:
             db.select_graph(name).delete()
@@ -77,32 +67,14 @@ def _wipe_falkordb():
 
 @pytest.fixture(autouse=True)
 def _wipe_store():
-    from neo4j import GraphDatabase
-
-    if _TEST_STORE == "kuzu":
+    if TEST_STORE == "kuzu":
         _wipe_kuzu()
-        yield
-        return
-
-    if _TEST_STORE == "falkordb":
+    elif TEST_STORE == "falkordb":
         _wipe_falkordb()
-        yield
-        return
-
-    if _TEST_STORE == "hydradb":
-        driver = GraphDatabase.driver(_HYDRADB_URI, auth=("neo4j", _HYDRADB_TOKEN))
-        try:
-            with driver.session(database="default") as session:
-                _wipe_hydradb(session)
-        finally:
-            driver.close()
-        yield
-        return
-
-    driver = GraphDatabase.driver(_URI, auth=_auth())
-    try:
-        with driver.session() as session:
-            session.run("MATCH (n) DETACH DELETE n")
-    finally:
-        driver.close()
+    elif TEST_STORE == "hydradb":
+        _wipe_bolt(HYDRADB_URI, ("neo4j", HYDRADB_TOKEN), database="default")
+    elif TEST_STORE in ("cypher", "memgraph"):
+        _wipe_bolt(CYPHER_URI, neo4j_auth())
+    else:
+        _wipe_bolt(NEO4J_URI, neo4j_auth())
     yield

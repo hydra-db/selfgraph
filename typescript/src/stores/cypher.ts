@@ -34,6 +34,9 @@ function isConnectionError(exc: unknown): boolean {
   return CONNECTION_MARKERS.some((k) => lowered.includes(k));
 }
 
+const SYNTAX_MARKERS = ["syntaxerror", "parsing error"];
+const CONFLICT_MARKERS = ["constraintvalidationfailed", "unique constraint violation"];
+
 /**
  * Map a Bolt driver error to a library error; lost races and retryable conflicts, including a post-check uniqueness violation, become TransientError.
  *
@@ -43,9 +46,12 @@ function isConnectionError(exc: unknown): boolean {
 function translateCypherError(exc: unknown): SelfGraphError {
   const message = errorMessage(exc);
   const lowered = `${errorCode(exc)} ${message}`.toLowerCase();
+  if (SYNTAX_MARKERS.some((k) => lowered.includes(k))) {
+    return new StoreError(`Cypher query failed: ${message}`, { cause: exc });
+  }
   const isConflict =
-    lowered.includes("constraintvalidationfailed") ||
-    (lowered.includes("constraint") && (lowered.includes("unique") || lowered.includes("already exists")));
+    CONFLICT_MARKERS.some((k) => lowered.includes(k)) ||
+    (lowered.includes("constraint") && lowered.includes("already exists"));
   const transient = ["transient", "serializ", "conflicting transactions", "cannot get"].some((k) =>
     lowered.includes(k),
   );

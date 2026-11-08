@@ -1,6 +1,6 @@
-import type { DeleteResult, Entity, JsonObject, Page } from "../models.js";
+import type { DeleteResult, Entity, Evidence, JsonObject, Page } from "../models.js";
 import * as ops from "../ops.js";
-import { paginate, Resource } from "./common.js";
+import { type PageOptions, paginate, Resource } from "./common.js";
 
 export interface EntityCreateOptions {
   id?: string | null;
@@ -20,7 +20,7 @@ export type EntityUpdateFields = ops.UpdateEntityFields;
 
 export class Entities extends Resource {
   async create(name: string, type: string, options: EntityCreateOptions = {}): Promise<Entity> {
-    return this.graph.write((tx, ns) => ops.createEntity(tx, ns, { name, type, ...options }));
+    return this.graph.write((tx, ns) => ops.createEntity(tx, ns, { name, type, ...options }, this.graph.schemaCheck));
   }
 
   async get(id: string): Promise<Entity | null> {
@@ -37,6 +37,19 @@ export class Entities extends Resource {
     );
   }
 
+  /**
+   * List the evidence records supporting an entity, one per source, version, chunk, and quote.
+   *
+   * @param id (string): the entity id.
+   * @param options (PageOptions): the cursor and page size.
+   * @return (Page<Evidence>): evidence ordered by evidence id; throws NotFoundError for an unknown entity.
+   */
+  async evidence(id: string, options: PageOptions = {}): Promise<Page<Evidence>> {
+    return this.page(options, (store, ns, window) =>
+      ops.listEvidence(store, ns, id, "entity", window.skip, window.limit),
+    );
+  }
+
   iterate(options: Omit<EntityListOptions, "cursor"> = {}): AsyncGenerator<Entity> {
     return paginate((cursor) => this.list({ ...options, cursor }));
   }
@@ -49,7 +62,7 @@ export class Entities extends Resource {
    * @return (Entity): the updated entity.
    */
   async update(id: string, fields: EntityUpdateFields): Promise<Entity> {
-    return this.graph.write((tx, ns) => ops.updateEntity(tx, ns, id, fields));
+    return this.graph.write((tx, ns) => ops.updateEntity(tx, ns, id, fields, this.graph.schemaCheck));
   }
 
   /**

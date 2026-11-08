@@ -167,6 +167,57 @@ describe("LLM extraction through the AI SDK", () => {
     expect(res.relations.map((r) => r.type)).toEqual(["MEMBER_OF", "CHOSE", "USES"]);
   });
 
+  it("drops an invalid extracted item with a warning and keeps the rest", async () => {
+    const extra: Partial<Record<Kind, unknown>> = {
+      relations: {
+        relations: [
+          ...(REPLIES.relations as { relations: unknown[] }).relations,
+          { from_name: "Soham", type: "", to_name: "HydraDB", event_time: null },
+          { from_name: "Soham", type: "prefers", to_name: "HydraDB", event_time: null },
+        ],
+      },
+      preferences: {
+        preferences: [
+          ...(REPLIES.preferences as { preferences: unknown[] }).preferences,
+          {
+            subject_name: "Soham",
+            kind: "preference",
+            key: "editor",
+            value_name: "HydraDB",
+            about_name: null,
+            strength: 2,
+          },
+        ],
+      },
+    };
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        const kind = kindOf(options as never);
+        return reply(extra[kind] ?? REPLIES[kind]) as never;
+      },
+    });
+    const res = await graphWith(model, "llm_drop").insert.text("Soham chose HydraDB.");
+    expect(res.relations.map((r) => r.type)).toEqual(["MEMBER_OF", "CHOSE", "USES"]);
+    expect(res.preferences.map((p) => p.key)).toEqual(["database"]);
+    expect(res.decisions).toHaveLength(1);
+    const dropped = res.warnings.filter((w) => w.code === "extraction_partial_failure").map((w) => w.message);
+    expect(dropped).toHaveLength(3);
+    expect(dropped.some((m) => m.includes("preference strength"))).toBe(true);
+    expect(dropped.some((m) => m.includes("reserved"))).toBe(true);
+  });
+
+  it("never re-substitutes placeholders that appear in the document text", async () => {
+    const { render } = await import("../src/extraction/prompts.js");
+    const slotted = { system: "s", user: "{instructions}|{text}", version: "v1" };
+    expect(render(slotted, "doc {instructions} {text}", "be brief {text}")[1]).toBe(
+      "be brief {text}|doc {instructions} {text}",
+    );
+    const appended = { system: "s", user: "T:{text}", version: "v2" };
+    expect(render(appended, "doc {instructions}", "extra")[1]).toBe(
+      "T:doc {instructions}\n\nAdditional instructions:\nextra",
+    );
+  });
+
   it("raises ExtractionError when every call fails", async () => {
     const model = new MockLanguageModelV4({
       doGenerate: async () => {

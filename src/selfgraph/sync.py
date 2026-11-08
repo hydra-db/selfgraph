@@ -6,6 +6,8 @@ import threading
 from typing import Any
 
 from .client import SelfGraph
+from .errors import CLOSED_MESSAGE, StoreError
+from .schema import Schema
 
 __all__ = ["SyncSelfGraph"]
 
@@ -77,7 +79,18 @@ class SyncSelfGraph:
         self.decisions = _SyncProxy(graph.decisions, self._run)
         self.insert = _SyncProxy(graph.insert, self._run)
 
+    @property
+    def schema(self) -> Schema | None:
+        """The graph-level schema, read-only.
+
+        @return (Schema | None): the schema, or None when none is set.
+        """
+        return self._async.schema
+
     def _run(self, coro):
+        if self._loop.is_closed():
+            coro.close()
+            raise StoreError(CLOSED_MESSAGE)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -99,10 +112,6 @@ class SyncSelfGraph:
         return out["value"]
 
     def initialize(self) -> None:
-        """Create the store's ID constraints and indexes.
-
-        @return (None): nothing.
-        """
         return self._run(self._async.initialize())
 
     def close(self) -> None:
@@ -119,17 +128,9 @@ class SyncSelfGraph:
                 self._loop.close()
 
     def run_cypher(self, *args: Any, **kwargs: Any):
-        """Run one raw Cypher statement.
-
-        @return (CypherResult): the resulting rows.
-        """
         return self._run(self._async.run_cypher(*args, **kwargs))
 
     def retrieve(self, *args: Any, **kwargs: Any):
-        """Retrieve graph context for a query.
-
-        @return (RetrievalResult): the seeds, subgraph, and assembled context.
-        """
         return self._run(self._async.retrieve(*args, **kwargs))
 
     def __enter__(self) -> SyncSelfGraph:
@@ -141,8 +142,4 @@ class SyncSelfGraph:
         return self
 
     def __exit__(self, *exc: object) -> None:
-        """Close the store on exit from a with block.
-
-        @return (None): nothing.
-        """
         self.close()

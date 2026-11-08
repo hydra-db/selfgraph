@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { loadTokenizer } from "../chunking.js";
-import { ExtractionError, errorMessage } from "../errors.js";
+import { ExtractionError, errorMessage, ValidationError } from "../errors.js";
 import * as ids from "../ids.js";
 import { pySplit, pyStrip } from "../internal/py.js";
 import {
@@ -17,8 +17,10 @@ import {
   parseOrThrow,
   Status,
 } from "../models.js";
+import { rejectReservedRelType, validateEntityIdentity, validateStrength } from "../ops.js";
 import type { Extractor, LLMClient } from "../protocols.js";
 import { type ParsedSchema, renderSchemaCatalog } from "../schema.js";
+import { requireOptionalText } from "../validate.js";
 import { effectiveInstruction, effectivePrompt, type ObjectType, render } from "./prompts.js";
 
 const EntitiesOut = z.object({
@@ -117,6 +119,25 @@ export function isNoiseName(name: string): boolean {
   return !HAS_LETTER.test(text);
 }
 
+/**
+ * Run a check on one extracted item, recording a warning and reporting false when the item is invalid.
+ *
+ * @param warnings (InsertWarning[]): the warning list to append to.
+ * @param kind (string): the kind of item, for the message.
+ * @param check (() => void): throws ValidationError when the item is invalid.
+ * @return (boolean): true when the item is valid and should be kept.
+ */
+function admitted(warnings: InsertWarning[], kind: string, check: () => void): boolean {
+  try {
+    check();
+    return true;
+  } catch (error) {
+    if (!(error instanceof ValidationError)) throw error;
+    warnings.push(insertWarning("extraction_partial_failure", `dropped an extracted ${kind}: ${error.message}`));
+    return false;
+  }
+}
+
 function lenientTime(value: string | Date | null | undefined): Date | null {
   if (value == null) return null;
   const parsed = DateTimeInput.safeParse(value);
@@ -130,6 +151,7 @@ function lenientTime(value: string | Date | null | undefined): Date | null {
  * @param rawRelations (RawRelation[]): the extracted relations, by name.
  * @param rawPreferences (RawPreference[]): the extracted preferences, by name.
  * @param rawDecisions (RawDecision[]): the extracted decisions, by name.
+ * @param warnings (InsertWarning[]): receives one warning per dropped invalid item.
  * @return (ParsedOntology): the assembled ontology.
  */
 export function assembleOntology(
@@ -137,11 +159,15 @@ export function assembleOntology(
   rawRelations: RawRelation[],
   rawPreferences: RawPreference[],
   rawDecisions: RawDecision[],
+  warnings: InsertWarning[] = [],
 ): ParsedOntology {
   const registry = new Map<string, RawEntity>();
+  const rejected = new Set<string>();
+  const admit = (ent: RawEntity): boolean =>
+    admitted(warnings, "entity", () => validateEntityIdentity(ids.entityId(ent.type, ent.name), ent.type, ent.name));
   for (const ent of rawEntities) {
     const key = norm(ent.name);
-    if (!registry.has(key) && !isNoiseName(ent.name)) registry.set(key, ent);
+    if (!registry.has(key) && !isNoiseName(ent.name) && admit(ent)) registry.set(key, ent);
   }
 
   const resolve = (name: string | null | undefined): string | null => {
@@ -151,8 +177,12 @@ export function assembleOntology(
       registry.get(key) ??
       [...registry.values()].find((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
     if (ent === undefined) {
-      if (isNoiseName(name)) return null;
+      if (isNoiseName(name) || rejected.has(key)) return null;
       ent = { type: FALLBACK_TYPE, name: pyStrip(name) };
+      if (!admit(ent)) {
+        rejected.add(key);
+        return null;
+      }
       registry.set(key, ent);
     }
     return ids.entityId(ent.type, ent.name);
@@ -167,6 +197,7 @@ export function assembleOntology(
     eventTime?: Date | null,
   ): string => {
     const rid = ids.relationId(fromId, rtype, toId);
+    rejectReservedRelType(ids.normalizeRelType(rtype), rtype);
     if (!relations.has(rid)) {
       relations.set(rid, {
         from_entity: fromId,
@@ -182,7 +213,11 @@ export function assembleOntology(
   for (const rel of rawRelations) {
     const fromId = resolve(rel.from_name);
     const toId = resolve(rel.to_name);
-    if (fromId && toId) addRelation(fromId, rel.type, toId, rel.properties, lenientTime(rel.event_time));
+    if (fromId && toId) {
+      admitted(warnings, "relation", () =>
+        addRelation(fromId, rel.type, toId, rel.properties, lenientTime(rel.event_time)),
+      );
+    }
   }
 
   const preferences = new Map<string, Record<string, unknown>>();
@@ -190,8 +225,12 @@ export function assembleOntology(
     const subjectId = resolve(pref.subject_name);
     const valueId = resolve(pref.value_name);
     if (!(subjectId && valueId)) continue;
-    const pid = ids.preferenceId(subjectId, pref.kind, pref.key, valueId);
-    if (!preferences.has(pid)) {
+    let pid = "";
+    const valid = admitted(warnings, "preference", () => {
+      validateStrength(pref.strength);
+      pid = ids.preferenceId(subjectId, pref.kind, pref.key, valueId);
+    });
+    if (valid && !preferences.has(pid)) {
       preferences.set(pid, {
         subject_entity: subjectId,
         kind: pref.kind,
@@ -210,10 +249,15 @@ export function assembleOntology(
     for (const step of dec.steps ?? []) {
       const fromId = resolve(step.from_name);
       const toId = resolve(step.to_name);
-      if (fromId && toId) stepIds.push(addRelation(fromId, step.type, toId));
+      if (fromId && toId) admitted(warnings, "decision step", () => stepIds.push(addRelation(fromId, step.type, toId)));
     }
-    const tid = ids.decisionId(actorId, dec.title);
-    if (!decisions.has(tid)) {
+    let tid = "";
+    const valid = admitted(warnings, "decision", () => {
+      requireOptionalText("decision summary", dec.summary);
+      requireOptionalText("decision rationale", dec.rationale);
+      tid = ids.decisionId(actorId, dec.title);
+    });
+    if (valid && !decisions.has(tid)) {
       decisions.set(tid, {
         title: dec.title,
         steps: stepIds,
@@ -243,8 +287,17 @@ export interface DefaultExtractorOptions {
   schema?: ParsedSchema | null;
 }
 
-export class DefaultExtractor implements Extractor {
-  private warnings: InsertWarning[] = [];
+export class WarningSink {
+  protected warnings: InsertWarning[] = [];
+
+  popWarnings(): InsertWarning[] {
+    const out = this.warnings;
+    this.warnings = [];
+    return out;
+  }
+}
+
+export class DefaultExtractor extends WarningSink implements Extractor {
   private readonly catalogs: Partial<Record<ObjectType, string>>;
   private readonly options: DefaultExtractorOptions;
 
@@ -258,6 +311,7 @@ export class DefaultExtractor implements Extractor {
     private readonly llm: LLMClient,
     options: DefaultExtractorOptions = {},
   ) {
+    super();
     this.options = {
       prompts: parseOrThrow(ExtractionPrompts.nullish(), options.prompts, "prompts"),
       instructions: parseOrThrow(ExtractionInstructions.nullish(), options.instructions, "instructions"),
@@ -268,23 +322,12 @@ export class DefaultExtractor implements Extractor {
     this.catalogs = { entities, relations };
   }
 
-  popWarnings(): InsertWarning[] {
-    const out = this.warnings;
-    this.warnings = [];
-    return out;
-  }
-
   private messages(objectType: ObjectType, text: string): [string, string] {
     const template = effectivePrompt(objectType, this.options.prompts, this.options.call_prompts);
     let instruction = effectiveInstruction(objectType, this.options.instructions, this.options.call_instructions);
     const catalog = this.catalogs[objectType] ?? "";
     if (catalog) instruction = instruction ? `${instruction}\n\n${catalog}` : catalog;
     return render(template, text, instruction);
-  }
-
-  private async call<T>(objectType: ObjectType, text: string, output: z.ZodType<T>): Promise<T> {
-    const [system, user] = this.messages(objectType, text);
-    return this.llm.generate({ system, user, output });
   }
 
   async extract(document: ParsedDocument): Promise<ParsedOntology> {
@@ -300,7 +343,8 @@ export class DefaultExtractor implements Extractor {
     const step = <T>(kind: ObjectType, schema: z.ZodType<T>, sink: (result: T) => void) => ({
       kind,
       run: async (text: string) => {
-        const result = await this.call(kind, text, schema);
+        const [system, user] = this.messages(kind, text);
+        const result = await this.llm.generate({ system, user, output: schema });
         return () => sink(result);
       },
     });
@@ -348,6 +392,6 @@ export class DefaultExtractor implements Extractor {
         `extraction failed for the whole input (${this.warnings.length} errors); first: ${this.warnings[0]!.message}`,
       );
     }
-    return assembleOntology(rawEntities, rawRelations, rawPreferences, rawDecisions);
+    return assembleOntology(rawEntities, rawRelations, rawPreferences, rawDecisions, this.warnings);
   }
 }

@@ -1,40 +1,22 @@
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { reachable, STORE_SPECS, uniqueNs } from "./helpers.js";
+import {
+  buildCli,
+  CLI,
+  runCli as cli,
+  NEO4J_PASSWORD,
+  NEO4J_URI,
+  reachable,
+  STORE_SPECS,
+  uniqueNs,
+} from "./helpers.js";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const neo4jUp = await reachable(STORE_SPECS.find((s) => s.name === "neo4j")!);
 const ns = uniqueNs("e2e");
-const GLOBAL = [
-  "--store",
-  "neo4j",
-  "--uri",
-  process.env.SG_NEO4J_URI ?? "bolt://localhost:7687",
-  "--auth",
-  `neo4j:${process.env.SG_NEO4J_PASSWORD ?? "testpassword123"}`,
-  "--namespace",
-  ns,
-];
-
-function cli(args: string[], input?: string): { code: number; out: unknown; err: string } {
-  const res = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", input, env: { ...process.env } });
-  let out: unknown = res.stdout;
-  try {
-    out = JSON.parse(res.stdout);
-  } catch {
-    out = res.stdout;
-  }
-  return { code: res.status ?? -1, out, err: res.stderr };
-}
+const GLOBAL = ["--store", "neo4j", "--uri", NEO4J_URI, "--auth", `neo4j:${NEO4J_PASSWORD}`, "--namespace", ns];
 
 beforeAll(() => {
-  if (!neo4jUp) return;
-  const build = spawnSync("npx", ["tsup"], { cwd: ROOT, stdio: "inherit" });
-  if (build.status !== 0) throw new Error(`tsup build failed with status ${build.status}`);
+  if (neo4jUp) buildCli();
 });
 
 describe.skipIf(!neo4jUp)("built CLI against Neo4j", () => {
@@ -60,7 +42,7 @@ describe.skipIf(!neo4jUp)("built CLI against Neo4j", () => {
       entities: [{ type: "Company", name: "Acme" }],
       relations: [{ from_entity: "person:jane-doe", type: "works at", to_entity: "company:acme" }],
     });
-    const inserted = cli([...GLOBAL, "insert", "ontology", "-", "--source-id", "stdin"], ontology);
+    const inserted = cli([...GLOBAL, "insert", "ontology", "-", "--source-id", "stdin"], { input: ontology });
     expect(inserted.code).toBe(0);
     expect((inserted.out as { relations: Array<{ type: string }> }).relations[0]!.type).toBe("WORKS_AT");
 
@@ -110,6 +92,7 @@ describe.skipIf(!neo4jUp)("built MCP server over stdio", () => {
           "delete_entity",
           "delete_preference",
           "delete_relation",
+          "entity_evidence",
           "get_decision",
           "get_entity",
           "get_preference",
@@ -122,6 +105,7 @@ describe.skipIf(!neo4jUp)("built MCP server over stdio", () => {
           "list_preferences",
           "list_relations",
           "preference_versions",
+          "relation_evidence",
           "relation_versions",
           "retrieve",
           "run_cypher",

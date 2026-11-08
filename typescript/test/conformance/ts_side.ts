@@ -1,6 +1,6 @@
-import type { GraphStore } from "../../src/index.js";
+import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import { FalkorDBStore, ids, KuzuStore, type SelfGraph, toJsonable } from "../../src/index.js";
-import { Ontology } from "../../src/models.js";
+import { Ontology, parseOrThrow } from "../../src/models.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { STORE_SPECS } from "../helpers.js";
 
@@ -20,7 +20,12 @@ const SCHEMA_SPEC = {
     { name: "Company", aliases: ["org"], properties: [{ name: "founded", type: "datetime" }] },
   ],
   relations: [
-    { type: "WORKS_AT", from: { types: ["Person"], max_count: 1 }, to: { types: ["Company"], min_count: 1 } },
+    {
+      type: "WORKS_AT",
+      aliases: ["employed by"],
+      from: { types: ["Person"], max_count: 1 },
+      to: { types: ["Company"], min_count: 1 },
+    },
     { type: "KNOWS", aliases: ["is friends with"], from: { types: ["Person"] }, to: { types: ["Person"] } },
   ],
 };
@@ -46,18 +51,73 @@ const SCHEMA_CASES = [
       { id: "relation:r4", from_entity: "person:p", type: "LIKES", to_entity: "company:c" },
     ],
   },
+  {
+    entities: [{ id: "manager:z", type: "Manager", name: "Z" }],
+    relations: [
+      { from_entity: "manager:z", type: "WORKS_AT", to_entity: "org:o" },
+      { from_entity: "manager:z", type: "employed by", to_entity: "org:o2" },
+      { from_entity: "company:stored", type: "KNOWS", to_entity: "manager:z" },
+    ],
+  },
+];
+
+const GRAPH_TYPES = new Map([
+  ["company:stored", "Company"],
+  ["org:o", "org"],
+]);
+
+const UNKNOWN_KEY_CASES: Array<["ontology" | "schema", unknown]> = [
+  ["ontology", { entites: [] }],
+  ["ontology", { entities: [{ type: "P", nmae: "x" }] }],
+  ["ontology", { entities: [{ type: "P", name: "x", b: 1, a: 2 }] }],
+  [
+    "ontology",
+    { relations: [{ from_entity: "a", type: "X", to_entity: "b", evidence: [{ source_id: "s", qoute: "q" }] }] },
+  ],
+  ["ontology", { decisions: [{ title: "t", steps: [], stauts: "active" }] }],
+  ["ontology", { preferences: [{ subject_entity: "a", key: "k", value_entity: "b", strenght: 1 }] }],
+  ["schema", { entity_types: [] }],
+  ["schema", { entities: [{ name: "A", properties: [{ name: "x", requird: true }] }] }],
+  ["schema", { relations: [{ type: "X", from: { type: ["A"] } }] }],
+  ["schema", { relations: [{ type: "X", to: { max: 1 } }] }],
 ];
 
 /**
- * Validate each schema case and return its warnings as code and message pairs.
+ * Parse a value with an unknown key and return the error message.
  *
- * @return (Array<Array<{ code: string; message: string }>>): one list per case.
+ * @param kind ("ontology" | "schema"): which input it is.
+ * @param value (unknown): the raw input.
+ * @return (string): the ValidationError message.
  */
-export function schemaWarnings(): Array<Array<{ code: string; message: string }>> {
+function unknownKeyError(kind: "ontology" | "schema", value: unknown): string {
+  try {
+    if (kind === "ontology") parseOrThrow(Ontology, value, kind);
+    else parseOrThrow(Schema, value, kind);
+  } catch (exc) {
+    return (exc as Error).message;
+  }
+  return "no error";
+}
+
+/**
+ * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
+ *
+ * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[] }): one list per case, and one message per unknown-key case.
+ */
+export function schemaWarnings(): {
+  warnings: Array<Array<{ code: string; message: string }>>;
+  unknown_keys: string[];
+} {
   const schema = Schema.parse(SCHEMA_SPEC);
-  return SCHEMA_CASES.map((c) =>
-    validateAgainstSchema(Ontology.parse(c), schema).map((w) => ({ code: w.code, message: w.message })),
-  );
+  return {
+    warnings: SCHEMA_CASES.map((c) =>
+      validateAgainstSchema(Ontology.parse(c), schema, { graphTypes: GRAPH_TYPES }).map((w) => ({
+        code: w.code,
+        message: w.message,
+      })),
+    ),
+    unknown_keys: UNKNOWN_KEY_CASES.map(([kind, value]) => unknownKeyError(kind, value)),
+  };
 }
 
 const ZOE = ids.entityId("Person", "Zoë Ångström");
@@ -164,11 +224,27 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
       evidence: [{ source_id: "manual", quote: "wrote COBOL", start_offset: 1, end_offset: 5, confidence: 0.75 }],
     }),
   );
+  out.rel_evidence = toJsonable(
+    await graph.relations.update(ids.relationId("thing:grace-hopper", "PIONEERED", "thing:cobol"), {
+      evidence: [{ source_id: "manual2", quote: "again", confidence: 0.5 }],
+    }),
+  );
   await graph.entities.create("Temp Thing", "Thing", { properties: { k: "v" } });
   await graph.relations.create("thing:temp-thing", "TOUCHES", "company:acme");
   await graph.preferences.create("thing:temp-thing", "color", "company:acme", { strength: 1.0 });
   out.ent_delete = toJsonable(await graph.entities.delete("thing:temp-thing"));
   out.rel_delete = toJsonable(await graph.relations.delete(ids.relationId(ZOE, "KNOWS", "person:jane-doe")));
+  return out;
+}
+
+async function allEvidence(list: (cursor: string | null) => Promise<Page<Evidence>>): Promise<Evidence[]> {
+  const out: Evidence[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: Page<Evidence> = await list(cursor);
+    out.push(...page.items);
+    cursor = page.next_cursor;
+  } while (cursor !== null);
   return out;
 }
 
@@ -193,6 +269,14 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
   const decisions = await collect(graph.decisions.iterate());
   const rawEntities: Record<string, unknown> = {};
   for (const e of entities) rawEntities[e.id] = await store.getNode(ns, "Entity", e.id);
+  const evidence: Record<string, unknown> = {};
+  for (const e of entities)
+    evidence[e.id] = await allEvidence((cursor) => graph.entities.evidence(e.id, { cursor, limit: 2 }));
+  for (const r of rels)
+    evidence[r.id] = await allEvidence((cursor) => graph.relations.evidence(r.id, { cursor, limit: 2 }));
+  const rawEvidence = (await store.matchNodes(ns, "Evidence")).sort((a, b) =>
+    (a.id as string) < (b.id as string) ? -1 : 1,
+  );
   const sourceVersions = (await store.matchNodes(ns, "SourceVersion")).sort((a, b) =>
     (a.id as string) < (b.id as string) ? -1 : 1,
   );
@@ -221,6 +305,8 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     sources,
     decisions,
     raw_entities: rawEntities,
+    evidence,
+    raw_evidence: rawEvidence,
     source_versions: sourceVersions,
     chunks,
     retrieval: { seeds: retrieval.seeds, context: retrieval.context },

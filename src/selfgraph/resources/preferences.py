@@ -2,23 +2,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from .. import _ops
 from ..errors import ValidationError
 from ..models import DeleteResult, JsonValue, Kind, Page, Preference
-from ._common import make_page, page_offset, paginate
-
-if TYPE_CHECKING:
-    from ..client import SelfGraph
+from ._common import DEFAULT_PAGE_LIMIT, Resource, paginate
 
 __all__ = ["Preferences"]
 
 
-class Preferences:
-    def __init__(self, client: SelfGraph) -> None:
-        self._c = client
-
+class Preferences(Resource):
     async def create(
         self,
         subject_entity: str,
@@ -55,19 +48,11 @@ class Preferences:
         key: str | None = None,
         kind: Kind | None = None,
         cursor: str | None = None,
-        limit: int = 50,
+        limit: int = DEFAULT_PAGE_LIMIT,
     ) -> Page[Preference]:
-        offset = page_offset(cursor, limit)
-        rows = await _ops.list_preferences(
-            await self._c._reader(),
-            self._c.namespace,
-            subject_entity=subject_entity,
-            key=key,
-            kind=kind,
-            skip=offset,
-            limit=limit + 1,
+        return await self._page(
+            _ops.list_preferences, subject_entity=subject_entity, key=key, kind=kind, cursor=cursor, limit=limit
         )
-        return make_page(rows, offset, limit)
 
     def iterate(
         self,
@@ -75,7 +60,7 @@ class Preferences:
         *,
         key: str | None = None,
         kind: Kind | None = None,
-        limit: int = 50,
+        limit: int = DEFAULT_PAGE_LIMIT,
     ) -> AsyncIterator[Preference]:
         """Yield preferences across pages, following the list cursor.
 
@@ -127,5 +112,4 @@ class Preferences:
         )
 
     async def delete(self, id: str) -> DeleteResult:
-        counts = await self._c._write(_ops.delete_preference, id)
-        return DeleteResult(**counts)
+        return DeleteResult(**await self._c._write(_ops.delete_preference, id))

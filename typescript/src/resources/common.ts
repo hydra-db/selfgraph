@@ -46,33 +46,6 @@ export function decodeCursor(cursor: unknown): number {
 }
 
 /**
- * Validate a page limit (1 to 1000) and resolve the cursor to its start offset.
- *
- * @param cursor (unknown): the cursor from a previous page, or null to start.
- * @param limit (unknown): the requested page size.
- * @return (number): the offset to resume from.
- */
-function pageOffset(cursor: unknown, limit: unknown): number {
-  requireInt("limit", limit);
-  if (limit < 1) throw new ValidationError(`limit must be >= 1, got ${limit}`);
-  if (limit > MAX_LIMIT) throw new ValidationError(`limit must be <= ${MAX_LIMIT}, got ${limit}`);
-  return decodeCursor(cursor);
-}
-
-/**
- * Build a page from limit + 1 fetched rows; the extra row signals a next page without a second query.
- *
- * @param rows (T[]): the fetched rows.
- * @param offset (number): the current offset.
- * @param limit (number): the page size.
- * @return (Page<T>): the page.
- */
-function makePage<T>(rows: T[], offset: number, limit: number): Page<T> {
-  const hasMore = rows.length > limit;
-  return { items: rows.slice(0, limit), next_cursor: hasMore ? encodeCursor(offset + limit) : null };
-}
-
-/**
  * Yield every item across pages by following the list cursor.
  *
  * @param list ((cursor: string | null) => Promise<Page<T>>): a list function taking a cursor.
@@ -106,7 +79,7 @@ export abstract class Resource {
   constructor(protected readonly graph: GraphAccess) {}
 
   /**
-   * Fetch one page: validate the limit and cursor, read limit + 1 rows, and set the next cursor.
+   * Fetch one page: validate the limit (1 to 1000) and cursor, read limit + 1 rows, and set the next cursor; the extra row only signals a next page.
    *
    * @param options (PageOptions): the cursor and page size.
    * @param fetch ((store: GraphPrimitives, ns: string, window: { skip: number; limit: number }) => Promise<T[]>): the list read.
@@ -116,9 +89,12 @@ export abstract class Resource {
     options: PageOptions,
     fetch: (store: GraphPrimitives, ns: string, window: { skip: number; limit: number }) => Promise<T[]>,
   ): Promise<Page<T>> {
-    const limit = options.limit ?? DEFAULT_PAGE_LIMIT;
-    const offset = pageOffset(options.cursor, limit);
+    const limit: unknown = options.limit ?? DEFAULT_PAGE_LIMIT;
+    requireInt("limit", limit);
+    if (limit < 1) throw new ValidationError(`limit must be >= 1, got ${limit}`);
+    if (limit > MAX_LIMIT) throw new ValidationError(`limit must be <= ${MAX_LIMIT}, got ${limit}`);
+    const offset = decodeCursor(options.cursor);
     const rows = await this.graph.read((store, ns) => fetch(store, ns, { skip: offset, limit: limit + 1 }));
-    return makePage(rows, offset, limit);
+    return { items: rows.slice(0, limit), next_cursor: rows.length > limit ? encodeCursor(offset + limit) : null };
   }
 }

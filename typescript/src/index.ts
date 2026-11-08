@@ -68,12 +68,14 @@ export {
 export { dumps, toJsonable } from "./output.js";
 export type {
   EdgeRow,
+  EdgeWrite,
   Extractor,
   GraphPrimitives,
   GraphStore,
   LLMClient,
   MatchEdgesOptions,
   MatchNodesOptions,
+  NodeRow,
   Props,
   UpsertNodeOptions,
 } from "./protocols.js";

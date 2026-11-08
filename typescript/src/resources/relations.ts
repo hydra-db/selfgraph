@@ -1,6 +1,7 @@
 import {
   type DateTimeInput,
   type DeleteResult,
+  type Evidence,
   type EvidenceInput,
   type JsonObject,
   type Page,
@@ -9,7 +10,7 @@ import {
 } from "../models.js";
 import * as ops from "../ops.js";
 import { keysOf, rejectUnknown } from "../validate.js";
-import { paginate, parseEvidence, Resource } from "./common.js";
+import { type PageOptions, paginate, parseEvidence, Resource } from "./common.js";
 
 export interface RelationCreateOptions {
   id?: string | null;
@@ -50,15 +51,20 @@ export class Relations extends Resource {
     const eventTime = parseDate(options.event_time);
     const evidence = parseEvidence(options.evidence ?? []);
     return this.graph.write((tx, ns) =>
-      ops.createRelation(tx, ns, {
-        from_entity: fromEntity,
-        type,
-        to_entity: toEntity,
-        id: options.id,
-        properties: options.properties ?? null,
-        event_time: eventTime,
-        evidence,
-      }),
+      ops.createRelation(
+        tx,
+        ns,
+        {
+          from_entity: fromEntity,
+          type,
+          to_entity: toEntity,
+          id: options.id,
+          properties: options.properties ?? null,
+          event_time: eventTime,
+          evidence,
+        },
+        this.graph.schemaCheck,
+      ),
     );
   }
 
@@ -85,7 +91,7 @@ export class Relations extends Resource {
    * Create a new version of a relation with merged properties; an unchanged update is a no-op.
    *
    * @param id (string): the relation id.
-   * @param options (RelationUpdateOptions): properties to set and remove, a new valid time, and evidence to attach.
+   * @param options (RelationUpdateOptions): properties to set and remove, a new valid time, and evidence records to add.
    * @return (Relation): the current version.
    */
   async update(id: string, options: RelationUpdateOptions = {}): Promise<Relation> {
@@ -93,12 +99,31 @@ export class Relations extends Resource {
     const eventTime = parseDate(options.event_time);
     const evidence = options.evidence == null ? null : parseEvidence(options.evidence);
     return this.graph.write((tx, ns) =>
-      ops.updateRelation(tx, ns, id, {
-        set_properties: options.set_properties ?? null,
-        remove_properties: [...(options.remove_properties ?? [])],
-        event_time: eventTime,
-        evidence,
-      }),
+      ops.updateRelation(
+        tx,
+        ns,
+        id,
+        {
+          set_properties: options.set_properties ?? null,
+          remove_properties: [...(options.remove_properties ?? [])],
+          event_time: eventTime,
+          evidence,
+        },
+        this.graph.schemaCheck,
+      ),
+    );
+  }
+
+  /**
+   * List the evidence records supporting a relation across all its versions.
+   *
+   * @param id (string): the relation id.
+   * @param options (PageOptions): the cursor and page size.
+   * @return (Page<Evidence>): evidence ordered by evidence id; throws NotFoundError for an unknown relation.
+   */
+  async evidence(id: string, options: PageOptions = {}): Promise<Page<Evidence>> {
+    return this.page(options, (store, ns, window) =>
+      ops.listEvidence(store, ns, id, "relation", window.skip, window.limit),
     );
   }
 

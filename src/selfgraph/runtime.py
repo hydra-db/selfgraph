@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ._ops import _require_text
 from .client import SelfGraph
 from .errors import StoreError, ValidationError
 from .models import LLMConfig
@@ -24,6 +25,8 @@ __all__ = [
     "to_jsonable",
     "dumps",
     "read_json",
+    "read_text",
+    "store_kind",
 ]
 
 STORES = ("neo4j", "cypher", "memgraph", "hydradb", "falkordb", "kuzu")
@@ -72,33 +75,99 @@ def settings_from_env(**overrides: Any) -> GraphSettings:
     )
 
 
+def read_text(path: str) -> str:
+    """Read a UTF-8 text file, or stdin when the path is '-'.
+
+    @param path (str): the file path, or '-'.
+    @return (str): the text.
+    """
+    try:
+        return sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValidationError(f"cannot read {path!r}: {exc.strerror or exc}") from exc
+
+
+def parse_json(text: str, where: str = "") -> Any:
+    """Parse JSON text, naming where it came from in the error.
+
+    @param text (str): the JSON text.
+    @param where (str): appended to "invalid JSON" in the error, e.g. " in 'graph.json'".
+    @return (Any): the parsed value.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"invalid JSON{where}: {exc}") from exc
+
+
 def read_json(path: str) -> Any:
     """Read and parse a JSON file, or stdin when the path is '-'.
 
     @param path (str): the file path, or '-'.
     @return (Any): the parsed JSON.
     """
-    try:
-        raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ValidationError(f"cannot read {path!r}: {exc.strerror or exc}") from exc
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValidationError(f"invalid JSON in {path!r}: {exc}") from exc
+    return parse_json(read_text(path), f" in {path!r}")
 
 
-def _parse_auth(auth: str | None) -> tuple[str, str] | None:
+def present(**fields: Any) -> dict[str, Any]:
+    """Keep the fields that are not None, so only those reach an SDK update.
+
+    @param fields (Any): the candidate fields.
+    @return (dict[str, Any]): the fields that were given.
+    """
+    return {key: value for key, value in fields.items() if value is not None}
+
+
+def _parse_auth(auth: str | None, default_user: str | None = "neo4j") -> tuple[str | None, str] | None:
+    """Split 'user:password' auth; a bare token is the password for default_user.
+
+    @param auth (str | None): the auth setting.
+    @param default_user (str | None): the user for a bare token.
+    @return (tuple[str | None, str] | None): the user and password, or None without auth.
+    """
     if not auth:
         return None
     user, sep, secret = auth.partition(":")
-    if not sep:
-        return ("neo4j", user)
-    return (user, secret)
+    return (user, secret) if sep else (default_user, user)
+
+
+def store_kind(settings: GraphSettings) -> str:
+    """The store name the settings resolve to: the named store, else hydradb with a URI, else kuzu.
+
+    @param settings (GraphSettings): the resolved store configuration.
+    @return (str): the lowercase store name.
+    """
+    return (settings.store or ("hydradb" if settings.uri else "kuzu")).lower()
+
+
+def _falkor_store(uri: str, settings: GraphSettings) -> GraphStore:
+    """A FalkorDB store from host:port or a redis:// URL; auth, else the URL credentials, logs in.
+
+    @param uri (str): the address.
+    @param settings (GraphSettings): the resolved auth and database settings.
+    @return (GraphStore): the store.
+    """
+    from urllib.parse import unquote, urlparse
+
+    from .stores.falkordb import FalkorDBStore
+
+    parsed = urlparse(uri if "://" in uri else f"//{uri}")
+    if settings.auth:
+        username, password = _parse_auth(settings.auth, None)
+    else:
+        username = unquote(parsed.username) if parsed.username else None
+        password = unquote(parsed.password) if parsed.password else None
+    credentials = {key: value for key, value in (("username", username), ("password", password)) if value}
+    return FalkorDBStore(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 6379,
+        graph=settings.database or "selfgraph",
+        **credentials,
+    )
 
 
 def _build_store(settings: GraphSettings) -> GraphStore:
-    kind = (settings.store or ("hydradb" if settings.uri else "kuzu")).lower()
+    kind = store_kind(settings)
     if kind not in STORES:
         raise ValidationError(f"unknown store {settings.store!r}; choose one of {', '.join(STORES)}")
     if kind == "kuzu":
@@ -124,12 +193,7 @@ def _build_store(settings: GraphSettings) -> GraphStore:
         store_cls = Neo4jStore if kind == "neo4j" else CypherStore
         return store_cls(settings.uri, auth=auth, database=settings.database)
     if kind == "falkordb":
-        from urllib.parse import urlparse
-
-        from .stores.falkordb import FalkorDBStore
-
-        parsed = urlparse(settings.uri if "://" in settings.uri else f"//{settings.uri}")
-        return FalkorDBStore(host=parsed.hostname or "localhost", port=parsed.port or 6379)
+        return _falkor_store(settings.uri, settings)
     from .stores.hydradb import HydraDBStore
 
     return HydraDBStore(settings.uri, auth=auth, database=settings.database)
@@ -154,10 +218,12 @@ def build_graph(settings: GraphSettings) -> SelfGraph:
     @param settings (GraphSettings): the resolved store, LLM, and schema configuration.
     @return (SelfGraph): the constructed graph.
     """
+    namespace = "default" if settings.namespace is None else settings.namespace
+    _require_text("namespace", namespace)
     return SelfGraph(
         store=_build_store(settings),
         llm=_build_llm(settings),
-        namespace=settings.namespace or "default",
+        namespace=namespace,
         schema=read_json(settings.schema) if isinstance(settings.schema, str) else settings.schema,
         schema_mode=settings.schema_mode or "warn",
     )

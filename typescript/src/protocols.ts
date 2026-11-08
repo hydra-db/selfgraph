@@ -15,9 +15,14 @@ export const DEFAULT_MATCH_LIMIT = 1000;
 
 export interface MatchNodesOptions {
   equals?: Props | null;
+  any_of?: Record<string, readonly unknown[]> | null;
   skip?: number;
   limit?: number;
 }
+
+export type NodeRow = readonly [id: string, props: Props];
+
+export type EdgeWrite = readonly [type: string, fromId: string, toId: string, props: Props];
 
 export interface UpsertNodeOptions {
   extra_label?: string | null;
@@ -64,9 +69,27 @@ export interface GraphPrimitives {
    */
   lockNode(ns: string, label: string, id: string): Promise<void>;
   upsertNode(ns: string, label: string, id: string, props: Props, options?: UpsertNodeOptions): Promise<void>;
+  /**
+   * Merge many nodes of one label by id and set their properties, optionally adding a second label to each.
+   *
+   * @param ns (string): the namespace.
+   * @param label (string): the primary label matched on.
+   * @param rows (readonly NodeRow[]): (node id, properties) pairs.
+   * @param options (UpsertNodeOptions): an additional label for every node.
+   */
+  upsertNodes(ns: string, label: string, rows: readonly NodeRow[], options?: UpsertNodeOptions): Promise<void>;
   removeNodeLabel(ns: string, label: string, id: string, dropLabel: string): Promise<void>;
   matchNodes(ns: string, label: string, options?: MatchNodesOptions): Promise<Props[]>;
   deleteNode(ns: string, label: string, id: string): Promise<void>;
+  /**
+   * Detach-delete the nodes of a label matching exact property values.
+   *
+   * @param ns (string): the namespace.
+   * @param label (string): the node label.
+   * @param equals (Props): property name to required value.
+   * @return (number): the number of nodes deleted.
+   */
+  deleteNodesBy(ns: string, label: string, equals: Props): Promise<number>;
   createEdge(
     ns: string,
     type: string,
@@ -76,6 +99,15 @@ export interface GraphPrimitives {
     toId: string,
     props: Props,
   ): Promise<boolean>;
+  /**
+   * Create or update many directed typed edges between existing nodes, skipping rows with a missing endpoint.
+   *
+   * @param ns (string): the namespace.
+   * @param fromLabel (string): the source node label.
+   * @param toLabel (string): the destination node label.
+   * @param rows (readonly EdgeWrite[]): (edge type, source id, destination id, properties) rows.
+   */
+  createEdges(ns: string, fromLabel: string, toLabel: string, rows: readonly EdgeWrite[]): Promise<void>;
   getCurrentEdge(ns: string, id: string): Promise<EdgeRow | null>;
   listEdgeVersions(ns: string, id: string): Promise<EdgeRow[]>;
   updateCurrentEdge(ns: string, id: string, props: Props): Promise<void>;

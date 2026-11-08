@@ -1,6 +1,6 @@
 export const KINDS = ["preference", "disinterest"] as const;
 
-export type Kind = (typeof KINDS)[number];
+type Kind = (typeof KINDS)[number];
 
 export const L_ENTITY = "Entity";
 export const L_PROFILE = "Profile";
@@ -9,6 +9,7 @@ export const L_STEP = "DecisionStep";
 export const L_SOURCE = "Source";
 export const L_SOURCE_VERSION = "SourceVersion";
 export const L_CHUNK = "Chunk";
+export const L_EVIDENCE = "Evidence";
 
 export const R_HAS_PROFILE = "HAS_PROFILE";
 export const R_PREFERS = "PREFERS";
@@ -22,7 +23,16 @@ export const R_CONSIDERED = "CONSIDERED";
 export const R_HAS_VERSION = "HAS_VERSION";
 export const R_HAS_CHUNK = "HAS_CHUNK";
 
-export const LABELS: readonly string[] = [L_ENTITY, L_PROFILE, L_TRACE, L_STEP, L_SOURCE, L_SOURCE_VERSION, L_CHUNK];
+export const LABELS: readonly string[] = [
+  L_ENTITY,
+  L_PROFILE,
+  L_TRACE,
+  L_STEP,
+  L_SOURCE,
+  L_SOURCE_VERSION,
+  L_CHUNK,
+  L_EVIDENCE,
+];
 
 export const EDGE_TYPES: ReadonlySet<string> = new Set([
   R_HAS_PROFILE,

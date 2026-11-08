@@ -62,7 +62,9 @@ names, so ontology JSON, MCP payloads, and these docs carry over unchanged.
 | `SelfGraph.from_env()` | `SelfGraph.fromEnv()` |
 
 Timestamps are `Date` objects, and inputs also accept ISO text. In an update an
-omitted field keeps its value and `null` clears it, as `None` does in Python.
+omitted field keeps its value. On a decision `null` clears a field, as `None` does
+in Python; on a relation or preference `null` keeps the value, as `None` does in
+Python, so `event_time` and `strength` cannot be cleared there.
 
 ## Differences
 
@@ -87,7 +89,7 @@ Schema works as in Python; see [Schema](schema.md#typescript).
 
 `npx @hydradb/selfgraph` takes the same flags, commands, and `SELFGRAPH_*`
 variables as the Python CLI and prints the same JSON. `npx @hydradb/selfgraph mcp`
-serves the same 27 tools. Installed, the command is `selfgraph`. To embed the
+serves the same 29 tools. Installed, the command is `selfgraph`. To embed the
 server in your own process, use
 `import { buildServer, TOOLS, close } from "@hydradb/selfgraph/mcp"`; `await close()`
 closes the tools' shared graph so the process can exit.

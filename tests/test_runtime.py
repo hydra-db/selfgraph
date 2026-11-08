@@ -11,6 +11,7 @@ from selfgraph.runtime import (
     build_graph,
     dumps,
     settings_from_env,
+    store_kind,
     to_jsonable,
 )
 
@@ -57,3 +58,33 @@ def test_jsonable_and_dumps():
     assert json.loads(dumps(e))["id"] == "company:hydradb"
     assert to_jsonable(None) is None
     assert to_jsonable([e])[0]["name"] == "HydraDB"
+
+
+def test_blank_namespace_rejected_unset_defaults(monkeypatch):
+    for ns in ("", "   "):
+        with pytest.raises(ValidationError, match="namespace"):
+            build_graph(GraphSettings(store="neo4j", uri=NEO4J_URI, namespace=ns))
+    monkeypatch.setenv("SELFGRAPH_NAMESPACE", "")
+    with pytest.raises(ValidationError, match="namespace"):
+        build_graph(settings_from_env(store="neo4j", uri=NEO4J_URI))
+    assert build_graph(GraphSettings(store="neo4j", uri=NEO4J_URI, namespace=None)).namespace == "default"
+
+
+def test_store_kind():
+    assert store_kind(GraphSettings()) == "kuzu"
+    assert store_kind(GraphSettings(uri="bolt://x:1")) == "hydradb"
+    assert store_kind(GraphSettings(store="Neo4j", uri="bolt://x:1")) == "neo4j"
+
+
+def test_falkordb_settings_pass_credentials_and_graph():
+    pytest.importorskip("falkordb")
+
+    def built(**over):
+        store = build_graph(GraphSettings(store="falkordb", **over)).store
+        return store._host, store._port, store._graph_name, store._client_kwargs
+
+    assert built(uri="db:6390") == ("db", 6390, "selfgraph", {})
+    assert built(uri="db:6390", auth="u:p w", database="g1") == ("db", 6390, "g1", {"username": "u", "password": "p w"})
+    assert built(uri="db", auth="tok") == ("db", 6379, "selfgraph", {"password": "tok"})
+    assert built(uri="redis://u:p%40w@db:6390") == ("db", 6390, "selfgraph", {"username": "u", "password": "p@w"})
+    assert built(uri="redis://u:bad@db:6390", auth="v:ok")[3] == {"username": "v", "password": "ok"}

@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 import binascii
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from .._ops import _require_int
 from ..errors import ValidationError
 from ..models import Page
+
+if TYPE_CHECKING:
+    from ..client import SelfGraph
 
 T = TypeVar("T")
 
@@ -61,33 +64,31 @@ def decode_cursor(cursor: str | None) -> int:
 
 
 _MAX_LIMIT = 1000
+DEFAULT_PAGE_LIMIT = 50
 
 
-def page_offset(cursor: str | None, limit: int) -> int:
-    """Validate a page limit and resolve the cursor to its start offset.
+class Resource:
+    def __init__(self, client: SelfGraph) -> None:
+        self._c = client
 
-    @param cursor (str | None): the opaque cursor from a previous page, or None to start.
-    @param limit (int): the requested page size.
-    @return (int): the offset to resume from.
-    """
-    _require_int("limit", limit)
-    if limit < 1:
-        raise ValidationError(f"limit must be >= 1, got {limit}")
-    if limit > _MAX_LIMIT:
-        raise ValidationError(f"limit must be <= {_MAX_LIMIT}, got {limit}")
-    return decode_cursor(cursor)
+    async def _page(
+        self, op: Callable[..., Awaitable[list[T]]], *args: Any, cursor: str | None, limit: int, **filters: Any
+    ) -> Page[T]:
+        """Fetch one page: validate the limit and cursor, read limit + 1 rows, and set the next cursor.
 
-
-def make_page(rows: list[T], offset: int, limit: int) -> Page[T]:
-    """Build a page from ``limit + 1`` fetched rows.
-
-    @param rows (list[T]): fetched rows; the extra row (if present) signals a next
-        page without a second query and is dropped from the returned items.
-    @param offset (int): the current offset.
-    @param limit (int): the page size.
-    @return (Page[T]): the page of items with its next cursor.
-    """
-    has_more = len(rows) > limit
-    items = rows[:limit]
-    next_cursor = encode_cursor(offset + limit) if has_more else None
-    return Page(items=items, next_cursor=next_cursor)
+        @param op (Callable[..., Awaitable[list[T]]]): the _ops list read, called as op(reader, namespace, *args, ...).
+        @param args (Any): positional arguments after the namespace.
+        @param cursor (str | None): the opaque cursor from a previous page, or None to start.
+        @param limit (int): the page size.
+        @param filters (Any): filter keyword arguments forwarded to op.
+        @return (Page[T]): the page; the extra row only signals a next page.
+        """
+        _require_int("limit", limit)
+        if limit < 1:
+            raise ValidationError(f"limit must be >= 1, got {limit}")
+        if limit > _MAX_LIMIT:
+            raise ValidationError(f"limit must be <= {_MAX_LIMIT}, got {limit}")
+        offset = decode_cursor(cursor)
+        rows = await op(await self._c._reader(), self._c.namespace, *args, skip=offset, limit=limit + 1, **filters)
+        next_cursor = encode_cursor(offset + limit) if len(rows) > limit else None
+        return Page(items=rows[:limit], next_cursor=next_cursor)

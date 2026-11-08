@@ -2,22 +2,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .. import _ops
 from ..models import DecisionTrace, DeleteResult, Page, Status
-from ._common import make_page, page_offset, paginate
-
-if TYPE_CHECKING:
-    from ..client import SelfGraph
+from ._common import DEFAULT_PAGE_LIMIT, Resource, paginate
 
 __all__ = ["Decisions"]
 
 
-class Decisions:
-    def __init__(self, client: SelfGraph) -> None:
-        self._c = client
-
+class Decisions(Resource):
     async def create(
         self,
         title: str,
@@ -69,25 +63,16 @@ class Decisions:
         actor_entity: str | None = None,
         status: Status | None = None,
         cursor: str | None = None,
-        limit: int = 50,
+        limit: int = DEFAULT_PAGE_LIMIT,
     ) -> Page[DecisionTrace]:
-        offset = page_offset(cursor, limit)
-        rows = await _ops.list_traces(
-            await self._c._reader(),
-            self._c.namespace,
-            actor_entity=actor_entity,
-            status=status,
-            skip=offset,
-            limit=limit + 1,
-        )
-        return make_page(rows, offset, limit)
+        return await self._page(_ops.list_traces, actor_entity=actor_entity, status=status, cursor=cursor, limit=limit)
 
     def iterate(
         self,
         *,
         actor_entity: str | None = None,
         status: Status | None = None,
-        limit: int = 50,
+        limit: int = DEFAULT_PAGE_LIMIT,
     ) -> AsyncIterator[DecisionTrace]:
         """Yield every decision trace across pages, following the list cursor.
 
@@ -102,5 +87,4 @@ class Decisions:
         return await self._c._write(_ops.update_trace, id, **fields)
 
     async def delete(self, id: str) -> DeleteResult:
-        counts = await self._c._write(_ops.delete_trace, id)
-        return DeleteResult(**counts)
+        return DeleteResult(**await self._c._write(_ops.delete_trace, id))

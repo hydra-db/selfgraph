@@ -10,8 +10,8 @@ from typing import Any
 from ..errors import StoreError, ValidationError
 from ..ids import quote_label
 from ..models import CypherResult
-from ._cypher import AutoCommitStore, count_of
-from ._docrows import delete_both_ways, docs, edge_row, first_doc, merged_current_edge, relation_ids_both_ways
+from ._cypher import AutoCommitStore, bind_list, count_of
+from ._docrows import docs, edge_row, first_doc, merged_current_edge
 
 __all__ = ["KuzuStore"]
 
@@ -65,6 +65,44 @@ def _pk(ns: str, id: str) -> str:
 
 def _jv(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+_BY_SID = "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid"
+_BOTH_WAYS = ("(x:N {pk:$pk})-[r:R]->(o:N)", "(o:N)-[r:R]->(x:N {pk:$pk})")
+
+
+def _where_doc_equals(alias: str, equals: dict | None, where: list[str], params: dict) -> None:
+    """Add one json_extract equality clause per filter entry, in sorted key order, binding the key and JSON value.
+
+    @param alias (str): the node or relationship variable.
+    @param equals (dict | None): the property filter.
+    @param where (list[str]): the clauses to extend.
+    @param params (dict): the parameters to extend.
+    @return (None): nothing.
+    """
+    for i, (key, value) in enumerate(sorted((equals or {}).items())):
+        where.append(f"json_extract({alias}.doc, $k{i}) = $v{i}")
+        params[f"k{i}"] = key
+        params[f"v{i}"] = _jv(value)
+
+
+def _where_doc_any_of(ns: str, any_of: dict | None, where: list[str], params: dict) -> None:
+    """Add one membership clause per any_of entry, matching id on the primary key and other keys inside the document.
+
+    @param ns (str): the namespace the primary keys are scoped to.
+    @param any_of (dict | None): property name to the list of accepted values.
+    @param where (list[str]): the clauses to extend.
+    @param params (dict): the parameters to extend.
+    @return (None): nothing.
+    """
+    for i, (key, values) in enumerate(sorted((any_of or {}).items())):
+        if key == "id":
+            where.append(f"n.pk IN $in{i}")
+            params[f"in{i}"] = [_pk(ns, v) for v in values]
+        else:
+            where.append(f"CAST(json_extract(n.doc, $ik{i}) AS STRING) IN $in{i}")
+            params[f"ik{i}"] = key
+            params[f"in{i}"] = [_jv(v) for v in values]
 
 
 class KuzuStore(AutoCommitStore):
@@ -124,13 +162,6 @@ class KuzuStore(AutoCommitStore):
                 del _OPEN_STORES[self._path]
                 _DATABASES.pop(self._path).close()
 
-    @staticmethod
-    def _where_equals(prefix: str, equals: dict | None, where: list[str], params: dict, start: int = 0) -> None:
-        for i, (key, value) in enumerate(sorted((equals or {}).items()), start=start):
-            where.append(f"json_extract({prefix}.doc, $k{i}) = $v{i}")
-            params[f"k{i}"] = key
-            params[f"v{i}"] = _jv(value)
-
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
         res = await self._run(
             "MATCH (n:N {pk:$pk}) WHERE n.label = $label RETURN n.doc AS doc",
@@ -162,6 +193,7 @@ class KuzuStore(AutoCommitStore):
         label: str,
         *,
         equals: dict | None = None,
+        any_of: dict | None = None,
         order_by: str = "id",
         skip: int = 0,
         limit: int = 1000,
@@ -170,7 +202,8 @@ class KuzuStore(AutoCommitStore):
             return []
         where = ["n.ns = $ns", "n.label = $label"]
         params: dict[str, Any] = {"ns": ns, "label": label}
-        self._where_equals("n", equals, where, params)
+        _where_doc_equals("n", equals, where, params)
+        _where_doc_any_of(ns, any_of, where, params)
         ob = "n.id" if order_by == "id" else f"json_extract(n.doc, '{_safe_order_by(order_by)}')"
         res = await self._run(
             f"MATCH (n:N) WHERE {' AND '.join(where)} "
@@ -185,7 +218,7 @@ class KuzuStore(AutoCommitStore):
     async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
         where = ["n.ns = $ns", "n.label = $label"]
         params: dict[str, Any] = {"ns": ns, "label": label}
-        self._where_equals("n", equals, where, params)
+        _where_doc_equals("n", equals, where, params)
         res = await self._run(f"MATCH (n:N) WHERE {' AND '.join(where)} RETURN n.pk AS pk", params)
         pks = [r["pk"] for r in res.rows]
         for pk in pks:
@@ -211,32 +244,24 @@ class KuzuStore(AutoCommitStore):
             "rev": rev,
             "doc": _jv(props),
         }
-        if sid is not None and rev is not None:
-            query = (
-                "MATCH (a:N {pk:$f}), (b:N {pk:$t}) "
-                "MERGE (a)-[r:R {sid:$sid, ns:$ns, revision:$rev}]->(b) "
-                "SET r.etype=$et, r.is_current=$isc, r.doc=$doc"
-            )
-        else:
-            query = (
-                "MATCH (a:N {pk:$f}), (b:N {pk:$t}) "
-                "CREATE (a)-[r:R {sid:$sid, ns:$ns, etype:$et, is_current:$isc, revision:$rev, doc:$doc}]->(b)"
-            )
-        await self._run(query, params)
+        write = (
+            "MERGE (a)-[r:R {sid:$sid, ns:$ns, revision:$rev}]->(b) SET r.etype=$et, r.is_current=$isc, r.doc=$doc"
+            if sid is not None and rev is not None
+            else "CREATE (a)-[r:R {sid:$sid, ns:$ns, etype:$et, is_current:$isc, revision:$rev, doc:$doc}]->(b)"
+        )
+        await self._run(f"MATCH (a:N {{pk:$f}}), (b:N {{pk:$t}}) {write}", params)
         return True
 
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
         res = await self._run(
-            "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid AND r.is_current = true "
-            "RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et",
+            f"{_BY_SID} AND r.is_current = true RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et",
             {"ns": ns, "sid": id},
         )
         return edge_row(res.rows[0]) if res.rows else None
 
     async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
         res = await self._run(
-            "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid "
-            "RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
+            f"{_BY_SID} RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
             {"ns": ns, "sid": id},
         )
         return [edge_row(r) for r in res.rows]
@@ -246,25 +271,18 @@ class KuzuStore(AutoCommitStore):
         if merged is None:
             return
         await self._run(
-            "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid AND r.is_current = true "
-            "SET r.doc = $doc, r.is_current = $isc, r.revision = $rev",
+            f"{_BY_SID} AND r.is_current = true SET r.doc = $doc, r.is_current = $isc, r.revision = $rev",
             {"ns": ns, "sid": id, "doc": _jv(merged), "isc": merged.get("is_current"), "rev": merged.get("revision")},
         )
 
     async def count_edges(self, ns: str, id: str) -> int:
-        res = await self._run(
-            "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid RETURN count(*) AS n",
-            {"ns": ns, "sid": id},
-        )
+        res = await self._run(f"{_BY_SID} RETURN count(*) AS n", {"ns": ns, "sid": id})
         return count_of(res.rows)
 
     async def delete_edges(self, ns: str, id: str) -> int:
         n = await self.count_edges(ns, id)
         if n:
-            await self._run(
-                "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid DELETE r",
-                {"ns": ns, "sid": id},
-            )
+            await self._run(f"{_BY_SID} DELETE r", {"ns": ns, "sid": id})
         return n
 
     async def match_edges(
@@ -308,7 +326,7 @@ class KuzuStore(AutoCommitStore):
         if to_in is not None:
             where.append("b.pk IN $tpks")
             params["tpks"] = [_pk(ns, i) for i in to_in]
-        self._where_equals("r", equals, where, params)
+        _where_doc_equals("r", equals, where, params)
         if order_by == "id":
             ob = "r.sid"
         elif order_by == "revision":
@@ -324,12 +342,18 @@ class KuzuStore(AutoCommitStore):
         return [edge_row(r) for r in res.rows]
 
     async def versioned_relation_ids(self, ns: str, label: str, id: str, *, exclude_types: list[str]) -> list[str]:
-        where = ["r.ns = $ns", "x.label = $label", "r.revision IS NOT NULL"]
         params: dict[str, Any] = {"pk": _pk(ns, id), "ns": ns, "label": label}
-        for i, t in enumerate(exclude_types):
-            where.append(f"r.etype <> $ex{i}")
-            params[f"ex{i}"] = t
-        return await relation_ids_both_ways(self._run, "x:N {pk:$pk}", "r:R", "o:N", where, params)
+        where = [
+            "r.ns = $ns",
+            "x.label = $label",
+            "r.revision IS NOT NULL",
+            *bind_list(exclude_types, "ex", params, lambda p: f"r.etype <> {p}"),
+        ]
+        out: list[str] = []
+        for pattern in _BOTH_WAYS:
+            res = await self._run(f"MATCH {pattern} WHERE {' AND '.join(where)} RETURN DISTINCT r.sid AS rid", params)
+            out.extend(r["rid"] for r in res.rows)
+        return list(dict.fromkeys(out))
 
     async def child_nodes(
         self,
@@ -358,10 +382,7 @@ class KuzuStore(AutoCommitStore):
 
     async def count_in_edges_typed(self, ns: str, label: str, id: str, types: list[str]) -> int:
         params: dict[str, Any] = {"pk": _pk(ns, id), "ns": ns}
-        ors = []
-        for i, t in enumerate(types):
-            ors.append(f"r.etype = $t{i}")
-            params[f"t{i}"] = t
+        ors = bind_list(types, "t", params, lambda p: f"r.etype = {p}")
         res = await self._run(
             f"MATCH (p:N)-[r:R]->(x:N {{pk:$pk}}) WHERE r.ns = $ns AND ({' OR '.join(ors)}) RETURN count(*) AS n",
             params,
@@ -369,5 +390,8 @@ class KuzuStore(AutoCommitStore):
         return count_of(res.rows)
 
     async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:
-        params = {"pk": _pk(ns, id), "ns": ns, "et": type}
-        await delete_both_ways(self._run, "t:N {pk:$pk}", "r:R", "o:N", params)
+        for pattern in _BOTH_WAYS:
+            await self._run(
+                f"MATCH {pattern} WHERE r.ns = $ns AND r.etype = $et DELETE r",
+                {"pk": _pk(ns, id), "ns": ns, "et": type},
+            )

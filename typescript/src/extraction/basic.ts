@@ -1,7 +1,7 @@
 import { PY_WS_CLASS, pyStrip } from "../internal/py.js";
-import { type InsertWarning, insertWarning, type ParsedDocument, type ParsedOntology } from "../models.js";
+import { insertWarning, type ParsedDocument, type ParsedOntology } from "../models.js";
 import type { Extractor } from "../protocols.js";
-import { assembleOntology, FALLBACK_TYPE, type RawEntity, type RawRelation } from "./extractor.js";
+import { assembleOntology, FALLBACK_TYPE, type RawEntity, type RawRelation, WarningSink } from "./extractor.js";
 
 const WORD = "[\\p{L}\\p{N}_&.'\\-]";
 const CAP = new RegExp(`[A-Z]${WORD}*(?:[${PY_WS_CLASS}]+[A-Z]${WORD}*)*`, "gu");
@@ -30,15 +30,7 @@ function regexExtract(text: string): { entities: RawEntity[]; relations: RawRela
   return { entities, relations };
 }
 
-export class BasicExtractor implements Extractor {
-  private warnings: InsertWarning[] = [];
-
-  popWarnings(): InsertWarning[] {
-    const out = this.warnings;
-    this.warnings = [];
-    return out;
-  }
-
+export class BasicExtractor extends WarningSink implements Extractor {
   async extract(document: ParsedDocument): Promise<ParsedOntology> {
     const { entities, relations } = regexExtract(document.text);
     this.warnings = [

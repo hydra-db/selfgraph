@@ -56,13 +56,32 @@ For a Bolt backend, pass its connection flags instead:
 ```
 
 The backend you name must be reachable when the client starts the server. A Kuzu
-file needs nothing running, which is why it is the simplest target.
+file needs nothing running.
 
 ## Schema
 
 Pass `--schema` before `mcp` to check every insert tool against a
 [schema](schema.md#cli-and-mcp). The `get_schema` tool returns it, so an agent can
 read the expected types before it writes.
+
+## Tools
+
+The tools mirror the library. Write tools for relations, preferences, and decisions
+take an optional `event_time` (ISO 8601 text, such as `2024-05-01T09:00:00+00:00`)
+for when the fact became true, and `insert_text` takes `event_time` and `metadata`
+for the source. `insert_text` uses the configured LLM and falls back to a built-in
+LLM-free extractor when none is set. In `update_decision`, an omitted field keeps
+its value and an explicit `null` clears `actor_entity`, `summary`, `rationale`,
+`outcome_entity`, or `event_time`; decisions are updated in place, with no version
+history. `entity_evidence` and `relation_evidence` page through the evidence records
+behind an entity or relation.
+
+`run_cypher` runs read-only Cypher. A keyword guard, not a sandbox, rejects any
+statement that writes, changes schema, or runs a transaction or admin command,
+including `INSERT`, a write keyword used as a bare alias or variable name
+(backtick-quote it instead), and any `\u` unicode escape, since Neo4j decodes those
+before parsing (pass such text as a parameter). It is not scoped to the server's
+namespace: it sees every namespace in the database, so filter on the `ns` property.
 
 ## Embedding
 

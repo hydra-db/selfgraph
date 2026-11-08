@@ -6,30 +6,13 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from .._serde import (
-    L_CHUNK,
-    L_ENTITY,
-    L_PROFILE,
-    L_SOURCE,
-    L_SOURCE_VERSION,
-    L_STEP,
-    L_TRACE,
-)
+from .._serde import LABELS
 from ..errors import SelfGraphError, StoreError, TransientError
 from ..models import CypherResult
 from ._cypher import CypherPrimitives, bolt_driver, records_to_result
 
 __all__ = ["CypherStore", "Neo4jStore"]
 
-_CONSTRAINT_LABELS = [
-    L_ENTITY,
-    L_PROFILE,
-    L_TRACE,
-    L_STEP,
-    L_SOURCE,
-    L_SOURCE_VERSION,
-    L_CHUNK,
-]
 
 _INIT_RETRIES = 5
 _INIT_BASE_DELAY = 0.05
@@ -51,19 +34,26 @@ _CONNECTION_MARKERS = (
 )
 
 
+_SYNTAX_MARKERS = ("syntaxerror", "parsing error")
+_CONFLICT_MARKERS = ("constraintvalidationfailed", "unique constraint violation")
+
+
 def _translate_cypher_error(exc: BaseException) -> SelfGraphError:
     """Map a Bolt driver error to a library error, TransientError for retryable races.
 
     A uniqueness violation surfaces only after a managed write has already passed its
     pre-existence check, so it is always a lost race the retry loop resolves: either the
-    retry's check reports the real conflict, or the race has cleared.
+    retry's check reports the real conflict, or the race has cleared. A syntax error is
+    never retried, even when Memgraph's message lists CONSTRAINT and UNIQUE among the keywords it expected.
 
     @param exc (BaseException): the driver exception.
     @return (SelfGraphError): the library error to raise.
     """
     lowered = f"{getattr(exc, 'code', '') or ''} {exc}".lower()
-    is_conflict = "constraintvalidationfailed" in lowered or (
-        "constraint" in lowered and ("unique" in lowered or "already exists" in lowered)
+    if any(k in lowered for k in _SYNTAX_MARKERS):
+        return StoreError(f"Cypher query failed: {exc}")
+    is_conflict = any(k in lowered for k in _CONFLICT_MARKERS) or (
+        "constraint" in lowered and "already exists" in lowered
     )
     transient = any(k in lowered for k in ("transient", "serializ", "conflicting transactions", "cannot get"))
     if is_conflict or transient:
@@ -126,7 +116,7 @@ class CypherStore(CypherPrimitives):
 
     async def initialize(self) -> None:
         """Create the id and namespace uniqueness constraints on the versioned node labels."""
-        for label in _CONSTRAINT_LABELS:
+        for label in LABELS:
             query = (
                 f"CREATE CONSTRAINT selfgraph_{label.lower()}_id IF NOT EXISTS "
                 f"FOR (n:{label}) REQUIRE (n.id, n.ns) IS UNIQUE"

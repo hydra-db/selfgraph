@@ -16,14 +16,11 @@ open an issue  ->  issue /approved  ->  open a PR  ->  review & merge
 
 1. Open an issue. Describe the bug or the change. Anyone can open an issue and discuss it.
 2. Wait until a maintainer approves the issue with `/approved`.
-3. Open a PR. Link the approved issue with `Closes #123`.
-4. Keep the PR small. Change only what the issue asks for.
+3. Open a PR that links the approved issue with `Closes #123`.
 
 Only the issue author or a person assigned to the issue can open the PR for it.
-To work on an issue that another person opened, comment on the issue. Ask a
+To work on an issue that another person opened, comment on the issue and ask a
 maintainer to assign it to you.
-
-If a PR does not link an approved issue that is yours, a bot closes it.
 
 A maintainer is a person in the `maintainers` list of
 [`.github/vouched.json`](.github/vouched.json), or a person with write access
@@ -33,7 +30,7 @@ to this repository.
 
 - Link an approved issue with `Closes #N`. You must be the issue author or an assignee. If not, a bot closes the PR.
 - Keep a maximum of 3 open PRs. If you open more, a bot closes your newest PR. Get an earlier PR merged or closed first. To ask, post in `#pr-discussion` on Discord.
-- Keep each PR small. If a PR is large or has unrelated changes, we ask you to split it.
+- Keep each PR small and change only what the issue asks for. If a PR is large or has unrelated changes, we ask you to split it.
 - If your PR has a breaking change, describe it in the PR.
 - Fill in the "AI Assistance" section of the PR template. Do not remove it. If the section is missing, the gate check fails. You are responsible for each line that you submit.
 

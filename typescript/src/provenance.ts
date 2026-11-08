@@ -4,7 +4,7 @@ import { pyJsonDumps, pyStr, utf8 } from "./internal/py.js";
 import { toIso } from "./internal/time.js";
 import { childEdgeId, L_CHUNK, L_SOURCE, L_SOURCE_VERSION, R_HAS_CHUNK, R_HAS_VERSION } from "./labels.js";
 import type { Evidence, JsonObject } from "./models.js";
-import type { GraphPrimitives } from "./protocols.js";
+import type { GraphPrimitives, NodeRow } from "./protocols.js";
 import { evidenceOf } from "./serde.js";
 
 /**
@@ -46,37 +46,27 @@ export async function recordSource(
   });
 
   const { chunkText } = await loadTokenizer();
-  for (const chunk of chunkText(text)) {
+  const chunks: NodeRow[] = chunkText(text).map((chunk) => {
     const cid = ids.chunkId(sv, chunk.index);
-    await runner.upsertNode(ns, L_CHUNK, cid, {
-      id: cid,
-      ns,
-      index: chunk.index,
-      text: chunk.text,
-      start_offset: chunk.start_offset,
-      end_offset: chunk.end_offset,
-    });
-    await runner.createEdge(ns, R_HAS_CHUNK, L_SOURCE_VERSION, sv, L_CHUNK, cid, {
-      ns,
-      id: childEdgeId(R_HAS_CHUNK, cid),
-      revision: 1,
-    });
-  }
+    return [
+      cid,
+      {
+        id: cid,
+        ns,
+        index: chunk.index,
+        text: chunk.text,
+        start_offset: chunk.start_offset,
+        end_offset: chunk.end_offset,
+      },
+    ];
+  });
+  await runner.upsertNodes(ns, L_CHUNK, chunks);
+  await runner.createEdges(
+    ns,
+    L_SOURCE_VERSION,
+    L_CHUNK,
+    chunks.map(([cid]) => [R_HAS_CHUNK, sv, cid, { ns, id: childEdgeId(R_HAS_CHUNK, cid), revision: 1 }]),
+  );
 
   return [sv, [evidenceOf({ source_id: sourceId, source_version: sv, chunk_id: null })]];
-}
-
-/**
- * The text of a source version's chunks, in chunk order.
- *
- * @param runner (GraphPrimitives): the graph runner.
- * @param ns (string): the namespace.
- * @param sourceVersion (string): the source version id.
- * @return (string[]): each chunk's text, empty when a chunk has none.
- */
-export async function readChunks(runner: GraphPrimitives, ns: string, sourceVersion: string): Promise<string[]> {
-  const chunks = await runner.childNodes(ns, L_SOURCE_VERSION, sourceVersion, R_HAS_CHUNK, L_CHUNK);
-  return chunks
-    .sort((a, b) => Math.trunc(Number(a.index)) - Math.trunc(Number(b.index)))
-    .map((c) => (typeof c.text === "string" ? c.text : ""));
 }

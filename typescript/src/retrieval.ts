@@ -5,11 +5,10 @@ import { normalizeText } from "./ids.js";
 import { casefold } from "./internal/casefold.js";
 import { comparePy, cpLen, NON_ASCII, pyFloatRepr, pyRepr, pyStr, pyStrip } from "./internal/py.js";
 import { epochMicros } from "./internal/time.js";
-import { preferenceEdgeType } from "./labels.js";
+import { L_CHUNK, L_EVIDENCE, L_SOURCE_VERSION, preferenceEdgeType, R_HAS_CHUNK } from "./labels.js";
 import type { DecisionTrace, Entity, JsonObject, Preference, Relation, RetrievalResult, Subgraph } from "./models.js";
 import * as ops from "./ops.js";
 import type { GraphPrimitives } from "./protocols.js";
-import { readChunks } from "./provenance.js";
 import { pyTypeName, requireInt } from "./validate.js";
 
 const STOPWORDS = new Set(
@@ -112,18 +111,6 @@ export function grepScore(terms: Set<string>, text: string): number {
   return n;
 }
 
-async function scan<T>(fetch: (skip: number) => Promise<T[]>, cap = Infinity): Promise<T[]> {
-  const out: T[] = [];
-  while (out.length < cap) {
-    const batch = await fetch(out.length);
-    out.push(...batch);
-    if (batch.length < PAGE) break;
-  }
-  return out;
-}
-
-const distinctSources = (evidence: Entity["evidence"]): number => new Set(evidence.map((ev) => ev.source_id)).size;
-
 /**
  * Rank entities against the query by BM25 plus a substring boost, divided by the log of distinct mentioning sources so generic entities do not crowd out specific ones.
  *
@@ -142,7 +129,7 @@ export function selectSeeds(entities: Entity[], queryTokens: Set<string>, k: num
   const scored: Array<[Entity, number]> = [];
   for (const [i, entity] of entities.entries()) {
     const score = bm25[i] + GREP_WEIGHT * grepScore(queryTokens, fold(texts[i]));
-    if (score > 0) scored.push([entity, score / Math.log(Math.E + distinctSources(entity.evidence))]);
+    if (score > 0) scored.push([entity, score / Math.log(Math.E + entity.source_count)]);
   }
   scored.sort((a, b) => b[1] - a[1] || comparePy(a[0].id, b[0].id));
   return scored.slice(0, k);
@@ -159,12 +146,12 @@ export function selectSeeds(entities: Entity[], queryTokens: Set<string>, k: num
 async function neighbors(store: GraphPrimitives, ns: string, nodes: string[]): Promise<Map<string, Relation[]>> {
   const outgoing = new Map<string, Relation[]>(nodes.map((n) => [n, []]));
   const incoming = new Map<string, Relation[]>(nodes.map((n) => [n, []]));
-  const page = (filter: { from_in?: string[]; to_in?: string[] }) => (skip: number) =>
-    ops.listRelations(store, ns, { skip, limit: PAGE, ...filter });
+  const page = (filter: { from_in?: string[]; to_in?: string[] }) => (skip: number, limit: number) =>
+    ops.listRelations(store, ns, { skip, limit, ...filter });
   for (let start = 0; start < nodes.length; start += PAGE) {
     const chunk = nodes.slice(start, start + PAGE);
-    for (const rel of await scan(page({ from_in: chunk }))) outgoing.get(rel.from_entity)?.push(rel);
-    for (const rel of await scan(page({ to_in: chunk }))) incoming.get(rel.to_entity)?.push(rel);
+    for (const rel of await ops.scan(page({ from_in: chunk }))) outgoing.get(rel.from_entity)?.push(rel);
+    for (const rel of await ops.scan(page({ to_in: chunk }))) incoming.get(rel.to_entity)?.push(rel);
   }
   return new Map(nodes.map((n) => [n, [...(outgoing.get(n) ?? []), ...(incoming.get(n) ?? [])]]));
 }
@@ -294,7 +281,7 @@ export function pprRank(
   const edges = new Map<string, Map<string, number>>(nodeList.map((n) => [n, new Map()]));
   for (const r of relations) {
     if (nodeSet.has(r.from_entity) && nodeSet.has(r.to_entity) && r.from_entity !== r.to_entity) {
-      const weight = Math.max(1, distinctSources(r.evidence));
+      const weight = Math.max(1, r.source_count);
       const a = edges.get(r.from_entity);
       const b = edges.get(r.to_entity);
       a?.set(r.to_entity, (a.get(r.to_entity) ?? 0) + weight);
@@ -340,7 +327,7 @@ async function collectDecisions(
   relationIds: Set<string>,
 ): Promise<DecisionTrace[]> {
   if (!relationIds.size) return [];
-  const traces = await scan((skip) => ops.listTraces(store, ns, { skip, limit: PAGE }), SCAN_LIMIT);
+  const traces = await ops.scan((skip, limit) => ops.listTraces(store, ns, { skip, limit }), SCAN_LIMIT);
   return traces.filter((t) => t.steps.some((s) => relationIds.has(s.relation_id)));
 }
 
@@ -353,17 +340,28 @@ async function collectPassages(
 ): Promise<string[]> {
   const distOf = distanceIn(dist);
   const svDist = new Map<string, number>();
-  outer: for (const e of [...entities].sort((a, b) => distOf(a.id) - distOf(b.id))) {
-    for (const ev of e.evidence) {
-      if (!svDist.has(ev.source_version)) svDist.set(ev.source_version, distOf(e.id));
-      if (svDist.size >= MAX_PASSAGE_SOURCES) break outer;
+  for (const e of [...entities].sort((a, b) => distOf(a.id) - distOf(b.id))) {
+    if (svDist.size >= MAX_PASSAGE_SOURCES) break;
+    if (!e.source_count) continue;
+    const fetch = ops.nodeListing(store, ns, L_EVIDENCE, { equals: { target_id: e.id } });
+    for (let skip = 0; svDist.size < MAX_PASSAGE_SOURCES; ) {
+      const rows = await fetch(skip, PAGE);
+      for (const row of rows) {
+        const sv = row.source_version as string;
+        if (!svDist.has(sv)) svDist.set(sv, distOf(e.id));
+        if (svDist.size >= MAX_PASSAGE_SOURCES) break;
+      }
+      if (rows.length < PAGE) break;
+      skip += rows.length;
     }
   }
 
   const candidates: Array<[number, number, string]> = [];
   for (const [sv, d] of svDist) {
-    for (const chunk of await readChunks(store, ns, sv)) {
-      const text = pyStrip(chunk);
+    const chunks = await store.childNodes(ns, L_SOURCE_VERSION, sv, R_HAS_CHUNK, L_CHUNK);
+    chunks.sort((a, b) => Math.trunc(Number(a.index)) - Math.trunc(Number(b.index)));
+    for (const chunk of chunks) {
+      const text = typeof chunk.text === "string" ? pyStrip(chunk.text) : "";
       if (text) {
         let overlap = 0;
         for (const t of tokens(text)) if (queryTokens.has(t)) overlap++;
@@ -393,7 +391,7 @@ async function collectPreferences(
   const order = new Map<string, number>();
   for (const eid of entityIds) order.set(eid, order.size);
   if (!order.size) return [];
-  const prefs = await scan((skip) => ops.listPreferences(store, ns, { skip, limit: PAGE }));
+  const prefs = await ops.scan((skip, limit) => ops.listPreferences(store, ns, { skip, limit }));
   return prefs
     .filter((p) => order.has(p.subject_entity))
     .sort((a, b) => (order.get(a.subject_entity) ?? 0) - (order.get(b.subject_entity) ?? 0));
@@ -532,7 +530,7 @@ async function run(
   const queryTokens = tokens(query);
   const known = new Map<string, Entity>();
   if (queryTokens.size) {
-    const entities = await scan((skip) => ops.listEntities(store, ns, { skip, limit: PAGE }), SCAN_LIMIT);
+    const entities = await ops.scan((skip, limit) => ops.listEntities(store, ns, { skip, limit }), SCAN_LIMIT);
     for (const e of entities) known.set(e.id, e);
   }
   const seedsScored = selectSeeds([...known.values()], queryTokens, k);

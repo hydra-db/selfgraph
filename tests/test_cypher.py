@@ -1,7 +1,8 @@
 import pytest
 from helpers import new_graph, run, skip_on_falkordb, skip_on_generic
 
-from selfgraph import StoreError
+from selfgraph import StoreError, TransientError
+from selfgraph.stores.cypher import _translate_cypher_error
 
 pytestmark = skip_on_generic
 
@@ -36,7 +37,6 @@ def test_raw_cypher_write_adds_no_version():
     seed(g)
     rel = run(g.relations.list(from_entity="person:soham")).items[0]
     assert rel.revision == 1
-    # A raw Cypher SET changes the edge in place; typed versioning is bypassed.
     run(
         g.run_cypher(
             "MATCH ()-[r {id:$id, ns:$ns}]->() WHERE r.is_current = true SET r.properties_json = $p",
@@ -72,7 +72,7 @@ def test_not_equal_null_is_three_valued():
     run(g.run_cypher("CREATE (n:Y {id:'a', status:'active'})"))
     run(g.run_cypher("CREATE (n:Y {id:'b'})"))
     res = run(g.run_cypher("MATCH (n:Y) WHERE n.status <> 'archived' RETURN n.id AS id ORDER BY n.id"))
-    assert [r["id"] for r in res.rows] == ["a"]  # null <> 'archived' is null, not true
+    assert [r["id"] for r in res.rows] == ["a"]
 
 
 def test_non_ascii_string_literal_round_trips():
@@ -88,8 +88,26 @@ def test_run_cypher_write_is_atomic():
     run(g.run_cypher("CREATE (n:Q {id:'a', x:1})"))
     run(g.run_cypher("CREATE (n:Q {id:'b'})"))
     run(g.run_cypher("MATCH (a:Q {id:'a'}),(b:Q {id:'b'}) CREATE (a)-[r:E]->(b)"))
-    # DELETE without DETACH on a node with relationships fails; the SET must not persist.
     with pytest.raises(StoreError):
         run(g.run_cypher("MATCH (a:Q {id:'a'}) SET a.x = 999 DELETE a"))
     res = run(g.run_cypher("MATCH (a:Q {id:'a'}) RETURN a.x AS x"))
     assert res.rows == [{"x": 1}]
+
+
+class _DriverError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def test_syntax_error_is_not_a_conflict():
+    memgraph = "Memgraph.ClientError.MemgraphError.MemgraphError"
+    syntax = _DriverError(memgraph, "The underlying parsing error is mismatched input expecting {CONSTRAINT, UNIQUE}")
+    assert type(_translate_cypher_error(syntax)) is StoreError
+    unique = _DriverError(memgraph, "Unable to commit due to unique constraint violation on :Entity(id)")
+    assert isinstance(_translate_cypher_error(unique), TransientError)
+    neo4j = _DriverError("Neo.ClientError.Schema.ConstraintValidationFailed", "Node(1) already exists")
+    assert isinstance(_translate_cypher_error(neo4j), TransientError)
+    with pytest.raises(StoreError) as err:
+        run(new_graph().run_cypher("RETURN"))
+    assert not isinstance(err.value, TransientError)

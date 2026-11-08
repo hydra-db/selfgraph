@@ -1,12 +1,13 @@
-from collections.abc import Mapping
-from typing import Literal, get_args
+import logging
+from collections.abc import Iterator, Mapping
+from typing import Any, ClassVar, Literal, get_args
 
-from pydantic import BaseModel, Field
-from pydantic import ValidationError as PydanticValidationError
+from pydantic import Field
 
+from . import _ops
 from .errors import ValidationError
 from .ids import entity_id, normalize_rel_type
-from .models import InsertWarning, Ontology
+from .models import InputModel, InsertWarning, Ontology, as_input
 
 __all__ = [
     "PropertyType",
@@ -19,21 +20,29 @@ __all__ = [
     "as_schema",
     "require_schema_mode",
     "validate_against_schema",
+    "enforce_schema",
+    "log_schema_warnings",
     "render_schema_catalog",
 ]
 
 PropertyType = Literal["string", "integer", "float", "boolean", "datetime", "json"]
 SchemaMode = Literal["off", "warn", "strict"]
 
+_log = logging.getLogger("selfgraph")
 
-class PropertySpec(BaseModel):
+
+class PropertySpec(InputModel):
+    input_label: ClassVar[str] = "property"
+
     name: str
     type: PropertyType = "string"
     required: bool = False
     description: str | None = None
 
 
-class EntityType(BaseModel):
+class EntityType(InputModel):
+    input_label: ClassVar[str] = "entity type"
+
     name: str
     description: str | None = None
     aliases: list[str] = Field(default_factory=list)
@@ -41,13 +50,17 @@ class EntityType(BaseModel):
     parent: str | None = None
 
 
-class RelationEndpoint(BaseModel):
+class RelationEndpoint(InputModel):
+    input_label: ClassVar[str] = "relation endpoint"
+
     types: list[str] = Field(default_factory=list)
     min_count: int | None = None
     max_count: int | None = None
 
 
-class RelationType(BaseModel):
+class RelationType(InputModel):
+    input_label: ClassVar[str] = "relation type"
+
     type: str
     description: str | None = None
     aliases: list[str] = Field(default_factory=list)
@@ -58,7 +71,9 @@ class RelationType(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class Schema(BaseModel):
+class Schema(InputModel):
+    input_label: ClassVar[str] = "schema"
+
     name: str | None = None
     version: str | None = None
     entities: list[EntityType] = Field(default_factory=list)
@@ -71,12 +86,7 @@ def as_schema(value: "Schema | Mapping | None") -> "Schema | None":
     @param value (Schema | Mapping | None): the schema argument.
     @return (Schema | None): the schema, or None.
     """
-    if value is None or isinstance(value, Schema):
-        return value
-    try:
-        return Schema.model_validate(value)
-    except PydanticValidationError as exc:
-        raise ValidationError(f"invalid schema: {exc}") from exc
+    return as_input(Schema, value, "schema")
 
 
 def require_schema_mode(mode: object) -> None:
@@ -116,22 +126,33 @@ def _relation_index(schema: Schema) -> dict[str, RelationType]:
     return index
 
 
-def _is_a(entity: EntityType, target: str, index: dict[str, EntityType]) -> bool:
-    """Report whether an entity type is the target or descends from it through declared parents.
+def _lineage(entity: EntityType, index: dict[str, EntityType]) -> Iterator[EntityType]:
+    """Yield an entity type and then each declared ancestor, stopping at a missing parent or a cycle.
 
     @param entity (EntityType): the starting type.
-    @param target (str): the ancestor type name to reach.
     @param index (dict[str, EntityType]): the entity type index.
-    @return (bool): true when entity is or descends from target.
+    @return (Iterator[EntityType]): the type, then its parent chain.
     """
     seen: set[str] = set()
     current: EntityType | None = entity
     while current is not None and current.name not in seen:
-        if current.name == target:
-            return True
+        yield current
         seen.add(current.name)
         current = index.get(current.parent) if current.parent is not None else None
-    return False
+
+
+def _property_specs(entity: EntityType, index: dict[str, EntityType]) -> list[PropertySpec]:
+    """Collect an entity type's property specs with those inherited through parents, the nearest declaration winning.
+
+    @param entity (EntityType): the type.
+    @param index (dict[str, EntityType]): the entity type index.
+    @return (list[PropertySpec]): own specs first, then each ancestor's specs not already declared.
+    """
+    specs: dict[str, PropertySpec] = {}
+    for current in _lineage(entity, index):
+        for spec in current.properties:
+            specs.setdefault(spec.name, spec)
+    return list(specs.values())
 
 
 def _type_ok(value: object, expected: PropertyType) -> bool:
@@ -185,11 +206,19 @@ def _check_properties(
     return warnings
 
 
-def validate_against_schema(ontology: Ontology, schema: Schema) -> list[InsertWarning]:
+def validate_against_schema(
+    ontology: Ontology,
+    schema: Schema,
+    *,
+    graph_types: Mapping[str, str] | None = None,
+    cardinality: bool = True,
+) -> list[InsertWarning]:
     """Check an ontology against a schema and return advisory warnings in a stable order.
 
     @param ontology (Ontology): the ontology to check.
     @param schema (Schema): the schema to check against.
+    @param graph_types (Mapping[str, str] | None): the stored type of each relation endpoint outside the ontology.
+    @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
     @return (list[InsertWarning]): the warnings, entities first then relations then cardinality.
     """
     entities = _entity_index(schema)
@@ -197,8 +226,12 @@ def validate_against_schema(ontology: Ontology, schema: Schema) -> list[InsertWa
     warnings: list[InsertWarning] = []
 
     type_of_id: dict[str, EntityType] = {}
+    for eid, etype in (graph_types or {}).items():
+        if etype in entities:
+            type_of_id[eid] = entities[etype]
     for ent in ontology.entities:
         matched = entities.get(ent.type)
+        eid = ent.id or entity_id(ent.type, ent.name)
         ref = ent.id or f"{ent.type}:{ent.name}"
         if matched is None:
             if entities:
@@ -206,8 +239,8 @@ def validate_against_schema(ontology: Ontology, schema: Schema) -> list[InsertWa
                     InsertWarning(code="unknown_entity_type", message=f"entity {ref} has unknown type {ent.type!r}")
                 )
         else:
-            type_of_id[ent.id or entity_id(ent.type, ent.name)] = matched
-            warnings.extend(_check_properties("entity", ref, ent.properties, matched.properties))
+            type_of_id[eid] = matched
+            warnings.extend(_check_properties("entity", ref, ent.properties, _property_specs(matched, entities)))
 
     counts: dict[tuple[str, str, str], int] = {}
     for rel in ontology.relations:
@@ -220,9 +253,10 @@ def validate_against_schema(ontology: Ontology, schema: Schema) -> list[InsertWa
                     InsertWarning(code="unknown_relation_type", message=f"relation {ref} has unknown type {rtype!r}")
                 )
             continue
+        canonical = normalize_rel_type(matched.type)
         for side, endpoint, eid in (("from", matched.from_, rel.from_entity), ("to", matched.to, rel.to_entity)):
             end_type = type_of_id.get(eid)
-            mismatch = end_type is not None and not any(_is_a(end_type, t, entities) for t in endpoint.types)
+            mismatch = end_type is not None and not any(t.name in endpoint.types for t in _lineage(end_type, entities))
             if endpoint.types and mismatch:
                 warnings.append(
                     InsertWarning(
@@ -230,10 +264,10 @@ def validate_against_schema(ontology: Ontology, schema: Schema) -> list[InsertWa
                         message=f"relation {ref} {side} entity {eid} is not one of {endpoint.types}",
                     )
                 )
-            counts[(rtype, side, eid)] = counts.get((rtype, side, eid), 0) + 1
+            counts[(canonical, side, eid)] = counts.get((canonical, side, eid), 0) + 1
         warnings.extend(_check_properties("relation", ref, rel.properties, matched.properties))
 
-    for relation in schema.relations:
+    for relation in schema.relations if cardinality else ():
         rtype = normalize_rel_type(relation.type)
         for side, endpoint in (("from", relation.from_), ("to", relation.to)):
             if endpoint.min_count is None and endpoint.max_count is None:
@@ -241,21 +275,63 @@ def validate_against_schema(ontology: Ontology, schema: Schema) -> list[InsertWa
             for (ctype, cside, eid), n in counts.items():
                 if ctype != rtype or cside != side:
                     continue
-                if endpoint.min_count is not None and n < endpoint.min_count:
-                    warnings.append(
-                        InsertWarning(
-                            code="cardinality_violation",
-                            message=f"{eid} has {n} {rtype} ({side}) in this insert, below min {endpoint.min_count}",
+                low, high = endpoint.min_count, endpoint.max_count
+                for bound, limit, broken in (
+                    ("below min", low, low is not None and n < low),
+                    ("above max", high, high is not None and n > high),
+                ):
+                    if broken:
+                        warnings.append(
+                            InsertWarning(
+                                code="cardinality_violation",
+                                message=f"{eid} has {n} {rtype} ({side}) in this insert, {bound} {limit}",
+                            )
                         )
-                    )
-                if endpoint.max_count is not None and n > endpoint.max_count:
-                    warnings.append(
-                        InsertWarning(
-                            code="cardinality_violation",
-                            message=f"{eid} has {n} {rtype} ({side}) in this insert, above max {endpoint.max_count}",
-                        )
-                    )
     return warnings
+
+
+async def enforce_schema(
+    runner: Any,
+    ns: str,
+    ontology: Ontology,
+    schema: Schema | None,
+    mode: SchemaMode,
+    *,
+    cardinality: bool = True,
+) -> list[InsertWarning]:
+    """Check a pending write against the schema, looking up stored endpoint types, and apply the schema mode.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param ontology (Ontology): the state about to be written.
+    @param schema (Schema | None): the active schema.
+    @param mode (SchemaMode): off skips the check, warn returns the warnings, strict raises on any.
+    @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
+    @return (list[InsertWarning]): the warnings, empty when off or clean.
+    """
+    if schema is None or mode == "off":
+        return []
+    local = {ent.id or entity_id(ent.type, ent.name) for ent in ontology.entities}
+    graph_types: dict[str, str] = {}
+    for rel in ontology.relations:
+        for eid in (rel.from_entity, rel.to_entity):
+            if eid not in local and eid not in graph_types:
+                stored = await _ops.get_entity(runner, ns, eid)
+                if stored is not None:
+                    graph_types[eid] = stored.type
+    warnings = validate_against_schema(ontology, schema, graph_types=graph_types, cardinality=cardinality)
+    if mode == "strict" and warnings:
+        raise ValidationError("; ".join(w.message for w in warnings))
+    return warnings
+
+
+def log_schema_warnings(warnings: list[InsertWarning]) -> None:
+    """Log schema warnings for a write that has no result to carry them, on the selfgraph logger.
+
+    @param warnings (list[InsertWarning]): the warnings.
+    """
+    for w in warnings:
+        _log.warning("schema warning [%s]: %s", w.code, w.message)
 
 
 def render_schema_catalog(schema: Schema) -> tuple[str, str]:

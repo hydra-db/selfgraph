@@ -48,3 +48,6 @@ class StoreError(SelfGraphError):
 
 class TransientError(StoreError):
     pass
+
+
+CLOSED_MESSAGE = "this SelfGraph is closed; create a new SelfGraph to keep using the store"
