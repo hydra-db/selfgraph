@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { TOOLS } from "../src/mcp.js";
 import {
   buildCli,
   CLI,
@@ -58,6 +59,17 @@ describe.skipIf(!neo4jUp)("built CLI against Neo4j", () => {
     ]);
     expect(q.out).toMatchObject({ columns: ["c"], rows: [{ c: 2 }] });
 
+    const example = cli([
+      ...GLOBAL,
+      "query",
+      "MATCH (n:Entity {ns: $ns}) RETURN n.id, n.name LIMIT 5",
+      "--param",
+      `ns=${ns}`,
+    ]);
+    expect((example.out as { rows: Array<Record<string, string>> }).rows).toEqual(
+      expect.arrayContaining([{ "n.id": "person:jane-doe", "n.name": "Jane Doe" }]),
+    );
+
     const r = cli([...GLOBAL, "retrieve", "where does Jane work", "--depth", "1"]);
     expect((r.out as { context: string }).context).toContain("Jane Doe -[WORKS_AT]-> Acme");
   });
@@ -82,39 +94,7 @@ describe.skipIf(!neo4jUp)("built MCP server over stdio", () => {
     await client.connect(transport);
     try {
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name).sort()).toEqual(
-        [
-          "create_decision",
-          "create_entity",
-          "create_preference",
-          "create_relation",
-          "delete_decision",
-          "delete_entity",
-          "delete_preference",
-          "delete_relation",
-          "entity_evidence",
-          "get_decision",
-          "get_entity",
-          "get_preference",
-          "get_relation",
-          "get_schema",
-          "insert_ontology",
-          "insert_text",
-          "list_decisions",
-          "list_entities",
-          "list_preferences",
-          "list_relations",
-          "preference_versions",
-          "relation_evidence",
-          "relation_versions",
-          "retrieve",
-          "run_cypher",
-          "update_decision",
-          "update_entity",
-          "update_preference",
-          "update_relation",
-        ].sort(),
-      );
+      expect(tools.map((t) => t.name).sort()).toEqual(TOOLS.map((t) => t.name).sort());
       const created = await client.callTool({ name: "create_entity", arguments: { name: "Mcp Bot", type: "Agent" } });
       expect(created.isError).toBeFalsy();
       expect(created.structuredContent).toMatchObject({ id: "agent:mcp-bot" });
@@ -135,7 +115,8 @@ describe.skipIf(!neo4jUp)("built MCP server over stdio", () => {
       });
       expect(read.structuredContent).toMatchObject({ columns: ["c"] });
       const versions = await client.callTool({ name: "relation_versions", arguments: { id: "relation:none" } });
-      expect(versions.structuredContent).toEqual({ result: [] });
+      expect(versions.isError).toBe(true);
+      expect(versions.structuredContent).toMatchObject({ error_type: "NotFoundError" });
     } finally {
       await client.close();
     }

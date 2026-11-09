@@ -16,6 +16,7 @@ def test_derived_ids_are_deterministic():
     assert a == b
     assert a.startswith("relation:")
     assert a != ids.relation_id("company:hydradb", "WORKS_AT", "person:soham")
+    assert ids.relation_id("a", "bc", "x") != ids.relation_id("ab", "c", "x")
 
 
 def test_preference_and_decision_ids():
@@ -27,10 +28,8 @@ def test_preference_and_decision_ids():
     assert d.startswith("decision:")
     assert d == ids.decision_id("team:core", "Select db")
     assert d != ids.decision_id(None, "Select db")
-
-
-def test_hash_no_delimiter_collision():
-    assert ids.relation_id("a", "bc", "x") != ids.relation_id("ab", "c", "x")
+    with pytest.raises(ValidationError):
+        ids.decision_id("", "t")
 
 
 def test_quote_label():
@@ -40,7 +39,21 @@ def test_quote_label():
     assert ids.quote_label("we`ird") == "`we``ird`"
 
 
-def test_decision_id_rejects_empty_actor():
-    assert ids.decision_id(None, "t")
-    with pytest.raises(ValidationError):
-        ids.decision_id("", "t")
+def test_explicit_entity_ids_are_canonicalized_like_derived_ones():
+    assert ids.canonical_entity_id("T:X") == "t:x"
+    assert ids.canonical_entity_id(" Person : Jane  Doe ") == "person:jane-doe"
+    assert ids.canonical_entity_id("Person:Café") == ids.entity_id("Person", "Café")
+    assert ids.canonical_entity_id(ids.entity_id("Big Company", "Acme, Inc.")) == "big-company:acme-inc"
+    assert ids.canonical_entity_id("doc:a:B") == "doc:a:b"
+    for bad in ("jane", "person:", "person: ", ":x", None):
+        with pytest.raises(ValidationError, match="entity id must"):
+            ids.canonical_entity_id(bad)
+
+
+def test_relation_types_split_camel_case():
+    assert ids.normalize_rel_type("worksAt") == "WORKS_AT"
+    assert ids.normalize_rel_type("WorksAt") == "WORKS_AT"
+    assert ids.normalize_rel_type("HTTPServer") == "HTTP_SERVER"
+    assert ids.normalize_rel_type("WORKS_AT") == "WORKS_AT"
+    assert ids.normalize_rel_type("works at") == "WORKS_AT"
+    assert ids.relation_id("a:b", "worksAt", "c:d") == ids.relation_id("a:b", "WORKS_AT", "c:d")

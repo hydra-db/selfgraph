@@ -22,6 +22,7 @@ L_SOURCE = "Source"
 L_SOURCE_VERSION = "SourceVersion"
 L_CHUNK = "Chunk"
 L_EVIDENCE = "Evidence"
+L_MERGE = "EntityMerge"
 
 R_HAS_PROFILE = "HAS_PROFILE"
 R_PREFERS = "PREFERS"
@@ -35,7 +36,7 @@ R_CONSIDERED = "CONSIDERED"
 R_HAS_VERSION = "HAS_VERSION"
 R_HAS_CHUNK = "HAS_CHUNK"
 
-LABELS = (L_ENTITY, L_PROFILE, L_TRACE, L_STEP, L_SOURCE, L_SOURCE_VERSION, L_CHUNK, L_EVIDENCE)
+LABELS = (L_ENTITY, L_PROFILE, L_TRACE, L_STEP, L_SOURCE, L_SOURCE_VERSION, L_CHUNK, L_EVIDENCE, L_MERGE)
 EDGE_TYPES = frozenset(
     {
         R_HAS_PROFILE,
@@ -88,12 +89,29 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def aware(dt: datetime) -> datetime:
+    """Read a naive datetime as UTC, as storage does, so it compares with aware ones.
+
+    @param dt (datetime): the datetime.
+    @return (datetime): the timezone-aware datetime.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def to_iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
+    return aware(dt).astimezone(timezone.utc).isoformat()
+
+
+def json_iso(dt: datetime | None) -> str | None:
+    """Format a datetime for a user-facing message the way JSON output does: UTC, "T", and a "Z" suffix.
+
+    @param dt (datetime | None): the datetime, or None.
+    @return (str | None): the ISO text, or None.
+    """
+    iso = to_iso(dt)
+    return None if iso is None else f"{iso.removesuffix('+00:00')}Z"
 
 
 def from_iso(value: Any) -> datetime | None:
@@ -142,6 +160,8 @@ def encode_entity_props(
     source_count: int,
     created_at: datetime,
     updated_at: datetime,
+    relevance: float | None = None,
+    relevance_at: datetime | None = None,
 ) -> dict[str, Any]:
     return {
         "id": id,
@@ -154,7 +174,25 @@ def encode_entity_props(
         "source_count": source_count,
         "created_at": to_iso(created_at),
         "updated_at": to_iso(updated_at),
+        **relevance_props(relevance, relevance_at),
     }
+
+
+def relevance_props(relevance: float | None, relevance_at: datetime | None) -> dict[str, Any]:
+    """The stored relevance fields of a node or edge, empty when it was never scored.
+
+    @param relevance (float | None): the relevance score, or None.
+    @param relevance_at (datetime | None): when the score was computed.
+    @return (dict[str, Any]): relevance and relevance_at, or nothing.
+    """
+    if relevance is None:
+        return {}
+    return {"relevance": relevance, "relevance_at": to_iso(relevance_at)}
+
+
+def _relevance_of(props: dict[str, Any]) -> float | None:
+    value = props.get("relevance")
+    return None if value is None else float(value)
 
 
 def decode_entity(props: dict[str, Any]) -> Entity:
@@ -168,6 +206,8 @@ def decode_entity(props: dict[str, Any]) -> Entity:
         source_count=int(props.get("source_count") or 0),
         created_at=from_iso(props["created_at"]),
         updated_at=from_iso(props["updated_at"]),
+        relevance=_relevance_of(props),
+        relevance_at=from_iso(props.get("relevance_at")),
     )
 
 
@@ -181,6 +221,8 @@ def encode_relation_props(
     created_at: datetime,
     is_current: bool,
     source_count: int,
+    invalidated_at: datetime | None = None,
+    invalidated_by: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": id,
@@ -191,6 +233,8 @@ def encode_relation_props(
         "event_time": to_iso(event_time),
         "properties_json": _dumps(properties),
         "source_count": source_count,
+        "invalidated_at": to_iso(invalidated_at),
+        "invalidated_by": invalidated_by,
     }
 
 
@@ -206,6 +250,10 @@ def decode_relation(props: dict[str, Any], *, from_entity: str, to_entity: str, 
         created_at=from_iso(props["created_at"]),
         is_current=bool(props["is_current"]),
         source_count=int(props.get("source_count") or 0),
+        invalidated_at=from_iso(props.get("invalidated_at")),
+        invalidated_by=props.get("invalidated_by"),
+        relevance=_relevance_of(props),
+        relevance_at=from_iso(props.get("relevance_at")),
     )
 
 

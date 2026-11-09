@@ -11,38 +11,53 @@
 
 ## What's included
 
-- Text-to-graph extraction with any LLM through the AI SDK, or without an LLM via a zero-dependency fallback.
-- Typed CRUD over entities, relations, preferences, and decision traces.
-- Bitemporal versioning, source provenance, and per-namespace isolation.
-- An optional schema that guides extraction and validates every write (inserts and entity and relation `create` and `update`), with warn, strict, or off modes; in warn mode a `create` or `update` violation is written to stderr as `selfgraph: schema warning [<code>]: <message>` ([docs](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md)).
-- Inputs (ontologies, schemas, `instructions`, `prompts`) reject unknown keys with a `ValidationError` that names the key and suggests the closest one, e.g. `unknown key 'entites' in ontology; did you mean 'entities'?`.
-- Retrieval from keyword seeds and bounded BFS, DFS, or personalized PageRank, returning source passages and relationships, no vector store.
-- A CLI and an MCP server over the same API.
-- One storage interface across backends: Neo4j, Memgraph, FalkorDB, embedded Kuzu, HydraDB, or a custom store.
-
-It is pure TypeScript: no Python, no native addon, no service to run.
+- Text-to-graph extraction with any LLM through the AI SDK, or a zero-dependency fallback without one.
+- Typed CRUD over entities, relations, preferences, and decision traces, with bitemporal versioning, source provenance, and per-namespace isolation.
+- An optional [schema](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md) that guides extraction and validates every write, with [contradiction handling](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md#contradictions) on `max_count`.
+- Optional [entity resolution](https://github.com/hydra-db/selfgraph/blob/main/docs/resolution.md) that merges duplicates on insert, with a reversible record of every merge.
+- [Retrieval](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md) from keyword seeds and bounded BFS, DFS, or personalized PageRank, no vector store, optionally as of a past time.
+- Explicit [maintenance](https://github.com/hydra-db/selfgraph/blob/main/docs/maintenance.md): relevance decay, pruning, and merging duplicate relations, dry runs by default.
+- A CLI and an MCP server, and one storage interface across Neo4j, Memgraph, FalkorDB, embedded Kuzu, HydraDB, or a custom store.
+- The same ids, encoding, and versioning as the Python SDK, so both read and write one graph.
 
 ## Install
 
 ```bash
 npm install @hydradb/selfgraph                            # core: Neo4j, the openCypher family, and HydraDB
-npm install @hydradb/selfgraph kuzu                       # the embedded Kuzu backend
+npm install @hydradb/selfgraph kuzu                       # the embedded Kuzu backend (a native addon)
 npm install @hydradb/selfgraph falkordb                   # the FalkorDB backend
-npm install @hydradb/selfgraph ai @ai-sdk/anthropic       # LLM extraction (any AI SDK provider)
+npm install @hydradb/selfgraph ai @ai-sdk/anthropic       # LLM extraction (ai 6 or newer, any AI SDK provider)
 npm install @hydradb/selfgraph js-tiktoken                # token-aware chunking and budgets
 npm install @hydradb/selfgraph @modelcontextprotocol/sdk  # the MCP server
 ```
 
-Node 20 or newer. ESM and CommonJS are both supported.
+Node 20 or newer; ESM and CommonJS are both supported. The type declarations reference
+`Symbol.asyncDispose`: with `skipLibCheck: false` (or for `await using` in your code)
+use `@types/node` 20 or newer, or add `"esnext.disposable"` to `lib` in `tsconfig.json`.
+
+LLM extraction needs `ai` plus the package for your `provider`:
+
+| `provider` | Package |
+| --- | --- |
+| `anthropic` | `@ai-sdk/anthropic` |
+| `openai`, `azure` | `@ai-sdk/openai`, `@ai-sdk/azure` |
+| `google`, `gemini` | `@ai-sdk/google` |
+| `vertex`, `vertex_ai` | `@ai-sdk/google-vertex` |
+| `bedrock` | `@ai-sdk/amazon-bedrock` |
+| `mistral`, `groq`, `xai`, `deepseek`, `cohere`, `cerebras`, `perplexity` | `@ai-sdk/<provider>` |
+| `togetherai`, `together_ai`; `fireworks`, `fireworks_ai` | `@ai-sdk/togetherai`; `@ai-sdk/fireworks` |
+| `openrouter` | `@openrouter/ai-sdk-provider` |
+| `gateway` | `@ai-sdk/gateway` |
+| `ollama`, or any other name with `base_url` | `@ai-sdk/openai-compatible` |
 
 ## Quickstart
 
-No server and no LLM. `npm install @hydradb/selfgraph kuzu` and run:
+No server and no LLM, with `npm install @hydradb/selfgraph kuzu`:
 
 ```ts
 import { KuzuStore, SelfGraph } from "@hydradb/selfgraph";
 
-const graph = new SelfGraph(new KuzuStore("graph.kuzu"));
+await using graph = new SelfGraph(new KuzuStore("graph.kuzu"));
 
 await graph.insert.ontology({
   entities: [
@@ -54,10 +69,7 @@ await graph.insert.ontology({
 
 const result = await graph.retrieve("who works at Acme");
 console.log(result.context);
-await graph.close();
 ```
-
-The store initializes lazily on first use. In TypeScript 5.2+ (or JavaScript on Node 24+), `await using graph = new SelfGraph(...)` closes it automatically at the end of the scope.
 
 With an LLM and a server:
 
@@ -67,87 +79,160 @@ import { Neo4jStore, SelfGraph } from "@hydradb/selfgraph";
 const graph = new SelfGraph(new Neo4jStore("bolt://localhost:7687", { auth: ["neo4j", "password"] }), {
   llm: { provider: "anthropic", model: "claude-sonnet-5-5" },
 });
-
-await graph.insert.text("Soham prefers HydraDB. The team picked it for temporal history.");
-const result = await graph.retrieve("which database and why", { strategy: "bfs", depth: 3 });
-console.log(result.context);
-await graph.close();
+try {
+  await graph.insert.text("Soham prefers HydraDB. The team picked it for temporal history.");
+  const result = await graph.retrieve("which database and why", { strategy: "bfs", depth: 3 });
+  console.log(result.context);
+} finally {
+  await graph.close();
+}
 ```
 
-`llm` accepts an `LLMConfig` (`provider`, `model`, `api_key`, `base_url`), any AI SDK model object such as `anthropic("claude-sonnet-5-5")`, or your own `LLMClient`. Set `provider: "gateway"` with `model: "openai/gpt-4o"` to route any vendor through the Vercel AI Gateway (`npm install @ai-sdk/gateway`, `AI_GATEWAY_API_KEY` or `api_key`); point `base_url` at any OpenAI-compatible endpoint for the rest. Without it, `insert.text` extracts with the regex fallback; there is no spaCy path. Skip extraction entirely with `insert.ontology(...)` or pass your own `extractor`.
+The store initializes lazily on first use. `await using` (TypeScript 5.2+, or Node 24+)
+closes the graph at the end of the scope; otherwise close it in a `finally`, since an
+unclosed server store keeps the Node process alive. Closing a graph closes the store you
+passed in, so build a new store for each `SelfGraph`.
+
+Without `llm`, `insert.text` uses a regex fallback that types every entity `Thing` and
+links neighbours with `RELATED_TO`; there is no spaCy path. Use an LLM for graphs that
+matter, or skip extraction with `insert.ontology(...)` or your own `extractor`. The
+ontology JSON format is in [inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md#from-an-ontology).
+
+## Configuration
+
+`new SelfGraph(store, {...})` takes `llm`, `instructions`, `prompts`, `extractor`,
+`namespace`, `schema`, `schema_mode`, `resolver` (a mode or an `EntityResolver`), and
+`contradiction`. `SelfGraph.connect({...})` and `SelfGraph.fromEnv({...})` take flat
+settings instead, the same ones the CLI flags and `SELFGRAPH_*` variables set: `store`,
+`uri`, `auth`, `database`, `namespace`, `llm_provider`, `llm_model`, `llm_api_key`,
+`llm_base_url`, `llm_timeout`, `llm_concurrency`, `schema`, `instructions`, `prompts`
+(each an object, inline JSON, or a file path), `schema_mode`, `resolver`, and
+`contradiction`. Any other key raises `ValidationError`. All three are synchronous: the
+first call connects.
+
+```ts
+// LLMConfig: { provider, model, api_key?, base_url?, temperature = 0, max_retries = 3,
+//              timeout = 120 (seconds per call, null for none), concurrency = 4 (chunks at once) }
+
+interface LLMClient {   // used for extraction and resolver: "llm"
+  generate<T>(args: { system: string; user: string; output: z.ZodType<T> }): Promise<T>;
+}
+
+interface EntityResolver {   // return target_id null to keep the candidate separate
+  resolve(candidate: ParsedEntityInput, existing: readonly Entity[]): Promise<ResolutionDecision>;
+}
+
+interface Extractor {   // replaces LLM and regex extraction; one call per insert.text with the whole text
+  extract(document: { text: string; media_type: string; metadata: JsonObject }): Promise<Ontology>;
+}
+
+const instructions = { entities: "...", relations: "...", preferences: "...", decisions: "..." }; // any subset
+const prompts = { entities: { system: "...", user: "... {text} ...", version: "v1" } };          // per pass
+```
+
+`llm` also takes any AI SDK model object, such as `anthropic("claude-sonnet-5-5")`; any
+other value, an unknown provider without `base_url`, or an unknown `LLMConfig` key raises
+`ValidationError` when the graph is built. `provider: "gateway"` with
+`model: "openai/gpt-4o"` routes any vendor through the Vercel AI Gateway
+(`AI_GATEWAY_API_KEY` or `api_key`); `provider: "openai"` with `base_url` targets any
+OpenAI-compatible endpoint through chat completions. The `google` provider reads
+`api_key`, then `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`; a
+prebuilt `google(...)` model reads only `GOOGLE_GENERATIVE_AI_API_KEY`.
+
+Extraction calls `generate()` once per pass (entities, relations, preferences, decisions)
+for each chunk, each with a different `output` schema, so a custom client must answer the
+schema it is given. A prompt override needs `system`, `user`, and `version`, and its
+`user` must contain `{text}` ([custom prompts](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md#custom-prompts)).
+
+Warnings and progress go through one logger, by default warnings to stderr as
+`selfgraph: <message>`: `setLogger(fn)` routes them, `setLogger(null)` silences them,
+and `setLogger(undefined)` restores the default.
+
+## Helpers
+
+| Helper | Returns |
+|--------|---------|
+| `entityId(type, name)`, `relationId(fromEntity, type, toEntity)`, `preferenceId(subjectEntity, kind, key, valueEntity)`, `decisionId(actorEntity, title)`, `profileId(subjectEntity)` | The id an insert derives. |
+| `normalizeRelType(type)` | The stored UPPER_SNAKE relation type. |
+| `chunkText(text, { max_tokens, overlap_tokens })` | The `Chunk`s extraction would read. |
+| `countTokens(text)` | Tokens through the loaded tokenizer, or an estimate. |
+| `loadTokenizer()` | Loads js-tiktoken once (async); returns `{ countTokens, chunkText }`. |
+| `setTokenizer(encoder)` | Uses your encoder, or `null` for the character estimate. |
+| `setLogger(fn)` | Routes warnings (see above); returns the previous logger. |
+
+All are exported from `@hydradb/selfgraph`; `ids` holds the full id module.
 
 ## Backends
-
-All logic lives in the SDK; a store only implements a small set of graph primitives, so the same graph runs on any backend.
 
 ```ts
 import { CypherStore, FalkorDBStore, HydraDBStore, KuzuStore, Neo4jStore } from "@hydradb/selfgraph";
 
 new Neo4jStore("bolt://localhost:7687", { auth: ["neo4j", "password"] });
-new CypherStore("bolt://localhost:7687", { auth: ["user", "password"] });
-new FalkorDBStore("localhost", 6379);
-new KuzuStore("selfgraph.kuzu");
-new HydraDBStore("bolt://127.0.0.1:17687", { auth: ["neo4j", "<token>"] });
+new CypherStore("bolt://localhost:7687", { auth: ["user", "password"] }); // Memgraph and other Bolt engines
+new FalkorDBStore("db.example.com", 6380, { graph: "crm" });              // graph defaults to "selfgraph"
+new KuzuStore("graph.kuzu", { max_db_size: 2 ** 30 });                    // no path: ./selfgraph_kuzu
+new HydraDBStore("bolt://127.0.0.1:17687", { auth: ["neo4j", "<token>"] }); // HydraDB 0.4.0 or newer
 ```
 
-With no store configured (`SelfGraph.connect()`, `fromEnv()`, the CLI, MCP), SelfGraph uses embedded Kuzu at `~/.selfgraph/default.kuzu` when there is no URI, and HydraDB when there is one. `memgraph` is accepted as a store name and uses `CypherStore`.
-
-`KuzuStore` creates the file's folder if needed. Each open Kuzu database reserves 8 TB of virtual memory by default, so a process that keeps many open at once can run out of address space; pass `max_db_size` in bytes, as in `new KuzuStore("graph.kuzu", { max_db_size: 2 ** 30 })`, or close each graph when done. `HydraDBStore` authenticates with the token in the second slot of `auth`; the first slot can be any non-empty name. HydraDB 0.4.0 or newer is required.
-
-`graph.runCypher()` sees each backend's physical storage, and what it accepts differs: Neo4j, Memgraph, and FalkorDB store nodes under their labels with the SelfGraph id in `n.id`; Kuzu keeps every node in table `N` and every edge in table `R`, with the record as JSON in `doc`, and rejects unused parameters; HydraDB runs a narrow openCypher subset (reliably `MATCH (n:Label) ... RETURN n.prop` with a predicate), where `n.id` is HydraDB's internal integer key and the SelfGraph id is `n.sid`. An integer beyond `Number.MAX_SAFE_INTEGER` in a row comes back as a `bigint`, so pass rows through `toJsonable()` before `JSON.stringify`.
-
-To add another database, extend `CypherPrimitives` and implement `_run`, or implement the `GraphStore` interface directly, then pass the store to `new SelfGraph(store)`.
-
-## Retrieval
-
-`graph.retrieve(query, { strategy, depth, k, max_nodes, budget_tokens })` seeds from the entities that best match the query, then walks the graph. Queries are matched as NFC-normalized, casefolded Unicode words, so `HAUPTSTRASSE` finds `Hauptstraße` and `東京` finds `東京タワー`. Seeds score by BM25 plus substring hits, divided by the log of how many sources mention the entity, so a generic entity does not crowd out a specific one. `strategy: "bfs"` or `"dfs"` keeps the nearest `max_nodes` entities; `"ppr"` collects a wider BFS neighborhood and keeps the `max_nodes` entities ranked highest by personalized PageRank from the seeds, so an entity reachable through many well-sourced paths outranks one that is merely close.
-
-## Writes, ids, and concurrency
-
-Ids are deterministic: an entity is `type:name` with the name canonicalized and NFC-normalized, so `Acme`, `Acme, Inc.` and `The Acme Corporation` share `company:acme` (article and suffix stripping applies to organization-like types only; a Work "The Trial" stays `work:the-trial`). `entityId(type, name)` computes the id a name resolves to. Inserts are idempotent upserts, so re-running an insert never duplicates data, and an insert that reaches an existing entity under another surface form keeps the stored name and adds the new form to its aliases. `create` with an id that already exists raises `ConflictError`.
-
-Updates merge: properties, aliases, and external ids merge into what is stored, and `remove_properties` / `remove_aliases` drop entries. Relations and preferences keep every version (`relations.versions(id)`, `preferences.versions(id)`); an update that changes nothing is a no-op. Decisions are updated in place. Deleting an entity removes its relations, its preferences, and any decision trace that references it.
-
-Concurrency differs by backend. On Neo4j and Memgraph each write serializes on its subject node and a whole insert commits or rolls back as one unit; a lost race raises `TransientError`, which the SDK retries with backoff. HydraDB, Kuzu, and FalkorDB auto-commit, so a batch applies incrementally. They run one write at a time per store object, so concurrent writers in one process behave as on Neo4j; writers in separate processes are not serialized, and concurrent writes there to one entity or edge are last-writer-wins.
-
-## Coming from the Python SDK
-
-The API is the same shape, with TypeScript naming where it matters:
-
-| Python | TypeScript |
-| --- | --- |
-| `SelfGraph(store=..., llm=..., namespace=...)` | `new SelfGraph(store, { llm, namespace })` |
-| `graph.run_cypher(q, params)` | `graph.runCypher(q, params)` |
-| `graph.entities.create(name, type, id=..., properties=...)` | `graph.entities.create(name, type, { id, properties })` |
-| `graph.relations.versions(id, newest_first=False)` | `graph.relations.versions(id, { newest_first: false })` |
-| `graph.preferences.list()` (every subject) | `graph.preferences.list()` or `graph.preferences.list({ key })` |
-| `selfgraph.entity_id(type, name)` | `entityId(type, name)` |
-| `graph.retrieve(q, max_nodes=100)` | `graph.retrieve(q, { max_nodes: 100 })` |
-| `async for e in graph.entities.iterate()` | `for await (const e of graph.entities.iterate())` |
-| `SelfGraph.from_env()` / `SelfGraph.connect(...)` | `SelfGraph.fromEnv()` / `SelfGraph.connect({...})` |
-| `async with SelfGraph(...)` | `await using graph = new SelfGraph(...)` |
-| `SyncSelfGraph` | not needed; JavaScript is async-native |
-
-Method names are camelCase. Every model field and option key keeps its Python name (`from_entity`, `event_time`, `next_cursor`, `budget_tokens`), so ontology JSON files, MCP payloads, and docs carry over unchanged. Timestamps are `Date` objects; inputs also accept ISO text. In an update, an omitted field keeps its value. On a decision, `null` clears a field, as an explicit `None` does in Python; on a relation or preference, `null` keeps the value like an omitted field, as `None` does in Python, so `event_time` and `strength` cannot be cleared there. Evidence is only ever added to: each item is its own record, listed with `graph.entities.evidence(id, { cursor, limit })` or `graph.relations.evidence(id, { cursor, limit })` as a `Page` like `list`, and an entity or relation carries `source_count`, the number of distinct sources behind it. `entityId`, `relationId`, `preferenceId`, `decisionId`, `profileId`, and `normalizeRelType` are exported from the root, like the Python package; the other id helpers live under the `ids` namespace. Error messages name types the way Python does (`str`, `NoneType`), so both SDKs report identical text.
-
-`create` raises `ConflictError` when the id exists and `delete` raises `NotFoundError` when it does not. The relation types `PREFERS`, `AVOIDS`, `HAS_PROFILE`, `MADE_DECISION`, `HAS_STEP`, `FROM`, `TO`, `RESULTED_IN`, `CONSIDERED`, `HAS_VERSION`, and `HAS_CHUNK` are reserved for edges SelfGraph writes itself. A new decision's `status` defaults to `"completed"`.
-
-## Interoperability with Python
-
-Both SDKs derive the same ids, store the same properties in the same encoding, and version the same way, so either one can read and extend a graph the other wrote. The test suite checks this on every backend: each side writes a graph and the other reads it back byte for byte.
+Bolt stores take `auth` as `"user:password"`, a bare token (user `neo4j`), a
+`[user, password]` pair, or a driver auth token, and reject any other shape. With no
+store configured, `connect()`, `fromEnv()`, the CLI, and MCP use embedded Kuzu at
+`~/.selfgraph/default.kuzu` without a URI and HydraDB with one, so a `.kuzu` path also
+needs `store: "kuzu"`. Kuzu allows one process at a time per database, and each open
+database reserves 8 TB of virtual memory unless you pass `max_db_size` (a positive
+integer of bytes). To add a database, extend `CypherPrimitives` and implement `_run`, or
+implement `GraphStore`. See [backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md)
+for concurrency and each backend's [raw Cypher](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md#raw-cypher)
+layout, and [TypeScript](https://github.com/hydra-db/selfgraph/blob/main/docs/typescript.md)
+for the Python-to-TypeScript names and the differences between the SDKs.
 
 ## CLI and MCP
 
 ```bash
-npx @hydradb/selfgraph --store neo4j --uri bolt://localhost:7687 --auth neo4j:password insert text "..." --source-id notes
-npx @hydradb/selfgraph --store neo4j --uri bolt://localhost:7687 --auth neo4j:password mcp
+npx @hydradb/selfgraph --store neo4j --uri bolt://localhost:7687 insert text "..." --source-id notes
+npx @hydradb/selfgraph --store neo4j --uri bolt://localhost:7687 mcp
 ```
 
-The CLI and the MCP server expose the same commands and 29 tools as the Python ones, read the same `SELFGRAPH_*` environment variables, and print the same JSON. A failing tool returns an MCP error result (`isError` set) whose content is `{error, error_type}`. The MCP `run_cypher` tool is read-only: it rejects any write, schema, transaction, or admin statement, including `INSERT`, a write keyword used as a bare alias, and any `\u` unicode escape (a keyword guard, not a sandbox), while `graph.runCypher()` in code runs anything. It is not scoped to the namespace and sees every namespace in the database. The relation, preference, and decision write tools take an optional ISO 8601 `event_time`, `insert_text` also takes `metadata`, and `update_decision` clears a nullable field on an explicit `null`. `import { buildServer, TOOLS, close } from "@hydradb/selfgraph/mcp"` embeds the server in your own process; `await close()` closes the tools' shared graph so the process can exit.
+The CLI and the MCP server match the Python ones: same flags, `SELFGRAPH_*` variables,
+JSON output, exit codes, and 34 tools ([CLI](https://github.com/hydra-db/selfgraph/blob/main/docs/cli.md),
+[MCP](https://github.com/hydra-db/selfgraph/blob/main/docs/mcp.md)). Pass secrets as
+`SELFGRAPH_AUTH` and `SELFGRAPH_LLM_API_KEY` rather than flags, which `ps` shows. Stdio
+MCP clients do not pass your shell environment, so set the connection in the `env` block:
+
+```json
+{
+  "mcpServers": {
+    "selfgraph": {
+      "command": "npx",
+      "args": ["-y", "-p", "@hydradb/selfgraph", "-p", "@modelcontextprotocol/sdk", "selfgraph", "mcp"],
+      "env": {
+        "SELFGRAPH_STORE": "neo4j",
+        "SELFGRAPH_URI": "bolt://localhost:7687",
+        "SELFGRAPH_AUTH": "neo4j:password"
+      }
+    }
+  }
+}
+```
+
+To embed the server in your own process:
+
+```ts
+import { DEFAULT_SETTINGS } from "@hydradb/selfgraph";
+import { buildServer, close, configure } from "@hydradb/selfgraph/mcp";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
+await configure({ ...DEFAULT_SETTINGS, store: "kuzu", uri: "graph.kuzu" }); // no argument: read SELFGRAPH_*
+const server = await buildServer();
+await server.connect(new StdioServerTransport());
+// on shutdown
+await server.close();
+await close(); // close the tools' shared graph so the process can exit
+```
 
 ## Known issues
 
-- HydraDB writes its Bolt handshake reply in more than one packet, which neo4j-driver for JavaScript does not reassemble, so many new connections fail before any query is sent. `HydraDBStore.initialize()` opens a first pooled connection and every query retries a failed handshake with jitter; both are safe because nothing has run yet. The Python driver is unaffected.
+- HydraDB writes its Bolt handshake reply in more than one packet, which neo4j-driver for JavaScript does not reassemble. `HydraDBStore.initialize()` opens a first pooled connection and every query retries a failed handshake with jitter, which is safe because nothing has run yet.
 - Entity id canonicalization follows Python's `\w`, which excludes combining marks, so names in scripts that use them (Devanagari, for example) are split at those marks. Both SDKs derive the same ids.
 - The `kuzu` npm package is deprecated upstream; the Python SDK depends on the same release.
 
@@ -158,7 +243,7 @@ npm install
 npm run lint && npm run typecheck && npm run build && npm test
 ```
 
-Integration tests run against whichever backends are reachable (see `test/helpers.ts`; select some with `SELFGRAPH_TEST_STORES=neo4j,kuzu`). The cross-language conformance test runs when `SELFGRAPH_PY` points at a Python that has `selfgraph` installed. `test/fixtures/generate_parity.py` regenerates the Python parity fixture.
+Integration tests run against whichever backends are reachable (`SELFGRAPH_TEST_STORES=neo4j,kuzu` selects some). The cross-language conformance test runs when `SELFGRAPH_PY` points at a Python that has `selfgraph` installed; `test/fixtures/generate_parity.py` regenerates the Python parity fixture.
 
 ## License
 

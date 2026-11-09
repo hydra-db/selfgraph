@@ -1,5 +1,7 @@
+import { ValidationError } from "./errors.js";
 import { isMissing } from "./internal/optional.js";
-import { cpLen, pyStrip } from "./internal/py.js";
+import { cpLen, PY_WS_CLASS, pyStrip } from "./internal/py.js";
+import { requireInt } from "./validate.js";
 
 export interface Chunk {
   index: number;
@@ -14,6 +16,7 @@ export interface Encoder {
 }
 
 const CHARS_PER_TOKEN = 4;
+const WS_CHAR = new RegExp(`^[${PY_WS_CLASS}]$`, "u");
 
 let encoder: Encoder | null | undefined;
 let loading: Promise<void> | null = null;
@@ -73,18 +76,33 @@ export function countTokens(text: string): number {
 }
 
 /**
- * Split text into overlapping chunks sized by tokens, falling back to characters, with code-point offsets.
+ * Validate a chunking size is an integer no smaller than the minimum.
+ *
+ * @param field (string): the parameter name, for the message.
+ * @param value (unknown): the value to check.
+ * @param minimum (number): the smallest accepted value.
+ */
+function requireCount(field: string, value: unknown, minimum: number): asserts value is number {
+  requireInt(field, value);
+  if (value < minimum) throw new ValidationError(`${field} must be at least ${minimum}, got ${value}`);
+}
+
+/**
+ * Split text into overlapping chunks sized by tokens, falling back to characters cut on whitespace, with code-point offsets.
  *
  * @param text (string): the text to split.
- * @param options ({ max_tokens?: number; overlap_tokens?: number }): the maximum tokens per chunk and the token overlap.
+ * @param options ({ max_tokens?: number; overlap_tokens?: number }): the maximum tokens per chunk (at least 1) and the token overlap (0 to max_tokens - 1, default min(64, max_tokens / 4) rounded down).
  * @return (Chunk[]): the chunks, in order.
  */
 export function chunkText(text: string, options: { max_tokens?: number; overlap_tokens?: number } = {}): Chunk[] {
   const maxTokens = options.max_tokens ?? 512;
-  let overlapTokens = options.overlap_tokens ?? 64;
-  if (maxTokens <= 0) throw new RangeError("max_tokens must be positive");
+  requireCount("max_tokens", maxTokens, 1);
+  const overlapTokens = options.overlap_tokens ?? Math.min(64, Math.floor(maxTokens / 4));
+  requireCount("overlap_tokens", overlapTokens, 0);
+  if (overlapTokens >= maxTokens) {
+    throw new ValidationError(`overlap_tokens (${overlapTokens}) must be smaller than max_tokens (${maxTokens})`);
+  }
   if (!pyStrip(text)) return [];
-  overlapTokens = Math.max(0, Math.min(overlapTokens, maxTokens - 1));
 
   if (!encoder) return chunkByChars(text, maxTokens * CHARS_PER_TOKEN, overlapTokens * CHARS_PER_TOKEN);
 
@@ -106,7 +124,7 @@ export function chunkText(text: string, options: { max_tokens?: number; overlap_
 }
 
 /**
- * Split text into overlapping chunks sized by characters, cutting on whitespace.
+ * Split text into overlapping chunks sized by characters, starting and ending each on a word boundary.
  *
  * @param text (string): the text to split.
  * @param sizeIn (number): the maximum characters per chunk.
@@ -115,6 +133,7 @@ export function chunkText(text: string, options: { max_tokens?: number; overlap_
  */
 export function chunkByChars(text: string, sizeIn: number, overlapIn: number): Chunk[] {
   const cps = Array.from(text);
+  const space = cps.map((ch) => WS_CHAR.test(ch));
   const size = Math.max(1, sizeIn);
   const overlap = Math.max(0, Math.min(overlapIn, size - 1));
   const chunks: Chunk[] = [];
@@ -124,9 +143,9 @@ export function chunkByChars(text: string, sizeIn: number, overlapIn: number): C
   while (start < n) {
     let end = Math.min(start + size, n);
     if (end < n) {
-      const window = cps.slice(start, end);
-      const cut = Math.max(window.lastIndexOf(" "), window.lastIndexOf("\n"));
-      if (cut > Math.floor(size / 2)) end = start + cut + 1;
+      let cut = end;
+      while (cut > start && !space[cut]) cut--;
+      if (cut > start) end = cut;
     }
     const piece = cps.slice(start, end).join("");
     if (pyStrip(piece)) {
@@ -134,7 +153,10 @@ export function chunkByChars(text: string, sizeIn: number, overlapIn: number): C
       index++;
     }
     if (end >= n) break;
-    start = Math.max(end - overlap, start + 1);
+    let next = Math.max(end - overlap, start + 1);
+    while (next < end && !space[next - 1]) next++;
+    while (next < n && space[next]) next++;
+    start = next;
   }
   return chunks;
 }

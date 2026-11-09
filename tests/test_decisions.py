@@ -1,14 +1,11 @@
 import pytest
-from helpers import new_graph, run, skip_on_generic
+from helpers import create_entities, fresh_graph, new_graph, run, skip_on_generic
 
 from selfgraph import ConflictError, NotFoundError, ValidationError
 
 
 def seed(g):
-    run(g.entities.create("HydraDB", "Company", id="company:hydradb"))
-    run(g.entities.create("Neo4j", "Company", id="company:neo4j"))
-    run(g.entities.create("Temporal History", "Feature", id="feature:temporal"))
-    run(g.entities.create("Core Team", "Team", id="team:core"))
+    create_entities(g, "Company:HydraDB", "Company:Neo4j", "Feature:Temporal", "Team:Core")
     r1 = run(g.relations.create("company:hydradb", "REQUIRES", "feature:temporal"))
     r2 = run(g.relations.create("team:core", "SELECTED", "company:hydradb"))
     return r1, r2
@@ -80,7 +77,7 @@ def test_conflict_notfound_validation():
     with pytest.raises(ConflictError):
         run(g.decisions.create("D2", steps=[r1.id], id="decision:d"))
     with pytest.raises(NotFoundError):
-        run(g.decisions.update("nope", status="active"))
+        run(g.decisions.update("decision:nope", status="active"))
     with pytest.raises(ValidationError):
         run(g.decisions.create("Bad", steps=["relation:ghost"], id="decision:bad"))
     with pytest.raises(ValidationError):
@@ -108,7 +105,43 @@ def test_delete_trace_keeps_relations():
     assert run(g.relations.get(r1.id)) is not None
 
 
-def test_decision_steps_are_required():
-    g = new_graph()
-    with pytest.raises(ValidationError):
-        run(g.insert.ontology({"decisions": [{"title": "No steps"}]}))
+def test_decision_steps_default_to_empty():
+    g = fresh_graph("nosteps")
+    run(g.insert.ontology({"decisions": [{"title": "No steps", "id": "decision:none"}]}))
+    assert run(g.decisions.get("decision:none")).steps == []
+    assert run(g.decisions.create("Also none")).steps == []
+
+
+def test_update_clears_named_fields_and_unlinks_cleared_references():
+    g = fresh_graph("clr")
+    create_entities(g, "Person:Ann", "Company:Acme", "Company:Beta", "Team:X", "Team:Y")
+    rel = run(g.relations.create("team:x", "SELECTED", "team:y"))
+    dec = run(
+        g.decisions.create(
+            "Pick a vendor",
+            steps=[rel.id],
+            actor_entity="person:ann",
+            outcome_entity="company:acme",
+            alternative_entities=["company:beta"],
+            summary="s",
+            rationale="r",
+        )
+    )
+    with pytest.raises(ValidationError, match=r"^unknown option 'titel' for decisions.update; did you mean 'title'\?$"):
+        run(g.decisions.update(dec.id, titel="t"))
+    with pytest.raises(ValidationError, match="cannot clear 'title'"):
+        run(g.decisions.update(dec.id, clear=["title"]))
+    out = run(g.decisions.update(dec.id, clear=["summary"], rationale=None, event_time="2024-03-01T00:00:00Z"))
+    assert (out.summary, out.rationale, out.title) == (None, None, "Pick a vendor")
+    assert out.event_time.isoformat() == "2024-03-01T00:00:00+00:00"
+    clear = ["actor_entity", "outcome_entity", "alternative_entities", "steps"]
+    out = run(g.decisions.update(dec.id, clear=clear))
+    assert (out.actor_entity, out.outcome_entity, out.alternative_entities, out.steps) == (None, None, [], [])
+    assert run(g.decisions.list(actor_entity="person:ann")).items == []
+    for eid in ("person:ann", "company:acme", "company:beta", "team:x"):
+        assert run(g.entities.delete(eid)).deleted_decisions == 0
+    assert run(g.decisions.get(dec.id)) is not None
+    with pytest.raises(ValidationError, match="decision status"):
+        run(g.decisions.list(status="zzz"))
+    with pytest.raises(ValidationError, match="preference kind"):
+        run(g.preferences.list(kind="zzz"))

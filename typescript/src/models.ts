@@ -2,10 +2,10 @@ import { z } from "zod";
 
 import { ValidationError } from "./errors.js";
 import { normalizeRelType } from "./ids.js";
-import { comparePy, cpLen, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
+import { comparePy, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso } from "./internal/time.js";
 import { KINDS } from "./labels.js";
-import { hasSurrogate, requireCleanJson, requireNoControl } from "./validate.js";
+import { hasSurrogate, keyHint, requireCleanJson, requireNoControl, requireUnit } from "./validate.js";
 
 export type JsonValue =
   | string
@@ -36,7 +36,7 @@ export type Status = z.infer<typeof Status>;
 export const DEFAULT_KIND: Kind = "preference";
 export const DEFAULT_STATUS: Status = "completed";
 
-export const LLM_DEFAULTS = { temperature: 0, max_retries: 3 } as const;
+export const LLM_DEFAULTS = { temperature: 0, max_retries: 3, timeout: 120, concurrency: 4 } as const;
 
 export const DateTimeInput = z.union([z.date(), z.string()]).transform((value, ctx) => {
   if (value instanceof Date) {
@@ -113,6 +113,8 @@ export interface Entity {
   source_count: number;
   created_at: Date;
   updated_at: Date;
+  relevance: number | null;
+  relevance_at: Date | null;
 }
 
 export interface Relation {
@@ -126,6 +128,10 @@ export interface Relation {
   created_at: Date;
   is_current: boolean;
   source_count: number;
+  invalidated_at: Date | null;
+  invalidated_by: string | null;
+  relevance: number | null;
+  relevance_at: Date | null;
 }
 
 export interface Preference {
@@ -171,6 +177,7 @@ export interface InsertWarning {
   message: string;
   source_id: string | null;
   chunk_id: string | null;
+  merge_id: string | null;
 }
 
 /**
@@ -181,7 +188,33 @@ export interface InsertWarning {
  * @return (InsertWarning): the warning.
  */
 export function insertWarning(code: string, message: string): InsertWarning {
-  return { code, message, source_id: null, chunk_id: null };
+  return { code, message, source_id: null, chunk_id: null, merge_id: null };
+}
+
+export interface MergeRewrite {
+  kind: "relation" | "preference" | "decision";
+  id: string;
+  original: JsonObject;
+  rewritten: JsonObject;
+  existed: boolean;
+  dropped: boolean;
+}
+
+export interface MergeRecord {
+  id: string;
+  survivor_id: string;
+  absorbed_id: string;
+  absorbed: JsonObject;
+  reason: string;
+  confidence: number;
+  source_id: string | null;
+  source_ids: string[];
+  added_aliases: string[];
+  added_external_ids: string[];
+  added_properties: string[];
+  rewrites: MergeRewrite[];
+  created_at: Date;
+  reverted_at: Date | null;
 }
 
 export interface InsertResult {
@@ -193,6 +226,16 @@ export interface InsertResult {
   preferences: Preference[];
   decisions: DecisionTrace[];
   warnings: InsertWarning[];
+  merges: MergeRecord[];
+}
+
+export interface UnmergeResult {
+  merge: MergeRecord;
+  entity: Entity;
+  survivor: Entity | null;
+  relations: Relation[];
+  preferences: Preference[];
+  decisions: DecisionTrace[];
 }
 
 export interface Page<T> {
@@ -205,6 +248,43 @@ export interface DeleteResult {
   deleted_relation_versions: number;
   deleted_decisions: number;
   deleted_preference_versions: number;
+}
+
+export interface DecayResult {
+  dry_run: boolean;
+  half_life_days: number;
+  now: Date;
+  entities: Record<string, number>;
+  relations: Record<string, number>;
+  updated_entities: number;
+  updated_relations: number;
+}
+
+export interface PruneResult {
+  dry_run: boolean;
+  entity_ids: string[];
+  relation_ids: string[];
+  /** The delete counts; absent on a dry run. */
+  deleted?: DeleteResult;
+  note: string | null;
+}
+
+export interface ConsolidateGroup {
+  from_entity: string;
+  type: string;
+  to_entity: string;
+  survivor: string;
+  duplicates: string[];
+  conflicts: Record<string, string[]>;
+  versions_lost: Record<string, number>;
+}
+
+export interface ConsolidateResult {
+  dry_run: boolean;
+  groups: ConsolidateGroup[];
+  /** The delete counts; absent on a dry run. */
+  deleted?: DeleteResult;
+  note: string | null;
 }
 
 export type CypherRow = Record<string, JsonValue | bigint>;
@@ -229,6 +309,7 @@ export type ParsedEntityInput = z.output<typeof EntityInput>;
 
 export const EvidenceInput = z.strictObject({
   source_id: noControl("evidence source_id"),
+  chunk_id: nullable(noControl("evidence chunk_id")),
   quote: nullable(z.string()).transform((value) => {
     if (value !== null && hasSurrogate(value)) {
       throw new ValidationError("evidence quote cannot contain unpaired surrogate characters");
@@ -238,8 +319,7 @@ export const EvidenceInput = z.strictObject({
   start_offset: nullable(z.number().int()),
   end_offset: nullable(z.number().int()),
   confidence: nullable(z.number()).transform((value) => {
-    if (value !== null && !Number.isFinite(value))
-      throw new ValidationError("evidence confidence must be a finite number");
+    if (value !== null) requireUnit("evidence confidence", value, true);
     return value;
   }),
 });
@@ -275,7 +355,7 @@ export type ParsedPreferenceInput = z.output<typeof PreferenceInput>;
 export const DecisionTraceInput = z.strictObject({
   id: optString,
   title: z.string(),
-  steps: z.array(z.string()),
+  steps: z.array(z.string()).default([]),
   actor_entity: optString,
   summary: optString,
   rationale: optString,
@@ -296,13 +376,62 @@ export const Ontology = z.strictObject({
 export type Ontology = DeepReadonly<z.input<typeof Ontology>>;
 export type ParsedOntology = z.output<typeof Ontology>;
 
-export const LLMConfig = z.object({
+const DIRECT_PROVIDERS = [
+  "anthropic",
+  "openai",
+  "gemini",
+  "google",
+  "mistral",
+  "xai",
+  "deepseek",
+  "cohere",
+  "perplexity",
+];
+const KNOWN_PROVIDERS = [
+  ...DIRECT_PROVIDERS,
+  "azure",
+  "bedrock",
+  "cerebras",
+  "fireworks",
+  "fireworks_ai",
+  "gateway",
+  "groq",
+  "ollama",
+  "openrouter",
+  "together_ai",
+  "togetherai",
+  "vertex",
+  "vertex_ai",
+];
+const SAME_PROVIDER: Record<string, string> = { google: "gemini" };
+
+/**
+ * Reject a model prefixed with another provider than a first-party provider's own, such as anthropic with gemini/x. Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed models, so only a first-party provider without a base_url is checked, and only against a known provider prefix.
+ *
+ * @param provider (string): the configured provider.
+ * @param model (string): the configured model.
+ * @param baseUrl (string | null | undefined): the configured base URL.
+ */
+export function requireMatchingPrefix(provider: string, model: string, baseUrl: string | null | undefined): void {
+  const i = model.indexOf("/");
+  const prefix = model.slice(0, i);
+  const own = provider.toLowerCase();
+  const other = prefix.toLowerCase();
+  if (i < 0 || baseUrl || !DIRECT_PROVIDERS.includes(own) || !KNOWN_PROVIDERS.includes(other)) return;
+  if ((SAME_PROVIDER[own] ?? own) !== (SAME_PROVIDER[other] ?? other)) {
+    throw new ValidationError(`provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}`);
+  }
+}
+
+export const LLMConfig = z.strictObject({
   provider: z.string(),
   model: z.string(),
   api_key: optString,
   base_url: optString,
   temperature: z.number().default(LLM_DEFAULTS.temperature),
   max_retries: z.number().int().min(0).default(LLM_DEFAULTS.max_retries),
+  timeout: z.number().positive().nullable().default(LLM_DEFAULTS.timeout),
+  concurrency: z.number().int().min(1).default(LLM_DEFAULTS.concurrency),
 });
 export type LLMConfig = z.input<typeof LLMConfig>;
 export type ParsedLLMConfig = z.output<typeof LLMConfig>;
@@ -357,48 +486,6 @@ export interface RetrievalResult {
 }
 
 /**
- * Count the single-character insertions, deletions, and substitutions that turn one string into another.
- *
- * @param a (string): the first string.
- * @param b (string): the second string.
- * @return (number): the Levenshtein distance.
- */
-function editDistance(a: string, b: string): number {
-  const bs = Array.from(b);
-  let prev = Array.from({ length: bs.length + 1 }, (_, j) => j);
-  let i = 0;
-  for (const ca of a) {
-    i += 1;
-    const cur = [i];
-    bs.forEach((cb, j) => {
-      cur.push(Math.min(prev[j + 1]! + 1, cur[j]! + 1, prev[j]! + (ca === cb ? 0 : 1)));
-    });
-    prev = cur;
-  }
-  return prev[bs.length]!;
-}
-
-/**
- * Pick the valid key closest to an unknown one: edit distance at most 2 and below the key's length, ties by order.
- *
- * @param key (string): the unknown key.
- * @param valid (readonly string[]): the accepted keys in declared order.
- * @return (string | null): the suggestion, or null when nothing is close.
- */
-export function suggestKey(key: string, valid: readonly string[]): string | null {
-  let best: string | null = null;
-  let limit = Math.min(2, cpLen(key) - 1);
-  for (const candidate of valid) {
-    const distance = editDistance(key, candidate);
-    if (distance <= limit) {
-      best = candidate;
-      limit = distance - 1;
-    }
-  }
-  return best;
-}
-
-/**
  * Strip optional, nullable, default, and transform wrappers off a zod schema.
  *
  * @param schema (z.core.$ZodType): the schema.
@@ -440,11 +527,7 @@ function unknownKey(schema: z.core.$ZodType, value: unknown, where: string): str
   const unknown = Object.keys(value)
     .filter((k) => !keys.includes(k))
     .sort(comparePy);
-  if (unknown.length) {
-    const suggestion = suggestKey(unknown[0]!, keys);
-    const hint = suggestion === null ? "" : `; did you mean ${pyRepr(suggestion)}?`;
-    return `unknown key ${pyRepr(unknown[0])} in ${where}${hint}`;
-  }
+  if (unknown.length) return `unknown key ${pyRepr(unknown[0])} in ${where}${keyHint(unknown[0]!, keys)}`;
   for (const key of keys) {
     if (!Object.hasOwn(value, key)) continue;
     const field = unwrapSchema(shape[key]!);
@@ -477,8 +560,88 @@ export function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, what: stri
   if (unknown !== null) throw new ValidationError(unknown);
   const result = schema.safeParse(value);
   if (result.success) return result.data;
-  const detail = result.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
-  throw new ValidationError(`invalid ${what}: ${detail}`, { cause: result.error });
+  throw new ValidationError(validationMessage(`invalid ${what}`, result.error, value), { cause: result.error });
+}
+
+const JSON_TYPES: Record<string, string> = { int: "integer", record: "object", map: "object", tuple: "array" };
+
+/**
+ * Render an error location as entities[0].name: keys joined by dots, list indexes in brackets.
+ *
+ * @param path (readonly PropertyKey[]): the location parts, keys as strings and indexes as numbers.
+ * @return (string): the path, or "" at the root.
+ */
+function errorPath(path: readonly PropertyKey[]): string {
+  let out = "";
+  for (const part of path) {
+    if (typeof part === "number") out += `[${part}]`;
+    else out += out ? `.${String(part)}` : String(part);
+  }
+  return out;
+}
+
+/**
+ * Join literal choices the way pydantic does: 'a', 'b' or 'c'.
+ *
+ * @param values (readonly unknown[]): the accepted values.
+ * @return (string): the choices.
+ */
+function choices(values: readonly unknown[]): string {
+  const shown = values.map(pyRepr);
+  return shown.length < 2 ? (shown[0] ?? "") : `${shown.slice(0, -1).join(", ")} or ${shown.at(-1)}`;
+}
+
+/**
+ * Describe one zod issue in the wording the Python package uses for the same pydantic error.
+ *
+ * @param issue (z.core.$ZodIssue): the issue.
+ * @param value (unknown): the input that was parsed, to tell a missing field from a mistyped one.
+ * @return (string): the message, such as "field required" or "expected string".
+ */
+function issueMessage(issue: z.core.$ZodIssue, value: unknown): string {
+  if (issue.code === "invalid_type") {
+    let at: unknown = value;
+    for (const part of issue.path)
+      at = isPlainObject(at) || Array.isArray(at) ? (at as Record<PropertyKey, unknown>)[part as string] : undefined;
+    if (at === undefined && issue.path.length) return "field required";
+    return `expected ${JSON_TYPES[issue.expected] ?? issue.expected}`;
+  }
+  if (issue.code === "invalid_value") return `expected ${choices(issue.values)}`;
+  if (
+    (issue.code === "too_small" || issue.code === "too_big") &&
+    (issue.origin === "number" || issue.origin === "int")
+  ) {
+    const bound = issue.code === "too_small" ? issue.minimum : issue.maximum;
+    const op = issue.code === "too_small" ? ">" : "<";
+    return `must be ${op}${issue.inclusive ? "=" : ""} ${String(bound)}`;
+  }
+  return issue.message.charAt(0).toLowerCase() + issue.message.slice(1);
+}
+
+/**
+ * Format one zod issue as a "path: message" line, or the message alone at the root.
+ *
+ * @param issue (z.core.$ZodIssue): the issue.
+ * @param value (unknown): the input that was parsed.
+ * @return (string): the line.
+ */
+export function issueLine(issue: z.core.$ZodIssue, value: unknown): string {
+  const path = errorPath(issue.path);
+  const message = issueMessage(issue, value);
+  return path ? `${path}: ${message}` : message;
+}
+
+/**
+ * Format a zod error as one "path: message" line per issue, with entities[0].name paths. One issue stays inline after the heading; several go on indented lines.
+ *
+ * @param head (string): what failed, such as "invalid ontology".
+ * @param error (z.ZodError): the error.
+ * @param value (unknown): the input that was parsed.
+ * @return (string): the message.
+ */
+export function validationMessage(head: string, error: z.ZodError, value: unknown): string {
+  const lines = error.issues.map((issue) => issueLine(issue, value));
+  return lines.length === 1 ? `${head}: ${lines[0]}` : `${head}:${lines.map((line) => `\n  ${line}`).join("")}`;
 }
 
 /**
@@ -492,12 +655,3 @@ export function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, what: stri
 export function asInput<T>(schema: z.ZodType<T>, value: unknown, what: string): T | null {
   return value === null || value === undefined ? null : parseOrThrow(schema, value, what);
 }
-
-/**
- * Parse an optional event time.
- *
- * @param value (DateTimeInput | null | undefined): a Date or ISO text, or null.
- * @return (Date | null): the parsed time, or null.
- */
-export const parseDate = (value: DateTimeInput | null | undefined): Date | null =>
-  value == null ? null : parseOrThrow(DateTimeInput, value, "event_time");

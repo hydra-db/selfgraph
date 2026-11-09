@@ -10,7 +10,7 @@ from typing import Any
 from ..errors import StoreError, ValidationError
 from ..ids import quote_label
 from ..models import CypherResult
-from ._cypher import AutoCommitStore, bind_list, count_of
+from ._cypher import AutoCommitStore, count_of, where_after, write_batches
 from ._docrows import docs, edge_row, first_doc, merged_current_edge
 
 __all__ = ["KuzuStore"]
@@ -59,6 +59,23 @@ _OPEN_STORES: dict[str, int] = {}
 _MAX_SKIP = 10_000_000
 
 
+def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
+    """Map a Kuzu error to a StoreError, adding what to do for the lock and mmap failures.
+
+    @param exc (BaseException): the Kuzu exception.
+    @param prefix (str): what failed, for the message.
+    @return (StoreError): the error to raise.
+    """
+    message = f"{prefix}: {exc}"
+    if "Could not set lock on file" in str(exc):
+        message += (
+            "; another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time"
+        )
+    elif "Buffer manager exception: Mmap for size" in str(exc):
+        message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size"
+    return StoreError(message)
+
+
 def _pk(ns: str, id: str) -> str:
     return f"{ns}\x00{id}"
 
@@ -68,6 +85,22 @@ def _jv(value: Any) -> str:
 
 
 _BY_SID = "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid"
+_UPSERT_NODES = (
+    "UNWIND $rows AS row WITH row, row.pk AS k MERGE (n:N {pk: k}) "
+    "SET n.id = row.id, n.ns = $ns, n.label = $label, n.doc = row.doc"
+)
+_EDGE_ROWS = (
+    "UNWIND $rows AS row WITH row, row.f AS f MATCH (a:N {pk: f}) WITH a, row, row.t AS t MATCH (b:N {pk: t}) "
+    "WHERE a.label = $fl AND b.label = $tl "
+)
+_MERGE_EDGES = (
+    "MERGE (a)-[r:R {sid: row.sid, ns: $ns, revision: CAST(row.rev AS INT64)}]->(b) "
+    "SET r.etype = row.et, r.is_current = CAST(row.isc AS BOOL), r.doc = row.doc"
+)
+_CREATE_EDGES = (
+    "CREATE (a)-[r:R {sid: CAST(row.sid AS STRING), ns: $ns, etype: row.et, is_current: CAST(row.isc AS BOOL), "
+    "revision: CAST(row.rev AS INT64), doc: row.doc}]->(b)"
+)
 _BOTH_WAYS = ("(x:N {pk:$pk})-[r:R]->(o:N)", "(o:N)-[r:R]->(x:N {pk:$pk})")
 
 
@@ -110,10 +143,17 @@ class KuzuStore(AutoCommitStore):
         try:
             import kuzu
         except ImportError as exc:  # pragma: no cover
-            raise StoreError("the 'kuzu' package is required for KuzuStore; install 'selfgraph[kuzu]'") from exc
+            raise StoreError("the 'kuzu' package is required for KuzuStore; pip install \"selfgraph[kuzu]\"") from exc
+        max_db_size = db_kwargs.get("max_db_size")
+        if max_db_size is not None and (type(max_db_size) is not int or max_db_size < 1):
+            raise ValidationError(f"max_db_size must be a positive integer of bytes, got {max_db_size!r}")
+        path = os.path.expanduser(path)
         if path not in _DATABASES:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            _DATABASES[path] = kuzu.Database(path, **db_kwargs)
+            try:
+                _DATABASES[path] = kuzu.Database(path, **db_kwargs)
+            except Exception as exc:  # noqa: BLE001
+                raise _kuzu_error(exc, f"could not open Kuzu database {path!r}") from exc
         self._path = path
         self._db = _DATABASES[path]
         self._conn = kuzu.Connection(self._db)
@@ -122,8 +162,6 @@ class KuzuStore(AutoCommitStore):
 
     async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
         def _exec():
-            if self._conn is None:
-                raise StoreError("KuzuStore is closed")
             qr = self._conn.execute(query, parameters=dict(params or {}))
             if isinstance(qr, list):
                 raise StoreError("Kuzu runs one statement per query; pass one statement, not several joined by ';'")
@@ -134,13 +172,14 @@ class KuzuStore(AutoCommitStore):
             return columns, rows
 
         async with self._lock:
+            self._require_open()
             try:
                 columns, rows = await asyncio.to_thread(_exec)
                 return CypherResult(columns=columns, rows=rows)
             except StoreError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                raise StoreError(f"Kuzu query failed: {exc}") from exc
+                raise _kuzu_error(exc, "Kuzu query failed") from exc
 
     async def initialize(self) -> None:
         """Create the node and relationship tables if they do not exist."""
@@ -152,11 +191,11 @@ class KuzuStore(AutoCommitStore):
 
         @return (None): nothing.
         """
-        if self._conn is None:
-            return
         async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._conn.close()
-            self._conn = None
             _OPEN_STORES[self._path] -= 1
             if _OPEN_STORES[self._path] == 0:
                 del _OPEN_STORES[self._path]
@@ -177,12 +216,54 @@ class KuzuStore(AutoCommitStore):
         return bool(res.rows)
 
     async def upsert_node(self, ns: str, label: str, id: str, props: dict, *, extra_label: str | None = None) -> None:
+        await self.upsert_nodes(ns, label, [(id, props)], extra_label=extra_label)
+
+    async def upsert_nodes(
+        self, ns: str, label: str, rows: list[tuple[str, dict]], *, extra_label: str | None = None
+    ) -> None:
+        """Merge many nodes by id, a batch per statement, since each Kuzu statement commits on its own.
+
+        @param ns (str): namespace.
+        @param label (str): the node label.
+        @param rows (list[tuple[str, dict]]): (node id, properties) pairs.
+        @param extra_label (str | None): validated only; the generic node table has no second label.
+        @return (None): nothing.
+        """
         if extra_label is not None:
             quote_label(extra_label)
-        await self._run(
-            "MERGE (n:N {pk:$pk}) SET n.id = $id, n.ns = $ns, n.label = $label, n.doc = $doc",
-            {"pk": _pk(ns, id), "id": id, "ns": ns, "label": label, "doc": _jv(props)},
-        )
+        for _, batch in write_batches((None, {"pk": _pk(ns, id), "id": id, "doc": _jv(props)}) for id, props in rows):
+            await self._run(_UPSERT_NODES, {"rows": batch, "ns": ns, "label": label})
+
+    async def create_edges(
+        self, ns: str, from_label: str, to_label: str, rows: list[tuple[str, str, str, dict]]
+    ) -> None:
+        """Create or update many edges, a batch per statement, skipping rows with a missing endpoint.
+
+        Rows are batched in order by which of id, revision, and is_current are null, so every batch binds one type
+        per column; rows with an id and a revision merge on them, the rest are created.
+
+        @param ns (str): namespace.
+        @param from_label (str): source node label.
+        @param to_label (str): destination node label.
+        @param rows (list[tuple[str, str, str, dict]]): (edge type, source id, destination id, properties) rows.
+        @return (None): nothing.
+        """
+        edge_rows = [
+            {
+                "f": _pk(ns, from_id),
+                "t": _pk(ns, to_id),
+                "sid": props.get("id"),
+                "et": type,
+                "isc": props.get("is_current"),
+                "rev": props.get("revision"),
+                "doc": _jv(props),
+            }
+            for type, from_id, to_id, props in rows
+        ]
+        keyed = (((r["sid"] is None, r["rev"] is None, r["isc"] is None), r) for r in edge_rows)
+        for (no_sid, no_rev, _), batch in write_batches(keyed):
+            write = _CREATE_EDGES if no_sid or no_rev else _MERGE_EDGES
+            await self._run(_EDGE_ROWS + write, {"rows": batch, "ns": ns, "fl": from_label, "tl": to_label})
 
     async def remove_node_label(self, ns: str, label: str, id: str, drop_label: str) -> None:
         return None
@@ -197,6 +278,7 @@ class KuzuStore(AutoCommitStore):
         order_by: str = "id",
         skip: int = 0,
         limit: int = 1000,
+        id_gt: str | None = None,
     ) -> list[dict]:
         if skip > _MAX_SKIP:
             return []
@@ -204,6 +286,7 @@ class KuzuStore(AutoCommitStore):
         params: dict[str, Any] = {"ns": ns, "label": label}
         _where_doc_equals("n", equals, where, params)
         _where_doc_any_of(ns, any_of, where, params)
+        where_after("n.id", id_gt, where, params)
         ob = "n.id" if order_by == "id" else f"json_extract(n.doc, '{_safe_order_by(order_by)}')"
         res = await self._run(
             f"MATCH (n:N) WHERE {' AND '.join(where)} "
@@ -215,41 +298,26 @@ class KuzuStore(AutoCommitStore):
     async def delete_node(self, ns: str, label: str, id: str) -> None:
         await self._run("MATCH (n:N {pk:$pk}) DETACH DELETE n", {"pk": _pk(ns, id)})
 
+    async def delete_nodes(self, ns: str, label: str, ids: list[str]) -> None:
+        if ids:
+            await self._run("MATCH (n:N) WHERE n.pk IN $pks DETACH DELETE n", {"pks": [_pk(ns, i) for i in ids]})
+
     async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
         where = ["n.ns = $ns", "n.label = $label"]
         params: dict[str, Any] = {"ns": ns, "label": label}
         _where_doc_equals("n", equals, where, params)
         res = await self._run(f"MATCH (n:N) WHERE {' AND '.join(where)} RETURN n.pk AS pk", params)
         pks = [r["pk"] for r in res.rows]
-        for pk in pks:
-            await self._run("MATCH (n:N {pk:$pk}) DETACH DELETE n", {"pk": pk})
+        if pks:
+            await self._run("MATCH (n:N) WHERE n.pk IN $pks DETACH DELETE n", {"pks": pks})
         return len(pks)
 
     async def create_edge(
         self, ns: str, type: str, from_label: str, from_id: str, to_label: str, to_id: str, props: dict
     ) -> bool:
-        if not await self.node_exists(ns, from_label, from_id):
+        if not await self.node_exists(ns, from_label, from_id) or not await self.node_exists(ns, to_label, to_id):
             return False
-        if not await self.node_exists(ns, to_label, to_id):
-            return False
-        sid = props.get("id")
-        rev = props.get("revision")
-        params = {
-            "f": _pk(ns, from_id),
-            "t": _pk(ns, to_id),
-            "sid": sid,
-            "ns": ns,
-            "et": type,
-            "isc": props.get("is_current"),
-            "rev": rev,
-            "doc": _jv(props),
-        }
-        write = (
-            "MERGE (a)-[r:R {sid:$sid, ns:$ns, revision:$rev}]->(b) SET r.etype=$et, r.is_current=$isc, r.doc=$doc"
-            if sid is not None and rev is not None
-            else "CREATE (a)-[r:R {sid:$sid, ns:$ns, etype:$et, is_current:$isc, revision:$rev, doc:$doc}]->(b)"
-        )
-        await self._run(f"MATCH (a:N {{pk:$f}}), (b:N {{pk:$t}}) {write}", params)
+        await self.create_edges(ns, from_label, to_label, [(type, from_id, to_id, props)])
         return True
 
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
@@ -301,6 +369,7 @@ class KuzuStore(AutoCommitStore):
         order_by: str = "id",
         skip: int = 0,
         limit: int = 1000,
+        id_gt: str | None = None,
     ) -> list[dict]:
         if skip > _MAX_SKIP:
             return []
@@ -327,6 +396,7 @@ class KuzuStore(AutoCommitStore):
             where.append("b.pk IN $tpks")
             params["tpks"] = [_pk(ns, i) for i in to_in]
         _where_doc_equals("r", equals, where, params)
+        where_after("r.sid", id_gt, where, params)
         if order_by == "id":
             ob = "r.sid"
         elif order_by == "revision":
@@ -340,20 +410,6 @@ class KuzuStore(AutoCommitStore):
             params,
         )
         return [edge_row(r) for r in res.rows]
-
-    async def versioned_relation_ids(self, ns: str, label: str, id: str, *, exclude_types: list[str]) -> list[str]:
-        params: dict[str, Any] = {"pk": _pk(ns, id), "ns": ns, "label": label}
-        where = [
-            "r.ns = $ns",
-            "x.label = $label",
-            "r.revision IS NOT NULL",
-            *bind_list(exclude_types, "ex", params, lambda p: f"r.etype <> {p}"),
-        ]
-        out: list[str] = []
-        for pattern in _BOTH_WAYS:
-            res = await self._run(f"MATCH {pattern} WHERE {' AND '.join(where)} RETURN DISTINCT r.sid AS rid", params)
-            out.extend(r["rid"] for r in res.rows)
-        return list(dict.fromkeys(out))
 
     async def child_nodes(
         self,
@@ -372,22 +428,6 @@ class KuzuStore(AutoCommitStore):
             {"pk": _pk(ns, parent_id), "ns": ns, "et": edge_type, "cl": child_label},
         )
         return docs(res.rows)
-
-    async def count_out_edges(self, ns: str, label: str, id: str) -> int:
-        res = await self._run(
-            "MATCH (p:N {pk:$pk})-[r:R]->(o:N) WHERE r.ns = $ns RETURN count(*) AS n",
-            {"pk": _pk(ns, id), "ns": ns},
-        )
-        return count_of(res.rows)
-
-    async def count_in_edges_typed(self, ns: str, label: str, id: str, types: list[str]) -> int:
-        params: dict[str, Any] = {"pk": _pk(ns, id), "ns": ns}
-        ors = bind_list(types, "t", params, lambda p: f"r.etype = {p}")
-        res = await self._run(
-            f"MATCH (p:N)-[r:R]->(x:N {{pk:$pk}}) WHERE r.ns = $ns AND ({' OR '.join(ors)}) RETURN count(*) AS n",
-            params,
-        )
-        return count_of(res.rows)
 
     async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:
         for pattern in _BOTH_WAYS:

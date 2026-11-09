@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from typing import Any
 
-from ..errors import StoreError, TransientError
-from ..models import CypherResult
-from ._cypher import WRITE_COUNTERS, AutoCommitStore, CypherPrimitives
+from ..errors import StoreError, TransientError, error_reason
+from ..models import CypherResult, check_options
+from ._cypher import WRITE_COUNTERS, AutoCommitStore, CypherPrimitives, graph_properties
 
 __all__ = ["FalkorDBStore"]
 
@@ -28,7 +29,7 @@ def _to_json(value: Any) -> Any:
     """
     props = getattr(value, "properties", None)
     if props is not None:
-        return dict(props)
+        return graph_properties(props.items(), _to_json)
     if isinstance(value, dict):
         return {k: _to_json(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
@@ -52,8 +53,12 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
             from falkordb.asyncio import FalkorDB
         except ImportError as exc:  # pragma: no cover
             raise StoreError(
-                "the 'falkordb' package is required for FalkorDBStore; install selfgraph[falkordb]"
+                "the 'falkordb' package is required for FalkorDBStore; pip install \"selfgraph[falkordb]\""
             ) from exc
+        client_options = [
+            p for p in inspect.signature(FalkorDB.__init__).parameters if p not in {"self", "host", "port"}
+        ]
+        check_options("FalkorDBStore", client_kwargs, ["graph", *client_options])
         self._FalkorDB = FalkorDB
         self._host, self._port, self._graph_name, self._client_kwargs = host, port, graph, client_kwargs
         self._db: Any = None
@@ -69,9 +74,12 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
                 self._db = self._FalkorDB(host=self._host, port=self._port, **self._client_kwargs)
                 self._graph = self._db.select_graph(self._graph_name)
             except Exception as exc:  # noqa: BLE001
-                raise StoreError(f"failed connecting to FalkorDB at {self._host}:{self._port}: {exc}") from exc
+                raise StoreError(
+                    f"failed connecting to FalkorDB at {self._host}:{self._port}: {error_reason(exc)}"
+                ) from exc
 
     async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
+        self._require_open()
         self._ensure_connected()
         try:
             res = await self._graph.query(query, dict(params or {}))
@@ -93,7 +101,8 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
         await self._run("CREATE (n:_SgInit) DELETE n")
 
     async def close(self) -> None:
-        """Close the underlying connection."""
+        """Close the underlying connection; later calls fail with StoreError."""
+        self._closed = True
         if self._db is None:
             return
         close = getattr(self._db, "aclose", None) or getattr(getattr(self._db, "connection", None), "aclose", None)

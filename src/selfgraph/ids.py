@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import unicodedata
 from collections.abc import Mapping
+from datetime import date
+from typing import Any
 
 from .errors import ValidationError
 
 __all__ = [
     "slug",
     "entity_id",
+    "canonical_entity_id",
     "relation_id",
     "normalize_rel_type",
     "preference_id",
@@ -52,9 +56,10 @@ def _has_control(text: str) -> bool:
 
 
 _MAX_JSON_DEPTH = 64
+MAX_SAFE_INTEGER = 2**53 - 1
 
 
-def _require_clean_json(name: str, value: object, depth: int = 0) -> None:
+def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: bool = True) -> None:
     """Validate a stored JSON value: bounded nesting, clean string keys, and UTF-8-emittable string values.
 
     The depth guard keeps a pathological nested value from exhausting the Python stack (a raw RecursionError
@@ -64,21 +69,28 @@ def _require_clean_json(name: str, value: object, depth: int = 0) -> None:
     @param name (str): the field name for error messages.
     @param value (object): the JSON-shaped value to validate.
     @param depth (int): the current nesting depth, for the recursion guard.
-    @return (None): nothing; raises ValidationError on excess depth, a control/surrogate key, or a surrogate value.
+    @param safe_ints (bool): reject integers outside +/-(2**53 - 1), which JSON readers in other languages round.
+    @return (None): nothing; raises ValidationError on excess depth, a control/surrogate key, a surrogate value, an
+        unsafe integer, or a date or datetime.
     """
     if depth > _MAX_JSON_DEPTH:
         raise ValidationError(f"{name} is nested too deeply; keep it under {_MAX_JSON_DEPTH} levels")
     if isinstance(value, str):
         if _unstorable(value):
             raise ValidationError(f"{name} values cannot contain NUL or unpaired surrogate characters")
+    elif isinstance(value, int) and not isinstance(value, bool):
+        if safe_ints and abs(value) > MAX_SAFE_INTEGER:
+            raise ValidationError(f"{name} integer {value} is outside the safe range; store it as a string")
+    elif isinstance(value, date):
+        raise ValidationError(f"{name} cannot hold {type(value).__name__} values; use an ISO 8601 string")
     elif isinstance(value, Mapping):
         for key, item in value.items():
             if isinstance(key, str) and _has_control(key):
                 raise ValidationError(f"{name} keys cannot contain control or surrogate characters")
-            _require_clean_json(name, item, depth + 1)
+            _require_clean_json(name, item, depth + 1, safe_ints=safe_ints)
     elif isinstance(value, list | tuple):
         for item in value:
-            _require_clean_json(name, item, depth + 1)
+            _require_clean_json(name, item, depth + 1, safe_ints=safe_ints)
 
 
 def _require_str(label: str, value: object) -> None:
@@ -93,6 +105,33 @@ def _require_str(label: str, value: object) -> None:
     if not value.strip():
         raise ValidationError(f"{label} cannot be empty")
     _require_no_control(label, value)
+
+
+def _require_unit(label: str, value: object, *, finite: bool = False) -> None:
+    """Validate a value is a real number in the unit interval.
+
+    @param label (str): the field name for the error message.
+    @param value (object): the value to check.
+    @param finite (bool): reject NaN and infinity with their own message before the range check.
+    @return (None): nothing; raises ValidationError when non-numeric or out of range.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValidationError(f"{label} must be a number, got {type(value).__name__}")
+    if finite and not math.isfinite(value):
+        raise ValidationError(f"{label} must be a finite number")
+    if not 0.0 <= value <= 1.0:
+        raise ValidationError(f"{label} must be between 0 and 1, got {value}")
+
+
+def _require_namespace(value: object) -> None:
+    """Validate a namespace: a non-empty string with no control characters and no leading or trailing whitespace.
+
+    @param value (object): the namespace.
+    @return (None): nothing; raises ValidationError on a bad namespace.
+    """
+    _require_str("namespace", value)
+    if value != value.strip():  # type: ignore[union-attr]
+        raise ValidationError("namespace cannot start or end with whitespace")
 
 
 def _require_no_control(label: str, value: str) -> None:
@@ -110,6 +149,7 @@ _WS = re.compile(r"\s+")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PUNCT = re.compile(r"[^\w\s]+")
 _NON_IDENT = re.compile(r"[^\w]+")
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _ENTITY_SUFFIXES = frozenset(
     {
         "inc",
@@ -227,14 +267,55 @@ def entity_id(type: str, name: str) -> str:
     return f"{slug(type)}:{_canonical_name(type, name)}"
 
 
+def _canonical_id(eid: Any) -> Any:
+    """Canonicalise an entity id without validating it; text without a colon, or a non-string, is returned as is.
+
+    @param eid (Any): the entity id as given.
+    @return (Any): the canonical entity id, or eid unchanged when it has no colon or is not a string.
+    """
+    if not isinstance(eid, str) or ":" not in eid:
+        return eid
+    prefix, name = eid.split(":", 1)
+    return f"{slug(normalize_text(prefix))}:{slug(normalize_text(name))}"
+
+
+def _require_entity_shape(eid: str) -> None:
+    """Reject an entity id that is not 'type:name' with a non-empty type and name.
+
+    @param eid (str): the entity id.
+    @return (None): nothing; raises ValidationError on a malformed id.
+    """
+    if ":" not in eid:
+        raise ValidationError(f"entity id must be 'type:name', e.g. 'person:jane', got {eid!r}")
+    prefix_part, name_part = eid.split(":", 1)
+    if not prefix_part.strip() or not name_part.strip():
+        raise ValidationError(f"entity id must be 'type:name' with a non-empty prefix and name, got {eid!r}")
+
+
+def canonical_entity_id(eid: str) -> str:
+    """Canonicalise an explicit entity id the way entity_id shapes a derived one, so case and spacing variants match.
+
+    The type prefix and the name part, split at the first colon, are each NFC-normalized, lowercased, stripped,
+    and have whitespace runs turned into single hyphens.
+
+    @param eid (str): the entity id as given.
+    @return (str): the canonical entity id; raises ValidationError when it is not a 'type:name' string with a
+        non-empty type and name.
+    """
+    _require_str("entity id", eid)
+    eid = _canonical_id(eid)
+    _require_entity_shape(eid)
+    return eid
+
+
 def normalize_rel_type(type: str) -> str:
-    """Canonicalise a relation type to UPPER_SNAKE so case and spacing variants collapse.
+    """Canonicalise a relation type to UPPER_SNAKE so case, spacing, and camelCase variants collapse.
 
     @param type (str): the raw relation type.
     @return (str): the canonical relation type.
     """
     _require_str("relation type", type)
-    normalized = _NON_IDENT.sub("_", normalize_text(type).strip().lower()).strip("_").upper()
+    normalized = _NON_IDENT.sub("_", _CAMEL.sub("_", normalize_text(type).strip()).lower()).strip("_").upper()
     if not normalized:
         raise ValidationError("relation type cannot be empty; use a verb phrase, e.g. 'works at' or 'WORKS_AT'")
     return normalized
@@ -359,7 +440,21 @@ def evidence_id(
     return f"evidence:{_hash(target_id, source_id, source_version, chunk_id, quote, *offsets)}"
 
 
-RESERVED_ID_PREFIXES = frozenset({"relation", "preference", "decision", "profile", "source", "sv", "evidence"})
+def entity_merge_id(survivor_id: str, absorbed_id: str) -> str:
+    """The id of the record of one entity merge: a hash of the surviving and the absorbed entity ids.
+
+    @param survivor_id (str): the id of the entity that absorbed the other.
+    @param absorbed_id (str): the id the absorbed entity would have had.
+    @return (str): the derived merge record id.
+    """
+    _require_str("survivor_id", survivor_id)
+    _require_str("absorbed_id", absorbed_id)
+    return f"entitymerge:{_hash(survivor_id, absorbed_id)}"
+
+
+RESERVED_ID_PREFIXES = frozenset(
+    {"relation", "preference", "decision", "profile", "source", "sv", "evidence", "entitymerge"}
+)
 
 
 def step_id(trace_id: str, order: int) -> str:

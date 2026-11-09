@@ -17,7 +17,10 @@ from .extraction import DEFAULT_PROMPTS, BasicExtractor, DefaultExtractor
 from .ids import decision_id, entity_id, normalize_rel_type, preference_id, profile_id, relation_id
 from .llm import build_llm_client
 from .models import (
+    ConsolidateGroup,
+    ConsolidateResult,
     CypherResult,
+    DecayResult,
     DecisionStep,
     DecisionTrace,
     DecisionTraceInput,
@@ -31,23 +34,28 @@ from .models import (
     InsertResult,
     InsertWarning,
     LLMConfig,
+    MergeRecord,
+    MergeRewrite,
     Ontology,
     Page,
     ParsedDocument,
     Preference,
     PreferenceInput,
     PromptTemplate,
+    PruneResult,
     Relation,
     RelationInput,
     RetrievalResult,
     RetrievalSeed,
     Subgraph,
+    UnmergeResult,
 )
 from .protocols import Extractor, GraphStore, LLMClient
+from .resolution import DefaultResolver, EntityResolver, LLMResolver, ResolutionDecision, ResolverMode
 from .schema import EntityType, PropertySpec, RelationEndpoint, RelationType, Schema
 from .sync import SyncSelfGraph
 
-__version__ = "0.0.4"
+__version__ = "0.1.0"
 
 if TYPE_CHECKING:
     from .stores.cypher import CypherStore, Neo4jStore
@@ -99,6 +107,10 @@ __all__ = [
     "InsertWarning",
     "Page",
     "DeleteResult",
+    "DecayResult",
+    "PruneResult",
+    "ConsolidateGroup",
+    "ConsolidateResult",
     "CypherResult",
     "EntityInput",
     "EvidenceInput",
@@ -119,6 +131,14 @@ __all__ = [
     "RetrievalResult",
     "RetrievalSeed",
     "Subgraph",
+    "EntityResolver",
+    "ResolutionDecision",
+    "DefaultResolver",
+    "LLMResolver",
+    "ResolverMode",
+    "MergeRecord",
+    "MergeRewrite",
+    "UnmergeResult",
     "DefaultExtractor",
     "BasicExtractor",
     "DEFAULT_PROMPTS",

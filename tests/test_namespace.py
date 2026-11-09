@@ -1,7 +1,7 @@
 import pytest
 from helpers import make_store, new_graph, run
 
-from selfgraph import SelfGraph, StoreError, SyncSelfGraph, TransientError, ValidationError
+from selfgraph import Schema, SelfGraph, StoreError, SyncSelfGraph, TransientError, ValidationError
 
 
 def test_namespaces_isolate_reads_and_writes():
@@ -47,8 +47,10 @@ def test_calls_after_close_raise_store_error():
         assert not isinstance(err.value, TransientError)
 
 
-def test_sync_graph_after_close_raises_store_error():
-    g = SyncSelfGraph(store=make_store())
+def test_sync_graph_exposes_schema_and_raises_after_close():
+    schema = {"entities": [{"name": "Person"}]}
+    g = SyncSelfGraph(store=make_store(), schema=schema)
+    assert g.schema == Schema.model_validate(schema)
     g.close()
     g.close()
     with pytest.raises(StoreError, match="closed"):

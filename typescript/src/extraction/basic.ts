@@ -1,3 +1,5 @@
+import { LLM_HINT } from "../errors.js";
+import { log } from "../internal/log.js";
 import { PY_WS_CLASS, pyStrip } from "../internal/py.js";
 import { insertWarning, type ParsedDocument, type ParsedOntology } from "../models.js";
 import type { Extractor } from "../protocols.js";
@@ -33,12 +35,9 @@ function regexExtract(text: string): { entities: RawEntity[]; relations: RawRela
 export class BasicExtractor extends WarningSink implements Extractor {
   async extract(document: ParsedDocument): Promise<ParsedOntology> {
     const { entities, relations } = regexExtract(document.text);
-    this.warnings = [
-      insertWarning(
-        "basic_extraction",
-        "extracted without an LLM using heuristic regex; pass llm= for model-based extraction",
-      ),
-    ];
+    const message = `extracted without an LLM using heuristic regex; for model-based extraction, ${LLM_HINT}`;
+    log(`basic_extraction: ${message}`);
+    this.warnings = [insertWarning("basic_extraction", message)];
     return assembleOntology(entities, relations, [], []);
   }
 }

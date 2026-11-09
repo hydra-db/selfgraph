@@ -1459,9 +1459,73 @@
   "e\u0301le\u0300ve de": "\u00c9L\u00c8VE_DE",
   "\ud83d\udd25hot": "HOT",
   "a__b": "A__B",
-  "Kelvin\u212a": "KELVINK",
-  "stra\u00dfe": "STRASSE"
+  "Kelvin\u212a": "KELVIN_K",
+  "stra\u00dfe": "STRASSE",
+  "worksAt": "WORKS_AT",
+  "WorksAt": "WORKS_AT",
+  "HTTPServer": "HTTP_SERVER",
+  "isPartOf2Things": "IS_PART_OF2_THINGS",
+  "already_SNAKE_case": "ALREADY_SNAKE_CASE",
+  "\u00c9coleDe": "\u00c9COLE_DE"
  },
+ "canonical_entity_id": [
+  [
+   "T:X",
+   "t:x"
+  ],
+  [
+   "t:x",
+   "t:x"
+  ],
+  [
+   " Person : Jane  Doe ",
+   "person:jane-doe"
+  ],
+  [
+   "Person:Cafe\u0301",
+   "person:caf\u00e9"
+  ],
+  [
+   "PERSON:Caf\u00e9 Ol\u00e9",
+   "person:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "doc:A:B",
+   "doc:a:b"
+  ],
+  [
+   "Big Company:Acme, Inc.",
+   "big-company:acme,-inc."
+  ],
+  [
+   "\u0130stanbul:\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "i\u0307stanbul:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "no-colon",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   ":x",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "x:",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "person: ",
+   {
+    "error": "ValidationError"
+   }
+  ]
+ ],
  "relation_id": [
   [
    "person:jane",
@@ -1515,13 +1579,49 @@
    "person:jane",
    "Kelvin\u212a",
    "company:acme",
-   "relation:ee16cde5009e0b81dcbcb034"
+   "relation:ebd7b4a4e2411cb88e1421aa"
   ],
   [
    "person:jane",
    "stra\u00dfe",
    "company:acme",
    "relation:3adabe311e89cf1cdf53e17d"
+  ],
+  [
+   "person:jane",
+   "worksAt",
+   "company:acme",
+   "relation:ec6ca7724d4851341629a9b9"
+  ],
+  [
+   "person:jane",
+   "WorksAt",
+   "company:acme",
+   "relation:ec6ca7724d4851341629a9b9"
+  ],
+  [
+   "person:jane",
+   "HTTPServer",
+   "company:acme",
+   "relation:9e7464174107db46c1ad9069"
+  ],
+  [
+   "person:jane",
+   "isPartOf2Things",
+   "company:acme",
+   "relation:784f6a9a575ffd3ddf733c1f"
+  ],
+  [
+   "person:jane",
+   "already_SNAKE_case",
+   "company:acme",
+   "relation:8b502e4b04d91c358e910f74"
+  ],
+  [
+   "person:jane",
+   "\u00c9coleDe",
+   "company:acme",
+   "relation:f06b310869a60ef018ff4566"
   ]
  ],
  "preference_id": [
@@ -1624,14 +1724,20 @@
   "e\u0301le\u0300ve de": "\u00c9L\u00c8VE_DE",
   "\ud83d\udd25hot": "HOT",
   "a__b": "A__B",
-  "Kelvin\u212a": "KELVINK",
+  "Kelvin\u212a": "KELVIN_K",
   "stra\u00dfe": "STRASSE",
   "!!!": {
    "error": "ValidationError"
   },
   "   ": {
    "error": "ValidationError"
-  }
+  },
+  "worksAt": "WORKS_AT",
+  "WorksAt": "WORKS_AT",
+  "HTTPServer": "HTTP_SERVER",
+  "isPartOf2Things": "IS_PART_OF2_THINGS",
+  "already_SNAKE_case": "ALREADY_SNAKE_CASE",
+  "\u00c9coleDe": "\u00c9COLE_DE"
  },
  "nfc_ids": [
   "preference:41c480c00563cb0d2772dc72",
@@ -1645,6 +1751,12 @@
   "50": "NTA=",
   "999": "OTk5",
   "123456789": "MTIzNDU2Nzg5"
+ },
+ "key_cursors": {
+  "person:ada": "cGVyc29uOmFkYQ==",
+  "company:caf\u00e9 \ud83d\ude80": "Y29tcGFueTpjYWbDqSDwn5qA",
+  "relation:a>b?c~d": "cmVsYXRpb246YT5iP2N-ZA==",
+  "x:??>>>": "eDo_Pz4-Pg=="
  },
  "cypher_blocked": {
   "MATCH (n) RETURN n": false,
@@ -3304,7 +3416,9 @@
    "properties": {},
    "source_count": 5,
    "created_at": "2026-01-01T00:00:00Z",
-   "updated_at": "2026-01-01T00:00:00Z"
+   "updated_at": "2026-01-01T00:00:00Z",
+   "relevance": null,
+   "relevance_at": null
   },
   {
    "id": "t:acme-labs",
@@ -3315,7 +3429,9 @@
    "properties": {},
    "source_count": 1,
    "created_at": "2026-01-01T00:00:00Z",
-   "updated_at": "2026-01-01T00:00:00Z"
+   "updated_at": "2026-01-01T00:00:00Z",
+   "relevance": null,
+   "relevance_at": null
   },
   {
    "id": "t:tokyo",
@@ -3326,7 +3442,9 @@
    "properties": {},
    "source_count": 1,
    "created_at": "2026-01-01T00:00:00Z",
-   "updated_at": "2026-01-01T00:00:00Z"
+   "updated_at": "2026-01-01T00:00:00Z",
+   "relevance": null,
+   "relevance_at": null
   },
   {
    "id": "t:cafe",
@@ -3339,7 +3457,9 @@
    "properties": {},
    "source_count": 0,
    "created_at": "2026-01-01T00:00:00Z",
-   "updated_at": "2026-01-01T00:00:00Z"
+   "updated_at": "2026-01-01T00:00:00Z",
+   "relevance": null,
+   "relevance_at": null
   },
   {
    "id": "t:n",
@@ -3350,7 +3470,9 @@
    "properties": {},
    "source_count": 1,
    "created_at": "2026-01-01T00:00:00Z",
-   "updated_at": "2026-01-01T00:00:00Z"
+   "updated_at": "2026-01-01T00:00:00Z",
+   "relevance": null,
+   "relevance_at": null
   },
   {
    "id": "t:strasse",
@@ -3363,7 +3485,9 @@
    },
    "source_count": 0,
    "created_at": "2026-01-01T00:00:00Z",
-   "updated_at": "2026-01-01T00:00:00Z"
+   "updated_at": "2026-01-01T00:00:00Z",
+   "relevance": null,
+   "relevance_at": null
   }
  ],
  "seeds": {
@@ -3439,7 +3563,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:b>c",
@@ -3451,7 +3579,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:c>d",
@@ -3463,7 +3595,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     }
    ],
    "ranks": {
@@ -3498,7 +3634,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:hub>y",
@@ -3510,7 +3650,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:hub>z",
@@ -3522,7 +3666,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:w>hub",
@@ -3534,7 +3682,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     }
    ],
    "ranks": {
@@ -3574,7 +3726,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 3
+     "source_count": 3,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:a>c",
@@ -3586,7 +3742,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:b>d",
@@ -3598,7 +3758,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:c>d",
@@ -3610,7 +3774,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:d>e",
@@ -3622,7 +3790,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 1
+     "source_count": 1,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     }
    ],
    "ranks": {
@@ -3661,7 +3833,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     }
    ],
    "ranks": {
@@ -3693,7 +3869,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:a>b",
@@ -3705,7 +3885,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     }
    ],
    "ranks": {
@@ -3736,7 +3920,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     }
    ],
    "ranks": {
@@ -3773,7 +3961,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:b>m",
@@ -3785,7 +3977,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:a>n2",
@@ -3797,7 +3993,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     },
     {
      "id": "r:b>n2",
@@ -3809,7 +4009,11 @@
      "event_time": null,
      "created_at": "2026-01-01T00:00:00Z",
      "is_current": true,
-     "source_count": 0
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
     }
    ],
    "ranks": {
@@ -3926,146 +4130,146 @@
   "by_chars": [
    {
     "index": 0,
-    "text": "Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha ",
+    "text": "Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha",
     "start_offset": 0,
-    "end_offset": 198
+    "end_offset": 197
    },
    {
     "index": 1,
-    "text": "ma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma ",
-    "start_offset": 158,
-    "end_offset": 353
+    "text": "delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta.",
+    "start_offset": 161,
+    "end_offset": 359
    },
    {
     "index": 2,
-    "text": "lpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha ",
-    "start_offset": 313,
-    "end_offset": 510
+    "text": "gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma",
+    "start_offset": 323,
+    "end_offset": 520
    },
    {
     "index": 3,
-    "text": "ma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma ",
-    "start_offset": 470,
-    "end_offset": 665
+    "text": "Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha",
+    "start_offset": 480,
+    "end_offset": 677
    },
    {
     "index": 4,
-    "text": "lpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha ",
-    "start_offset": 625,
-    "end_offset": 822
+    "text": "delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta.",
+    "start_offset": 641,
+    "end_offset": 839
    },
    {
     "index": 5,
-    "text": "ma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Emoji \ud83d\ude80 rockets and ",
-    "start_offset": 782,
-    "end_offset": 980
+    "text": "gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Alpha beta gamma delta. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80",
+    "start_offset": 803,
+    "end_offset": 1001
    },
    {
     "index": 6,
-    "text": "a beta gamma delta. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 ",
-    "start_offset": 940,
-    "end_offset": 1138
+    "text": "\ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait.",
+    "start_offset": 966,
+    "end_offset": 1163
    },
    {
     "index": 7,
-    "text": "oji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au ",
-    "start_offset": 1098,
-    "end_offset": 1294
+    "text": "lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9",
+    "start_offset": 1124,
+    "end_offset": 1324
    },
    {
     "index": 8,
-    "text": "f\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets ",
-    "start_offset": 1254,
-    "end_offset": 1452
+    "text": "caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets",
+    "start_offset": 1286,
+    "end_offset": 1485
    },
    {
     "index": 9,
-    "text": "ckets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji ",
-    "start_offset": 1412,
-    "end_offset": 1612
+    "text": "and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80",
+    "start_offset": 1452,
+    "end_offset": 1647
    },
    {
     "index": 10,
-    "text": "Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au ",
-    "start_offset": 1572,
-    "end_offset": 1770
+    "text": "\ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait.",
+    "start_offset": 1612,
+    "end_offset": 1809
    },
    {
     "index": 11,
-    "text": "f\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets ",
-    "start_offset": 1730,
-    "end_offset": 1928
+    "text": "lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9",
+    "start_offset": 1770,
+    "end_offset": 1970
    },
    {
     "index": 12,
-    "text": "ckets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text ",
-    "start_offset": 1888,
-    "end_offset": 2087
+    "text": "caf\u00e9 au lait. Emoji \ud83d\ude80 rockets and caf\u00e9 au lait. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew",
+    "start_offset": 1932,
+    "end_offset": 2131
    },
    {
     "index": 13,
-    "text": "pace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more ",
-    "start_offset": 2047,
-    "end_offset": 2242
+    "text": "more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph",
+    "start_offset": 2091,
+    "end_offset": 2287
    },
    {
     "index": 14,
-    "text": "ew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to ",
-    "start_offset": 2202,
-    "end_offset": 2397
+    "text": "to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9",
+    "start_offset": 2248,
+    "end_offset": 2446
    },
    {
     "index": 15,
-    "text": "aph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on ",
-    "start_offset": 2357,
-    "end_offset": 2552
+    "text": "whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more",
+    "start_offset": 2406,
+    "end_offset": 2606
    },
    {
     "index": 16,
-    "text": "\u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\n",
-    "start_offset": 2512,
-    "end_offset": 2712
+    "text": "New paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to",
+    "start_offset": 2566,
+    "end_offset": 2761
    },
    {
     "index": 17,
-    "text": "nd more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph ",
-    "start_offset": 2672,
-    "end_offset": 2872
+    "text": "with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on",
+    "start_offset": 2726,
+    "end_offset": 2916
    },
    {
     "index": 18,
-    "text": "to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 ",
-    "start_offset": 2832,
-    "end_offset": 3031
+    "text": "\u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n",
+    "start_offset": 2877,
+    "end_offset": 3076
    },
    {
     "index": 19,
-    "text": "hitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more ",
-    "start_offset": 2991,
-    "end_offset": 3191
+    "text": "and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph",
+    "start_offset": 3036,
+    "end_offset": 3236
    },
    {
     "index": 20,
-    "text": "ew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to ",
-    "start_offset": 3151,
-    "end_offset": 3346
+    "text": "to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9",
+    "start_offset": 3197,
+    "end_offset": 3395
    },
    {
     "index": 21,
-    "text": "aph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on ",
-    "start_offset": 3306,
-    "end_offset": 3501
+    "text": "whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more",
+    "start_offset": 3355,
+    "end_offset": 3555
    },
    {
     "index": 22,
-    "text": "\u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\n",
-    "start_offset": 3461,
-    "end_offset": 3661
+    "text": "New paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to",
+    "start_offset": 3515,
+    "end_offset": 3710
    },
    {
     "index": 23,
-    "text": "nd more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. ",
-    "start_offset": 3621,
+    "text": "with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. \n\nNew paragraph with \u00dcn\u00efc\u00f6d\u00e9 text and more words to split on whitespace. ",
+    "start_offset": 3675,
     "end_offset": 3805
    }
   ],
@@ -4677,5 +4881,3293 @@
    "preferences": [],
    "decisions": []
   }
- }
+ },
+ "as_of": {
+  "revisions": {
+   "versions": [
+    {
+     "id": "relation:r",
+     "revision": 1,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-01T00:00:00Z",
+     "is_current": true,
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
+    },
+    {
+     "id": "relation:r",
+     "revision": 2,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-11T00:00:00Z",
+     "is_current": true,
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
+    }
+   ],
+   "picked": {
+    "2023-12-30T23:59:59.999999+00:00": null,
+    "2023-12-31T00:00:00+00:00": null,
+    "2023-12-31T23:59:59.999999+00:00": null,
+    "2024-01-01T00:00:00+00:00": 1,
+    "2024-01-05T23:59:59.999999+00:00": 1,
+    "2024-01-06T00:00:00+00:00": 1,
+    "2024-01-10T23:59:59.999999+00:00": 1,
+    "2024-01-11T00:00:00+00:00": 2,
+    "2024-01-20T23:59:59.999999+00:00": 2,
+    "2024-01-21T00:00:00+00:00": 2
+   }
+  },
+  "invalidated": {
+   "versions": [
+    {
+     "id": "relation:r",
+     "revision": 1,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-01T00:00:00Z",
+     "is_current": false,
+     "source_count": 0,
+     "invalidated_at": "2024-01-06T00:00:00Z",
+     "invalidated_by": "relation:x",
+     "relevance": null,
+     "relevance_at": null
+    }
+   ],
+   "picked": {
+    "2024-01-04T23:59:59.999999+00:00": 1,
+    "2024-01-05T00:00:00+00:00": 1,
+    "2024-01-05T23:59:59.999999+00:00": 1,
+    "2024-01-06T00:00:00+00:00": null,
+    "2024-01-06T23:59:59.999999+00:00": null,
+    "2024-01-07T00:00:00+00:00": null
+   }
+  },
+  "reasserted": {
+   "versions": [
+    {
+     "id": "relation:r",
+     "revision": 1,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-01T00:00:00Z",
+     "is_current": false,
+     "source_count": 0,
+     "invalidated_at": "2024-01-06T00:00:00Z",
+     "invalidated_by": "relation:x",
+     "relevance": null,
+     "relevance_at": null
+    },
+    {
+     "id": "relation:r",
+     "revision": 2,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-09T00:00:00Z",
+     "is_current": true,
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
+    }
+   ],
+   "picked": {
+    "2024-01-04T23:59:59.999999+00:00": 1,
+    "2024-01-05T00:00:00+00:00": 1,
+    "2024-01-06T23:59:59.999999+00:00": null,
+    "2024-01-07T00:00:00+00:00": null,
+    "2024-01-08T23:59:59.999999+00:00": null,
+    "2024-01-09T00:00:00+00:00": 2,
+    "2024-01-09T23:59:59.999999+00:00": 2,
+    "2024-01-10T00:00:00+00:00": 2
+   }
+  },
+  "backdated": {
+   "versions": [
+    {
+     "id": "relation:r",
+     "revision": 1,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-01T00:00:00Z",
+     "is_current": true,
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
+    },
+    {
+     "id": "relation:r",
+     "revision": 2,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": "2023-12-29T00:00:00Z",
+     "created_at": "2024-01-11T00:00:00Z",
+     "is_current": false,
+     "source_count": 0,
+     "invalidated_at": "2024-01-21T00:00:00Z",
+     "invalidated_by": "relation:x",
+     "relevance": null,
+     "relevance_at": null
+    }
+   ],
+   "picked": {
+    "2023-12-27T23:59:59.999999+00:00": null,
+    "2023-12-28T00:00:00+00:00": null,
+    "2023-12-29T23:59:59.999999+00:00": 2,
+    "2023-12-30T00:00:00+00:00": 2,
+    "2024-01-01T23:59:59.999999+00:00": 2,
+    "2024-01-02T00:00:00+00:00": 2,
+    "2024-01-15T23:59:59.999999+00:00": 2,
+    "2024-01-16T00:00:00+00:00": 2,
+    "2024-01-25T23:59:59.999999+00:00": null,
+    "2024-01-26T00:00:00+00:00": null
+   }
+  },
+  "tie": {
+   "versions": [
+    {
+     "id": "relation:r",
+     "revision": 1,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": "2024-01-01T00:00:00Z",
+     "created_at": "2024-01-02T00:00:00Z",
+     "is_current": true,
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
+    },
+    {
+     "id": "relation:r",
+     "revision": 2,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": "2024-01-01T00:00:00Z",
+     "created_at": "2024-01-03T00:00:00Z",
+     "is_current": true,
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
+    }
+   ],
+   "picked": {
+    "2023-12-31T23:59:59.999999+00:00": null,
+    "2024-01-01T00:00:00+00:00": 2
+   }
+  },
+  "unsorted": {
+   "versions": [
+    {
+     "id": "relation:r",
+     "revision": 2,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-11T00:00:00Z",
+     "is_current": true,
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
+    },
+    {
+     "id": "relation:r",
+     "revision": 1,
+     "from_entity": "person:ann",
+     "type": "WORKS_AT",
+     "to_entity": "company:acme",
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-01T00:00:00Z",
+     "is_current": true,
+     "source_count": 0,
+     "invalidated_at": null,
+     "invalidated_by": null,
+     "relevance": null,
+     "relevance_at": null
+    }
+   ],
+   "picked": {
+    "2024-01-05T23:59:59.999999+00:00": 1,
+    "2024-01-06T00:00:00+00:00": 1,
+    "2024-01-10T23:59:59.999999+00:00": 1,
+    "2024-01-11T00:00:00+00:00": 2
+   }
+  },
+  "preference": {
+   "versions": [
+    {
+     "id": "preference:p",
+     "revision": 1,
+     "profile_id": "profile:x",
+     "subject_entity": "person:ann",
+     "kind": "preference",
+     "key": "db",
+     "value_entity": "db:x",
+     "about_entity": null,
+     "strength": null,
+     "properties": {},
+     "event_time": null,
+     "created_at": "2024-01-01T00:00:00Z",
+     "is_current": true
+    }
+   ],
+   "picked": {
+    "2023-12-31T00:00:00+00:00": null,
+    "2024-01-01T00:00:00+00:00": 1
+   }
+  }
+ },
+ "contradictions": {
+  "schema": {
+   "relations": [
+    {
+     "type": "WORKS_AT",
+     "aliases": [
+      "employed by",
+      "CEO_OF"
+     ],
+     "from": {
+      "max_count": 1
+     }
+    },
+    {
+     "type": "CEO_OF",
+     "from": {
+      "max_count": 1
+     },
+     "to": {
+      "max_count": 1
+     }
+    },
+    {
+     "type": "MEMBER_OF",
+     "from": {
+      "max_count": 2
+     }
+    },
+    {
+     "type": "KNOWS",
+     "aliases": [
+      "meets"
+     ]
+    },
+    {
+     "type": "MEETS"
+    }
+   ]
+  },
+  "caps": {
+   "WORKS_AT": [
+    "WORKS_AT",
+    [
+     "WORKS_AT",
+     "EMPLOYED_BY",
+     "CEO_OF"
+    ],
+    [
+     [
+      "from",
+      1
+     ]
+    ]
+   ],
+   "EMPLOYED_BY": [
+    "WORKS_AT",
+    [
+     "WORKS_AT",
+     "EMPLOYED_BY",
+     "CEO_OF"
+    ],
+    [
+     [
+      "from",
+      1
+     ]
+    ]
+   ],
+   "CEO_OF": [
+    "CEO_OF",
+    [
+     "CEO_OF"
+    ],
+    [
+     [
+      "from",
+      1
+     ],
+     [
+      "to",
+      1
+     ]
+    ]
+   ],
+   "MEMBER_OF": [
+    "MEMBER_OF",
+    [
+     "MEMBER_OF"
+    ],
+    [
+     [
+      "from",
+      2
+     ]
+    ]
+   ]
+  },
+  "cases": {
+   "warn": {
+    "mode": "warn",
+    "existing": [
+     {
+      "id": "relation:acme",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:acme",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:globex",
+      "WORKS_AT",
+      "person:ann",
+      "company:globex",
+      "2024-01-04T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {},
+      [
+       [
+        "contradiction",
+        "relation relation:globex contradicts current WORKS_AT relation(s) relation:acme at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ]
+    ]
+   },
+   "supersede": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:acme",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:acme",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:globex",
+      "WORKS_AT",
+      "person:ann",
+      "company:globex",
+      "2024-01-04T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:acme": [
+        "relation:globex",
+        "2024-01-04T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:acme was superseded by relation:globex, a newer WORKS_AT relation at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ]
+    ]
+   },
+   "out_of_order": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:globex",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:globex",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-11T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:acme",
+      "WORKS_AT",
+      "person:ann",
+      "company:acme",
+      "2024-01-01T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:acme": [
+        "relation:globex",
+        "2024-01-11T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "contradiction_out_of_order",
+        "relation relation:acme is older than current WORKS_AT relation relation:globex at from entity person:ann, so relation:globex stays current"
+       ]
+      ]
+     ]
+    ]
+   },
+   "out_of_order_max_two": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:a",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "MEMBER_OF",
+      "to_entity": "club:a",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-06T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     },
+     {
+      "id": "relation:b",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "MEMBER_OF",
+      "to_entity": "club:b",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-08T00:00:00.000003Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:c",
+      "MEMBER_OF",
+      "person:ann",
+      "club:c",
+      "2024-01-02T00:00:00+00:00"
+     ],
+     [
+      "relation:d",
+      "MEMBER_OF",
+      "person:ann",
+      "club:d",
+      "2024-01-07T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:c": [
+        "relation:b",
+        "2024-01-08T00:00:00.000003+00:00"
+       ]
+      },
+      [
+       [
+        "contradiction_out_of_order",
+        "relation relation:c is older than current MEMBER_OF relation relation:a at from entity person:ann, so relation:a stays current"
+       ]
+      ]
+     ],
+     [
+      {
+       "relation:a": [
+        "relation:b",
+        "2024-01-08T00:00:00.000003+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:a was superseded by relation:b, a newer MEMBER_OF relation at from entity person:ann (max_count 2)"
+       ]
+      ]
+     ]
+    ]
+   },
+   "same_instant": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:acme",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:acme",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00.000007Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:globex",
+      "WORKS_AT",
+      "person:ann",
+      "company:globex",
+      "2024-01-01T00:00:00.000007+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:acme": [
+        "relation:globex",
+        "2024-01-01T00:00:00.000007+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:acme was superseded by relation:globex, a newer WORKS_AT relation at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ]
+    ]
+   },
+   "max_two": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:a",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "MEMBER_OF",
+      "to_entity": "club:a",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     },
+     {
+      "id": "relation:b",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "MEMBER_OF",
+      "to_entity": "club:b",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-02T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:c",
+      "MEMBER_OF",
+      "person:ann",
+      "club:c",
+      "2024-01-03T00:00:00+00:00"
+     ],
+     [
+      "relation:d",
+      "MEMBER_OF",
+      "person:ann",
+      "club:d",
+      "2024-01-04T00:00:00+00:00"
+     ],
+     [
+      "relation:d",
+      "MEMBER_OF",
+      "person:ann",
+      "club:d",
+      "2024-01-05T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:a": [
+        "relation:c",
+        "2024-01-03T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:a was superseded by relation:c, a newer MEMBER_OF relation at from entity person:ann (max_count 2)"
+       ]
+      ]
+     ],
+     [
+      {
+       "relation:b": [
+        "relation:d",
+        "2024-01-04T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:b was superseded by relation:d, a newer MEMBER_OF relation at from entity person:ann (max_count 2)"
+       ]
+      ]
+     ],
+     [
+      {},
+      []
+     ]
+    ]
+   },
+   "ties_by_id": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:x",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:x",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     },
+     {
+      "id": "relation:w",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:w",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:z",
+      "WORKS_AT",
+      "person:ann",
+      "company:z",
+      "2024-01-02T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:x": [
+        "relation:z",
+        "2024-01-02T00:00:00+00:00"
+       ],
+       "relation:w": [
+        "relation:x",
+        "2024-01-01T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:x was superseded by relation:z, a newer WORKS_AT relation at from entity person:ann (max_count 1)"
+       ],
+       [
+        "relation_superseded",
+        "relation relation:w was superseded by relation:x, a newer WORKS_AT relation at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ]
+    ]
+   },
+   "both_sides": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:ceo",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "CEO_OF",
+      "to_entity": "company:acme",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:bob",
+      "CEO_OF",
+      "person:bob",
+      "company:acme",
+      "2024-01-02T00:00:00+00:00"
+     ],
+     [
+      "relation:ann2",
+      "CEO_OF",
+      "person:ann",
+      "company:globex",
+      "2024-01-03T00:00:00+00:00"
+     ],
+     [
+      "relation:bob2",
+      "CEO_OF",
+      "person:bob",
+      "company:globex",
+      "2024-01-04T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:ceo": [
+        "relation:bob",
+        "2024-01-02T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:ceo was superseded by relation:bob, a newer CEO_OF relation at to entity company:acme (max_count 1)"
+       ]
+      ]
+     ],
+     [
+      {},
+      []
+     ],
+     [
+      {
+       "relation:bob": [
+        "relation:bob2",
+        "2024-01-04T00:00:00+00:00"
+       ],
+       "relation:ann2": [
+        "relation:bob2",
+        "2024-01-04T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:bob was superseded by relation:bob2, a newer CEO_OF relation at from entity person:bob (max_count 1)"
+       ],
+       [
+        "relation_superseded",
+        "relation relation:ann2 was superseded by relation:bob2, a newer CEO_OF relation at to entity company:globex (max_count 1)"
+       ]
+      ]
+     ]
+    ]
+   },
+   "alias_and_unconstrained": {
+    "mode": "warn",
+    "existing": [
+     {
+      "id": "relation:emp",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "EMPLOYED_BY",
+      "to_entity": "company:acme",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:w",
+      "WORKS_AT",
+      "person:ann",
+      "company:globex",
+      "2024-01-02T00:00:00+00:00"
+     ],
+     [
+      "relation:k1",
+      "KNOWS",
+      "person:ann",
+      "person:bob",
+      "2024-01-02T00:00:00+00:00"
+     ],
+     [
+      "relation:k2",
+      "MEETS",
+      "person:ann",
+      "person:cy",
+      "2024-01-02T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {},
+      [
+       [
+        "contradiction",
+        "relation relation:w contradicts current WORKS_AT relation(s) relation:emp at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ],
+     [
+      {},
+      []
+     ],
+     [
+      {},
+      []
+     ]
+    ]
+   },
+   "next_newer": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:a",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:a",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     },
+     {
+      "id": "relation:b",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:b",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-02T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     },
+     {
+      "id": "relation:c",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:c",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-04T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null
+     }
+    ],
+    "admits": [
+     [
+      "relation:a",
+      "WORKS_AT",
+      "person:ann",
+      "company:a",
+      "2024-01-01T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:b": [
+        "relation:c",
+        "2024-01-04T00:00:00+00:00"
+       ],
+       "relation:a": [
+        "relation:b",
+        "2024-01-02T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:b was superseded by relation:c, a newer WORKS_AT relation at from entity person:ann (max_count 1)"
+       ],
+       [
+        "contradiction_out_of_order",
+        "relation relation:a is older than current WORKS_AT relation relation:c at from entity person:ann, so relation:c stays current"
+       ]
+      ]
+     ]
+    ]
+   },
+   "batch": {
+    "mode": "warn",
+    "existing": [],
+    "admits": [
+     [
+      "relation:a",
+      "WORKS_AT",
+      "person:ann",
+      "company:a",
+      "2024-01-01T00:00:00+00:00"
+     ],
+     [
+      "relation:b",
+      "WORKS_AT",
+      "person:ann",
+      "company:b",
+      "2024-01-01T00:00:00+00:00"
+     ],
+     [
+      "relation:c",
+      "WORKS_AT",
+      "person:ann",
+      "company:c",
+      "2024-01-01T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {},
+      []
+     ],
+     [
+      {},
+      [
+       [
+        "contradiction",
+        "relation relation:b contradicts current WORKS_AT relation(s) relation:a at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ],
+     [
+      {},
+      [
+       [
+        "contradiction",
+        "relation relation:c contradicts current WORKS_AT relation(s) relation:a, relation:b at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ]
+    ]
+   }
+  }
+ },
+ "resolution": {
+  "jaro_winkler": [
+   [
+    "MARTHA",
+    "MARHTA",
+    0.9611111111111111
+   ],
+   [
+    "DWAYNE",
+    "DUANE",
+    0.8400000000000001
+   ],
+   [
+    "DIXON",
+    "DICKSONX",
+    0.8133333333333332
+   ],
+   [
+    "Jonathan Smith",
+    "Jonathon Smith",
+    0.9714285714285714
+   ],
+   [
+    "Jon Smyth",
+    "John Smith",
+    0.9170370370370371
+   ],
+   [
+    "New York Times",
+    "The New York Times",
+    0.771164021164021
+   ],
+   [
+    "Zo\u00eb \u00c5ngstr\u00f6m",
+    "Zoe Angstrom",
+    0.8666666666666667
+   ],
+   [
+    "Cafe\u0301 Ole\u0301",
+    "caf\u00e9 ol\u00e9",
+    0.6333333333333333
+   ],
+   [
+    "\u0130stanbul",
+    "istanbul",
+    0.9166666666666666
+   ],
+   [
+    "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+    "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2",
+    0.0
+   ],
+   [
+    "Stra\u00dfe",
+    "STRASSE",
+    0.4928571428571429
+   ],
+   [
+    "\u5317\u4eac\u5927\u5b66",
+    "\u5317\u4eac",
+    0.8666666666666667
+   ],
+   [
+    "\ud83d\ude80 Rocket Co",
+    "Rocket Co",
+    0.9393939393939394
+   ],
+   [
+    "a",
+    "",
+    0.0
+   ],
+   [
+    "",
+    "",
+    1.0
+   ],
+   [
+    "  Acme  ",
+    "acme",
+    0.7083333333333334
+   ],
+   [
+    "Apple",
+    "Apex",
+    0.7066666666666667
+   ]
+  ],
+  "token_jaccard": [
+   [
+    "MARTHA",
+    "MARHTA",
+    0.0
+   ],
+   [
+    "DWAYNE",
+    "DUANE",
+    0.0
+   ],
+   [
+    "DIXON",
+    "DICKSONX",
+    0.0
+   ],
+   [
+    "Jonathan Smith",
+    "Jonathon Smith",
+    0.3333333333333333
+   ],
+   [
+    "Jon Smyth",
+    "John Smith",
+    0.0
+   ],
+   [
+    "New York Times",
+    "The New York Times",
+    1.0
+   ],
+   [
+    "Zo\u00eb \u00c5ngstr\u00f6m",
+    "Zoe Angstrom",
+    0.0
+   ],
+   [
+    "Cafe\u0301 Ole\u0301",
+    "caf\u00e9 ol\u00e9",
+    1.0
+   ],
+   [
+    "\u0130stanbul",
+    "istanbul",
+    0.0
+   ],
+   [
+    "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+    "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2",
+    1.0
+   ],
+   [
+    "Stra\u00dfe",
+    "STRASSE",
+    1.0
+   ],
+   [
+    "\u5317\u4eac\u5927\u5b66",
+    "\u5317\u4eac",
+    0.0
+   ],
+   [
+    "\ud83d\ude80 Rocket Co",
+    "Rocket Co",
+    1.0
+   ],
+   [
+    "a",
+    "",
+    0.0
+   ],
+   [
+    "",
+    "",
+    0.0
+   ],
+   [
+    "  Acme  ",
+    "acme",
+    1.0
+   ],
+   [
+    "Apple",
+    "Apex",
+    0.0
+   ]
+  ],
+  "name_similarity": [
+   [
+    "MARTHA",
+    "MARHTA",
+    0.9611111111111111
+   ],
+   [
+    "DWAYNE",
+    "DUANE",
+    0.8400000000000001
+   ],
+   [
+    "DIXON",
+    "DICKSONX",
+    0.8133333333333332
+   ],
+   [
+    "Jonathan Smith",
+    "Jonathon Smith",
+    0.9714285714285714
+   ],
+   [
+    "Jon Smyth",
+    "John Smith",
+    0.9170370370370371
+   ],
+   [
+    "New York Times",
+    "The New York Times",
+    1.0
+   ],
+   [
+    "Zo\u00eb \u00c5ngstr\u00f6m",
+    "Zoe Angstrom",
+    0.8666666666666667
+   ],
+   [
+    "Cafe\u0301 Ole\u0301",
+    "caf\u00e9 ol\u00e9",
+    1.0
+   ],
+   [
+    "\u0130stanbul",
+    "istanbul",
+    0.9666666666666666
+   ],
+   [
+    "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+    "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2",
+    1.0
+   ],
+   [
+    "Stra\u00dfe",
+    "STRASSE",
+    1.0
+   ],
+   [
+    "\u5317\u4eac\u5927\u5b66",
+    "\u5317\u4eac",
+    0.8666666666666667
+   ],
+   [
+    "\ud83d\ude80 Rocket Co",
+    "Rocket Co",
+    1.0
+   ],
+   [
+    "a",
+    "",
+    0.0
+   ],
+   [
+    "",
+    "",
+    1.0
+   ],
+   [
+    "  Acme  ",
+    "acme",
+    1.0
+   ],
+   [
+    "Apple",
+    "Apex",
+    0.7066666666666667
+   ]
+  ],
+  "distinct": [
+   [
+    "Employee1",
+    "Employee2",
+    true
+   ],
+   [
+    "Employee 1",
+    "employee1",
+    false
+   ],
+   [
+    "Project 12",
+    "Project 13",
+    true
+   ],
+   [
+    "Server00",
+    "Server0",
+    true
+   ],
+   [
+    "Model A",
+    "Model B",
+    true
+   ],
+   [
+    "John F Kennedy",
+    "John Kennedy",
+    false
+   ],
+   [
+    "John F Kennedy",
+    "John K Kennedy",
+    true
+   ],
+   [
+    "Area 51 Unit 7",
+    "Unit 7 Area 51",
+    false
+   ],
+   [
+    "Caf\u00e9 2",
+    "CAF\u00c9 2",
+    false
+   ],
+   [
+    "Katherine Zorkfuzzy",
+    "Katherine Zorkdefault",
+    true
+   ],
+   [
+    "Jon Smithers",
+    "Jonathan Smithers",
+    false
+   ],
+   [
+    "J Smithers",
+    "Jon Smithers",
+    false
+   ],
+   [
+    "New York Times",
+    "The New York Times",
+    false
+   ],
+   [
+    "Jane Dow",
+    "Jane Doe",
+    true
+   ],
+   [
+    "Jonathan Smyth",
+    "Jonathan Smith",
+    true
+   ],
+   [
+    "Zo\u00eb \u00c5ngstr\u00f6m",
+    "Zoe Angstrom",
+    true
+   ],
+   [
+    "\u216b Legion",
+    "XII Legion",
+    true
+   ],
+   [
+    "Route \u0663",
+    "Route 3",
+    true
+   ],
+   [
+    "Bobby Tables Jr",
+    "Bobby Tables",
+    true
+   ],
+   [
+    "Bobby Tables Jr.",
+    "bobby tables jr",
+    false
+   ],
+   [
+    "Henry Ford II",
+    "Henry Ford III",
+    true
+   ],
+   [
+    "John Smith Sr",
+    "John Smith IV",
+    true
+   ],
+   [
+    "",
+    "",
+    false
+   ]
+  ],
+  "distinct_low": [
+   [
+    "Employee1",
+    "Employee2",
+    true
+   ],
+   [
+    "Employee 1",
+    "employee1",
+    false
+   ],
+   [
+    "Project 12",
+    "Project 13",
+    true
+   ],
+   [
+    "Server00",
+    "Server0",
+    true
+   ],
+   [
+    "Model A",
+    "Model B",
+    true
+   ],
+   [
+    "John F Kennedy",
+    "John Kennedy",
+    false
+   ],
+   [
+    "John F Kennedy",
+    "John K Kennedy",
+    true
+   ],
+   [
+    "Area 51 Unit 7",
+    "Unit 7 Area 51",
+    false
+   ],
+   [
+    "Caf\u00e9 2",
+    "CAF\u00c9 2",
+    false
+   ],
+   [
+    "Katherine Zorkfuzzy",
+    "Katherine Zorkdefault",
+    false
+   ],
+   [
+    "Jon Smithers",
+    "Jonathan Smithers",
+    false
+   ],
+   [
+    "J Smithers",
+    "Jon Smithers",
+    false
+   ],
+   [
+    "New York Times",
+    "The New York Times",
+    false
+   ],
+   [
+    "Jane Dow",
+    "Jane Doe",
+    false
+   ],
+   [
+    "Jonathan Smyth",
+    "Jonathan Smith",
+    false
+   ],
+   [
+    "Zo\u00eb \u00c5ngstr\u00f6m",
+    "Zoe Angstrom",
+    false
+   ],
+   [
+    "\u216b Legion",
+    "XII Legion",
+    true
+   ],
+   [
+    "Route \u0663",
+    "Route 3",
+    true
+   ],
+   [
+    "Bobby Tables Jr",
+    "Bobby Tables",
+    true
+   ],
+   [
+    "Bobby Tables Jr.",
+    "bobby tables jr",
+    false
+   ],
+   [
+    "Henry Ford II",
+    "Henry Ford III",
+    true
+   ],
+   [
+    "John Smith Sr",
+    "John Smith IV",
+    true
+   ],
+   [
+    "",
+    "",
+    false
+   ]
+  ],
+  "existing": [
+   {
+    "id": "company:big-blue",
+    "type": "Company",
+    "name": "Big Blue",
+    "external_ids": {
+     "ticker": "IBM"
+    }
+   },
+   {
+    "id": "company:ibm-research",
+    "type": "Company",
+    "name": "IBM Research",
+    "aliases": [
+     "IBM Labs"
+    ]
+   },
+   {
+    "id": "person:jonathan-smith",
+    "type": "Person",
+    "name": "Jonathan Smith"
+   },
+   {
+    "id": "person:b",
+    "type": "Person",
+    "name": "B",
+    "aliases": [
+     "Sam"
+    ]
+   },
+   {
+    "id": "person:a",
+    "type": "Person",
+    "name": "A",
+    "aliases": [
+     "Sam"
+    ]
+   },
+   {
+    "id": "person:zoe",
+    "type": "Person",
+    "name": "Zo\u00eb \u00c5ngstr\u00f6m",
+    "aliases": [
+     "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3"
+    ]
+   },
+   {
+    "id": "person:employee1",
+    "type": "Person",
+    "name": "Employee1"
+   },
+   {
+    "id": "project:project-12",
+    "type": "Project",
+    "name": "Project 12"
+   },
+   {
+    "id": "server:server00",
+    "type": "Server",
+    "name": "Server00"
+   },
+   {
+    "id": "product:model-a",
+    "type": "Product",
+    "name": "Model A"
+   },
+   {
+    "id": "person:robert-johnson",
+    "type": "Person",
+    "name": "Robert Johnson",
+    "external_ids": {
+     "lei": "7"
+    }
+   },
+   {
+    "id": "person:katherine-zorkdefault",
+    "type": "Person",
+    "name": "Katherine Zorkdefault"
+   },
+   {
+    "id": "person:jonathan-smithers",
+    "type": "Person",
+    "name": "Jonathan Smithers"
+   },
+   {
+    "id": "person:jonny",
+    "type": "Person",
+    "name": "Jon Nystr\u00f6m",
+    "aliases": [
+     "Jonny S"
+    ]
+   }
+  ],
+  "decide": [
+   [
+    {
+     "type": "Company",
+     "name": "Big Blue"
+    },
+    false,
+    0.92,
+    {
+     "target_id": "company:big-blue",
+     "confidence": 1.0,
+     "reason": "id"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "Big Blue"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "company:big-blue",
+     "confidence": 1.0,
+     "reason": "id"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "Big Blue"
+    },
+    true,
+    0.97,
+    {
+     "target_id": "company:big-blue",
+     "confidence": 1.0,
+     "reason": "id"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBM",
+     "external_ids": {
+      "ticker": "IBM"
+     }
+    },
+    false,
+    0.92,
+    {
+     "target_id": "company:big-blue",
+     "confidence": 1.0,
+     "reason": "external_id"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBM",
+     "external_ids": {
+      "ticker": "IBM"
+     }
+    },
+    true,
+    0.92,
+    {
+     "target_id": "company:big-blue",
+     "confidence": 1.0,
+     "reason": "external_id"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBM",
+     "external_ids": {
+      "ticker": "IBM"
+     }
+    },
+    true,
+    0.97,
+    {
+     "target_id": "company:big-blue",
+     "confidence": 1.0,
+     "reason": "external_id"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBM",
+     "external_ids": {
+      "ticker": "MSFT"
+     }
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBM",
+     "external_ids": {
+      "ticker": "MSFT"
+     }
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBM",
+     "external_ids": {
+      "ticker": "MSFT"
+     }
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "ibm labs"
+    },
+    false,
+    0.92,
+    {
+     "target_id": "company:ibm-research",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "ibm labs"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "company:ibm-research",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "ibm labs"
+    },
+    true,
+    0.97,
+    {
+     "target_id": "company:ibm-research",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBMR",
+     "aliases": [
+      "IBM Research"
+     ]
+    },
+    false,
+    0.92,
+    {
+     "target_id": "company:ibm-research",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBMR",
+     "aliases": [
+      "IBM Research"
+     ]
+    },
+    true,
+    0.92,
+    {
+     "target_id": "company:ibm-research",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "IBMR",
+     "aliases": [
+      "IBM Research"
+     ]
+    },
+    true,
+    0.97,
+    {
+     "target_id": "company:ibm-research",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathon Smith"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathon Smith"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:jonathan-smith",
+     "confidence": 0.9714285714285714,
+     "reason": "similarity"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathon Smith"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathan Smyth"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathan Smyth"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathan Smyth"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "Jonathan Smith"
+    },
+    false,
+    0.92,
+    {
+     "target_id": "person:jonathan-smith",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "Jonathan Smith"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:jonathan-smith",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Company",
+     "name": "Jonathan Smith"
+    },
+    true,
+    0.97,
+    {
+     "target_id": "person:jonathan-smith",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Sam"
+    },
+    false,
+    0.92,
+    {
+     "target_id": "person:a",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Sam"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:a",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Sam"
+    },
+    true,
+    0.97,
+    {
+     "target_id": "person:a",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+    },
+    false,
+    0.92,
+    {
+     "target_id": "person:zoe",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:zoe",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+    },
+    true,
+    0.97,
+    {
+     "target_id": "person:zoe",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Zoe Angstrom"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Zoe Angstrom"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Zoe Angstrom"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "id": "x:custom",
+     "type": "Person",
+     "name": "Nobody"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "id": "x:custom",
+     "type": "Person",
+     "name": "Nobody"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "id": "x:custom",
+     "type": "Person",
+     "name": "Nobody"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Employee2"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Employee2"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Employee2"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Employee 1"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Employee 1"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:employee1",
+     "confidence": 0.98,
+     "reason": "similarity"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Employee 1"
+    },
+    true,
+    0.97,
+    {
+     "target_id": "person:employee1",
+     "confidence": 0.98,
+     "reason": "similarity"
+    }
+   ],
+   [
+    {
+     "type": "Project",
+     "name": "Project 13"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Project",
+     "name": "Project 13"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Project",
+     "name": "Project 13"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Server",
+     "name": "Server01"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Server",
+     "name": "Server01"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Server",
+     "name": "Server01"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Server",
+     "name": "Server0"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Server",
+     "name": "Server0"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Server",
+     "name": "Server0"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Product",
+     "name": "Model B"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Product",
+     "name": "Model B"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Product",
+     "name": "Model B"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Product",
+     "name": "Model  A"
+    },
+    false,
+    0.92,
+    {
+     "target_id": "product:model-a",
+     "confidence": 1.0,
+     "reason": "id"
+    }
+   ],
+   [
+    {
+     "type": "Product",
+     "name": "Model  A"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "product:model-a",
+     "confidence": 1.0,
+     "reason": "id"
+    }
+   ],
+   [
+    {
+     "type": "Product",
+     "name": "Model  A"
+    },
+    true,
+    0.97,
+    {
+     "target_id": "product:model-a",
+     "confidence": 1.0,
+     "reason": "id"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "robert johnson"
+    },
+    false,
+    0.92,
+    {
+     "target_id": "person:robert-johnson",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "robert johnson"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:robert-johnson",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "robert johnson"
+    },
+    true,
+    0.97,
+    {
+     "target_id": "person:robert-johnson",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "Robert Johnsen"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "Robert Johnsen"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "Robert Johnsen"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "Bob",
+     "external_ids": {
+      "lei": "7"
+     }
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "Bob",
+     "external_ids": {
+      "lei": "7"
+     }
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "Bob",
+     "external_ids": {
+      "lei": "7"
+     }
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "RJ",
+     "aliases": [
+      "Robert Johnson"
+     ]
+    },
+    false,
+    0.92,
+    {
+     "target_id": "person:robert-johnson",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "RJ",
+     "aliases": [
+      "Robert Johnson"
+     ]
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:robert-johnson",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Thing",
+     "name": "RJ",
+     "aliases": [
+      "Robert Johnson"
+     ]
+    },
+    true,
+    0.97,
+    {
+     "target_id": "person:robert-johnson",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Katherine Zorkfuzzy"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Katherine Zorkfuzzy"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Katherine Zorkfuzzy"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathon Smithers"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathon Smithers"
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:jonathan-smithers",
+     "confidence": 0.9764705882352941,
+     "reason": "similarity"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathon Smithers"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jon Smithers"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jon Smithers"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jon Smithers"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Janie",
+     "aliases": [
+      "Jonny S"
+     ]
+    },
+    false,
+    0.92,
+    {
+     "target_id": "person:jonny",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Janie",
+     "aliases": [
+      "Jonny S"
+     ]
+    },
+    true,
+    0.92,
+    {
+     "target_id": "person:jonny",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Janie",
+     "aliases": [
+      "Jonny S"
+     ]
+    },
+    true,
+    0.97,
+    {
+     "target_id": "person:jonny",
+     "confidence": 0.95,
+     "reason": "alias"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathan Smithers Jr"
+    },
+    false,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathan Smithers Jr"
+    },
+    true,
+    0.92,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ],
+   [
+    {
+     "type": "Person",
+     "name": "Jonathan Smithers Jr"
+    },
+    true,
+    0.97,
+    {
+     "target_id": null,
+     "confidence": 0.0,
+     "reason": "no_match"
+    }
+   ]
+  ],
+  "merge_id": [
+   [
+    "company:ibm",
+    "company:big-blue",
+    "entitymerge:6e9c4a01d1d73d0096d77094"
+   ],
+   [
+    "x",
+    "\ud83d\ude80",
+    "entitymerge:0756b0c57b0f3c172d78b8d9"
+   ]
+  ]
+ },
+ "relevance": [
+  [
+   [
+    "2026-01-01T00:00:00+00:00"
+   ],
+   "2026-01-01T00:00:00+00:00",
+   30,
+   0,
+   0.5
+  ],
+  [
+   [
+    "2026-01-01T00:00:00+00:00",
+    null
+   ],
+   "2026-01-31T00:00:00+00:00",
+   30,
+   1,
+   0.375
+  ],
+  [
+   [
+    "2025-11-02T00:00:00+00:00",
+    "2026-01-01T00:00:00+00:00"
+   ],
+   "2026-03-02T00:00:00+00:00",
+   30,
+   3,
+   0.21875
+  ],
+  [
+   [
+    "2026-01-06T00:00:00+00:00"
+   ],
+   "2026-01-01T00:00:00+00:00",
+   30,
+   0,
+   0.5
+  ],
+  [
+   [
+    "2026-01-01T00:00:00+00:00"
+   ],
+   "2026-01-01T00:00:00+00:00",
+   30,
+   63,
+   0.992188
+  ],
+  [
+   [
+    "2026-01-01T00:00:00.999999+00:00"
+   ],
+   "2026-01-01T00:00:01.000500+00:00",
+   1e-05,
+   0,
+   0.499599
+  ],
+  [
+   [
+    "2024-02-29T12:34:56.789+00:00",
+    "2025-06-01T08:00:00.123456+00:00"
+   ],
+   "2026-11-08T10:00:00+00:00",
+   400,
+   12,
+   0.387081
+  ],
+  [
+   [
+    "2020-01-01T00:00:00+00:00"
+   ],
+   "2026-11-08T10:00:00.5+00:00",
+   3000,
+   1000000,
+   0.560788
+  ],
+  [
+   [
+    null,
+    "2026-11-08T09:59:59.999+00:00"
+   ],
+   "2026-11-08T10:00:00+00:00",
+   365,
+   2,
+   0.833333
+  ]
+ ],
+ "neo4j_schema": [
+  {
+   "input": {
+    "node_types": [
+     {
+      "label": "Person",
+      "description": "A human",
+      "aliases": [
+       "Human"
+      ],
+      "properties": [
+       {
+        "name": "name",
+        "type": "STRING",
+        "description": "full name"
+       },
+       {
+        "name": "born",
+        "type": "DATE"
+       },
+       {
+        "name": "where",
+        "type": "POINT",
+        "required": true
+       },
+       {
+        "name": "tags",
+        "type": "LIST"
+       }
+      ],
+      "additional_properties": true
+     },
+     "Company"
+    ],
+    "relationship_types": [
+     {
+      "label": "WORKS_FOR",
+      "properties": [
+       {
+        "name": "since",
+        "type": "INTEGER"
+       }
+      ]
+     }
+    ],
+    "patterns": [
+     [
+      "Person",
+      "WORKS_FOR",
+      "Company"
+     ],
+     {
+      "source": "Company",
+      "relationship": "OWNS",
+      "target": "Company"
+     },
+     [
+      "Person",
+      "WORKS_FOR",
+      "Person"
+     ]
+    ],
+    "constraints": [
+     {
+      "type": "EXISTENCE",
+      "property_names": [
+       "name"
+      ],
+      "node_type": "Person"
+     },
+     {
+      "type": "KEY",
+      "property_names": [
+       "since"
+      ],
+      "relationship_type": "WORKS_FOR"
+     },
+     {
+      "type": "UNIQUENESS",
+      "property_name": "name",
+      "node_type": "Person"
+     }
+    ],
+    "additional_patterns": false
+   },
+   "schema": {
+    "name": null,
+    "version": null,
+    "entities": [
+     {
+      "name": "Person",
+      "description": "A human",
+      "aliases": [
+       "Human"
+      ],
+      "properties": [
+       {
+        "name": "name",
+        "type": "string",
+        "required": true,
+        "description": "full name"
+       },
+       {
+        "name": "born",
+        "type": "datetime",
+        "required": false,
+        "description": null
+       },
+       {
+        "name": "where",
+        "type": "json",
+        "required": true,
+        "description": null
+       },
+       {
+        "name": "tags",
+        "type": "json",
+        "required": false,
+        "description": null
+       }
+      ],
+      "parent": null
+     },
+     {
+      "name": "Company",
+      "description": null,
+      "aliases": [],
+      "properties": [],
+      "parent": null
+     }
+    ],
+    "relations": [
+     {
+      "type": "WORKS_FOR",
+      "description": null,
+      "aliases": [],
+      "from": {
+       "types": [
+        "Person"
+       ],
+       "min_count": null,
+       "max_count": null
+      },
+      "to": {
+       "types": [
+        "Company",
+        "Person"
+       ],
+       "min_count": null,
+       "max_count": null
+      },
+      "properties": [
+       {
+        "name": "since",
+        "type": "integer",
+        "required": true,
+        "description": null
+       }
+      ]
+     },
+     {
+      "type": "OWNS",
+      "description": null,
+      "aliases": [],
+      "from": {
+       "types": [
+        "Company"
+       ],
+       "min_count": null,
+       "max_count": null
+      },
+      "to": {
+       "types": [
+        "Company"
+       ],
+       "min_count": null,
+       "max_count": null
+      },
+      "properties": []
+     }
+    ]
+   },
+   "export": {
+    "node_types": [
+     {
+      "label": "Person",
+      "description": "A human",
+      "aliases": [
+       "Human"
+      ],
+      "properties": [
+       {
+        "name": "name",
+        "type": "STRING",
+        "description": "full name"
+       },
+       {
+        "name": "born",
+        "type": "ZONED_DATETIME",
+        "description": ""
+       },
+       {
+        "name": "where",
+        "type": "STRING",
+        "description": ""
+       },
+       {
+        "name": "tags",
+        "type": "STRING",
+        "description": ""
+       }
+      ]
+     },
+     {
+      "label": "Company",
+      "description": "",
+      "properties": []
+     }
+    ],
+    "relationship_types": [
+     {
+      "label": "WORKS_FOR",
+      "description": "",
+      "properties": [
+       {
+        "name": "since",
+        "type": "INTEGER",
+        "description": ""
+       }
+      ]
+     },
+     {
+      "label": "OWNS",
+      "description": "",
+      "properties": []
+     }
+    ],
+    "patterns": [
+     [
+      "Person",
+      "WORKS_FOR",
+      "Company"
+     ],
+     [
+      "Person",
+      "WORKS_FOR",
+      "Person"
+     ],
+     [
+      "Company",
+      "OWNS",
+      "Company"
+     ]
+    ],
+    "constraints": [
+     {
+      "type": "EXISTENCE",
+      "property_names": [
+       "name"
+      ],
+      "node_type": "Person"
+     },
+     {
+      "type": "EXISTENCE",
+      "property_names": [
+       "where"
+      ],
+      "node_type": "Person"
+     },
+     {
+      "type": "EXISTENCE",
+      "property_names": [
+       "since"
+      ],
+      "relationship_type": "WORKS_FOR"
+     }
+    ]
+   }
+  },
+  {
+   "input": {
+    "node_types": [],
+    "patterns": [
+     [
+      "A",
+      "R",
+      "B"
+     ],
+     [
+      "C",
+      "R",
+      "D"
+     ]
+    ]
+   },
+   "schema": {
+    "name": null,
+    "version": null,
+    "entities": [],
+    "relations": [
+     {
+      "type": "R",
+      "description": null,
+      "aliases": [],
+      "from": {
+       "types": [
+        "A",
+        "C"
+       ],
+       "min_count": null,
+       "max_count": null
+      },
+      "to": {
+       "types": [
+        "B",
+        "D"
+       ],
+       "min_count": null,
+       "max_count": null
+      },
+      "properties": []
+     }
+    ]
+   },
+   "export": {
+    "node_types": [],
+    "relationship_types": [
+     {
+      "label": "R",
+      "description": "",
+      "properties": []
+     }
+    ],
+    "patterns": [
+     [
+      "A",
+      "R",
+      "B"
+     ],
+     [
+      "A",
+      "R",
+      "D"
+     ],
+     [
+      "C",
+      "R",
+      "B"
+     ],
+     [
+      "C",
+      "R",
+      "D"
+     ]
+    ],
+    "constraints": []
+   }
+  }
+ ]
 }

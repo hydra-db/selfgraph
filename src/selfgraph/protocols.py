@@ -11,7 +11,20 @@ T = TypeVar("T")
 
 @runtime_checkable
 class LLMClient(Protocol):
-    async def generate(self, *, system: str, user: str, output: type[T]) -> T: ...
+    async def generate(self, *, system: str, user: str, output: type[T]) -> T:
+        """Return structured output for one prompt.
+
+        Extraction calls this once per pass for each chunk (entities, relations, preferences, decisions),
+        each with a different output model, so the reply must match the model it is given; a mismatch raises
+        ExtractionError naming the pass.
+
+        @param system (str): the system prompt.
+        @param user (str): the user prompt.
+        @param output (type[T]): the pydantic model the reply must validate against, such as one with a
+            "relations" list.
+        @return (T): an instance of output, or a mapping that validates against it.
+        """
+        ...
 
 
 @runtime_checkable

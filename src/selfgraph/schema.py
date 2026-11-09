@@ -1,13 +1,13 @@
 import logging
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, ClassVar, Literal, get_args
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from . import _ops
 from .errors import ValidationError
-from .ids import entity_id, normalize_rel_type
-from .models import InputModel, InsertWarning, Ontology, as_input
+from .ids import _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
+from .models import InputModel, InsertWarning, Ontology, TopInputModel, as_input
 
 __all__ = [
     "PropertyType",
@@ -17,16 +17,22 @@ __all__ = [
     "RelationType",
     "Schema",
     "SchemaMode",
+    "ContradictionMode",
     "as_schema",
     "require_schema_mode",
+    "require_contradiction_mode",
+    "require_schema_for_mode",
+    "contradiction_caps",
     "validate_against_schema",
     "enforce_schema",
+    "drop_off_schema",
     "log_schema_warnings",
     "render_schema_catalog",
 ]
 
 PropertyType = Literal["string", "integer", "float", "boolean", "datetime", "json"]
 SchemaMode = Literal["off", "warn", "strict"]
+ContradictionMode = Literal["off", "warn", "supersede"]
 
 _log = logging.getLogger("selfgraph")
 
@@ -71,13 +77,95 @@ class RelationType(InputModel):
     model_config = {"populate_by_name": True}
 
 
-class Schema(InputModel):
+class Schema(TopInputModel):
     input_label: ClassVar[str] = "schema"
 
     name: str | None = None
     version: str | None = None
     entities: list[EntityType] = Field(default_factory=list)
     relations: list[RelationType] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> "Schema":
+        """Reject a schema whose types contradict each other, naming the first problem by its path.
+
+        Entity type names are compared ignoring case and relation types after normalization. A max_count must be
+        at least 1, a min_count at least 0, and a min_count no greater than the max_count on the same side.
+
+        @return (Schema): the schema; raises ValueError on a duplicate name, an unknown or cyclic parent, or an
+            impossible endpoint count.
+        """
+        names: set[str] = set()
+        for i, entity in enumerate(self.entities):
+            if entity.name.casefold() in names:
+                raise ValueError(f"entities[{i}].name: duplicate entity type {entity.name!r}")
+            names.add(entity.name.casefold())
+        index = _entity_index(self)
+        for i, entity in enumerate(self.entities):
+            if entity.parent is None:
+                continue
+            if entity.parent not in index:
+                raise ValueError(f"entities[{i}].parent: unknown type {entity.parent!r}")
+            chain, seen = [entity.name], {entity.name}
+            current: EntityType | None = index[entity.parent]
+            while current is not None:
+                chain.append(current.name)
+                if current.name == entity.name:
+                    raise ValueError(f"entities[{i}].parent: parent cycle " + " -> ".join(repr(n) for n in chain))
+                if current.name in seen:
+                    break
+                seen.add(current.name)
+                current = index.get(current.parent) if current.parent is not None else None
+        types: set[str] = set()
+        for i, relation in enumerate(self.relations):
+            try:
+                rtype = normalize_rel_type(relation.type)
+            except ValidationError:
+                rtype = None
+            if rtype in types:
+                raise ValueError(f"relations[{i}].type: duplicate relation type {relation.type!r}")
+            if rtype is not None:
+                types.add(rtype)
+            for side, end in (("from", relation.from_), ("to", relation.to)):
+                at = f"relations[{i}].{side}"
+                if end.max_count is not None and end.max_count < 1:
+                    raise ValueError(f"{at}.max_count: must be >= 1")
+                if end.min_count is not None and end.min_count < 0:
+                    raise ValueError(f"{at}.min_count: must be >= 0")
+                if end.min_count is not None and end.max_count is not None and end.min_count > end.max_count:
+                    raise ValueError(
+                        f"{at}.min_count: min_count {end.min_count} is greater than max_count {end.max_count}"
+                    )
+        return self
+
+    @classmethod
+    def from_neo4j_ontology(cls, data: Mapping[str, Any]) -> "Schema":
+        """Build a schema from a Neo4j graph schema JSON object, as written by neo4j-graphrag's SchemaBuilder.
+
+        Node types become entity types, relationship types become relation types, patterns become endpoint
+        types, and EXISTENCE or KEY constraints mark properties required. Property types map to the nearest
+        SelfGraph type, or json with a warning. What SelfGraph does not model (uniqueness, additional_*
+        flags, indexes, and any other key) is dropped and listed in one warning on the selfgraph logger.
+
+        @param data (Mapping[str, Any]): node_types, relationship_types, patterns, and constraints.
+        @return (Schema): the schema.
+        """
+        from ._neo4j_schema import from_neo4j
+
+        return as_input(cls, from_neo4j(data), "schema")
+
+    def to_neo4j_ontology(self) -> dict[str, Any]:
+        """Render this schema as a Neo4j graph schema JSON object, the format neo4j-graphrag reads.
+
+        Required properties become EXISTENCE constraints and endpoint types become every source and target
+        pattern. Fields with no Neo4j counterpart (name, version, parent, cardinality, json types, one-sided
+        endpoints) are listed in one warning on the selfgraph logger.
+
+        @return (dict[str, Any]): node_types, relationship_types, patterns, and constraints.
+        """
+        from ._neo4j_schema import to_neo4j
+
+        return to_neo4j(self)
 
 
 def as_schema(value: "Schema | Mapping | None") -> "Schema | None":
@@ -89,13 +177,64 @@ def as_schema(value: "Schema | Mapping | None") -> "Schema | None":
     return as_input(Schema, value, "schema")
 
 
+def _require_mode(field: str, mode: object, modes: tuple[str, ...]) -> None:
+    """Reject a mode name outside its allowed set.
+
+    @param field (str): the option name, for the error.
+    @param mode (object): the mode.
+    @param modes (tuple[str, ...]): the allowed modes, in the order the error lists them.
+    """
+    if mode not in modes:
+        raise ValidationError(f"{field} must be one of {', '.join(modes)}, got {mode!r}")
+
+
 def require_schema_mode(mode: object) -> None:
     """Reject a schema mode other than off, warn, or strict.
 
     @param mode (object): the schema mode.
     """
-    if mode not in get_args(SchemaMode):
-        raise ValidationError(f"schema_mode must be one of {', '.join(get_args(SchemaMode))}, got {mode!r}")
+    _require_mode("schema_mode", mode, get_args(SchemaMode))
+
+
+def require_schema_for_mode(mode: object, schema: object) -> None:
+    """Reject strict schema mode when no schema is set, since there is nothing to be strict about.
+
+    @param mode (object): the schema mode.
+    @param schema (object): the schema, a schema source, or None.
+    """
+    if mode == "strict" and schema is None:
+        raise ValidationError("schema_mode 'strict' needs a schema")
+
+
+def require_contradiction_mode(mode: object) -> None:
+    """Reject a contradiction mode other than off, warn, or supersede.
+
+    @param mode (object): the contradiction mode.
+    """
+    _require_mode("contradiction", mode, get_args(ContradictionMode))
+
+
+def contradiction_caps(schema: Schema | None) -> dict[str, _ops.RelationCap]:
+    """Collect the max_count limits a contradiction check enforces, keyed by normalized relation type and alias.
+
+    @param schema (Schema | None): the active schema.
+    @return (dict[str, RelationCap]): each constrained type's canonical type, stored type names, and limits.
+    """
+    caps: dict[str, _ops.RelationCap] = {}
+    for relation in schema.relations if schema is not None else ():
+        limits = tuple(
+            (side, endpoint.max_count)
+            for side, endpoint in (("from", relation.from_), ("to", relation.to))
+            if endpoint.max_count is not None
+        )
+        canonical = normalize_rel_type(relation.type)
+        names = tuple(dict.fromkeys([canonical, *(normalize_rel_type(a) for a in relation.aliases)]))
+        for name in names:
+            if limits:
+                caps[name] = _ops.RelationCap(canonical, names, limits)
+            else:
+                caps.pop(name, None)
+    return caps
 
 
 def _entity_index(schema: Schema) -> dict[str, EntityType]:
@@ -124,6 +263,137 @@ def _relation_index(schema: Schema) -> dict[str, RelationType]:
         for alias in relation.aliases:
             index[normalize_rel_type(alias)] = relation
     return index
+
+
+def canonical_entity_type(etype: str, schema: Schema | None) -> str:
+    """Rename an entity type written as a schema type name or alias, in any letter case, to the schema's type name.
+
+    An exact match wins; otherwise the first schema name or alias that matches ignoring case, in schema order.
+
+    @param etype (str): the cleaned entity type.
+    @param schema (Schema | None): the active schema.
+    @return (str): the schema type name for a name or alias, else the type unchanged.
+    """
+    if schema is None:
+        return etype
+    index = _entity_index(schema)
+    folded = etype.casefold()
+    matched = index.get(etype) or next((t for name, t in index.items() if name.casefold() == folded), None)
+    return etype if matched is None else matched.name
+
+
+def canonical_entity_ref(eid: Any, etype: str, schema: Schema | None) -> Any:
+    """Rewrite an explicit entity id whose prefix is another name or alias of its own schema type to the canonical id.
+
+    For an entity typed Company or org, where org is an alias of Company, the id org:acme becomes company:acme. A
+    prefix that names a different type is left as is, so the id check rejects it.
+
+    @param eid (Any): the explicit entity id as given.
+    @param etype (str): the cleaned entity type as given.
+    @param schema (Schema | None): the active schema.
+    @return (Any): the canonical entity id, or eid canonicalized but otherwise unchanged.
+    """
+    eid = _canonical_id(eid)
+    if schema is None or not isinstance(eid, str) or ":" not in eid:
+        return eid
+    canonical = canonical_entity_type(etype, schema)
+    matched = _entity_index(schema).get(canonical)
+    forms = {etype, canonical, *(matched.aliases if matched is not None else ())}
+    prefix, name = eid.split(":", 1)
+    target = slug(normalize_text(canonical))
+    if prefix != target and prefix in {slug(normalize_text(form)) for form in forms}:
+        return f"{target}:{name}"
+    return eid
+
+
+def canonical_relation_type(rtype: str, schema: Schema | None) -> str:
+    """Rename a relation type written as a schema alias to the schema's normalized type.
+
+    @param rtype (str): the relation type.
+    @param schema (Schema | None): the active schema.
+    @return (str): the normalized schema type for an alias, else the type unchanged.
+    """
+    given = normalize_rel_type(rtype)
+    matched = _relation_index(schema).get(given) if schema is not None else None
+    return rtype if matched is None or normalize_rel_type(matched.type) == given else normalize_rel_type(matched.type)
+
+
+def canonicalize_types(ontology: Ontology, schema: Schema | None) -> Ontology:
+    """Rename entity and relation types written as schema aliases to the schema names before ids are derived.
+
+    References elsewhere in the ontology to an entity's derived id under any name or alias of its schema type (such
+    as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed
+    relation's derived id. An explicit entity id in such an alias form is rewritten the same way.
+
+    @param ontology (Ontology): the ontology.
+    @param schema (Schema | None): the active schema.
+    @return (Ontology): the ontology with canonical types.
+    """
+    if schema is None:
+        return ontology
+    forms = {t.name: [t.name, *t.aliases] for t in schema.entities}
+    moved: dict[str, str] = {}
+    entities = []
+    for ent in ontology.entities:
+        etype = _ops._clean_text(ent.type)
+        canonical = canonical_entity_type(etype, schema)
+        update: dict[str, Any] = {} if canonical == etype else {"type": canonical}
+        if ent.id is None:
+            name = _ops._clean_text(ent.name)
+            target = entity_id(canonical, name)
+            for form in (etype, *forms.get(canonical, ())):
+                alt = entity_id(form, name)
+                if alt != target and alt not in moved:
+                    moved[alt] = target
+        else:
+            target = canonical_entity_ref(ent.id, etype, schema)
+            if target != ent.id:
+                moved.setdefault(ent.id, target)
+                update["id"] = target
+        entities.append(ent.model_copy(update=update) if update else ent)
+    if moved:
+        kept = {ent.id or entity_id(_ops._clean_text(ent.type), _ops._clean_text(ent.name)) for ent in entities}
+        moved = {old: new for old, new in moved.items() if old not in kept}
+
+    def m(eid: str | None) -> str | None:
+        return moved.get(eid, eid) if eid is not None else None
+
+    steps: dict[str, str] = {}
+    relations = []
+    for rel in ontology.relations:
+        rtype = canonical_relation_type(rel.type, schema)
+        new = rel.model_copy(update={"type": rtype, "from_entity": m(rel.from_entity), "to_entity": m(rel.to_entity)})
+        if rel.id is None and (
+            rtype != rel.type or (new.from_entity, new.to_entity) != (rel.from_entity, rel.to_entity)
+        ):
+            steps[relation_id(rel.from_entity, rel.type, rel.to_entity)] = relation_id(
+                new.from_entity, rtype, new.to_entity
+            )
+        relations.append(new)
+    preferences = [
+        p.model_copy(
+            update={
+                "subject_entity": m(p.subject_entity),
+                "value_entity": m(p.value_entity),
+                "about_entity": m(p.about_entity),
+            }
+        )
+        for p in ontology.preferences
+    ]
+    decisions = [
+        d.model_copy(
+            update={
+                "actor_entity": m(d.actor_entity),
+                "outcome_entity": m(d.outcome_entity),
+                "alternative_entities": [m(a) for a in d.alternative_entities],
+                "steps": [steps.get(s, s) for s in d.steps],
+            }
+        )
+        for d in ontology.decisions
+    ]
+    return ontology.model_copy(
+        update={"entities": entities, "relations": relations, "preferences": preferences, "decisions": decisions}
+    )
 
 
 def _lineage(entity: EntityType, index: dict[str, EntityType]) -> Iterator[EntityType]:
@@ -164,7 +434,9 @@ def _type_ok(value: object, expected: PropertyType) -> bool:
     """
     if value is None or expected == "json":
         return True
-    if expected == "string" or expected == "datetime":
+    if expected == "datetime":
+        return isinstance(value, str) and _is_iso_time(value)
+    if expected == "string":
         return isinstance(value, str)
     if expected == "boolean":
         return isinstance(value, bool)
@@ -172,6 +444,19 @@ def _type_ok(value: object, expected: PropertyType) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if expected == "float":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return True
+
+
+def _is_iso_time(text: str) -> bool:
+    """Report whether text is an ISO 8601 date or time, as the time flags and parameters accept it.
+
+    @param text (str): the text.
+    @return (bool): True when it parses.
+    """
+    try:
+        _ops.parse_time(text, "value")
+    except ValidationError:
+        return False
     return True
 
 
@@ -212,6 +497,7 @@ def validate_against_schema(
     *,
     graph_types: Mapping[str, str] | None = None,
     cardinality: bool = True,
+    max_count: bool = True,
 ) -> list[InsertWarning]:
     """Check an ontology against a schema and return advisory warnings in a stable order.
 
@@ -219,6 +505,7 @@ def validate_against_schema(
     @param schema (Schema): the schema to check against.
     @param graph_types (Mapping[str, str] | None): the stored type of each relation endpoint outside the ontology.
     @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
+    @param max_count (bool): whether to report counts above max_count, which a contradiction check reports instead.
     @return (list[InsertWarning]): the warnings, entities first then relations then cardinality.
     """
     entities = _entity_index(schema)
@@ -226,13 +513,14 @@ def validate_against_schema(
     warnings: list[InsertWarning] = []
 
     type_of_id: dict[str, EntityType] = {}
-    for eid, etype in (graph_types or {}).items():
+    raw_type_of_id: dict[str, str] = dict(graph_types or {})
+    for eid, etype in raw_type_of_id.items():
         if etype in entities:
             type_of_id[eid] = entities[etype]
     for ent in ontology.entities:
         matched = entities.get(ent.type)
-        eid = ent.id or entity_id(ent.type, ent.name)
-        ref = ent.id or f"{ent.type}:{ent.name}"
+        ref = eid = ent.id or entity_id(ent.type, ent.name)
+        raw_type_of_id[eid] = ent.type
         if matched is None:
             if entities:
                 warnings.append(
@@ -256,7 +544,10 @@ def validate_against_schema(
         canonical = normalize_rel_type(matched.type)
         for side, endpoint, eid in (("from", matched.from_, rel.from_entity), ("to", matched.to, rel.to_entity)):
             end_type = type_of_id.get(eid)
-            mismatch = end_type is not None and not any(t.name in endpoint.types for t in _lineage(end_type, entities))
+            if end_type is not None:
+                mismatch = not any(t.name in endpoint.types for t in _lineage(end_type, entities))
+            else:
+                mismatch = eid in raw_type_of_id and raw_type_of_id[eid] not in endpoint.types
             if endpoint.types and mismatch:
                 warnings.append(
                     InsertWarning(
@@ -278,7 +569,7 @@ def validate_against_schema(
                 low, high = endpoint.min_count, endpoint.max_count
                 for bound, limit, broken in (
                     ("below min", low, low is not None and n < low),
-                    ("above max", high, high is not None and n > high),
+                    ("above max", high, max_count and high is not None and n > high),
                 ):
                     if broken:
                         warnings.append(
@@ -298,8 +589,13 @@ async def enforce_schema(
     mode: SchemaMode,
     *,
     cardinality: bool = True,
+    max_count: bool = True,
+    before: Ontology | None = None,
 ) -> list[InsertWarning]:
     """Check a pending write against the schema, looking up stored endpoint types, and apply the schema mode.
+
+    With before, the stored state an update starts from, only the warnings the update introduces count: a
+    violation the stored state already had neither raises in strict mode nor is reported in warn mode.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -307,10 +603,39 @@ async def enforce_schema(
     @param schema (Schema | None): the active schema.
     @param mode (SchemaMode): off skips the check, warn returns the warnings, strict raises on any.
     @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
+    @param max_count (bool): whether to report counts above max_count, which a contradiction check reports instead.
+    @param before (Ontology | None): the stored state an update replaces, or None for a new write.
     @return (list[InsertWarning]): the warnings, empty when off or clean.
     """
     if schema is None or mode == "off":
         return []
+
+    async def check(subject: Ontology) -> list[InsertWarning]:
+        return validate_against_schema(
+            subject,
+            schema,
+            graph_types=await _stored_types(runner, ns, subject),
+            cardinality=cardinality,
+            max_count=max_count,
+        )
+
+    warnings = await check(ontology)
+    if before is not None and warnings:
+        known = {(w.code, w.message) for w in await check(before)}
+        warnings = [w for w in warnings if (w.code, w.message) not in known]
+    if mode == "strict" and warnings:
+        raise ValidationError("; ".join(w.message for w in warnings))
+    return warnings
+
+
+async def _stored_types(runner: Any, ns: str, ontology: Ontology) -> dict[str, str]:
+    """Look up the stored type of every relation endpoint the ontology does not define.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param ontology (Ontology): the pending write.
+    @return (dict[str, str]): each stored endpoint's type by entity id.
+    """
     local = {ent.id or entity_id(ent.type, ent.name) for ent in ontology.entities}
     graph_types: dict[str, str] = {}
     for rel in ontology.relations:
@@ -319,10 +644,73 @@ async def enforce_schema(
                 stored = await _ops.get_entity(runner, ns, eid)
                 if stored is not None:
                     graph_types[eid] = stored.type
-    warnings = validate_against_schema(ontology, schema, graph_types=graph_types, cardinality=cardinality)
-    if mode == "strict" and warnings:
-        raise ValidationError("; ".join(w.message for w in warnings))
-    return warnings
+    return graph_types
+
+
+async def drop_off_schema(
+    runner: Any, ns: str, ontology: Ontology, schema: Schema | None
+) -> tuple[Ontology, list[InsertWarning]]:
+    """Drop the extracted entities and relations a schema rejects, and whatever references a dropped one.
+
+    Strict mode applies this to extracted data, so one off-schema guess by the extractor does not fail the insert.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param ontology (Ontology): the extracted ontology, with canonical types.
+    @param schema (Schema | None): the active schema.
+    @return (tuple[Ontology, list[InsertWarning]]): the kept ontology and a "dropped_off_schema" warning per drop.
+    """
+    if schema is None:
+        return ontology, []
+    warnings: list[InsertWarning] = []
+    dropped: set[str] = set()
+
+    def keep(kind: str, oid: str, reasons: list[str]) -> bool:
+        if reasons:
+            dropped.add(oid)
+            message = f"dropped extracted {kind} {oid}: {'; '.join(reasons)}"
+            warnings.append(InsertWarning(code="dropped_off_schema", message=message))
+        return not reasons
+
+    def lost(refs: Iterable[str | None]) -> list[str]:
+        return [f"{ref} was dropped" for ref in dict.fromkeys(refs) if ref in dropped]
+
+    entities = [
+        ent
+        for ent in ontology.entities
+        if keep(
+            "entity",
+            ent.id or entity_id(ent.type, ent.name),
+            [w.message for w in validate_against_schema(Ontology(entities=[ent]), schema, cardinality=False)],
+        )
+    ]
+    by_id = {ent.id or entity_id(ent.type, ent.name): ent for ent in entities}
+    graph_types = await _stored_types(runner, ns, ontology)
+    relations = []
+    for rel in ontology.relations:
+        ends = [by_id[e] for e in (rel.from_entity, rel.to_entity) if e in by_id]
+        found = validate_against_schema(
+            Ontology(entities=ends, relations=[rel]), schema, graph_types=graph_types, cardinality=False
+        )
+        rid = rel.id or relation_id(rel.from_entity, rel.type, rel.to_entity)
+        if keep("relation", rid, lost([rel.from_entity, rel.to_entity]) or [w.message for w in found]):
+            relations.append(rel)
+    preferences = [
+        p
+        for p in ontology.preferences
+        if keep("preference", p.id or p.key, lost([p.subject_entity, p.value_entity, p.about_entity]))
+    ]
+    decisions = [
+        d
+        for d in ontology.decisions
+        if keep(
+            "decision",
+            d.id or d.title,
+            lost([d.actor_entity, d.outcome_entity, *d.alternative_entities, *d.steps]),
+        )
+    ]
+    update = {"entities": entities, "relations": relations, "preferences": preferences, "decisions": decisions}
+    return ontology.model_copy(update=update), warnings
 
 
 def log_schema_warnings(warnings: list[InsertWarning]) -> None:

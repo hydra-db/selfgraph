@@ -18,6 +18,7 @@ export interface MatchNodesOptions {
   any_of?: Record<string, readonly unknown[]> | null;
   skip?: number;
   limit?: number;
+  id_gt?: string | null;
 }
 
 export type NodeRow = readonly [id: string, props: Props];
@@ -40,9 +41,16 @@ export interface MatchEdgesOptions {
   equals?: Props | null;
   skip?: number;
   limit?: number;
+  id_gt?: string | null;
 }
 
 export interface LLMClient {
+  /**
+   * Return structured output for one prompt. Extraction calls this once per pass for each chunk (entities, relations, preferences, decisions), each with a different output schema, so the reply must match the schema it is given; a mismatch throws ExtractionError naming the pass.
+   *
+   * @param args ({ system: string; user: string; output: z.ZodType<T> }): the system prompt, the user prompt, and the zod schema the reply must parse with, such as one with a "relations" array.
+   * @return (T): a value the output schema accepts.
+   */
   generate<T>(args: { system: string; user: string; output: z.ZodType<T> }): Promise<T>;
 }
 
@@ -82,6 +90,14 @@ export interface GraphPrimitives {
   matchNodes(ns: string, label: string, options?: MatchNodesOptions): Promise<Props[]>;
   deleteNode(ns: string, label: string, id: string): Promise<void>;
   /**
+   * Detach-delete many nodes of a label by id; unknown ids are skipped.
+   *
+   * @param ns (string): the namespace.
+   * @param label (string): the node label.
+   * @param ids (readonly string[]): the node ids.
+   */
+  deleteNodes(ns: string, label: string, ids: readonly string[]): Promise<void>;
+  /**
    * Detach-delete the nodes of a label matching exact property values.
    *
    * @param ns (string): the namespace.
@@ -113,15 +129,7 @@ export interface GraphPrimitives {
   updateCurrentEdge(ns: string, id: string, props: Props): Promise<void>;
   deleteEdges(ns: string, id: string): Promise<number>;
   matchEdges(ns: string, options: MatchEdgesOptions): Promise<EdgeRow[]>;
-  versionedRelationIds(
-    ns: string,
-    label: string,
-    id: string,
-    options: { exclude_types: readonly string[] },
-  ): Promise<string[]>;
   childNodes(ns: string, parentLabel: string, parentId: string, edgeType: string, childLabel: string): Promise<Props[]>;
-  countOutEdges(ns: string, label: string, id: string): Promise<number>;
-  countInEdgesTyped(ns: string, label: string, id: string, types: readonly string[]): Promise<number>;
   deleteEdgesTouchingByType(ns: string, label: string, id: string, type: string): Promise<void>;
   /**
    * Reject an encoded write that exceeds a store size limit, before any prior state is mutated.

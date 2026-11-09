@@ -37,6 +37,82 @@ function suite(spec: StoreSpec) {
   const open = freshGraphs(spec, "ev");
   const records = (g: SelfGraph) => g.store.matchNodes(g.namespace, "Evidence");
 
+  it("records the evidence of a created relation, rejects bad offsets, and needs a known object", async () => {
+    const g = open();
+    await expect(g.entities.evidence("person:nobody")).rejects.toBeInstanceOf(NotFoundError);
+    await expect(g.relations.evidence("relation:nothing")).rejects.toBeInstanceOf(NotFoundError);
+    await g.entities.create("Ada", "Person");
+    expect((await g.entities.evidence("person:ada")).items).toEqual([]);
+    await g.entities.create("Acme", "Company");
+    const rel = await g.relations.create("person:ada", "WORKS_AT", "company:acme", {
+      evidence: [{ source_id: "m", quote: "a", start_offset: 1, end_offset: 2, confidence: 0.5 }],
+    });
+    expect(rel.source_count).toBe(1);
+    expect(await all((id, o) => g.relations.evidence(id, o), rel.id)).toEqual([
+      {
+        source_id: "m",
+        source_version: "m:manual",
+        chunk_id: null,
+        quote: "a",
+        start_offset: 1,
+        end_offset: 2,
+        confidence: 0.5,
+      },
+    ]);
+    for (const [bad, message] of [
+      [{ start_offset: -1 }, "evidence start_offset cannot be negative, got -1"],
+      [{ end_offset: -2 }, "evidence end_offset cannot be negative, got -2"],
+      [{ start_offset: 5, end_offset: 2 }, "evidence start_offset 5 is greater than end_offset 2"],
+      [{ confidence: 1.5 }, "evidence confidence must be between 0 and 1, got 1.5"],
+      [{ confidence: -0.5 }, "evidence confidence must be between 0 and 1, got -0.5"],
+    ] as const) {
+      await expect(
+        g.relations.create("person:ada", "KNOWS", "company:acme", { evidence: [{ source_id: "m", ...bad }] }),
+      ).rejects.toThrow(message);
+      await expect(g.relations.update(REL, { evidence: [{ source_id: "m", ...bad }] })).rejects.toThrow(message);
+    }
+  });
+
+  it("records one evidence per source version, and other sources on their own manual version", async () => {
+    const g = open();
+    const rel = { ...ONTOLOGY.relations[0]!, evidence: [{ source_id: "doc", quote: "Ada works at Acme" }] };
+    const res = await g.insert.ontology({ ...ONTOLOGY, relations: [rel] }, { source_id: "doc" });
+    const [ev, ...rest] = (await g.relations.evidence(REL)).items;
+    expect(rest).toEqual([]);
+    expect([ev!.source_id, ev!.source_version, ev!.quote]).toEqual(["doc", res.source_version, "Ada works at Acme"]);
+    expect((await g.entities.evidence("person:ada")).items).toHaveLength(1);
+    const other = { ...rel, evidence: [{ source_id: "elsewhere", quote: "q" }] };
+    await g.insert.ontology({ ...ONTOLOGY, relations: [other] }, { source_id: "doc2" });
+    const sources = (await g.relations.evidence(REL)).items.map((e) => e.source_id).sort();
+    expect(sources).toEqual(["doc", "doc2", "elsewhere"]);
+    const twoSources = {
+      entities: [
+        { type: "Person", name: "A" },
+        { type: "Person", name: "B" },
+      ],
+      relations: [
+        {
+          from_entity: "person:a",
+          type: "KNOWS",
+          to_entity: "person:b",
+          evidence: [
+            { source_id: "doc1", quote: "other" },
+            { source_id: "src1", quote: "own" },
+          ],
+        },
+      ],
+    };
+    const own = await g.insert.ontology(twoSources, { source_id: "src1" });
+    const rid = own.relations[0]!.id;
+    const byQuote = new Map((await g.relations.evidence(rid)).items.map((e) => [e.quote, e]));
+    expect(byQuote.get("other")!.source_version).toBe("doc1:manual");
+    expect(byQuote.get("own")!.source_version).toBe(own.source_version);
+    const plain = await g.insert.ontology(twoSources);
+    expect(plain.relations[0]!.source_count).toBe(2);
+    const items = (await g.relations.evidence(rid)).items;
+    expect(items.filter((e) => e.source_id === "doc1").map((e) => e.source_version)).toEqual(["doc1:manual"]);
+  });
+
   it("counts each source once and pages through evidence", async () => {
     const g = open();
     let res = await g.insert.ontology(ONTOLOGY, { source_id: "doc-0" });
@@ -63,8 +139,8 @@ function suite(spec: StoreSpec) {
       },
       { source_id: "s" },
     );
-    expect(res.entities.map((e) => e.source_count)).toEqual([1, 1]);
-    expect(res.entities[1]!.aliases).toEqual(["A"]);
+    expect(res.entities.map((e) => e.source_count)).toEqual([1]);
+    expect(res.entities[0]!.aliases).toEqual(["A"]);
     expect(await all((id, o) => g.entities.evidence(id, o), "person:ada")).toHaveLength(1);
   });
 
@@ -82,77 +158,6 @@ function suite(spec: StoreSpec) {
       ["s1", null],
       ["s2", "works there"],
     ]);
-  });
-
-  it("records the evidence of a created relation", async () => {
-    const g = open();
-    await g.entities.create("Ada", "Person");
-    await g.entities.create("Acme", "Company");
-    const rel = await g.relations.create("person:ada", "WORKS_AT", "company:acme", {
-      evidence: [{ source_id: "m", quote: "a", start_offset: 1, end_offset: 2, confidence: 0.5 }],
-    });
-    expect(rel.source_count).toBe(1);
-    expect(await all((id, o) => g.relations.evidence(id, o), rel.id)).toEqual([
-      {
-        source_id: "m",
-        source_version: "m:manual",
-        chunk_id: null,
-        quote: "a",
-        start_offset: 1,
-        end_offset: 2,
-        confidence: 0.5,
-      },
-    ]);
-  });
-
-  it("deletes evidence with its entity or relation", async () => {
-    const g = open();
-    await g.insert.ontology(ONTOLOGY, { source_id: "s1" });
-    await g.insert.ontology({ entities: [{ type: "Person", name: "Bob" }] }, { source_id: "s1" });
-    await g.relations.delete(REL);
-    expect(await records(g)).toHaveLength(3);
-    await g.insert.ontology(ONTOLOGY, { source_id: "s2" });
-    await g.entities.delete("person:ada");
-    const remaining = (await records(g)).map((r) => `${r.target_id}|${r.source_id}`).sort();
-    expect(remaining).toEqual(["company:acme|s1", "company:acme|s2", "person:bob|s1"]);
-  });
-
-  it("raises NotFoundError for the evidence of an unknown object", async () => {
-    const g = open();
-    await expect(g.entities.evidence("person:nobody")).rejects.toBeInstanceOf(NotFoundError);
-    await expect(g.relations.evidence("relation:nothing")).rejects.toBeInstanceOf(NotFoundError);
-    await g.entities.create("Ada", "Person");
-    expect((await g.entities.evidence("person:ada")).items).toEqual([]);
-  });
-
-  it("keeps evidence for another source on its own manual version", async () => {
-    const g = open();
-    const ontology = {
-      entities: [
-        { type: "Person", name: "A" },
-        { type: "Person", name: "B" },
-      ],
-      relations: [
-        {
-          from_entity: "person:a",
-          type: "KNOWS",
-          to_entity: "person:b",
-          evidence: [
-            { source_id: "doc1", quote: "other" },
-            { source_id: "src1", quote: "own" },
-          ],
-        },
-      ],
-    };
-    const res = await g.insert.ontology(ontology, { source_id: "src1" });
-    const rid = res.relations[0]!.id;
-    const byQuote = new Map((await g.relations.evidence(rid)).items.map((e) => [e.quote, e]));
-    expect(byQuote.get("other")!.source_version).toBe("doc1:manual");
-    expect(byQuote.get("own")!.source_version).toBe(res.source_version);
-    const plain = await g.insert.ontology(ontology);
-    expect(plain.relations[0]!.source_count).toBe(2);
-    const items = (await g.relations.evidence(rid)).items;
-    expect(items.filter((e) => e.source_id === "doc1").map((e) => e.source_version)).toEqual(["doc1:manual"]);
   });
 
   it.runIf(spec.name === "hydradb")(

@@ -57,6 +57,8 @@ export function encodeEntityProps(args: {
   source_count: number;
   created_at: Date;
   updated_at: Date;
+  relevance?: number | null;
+  relevance_at?: Date | null;
 }): Props {
   return {
     id: args.id,
@@ -69,7 +71,19 @@ export function encodeEntityProps(args: {
     source_count: args.source_count,
     created_at: toIso(args.created_at),
     updated_at: toIso(args.updated_at),
+    ...relevanceProps(args.relevance ?? null, args.relevance_at ?? null),
   };
+}
+
+/**
+ * The stored relevance fields of a node or edge, empty when it was never scored.
+ *
+ * @param relevance (number | null): the relevance score, or null.
+ * @param relevanceAt (Date | null): when the score was computed.
+ * @return (Props): relevance and relevance_at, or nothing.
+ */
+export function relevanceProps(relevance: number | null, relevanceAt: Date | null): Props {
+  return relevance === null ? {} : { relevance, relevance_at: toIso(relevanceAt) };
 }
 
 export function decodeEntity(props: Props): Entity {
@@ -83,6 +97,8 @@ export function decodeEntity(props: Props): Entity {
     source_count: count(props.source_count),
     created_at: date(props.created_at),
     updated_at: date(props.updated_at),
+    relevance: optNum(props.relevance),
+    relevance_at: fromIso(props.relevance_at),
   };
 }
 
@@ -95,6 +111,8 @@ export function encodeRelationProps(args: {
   created_at: Date;
   is_current: boolean;
   source_count: number;
+  invalidated_at?: Date | null;
+  invalidated_by?: string | null;
 }): Props {
   return {
     id: args.id,
@@ -105,6 +123,8 @@ export function encodeRelationProps(args: {
     event_time: toIso(args.event_time),
     properties_json: dumps(args.properties),
     source_count: args.source_count,
+    invalidated_at: toIso(args.invalidated_at),
+    invalidated_by: args.invalidated_by ?? null,
   };
 }
 
@@ -120,6 +140,10 @@ export function decodeRelation(props: Props, edge: { from_entity: string; to_ent
     created_at: date(props.created_at),
     is_current: Boolean(props.is_current),
     source_count: count(props.source_count),
+    invalidated_at: fromIso(props.invalidated_at),
+    invalidated_by: optStr(props.invalidated_by),
+    relevance: optNum(props.relevance),
+    relevance_at: fromIso(props.relevance_at),
   };
 }
 

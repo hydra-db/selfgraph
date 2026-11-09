@@ -16,21 +16,41 @@ import {
   Ontology,
   type ParsedDocument,
   type ParsedOntology,
-  parseDate,
+  type Preference,
   parseOrThrow,
 } from "./models.js";
 import * as ops from "./ops.js";
 import type { Extractor, LLMClient } from "./protocols.js";
 import { recordSource } from "./provenance.js";
 import {
+  asResolver,
+  type EntityResolver,
+  mergeWarnings,
+  planResolution,
+  type ResolverMode,
+  saveMerges,
+} from "./resolution.js";
+import {
   asSchema,
+  type ContradictionMode,
+  canonicalizeTypes,
+  dropOffSchema,
   enforceSchema,
   type ParsedSchema,
+  requireSchemaForMode,
   requireSchemaMode,
   type Schema,
   type SchemaMode,
 } from "./schema.js";
-import { isUnstorable, pyTypeName, requireJsonMapping, requireOptionalText } from "./validate.js";
+import {
+  checkOptions,
+  isUnstorable,
+  keysOf,
+  parseTime,
+  requireJsonMapping,
+  requireOptionalText,
+  typeName,
+} from "./validate.js";
 
 export interface InsertTextOptions {
   source_id?: string | null;
@@ -40,19 +60,45 @@ export interface InsertTextOptions {
   prompts?: ExtractionPrompts | null;
   schema?: Schema | ParsedSchema | null;
   schema_mode?: SchemaMode | null;
+  resolver?: EntityResolver | ResolverMode | null;
+  contradiction?: ContradictionMode | null;
 }
 
 export interface InsertOntologyOptions {
   source_id?: string | null;
+  event_time?: DateTimeInput | null;
   schema?: Schema | ParsedSchema | null;
   schema_mode?: SchemaMode | null;
+  resolver?: EntityResolver | ResolverMode | null;
+  contradiction?: ContradictionMode | null;
 }
+
+const ONTOLOGY_KEYS = keysOf<InsertOntologyOptions>({
+  source_id: true,
+  event_time: true,
+  schema: true,
+  schema_mode: true,
+  resolver: true,
+  contradiction: true,
+});
+const TEXT_KEYS = keysOf<InsertTextOptions>({
+  source_id: true,
+  event_time: true,
+  metadata: true,
+  instructions: true,
+  prompts: true,
+  schema: true,
+  schema_mode: true,
+  resolver: true,
+  contradiction: true,
+});
 
 export interface ExtractionSetup {
   llm: LLMClient | null;
   instructions: ExtractionInstructions | null;
   prompts: ExtractionPrompts | null;
   extractor: Extractor | null;
+  resolver: EntityResolver | null;
 }
 
 interface Provenance {
@@ -75,12 +121,15 @@ export class Insert {
    *
    * @param callInstructions (ExtractionInstructions | null): per-call extraction instructions.
    * @param callPrompts (ExtractionPrompts | null): per-call prompt overrides.
+   * @param schema (ParsedSchema | null): the per-call schema, or null for the graph's.
+   * @param sourceId (string | null): the source id the warnings belong to.
    * @return (Extractor): the extractor.
    */
   private extractorFor(
     callInstructions: ExtractionInstructions | null,
     callPrompts: ExtractionPrompts | null,
     schema: ParsedSchema | null,
+    sourceId: string | null,
   ): Extractor {
     const { extractor, llm, prompts, instructions } = this.setup;
     if (extractor !== null) return extractor;
@@ -91,6 +140,7 @@ export class Insert {
       call_prompts: callPrompts,
       call_instructions: callInstructions,
       schema: schema ?? this.graph.schema,
+      source_id: sourceId,
     });
   }
 
@@ -99,6 +149,11 @@ export class Insert {
    *
    * @param ontology (ParsedOntology): the parsed ontology.
    * @param source (Provenance): the source and provenance fields, and the warnings to report.
+   * @param schema (ParsedSchema | null): the per-call schema, or null for the graph's.
+   * @param schemaMode (SchemaMode | null): the per-call schema mode, or null for the graph's.
+   * @param resolver (EntityResolver | ResolverMode | null): the per-call entity resolver, or null for the graph's.
+   * @param contradiction (ContradictionMode | null): the per-call contradiction mode, or null for the graph's.
+   * @param extracted (boolean): the ontology came from extraction, so strict mode drops what is off schema instead of throwing.
    * @return (InsertResult): the insert result.
    */
   private async apply(
@@ -106,14 +161,30 @@ export class Insert {
     source: Provenance,
     schema: ParsedSchema | null,
     schemaMode: SchemaMode | null,
+    resolver: EntityResolver | ResolverMode | null,
+    contradiction: ContradictionMode | null,
+    extracted = false,
   ): Promise<InsertResult> {
     const createdAt = new Date();
     const activeSchema = schema ?? this.graph.schema;
     const mode = schemaMode ?? this.graph.schemaMode;
     requireSchemaMode(mode);
+    requireSchemaForMode(mode, activeSchema);
+    const { contradiction: conflicts, caps } = this.graph.contradictionFor(contradiction, activeSchema);
+    const activeResolver = resolver === null ? this.setup.resolver : asResolver(resolver, this.setup.llm);
     return this.graph.write(async (tx, ns) => {
-      await ops.validateOntology(tx, ns, ontology);
-      const warnings = [...source.warnings, ...(await enforceSchema(tx, ns, ontology, activeSchema, mode))];
+      let canonical = await ops.validateOntology(tx, ns, ontology, (o) => canonicalizeTypes(o, activeSchema));
+      let dropped: InsertWarning[] = [];
+      if (extracted && mode === "strict") [canonical, dropped] = await dropOffSchema(tx, ns, canonical, activeSchema);
+      const maxCount = mode === "strict" && conflicts !== "off";
+      const checked = await enforceSchema(tx, ns, canonical, activeSchema, mode, true, maxCount);
+      const found: InsertWarning[] = [];
+      const resolution =
+        activeResolver === null
+          ? null
+          : await planResolution(tx, ns, canonical, activeResolver, activeSchema, createdAt);
+      const resolved = resolution?.ontology ?? canonical;
+      if (mode === "strict" && conflicts === "warn") await ops.requireMaxCount(tx, ns, caps, resolved.relations);
       let sourceVersion: string | null = null;
       let baseEvidence: Evidence[] = [];
 
@@ -122,28 +193,29 @@ export class Insert {
           ...source,
           source_id: source.source_id,
           created_at: createdAt,
+          event_time: source.default_event_time,
         });
       }
 
-      const entities = await ops.upsertEntities(tx, ns, ontology.entities, [...baseEvidence], createdAt);
+      const entities = await ops.upsertEntities(tx, ns, resolved.entities, [...baseEvidence], createdAt);
       const relations = await ops.upsertRelations(
         tx,
         ns,
-        ontology.relations.map(
-          (rel) =>
-            [rel, [...baseEvidence, ...ops.evidenceFromInputs(rel.evidence, source.source_id, sourceVersion)]] as const,
+        resolved.relations.map(
+          (rel) => [rel, ops.relationEvidence(rel.evidence, baseEvidence, source.source_id, sourceVersion)] as const,
         ),
         source.default_event_time,
         createdAt,
+        { contradiction: conflicts, caps, warnings: found },
       );
 
-      const preferences = [];
-      for (const pref of ontology.preferences) {
+      const preferences: Preference[] = [];
+      for (const pref of resolved.preferences) {
         preferences.push(await ops.upsertPreference(tx, ns, pref, source.default_event_time, createdAt));
       }
 
       const decisions = [];
-      for (const dec of ontology.decisions) {
+      for (const dec of resolved.decisions) {
         decisions.push(
           await ops.upsertTrace(tx, ns, {
             tid: dec.id,
@@ -161,15 +233,24 @@ export class Insert {
         );
       }
 
+      const merges = resolution === null ? [] : await saveMerges(tx, ns, resolution, source.source_id, createdAt);
       return {
         source_id: source.source_id,
         source_version: sourceVersion,
         created_at: createdAt,
-        entities,
-        relations,
-        preferences,
-        decisions,
-        warnings,
+        entities: ops.uniqueById(entities),
+        relations: ops.uniqueById(relations),
+        preferences: ops.uniqueById(preferences),
+        decisions: ops.uniqueById(decisions),
+        warnings: [
+          ...source.warnings,
+          ...dropped,
+          ...checked,
+          ...mergeWarnings(merges),
+          ...(resolution?.warnings ?? []),
+          ...found,
+        ].map((w) => (w.source_id == null ? { ...w, source_id: source.source_id } : w)),
+        merges,
       };
     });
   }
@@ -193,30 +274,22 @@ export class Insert {
    * @return (InsertResult): what was inserted.
    */
   async text(text: string, options: InsertTextOptions = {}): Promise<InsertResult> {
-    if (typeof text !== "string") throw new ValidationError(`text must be a string, got ${pyTypeName(text)}`);
+    if (typeof text !== "string") throw new ValidationError(`text must be a string, got ${typeName(text)}`);
+    checkOptions("insert.text", options, TEXT_KEYS);
     if (isUnstorable(text)) {
       throw new ValidationError("text cannot contain NUL or unpaired surrogate characters");
     }
     requireOptionalText("source_id", options.source_id);
     requireJsonMapping("metadata", options.metadata);
-    const eventTime = parseDate(options.event_time);
-    if (!pyStrip(text)) {
-      return {
-        source_id: options.source_id ?? null,
-        source_version: null,
-        created_at: new Date(),
-        entities: [],
-        relations: [],
-        preferences: [],
-        decisions: [],
-        warnings: [insertWarning("empty_text", "text was empty; nothing was ingested")],
-      };
-    }
+    if (options.resolver != null) asResolver(options.resolver, this.setup.llm);
+    const eventTime = parseTime(options.event_time, "event_time");
+    if (!pyStrip(text)) throw new ValidationError("text cannot be empty or whitespace");
     const activeSchema = asSchema(options.schema);
+    requireSchemaForMode(options.schema_mode ?? this.graph.schemaMode, activeSchema ?? this.graph.schema);
     const callInstructions = asInput(ExtractionInstructions, options.instructions, "instructions");
     const callPrompts = asInput(ExtractionPrompts, options.prompts, "prompts");
-    const extractor = this.extractorFor(callInstructions, callPrompts, activeSchema);
-    const document: ParsedDocument = { text, media_type: "text/plain", metadata: {} };
+    const extractor = this.extractorFor(callInstructions, callPrompts, activeSchema, options.source_id ?? null);
+    const document: ParsedDocument = { text, media_type: "text/plain", metadata: { ...(options.metadata ?? {}) } };
     const ontology = await this.extract(extractor, document);
     const warnings: InsertWarning[] = extractor.popWarnings?.() ?? [];
     const { instructions, prompts } = this.setup;
@@ -241,6 +314,9 @@ export class Insert {
       },
       activeSchema,
       options.schema_mode ?? null,
+      options.resolver ?? null,
+      options.contradiction ?? null,
+      true,
     );
   }
 
@@ -248,11 +324,13 @@ export class Insert {
    * Merge a ready ontology as idempotent upserts, validating every reference before any write.
    *
    * @param ontology (Ontology): the ontology object.
-   * @param options ({ source_id?: string | null }): the source id to record provenance under.
+   * @param options (InsertOntologyOptions): the source id to record provenance under, and event_time, the default event time for relations, preferences, and decisions that carry none of their own.
    * @return (InsertResult): what was inserted.
    */
   async ontology(ontology: Ontology, options: InsertOntologyOptions = {}): Promise<InsertResult> {
+    checkOptions("insert.ontology", options, ONTOLOGY_KEYS);
     requireOptionalText("source_id", options.source_id);
+    const eventTime = parseTime(options.event_time, "event_time");
     const parsed = parseOrThrow(Ontology, ontology, "ontology");
     return this.apply(
       parsed,
@@ -261,11 +339,13 @@ export class Insert {
         parsed_text: "",
         media_type: "application/octet-stream",
         metadata: null,
-        default_event_time: null,
+        default_event_time: eventTime,
         warnings: [],
       },
       asSchema(options.schema),
       options.schema_mode ?? null,
+      options.resolver ?? null,
+      options.contradiction ?? null,
     );
   }
 }

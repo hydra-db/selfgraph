@@ -27,6 +27,7 @@ async def record_source(
     media_type: str,
     metadata: dict[str, Any] | None,
     created_at: datetime,
+    event_time: datetime | None = None,
 ) -> tuple[str, list[Evidence]]:
     """Write the source, content-addressed version, and chunks; return the version id and its base evidence.
 
@@ -37,6 +38,7 @@ async def record_source(
     @param media_type (str): the media type of the source content.
     @param metadata (dict[str, Any] | None): optional metadata stored on the version.
     @param created_at (datetime): the insert timestamp stored on the version node.
+    @param event_time (datetime | None): when the content took effect, stored on the version node when set.
     @return (tuple[str, list[Evidence]]): the source version id and one source-level evidence (chunk_id None).
     """
     sv = _ids.source_version_id(source_id, _ids.content_hash(parsed_text.encode("utf-8")))
@@ -53,6 +55,7 @@ async def record_source(
             "source_id": source_id,
             "media_type": media_type,
             "created_at": to_iso(created_at),
+            "event_time": to_iso(event_time),
             "metadata_json": json.dumps(metadata or {}, sort_keys=True, default=str),
         },
     )

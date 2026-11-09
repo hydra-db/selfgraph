@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import ValidationError as PydanticValidationError
 
 from .. import ids as _ids
 from .._ops import (
@@ -13,10 +15,14 @@ from .._ops import (
     _validate_entity_identity,
     _validate_strength,
 )
+from .._serde import EDGE_TYPES, preference_kind_of
 from ..errors import ExtractionError, ValidationError
+from ..llm.base import summarize_error
 from ..models import (
+    LLM_CONCURRENCY,
     DecisionTraceInput,
     EntityInput,
+    EvidenceInput,
     ExtractionInstructions,
     ExtractionPrompts,
     InsertWarning,
@@ -27,11 +33,12 @@ from ..models import (
     PreferenceInput,
     RelationInput,
     Status,
+    issue_line,
 )
 from ..protocols import LLMClient
 from ..schema import Schema, render_schema_catalog
 from .chunking import chunk_text
-from .prompts import effective_instruction, effective_prompt, render
+from .prompts import check_prompts, effective_instruction, effective_prompt, render
 
 __all__ = ["DefaultExtractor"]
 
@@ -46,6 +53,7 @@ class _RelOut(BaseModel):
     to_name: str
     properties: dict[str, JsonValue] = Field(default_factory=dict)
     event_time: datetime | None = None
+    _evidence: EvidenceInput | None = PrivateAttr(default=None)
 
 
 class _RelationsOut(BaseModel):
@@ -80,6 +88,7 @@ class _DecOut(BaseModel):
     alternative_names: list[str] = Field(default_factory=list)
     status: Status = "completed"
     steps: list[_StepOut] = Field(default_factory=list)
+    _evidence: EvidenceInput | None = PrivateAttr(default=None)
 
 
 class _DecisionsOut(BaseModel):
@@ -87,7 +96,6 @@ class _DecisionsOut(BaseModel):
 
 
 _log = logging.getLogger("selfgraph")
-_MAX_CONCURRENT_CALLS = 8
 _FALLBACK_TYPE = "Thing"
 
 
@@ -109,15 +117,51 @@ def _is_noise_name(name: str) -> bool:
     return not any(c.isalpha() for c in text)
 
 
-def _dropped(warnings: list[InsertWarning], kind: str, exc: ValidationError) -> None:
+def _dropped(warnings: list[InsertWarning], kind: str, exc: ValidationError, rtype: str | None = None) -> None:
     """Record that one invalid extracted item was dropped instead of failing the whole insert.
 
     @param warnings (list[InsertWarning]): the warning list to append to.
     @param kind (str): the kind of item dropped.
     @param exc (ValidationError): why the item was invalid.
+    @param rtype (str | None): the relation type of a dropped relation or decision step, so a reserved one gets
+        the dropped_reserved_relation code.
     @return (None): nothing.
     """
-    warnings.append(InsertWarning(code="extraction_partial_failure", message=f"dropped an extracted {kind}: {exc}"))
+    code = "dropped_reserved_relation" if rtype is not None and _is_reserved(rtype) else "extraction_partial_failure"
+    warnings.append(InsertWarning(code=code, message=f"dropped an extracted {kind}: {exc}"))
+
+
+def _is_reserved(rtype: str) -> bool:
+    """Report whether an extracted relation type names one of SelfGraph's internal edge types.
+
+    @param rtype (str): the type as the model wrote it.
+    @return (bool): True for a reserved type such as CONSIDERED.
+    """
+    try:
+        return _ids.normalize_rel_type(rtype) in EDGE_TYPES
+    except ValidationError:
+        return False
+
+
+def _checked_output(result: object, schema: type[BaseModel], kind: str) -> BaseModel:
+    """Validate an LLM client's reply for one extraction pass against that pass's output model.
+
+    @param result (object): what the client returned.
+    @param schema (type[BaseModel]): the expected output model.
+    @param kind (str): the extraction pass, such as "relations", for the message.
+    @return (BaseModel): the validated output.
+    """
+    if isinstance(result, schema):
+        return result
+    head = f"LLM client returned an invalid result for the {kind} pass"
+    if (isinstance(result, Mapping) and kind not in result) or (
+        hasattr(result, "__dict__") and not hasattr(result, kind)
+    ):
+        raise ExtractionError(f"{head}: {kind}: field required")
+    try:
+        return schema.model_validate(result, from_attributes=True)
+    except PydanticValidationError as exc:
+        raise ExtractionError(f"{head}: {issue_line(exc.errors()[0])}") from exc
 
 
 class _WarningSink:
@@ -141,8 +185,12 @@ class DefaultExtractor(_WarningSink):
         call_prompts: ExtractionPrompts | None = None,
         call_instructions: ExtractionInstructions | None = None,
         schema: Schema | None = None,
+        source_id: str | None = None,
     ) -> None:
+        check_prompts(prompts)
+        check_prompts(call_prompts)
         self._llm = llm
+        self._source_id = source_id
         self._client_prompts = prompts
         self._client_instructions = instructions
         self._call_prompts = call_prompts
@@ -159,7 +207,7 @@ class DefaultExtractor(_WarningSink):
         catalog = self._catalogs.get(object_type, "")
         if catalog:
             instruction = f"{instruction}\n\n{catalog}" if instruction else catalog
-        return render(template, text=text, instructions=instruction)
+        return render(template, text=text, instructions=instruction, name=object_type)
 
     async def extract(self, document: ParsedDocument) -> Ontology:
         self._warnings = []
@@ -181,42 +229,64 @@ class DefaultExtractor(_WarningSink):
 
         for kind, *_ in kinds:
             self._messages(kind, "")
-        gate = asyncio.Semaphore(_MAX_CONCURRENT_CALLS)
+        concurrency = getattr(self._llm, "concurrency", None)
+        chunks_at_once = concurrency if type(concurrency) is int and concurrency > 0 else LLM_CONCURRENCY
+        gate = asyncio.Semaphore(chunks_at_once * len(kinds))
+        version = (
+            None
+            if self._source_id is None
+            else _ids.source_version_id(self._source_id, _ids.content_hash(document.text.encode("utf-8")))
+        )
 
-        async def run(chunk, kind: str, schema: type) -> list | InsertWarning:
+        def chunk_id(chunk) -> str | None:
+            return None if version is None else _ids.chunk_id(version, chunk.index)
+
+        async def run(chunk, kind: str, schema: type[BaseModel]) -> list | InsertWarning:
             async with gate:
+                if len(chunks) > 1 and kind == kinds[0][0]:
+                    _log.info("extracting chunk %d/%d", chunk.index + 1, len(chunks))
                 try:
                     system, user = self._messages(kind, chunk.text)
-                    return getattr(await self._llm.generate(system=system, user=user, output=schema), kind)
+                    result = await self._llm.generate(system=system, user=user, output=schema)
+                    return getattr(_checked_output(result, schema, kind), kind)
+                except ExtractionError:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     return InsertWarning(
                         code="extraction_partial_failure",
-                        message=f"{kind} extraction failed on chunk {chunk.index}: {exc}",
+                        message=f"{kind} extraction failed on chunk {chunk.index}: {summarize_error(exc)}",
+                        source_id=self._source_id,
+                        chunk_id=chunk_id(chunk),
                     )
 
-        outcomes = iter(
-            await asyncio.gather(*(run(chunk, kind, schema) for chunk in chunks for kind, schema, _ in kinds))
-        )
-        succeeded = 0
-        for _chunk in chunks:
-            chunk_ok = False
-            for _kind, _schema, sink in kinds:
+        tasks = [asyncio.ensure_future(run(chunk, kind, schema)) for chunk in chunks for kind, schema, _ in kinds]
+        try:
+            outcomes = iter(await asyncio.gather(*tasks))
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        for chunk in chunks:
+            cid = chunk_id(chunk)
+            for kind, _schema, sink in kinds:
                 outcome = next(outcomes)
                 if isinstance(outcome, InsertWarning):
                     self._warnings.append(outcome)
-                else:
-                    sink.extend(outcome)
-                    chunk_ok = True
-            if chunk_ok:
-                succeeded += 1
+                    continue
+                if cid is not None and kind in ("relations", "decisions"):
+                    outcome = [item.model_copy() for item in outcome]
+                    for item in outcome:
+                        item._evidence = EvidenceInput(source_id=self._source_id, chunk_id=cid)
+                sink.extend(outcome)
 
-        if succeeded == 0 and self._warnings:
+        failed = len(self._warnings)
+        ontology = self._assemble(raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings)
+        if failed and not (ontology.entities or ontology.relations or ontology.preferences or ontology.decisions):
             raise ExtractionError(
-                f"extraction failed for the whole input ({len(self._warnings)} errors); "
+                f"extraction failed for the whole input ({failed} of {len(tasks)} LLM calls failed); "
                 f"first: {self._warnings[0].message}"
             )
-
-        ontology = self._assemble(raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings)
         _log.debug(
             "LLM extraction: %d entities, %d relations from %d chunks (%d warnings)",
             len(ontology.entities),
@@ -279,7 +349,7 @@ class DefaultExtractor(_WarningSink):
 
         relations: dict[str, RelationInput] = {}
 
-        def add_relation(from_id: str, rtype: str, to_id: str, props=None, event_time=None) -> str:
+        def add_relation(from_id: str, rtype: str, to_id: str, props=None, event_time=None, evidence=None) -> str:
             rid = _ids.relation_id(from_id, rtype, to_id)
             _reject_reserved_rel_type(_ids.normalize_rel_type(rtype), rtype)
             if rid not in relations:
@@ -290,23 +360,38 @@ class DefaultExtractor(_WarningSink):
                     properties=dict(props or {}),
                     event_time=event_time,
                 )
+            if evidence is not None and evidence not in relations[rid].evidence:
+                relations[rid].evidence.append(evidence)
             return rid
 
+        promoted: list[_PrefOut] = []
         for rel in raw_relations:
             from_id = resolve(rel.from_name)
             to_id = resolve(rel.to_name)
             if from_id and to_id:
                 try:
-                    add_relation(from_id, rel.type, to_id, rel.properties, rel.event_time)
+                    kind = preference_kind_of(_ids.normalize_rel_type(rel.type))
+                    value = registry.get(_norm(rel.to_name))
+                    if kind is not None and value is not None and value.type != _FALLBACK_TYPE:
+                        key = value.type.lower()
+                        promoted.append(
+                            _PrefOut(subject_name=rel.from_name, kind=kind, key=key, value_name=rel.to_name)
+                        )
+                        continue
+                    add_relation(from_id, rel.type, to_id, rel.properties, rel.event_time, rel._evidence)
                 except ValidationError as exc:
-                    _dropped(sink, "relation", exc)
+                    _dropped(sink, "relation", exc, rel.type)
 
         preferences: dict[str, PreferenceInput] = {}
-        for pref in raw_preferences:
+        stated: set[tuple[str, str, str]] = set()
+        for index, pref in enumerate([*raw_preferences, *promoted]):
             subject_id = resolve(pref.subject_name)
             value_id = resolve(pref.value_name)
             if not (subject_id and value_id):
                 continue
+            if index >= len(raw_preferences) and (subject_id, pref.kind, value_id) in stated:
+                continue
+            stated.add((subject_id, pref.kind, value_id))
             try:
                 _validate_strength(pref.strength)
                 pid = _ids.preference_id(subject_id, pref.kind, pref.key, value_id)
@@ -332,9 +417,9 @@ class DefaultExtractor(_WarningSink):
                 to_id = resolve(step.to_name)
                 if from_id and to_id:
                     try:
-                        step_ids.append(add_relation(from_id, step.type, to_id))
+                        step_ids.append(add_relation(from_id, step.type, to_id, evidence=dec._evidence))
                     except ValidationError as exc:
-                        _dropped(sink, "decision step", exc)
+                        _dropped(sink, "decision step", exc, step.type)
             try:
                 _require_optional_text("decision summary", dec.summary)
                 _require_optional_text("decision rationale", dec.rationale)

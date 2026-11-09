@@ -24,11 +24,15 @@ export { DEFAULT_PROMPTS } from "./extraction/prompts.js";
 export * as ids from "./ids.js";
 export { decisionId, entityId, normalizeRelType, preferenceId, profileId, relationId } from "./ids.js";
 export type { InsertOntologyOptions, InsertTextOptions } from "./insert.js";
+export { type Logger, type LogLevel, setLogger } from "./internal/log.js";
 export { buildLlmClient, type LLMArg } from "./llm/index.js";
 export {
+  type ConsolidateGroup,
+  type ConsolidateResult,
   type CypherResult,
   type CypherRow,
   DateTimeInput,
+  type DecayResult,
   type DecisionStep,
   type DecisionTrace,
   DecisionTraceInput,
@@ -45,6 +49,8 @@ export {
   JsonValue,
   Kind,
   LLMConfig,
+  type MergeRecord,
+  type MergeRewrite,
   Ontology,
   type Page,
   type ParsedDecisionTraceInput,
@@ -58,13 +64,16 @@ export {
   type Preference,
   PreferenceInput,
   PromptTemplate,
+  type PruneResult,
   type Relation,
   RelationInput,
   type RetrievalResult,
   type RetrievalSeed,
   Status,
   type Subgraph,
+  type UnmergeResult,
 } from "./models.js";
+export { fromNeo4jOntology, toNeo4jOntology } from "./neo4jSchema.js";
 export { dumps, toJsonable } from "./output.js";
 export type {
   EdgeRow,
@@ -79,7 +88,18 @@ export type {
   Props,
   UpsertNodeOptions,
 } from "./protocols.js";
+export {
+  DefaultResolver,
+  type DefaultResolverOptions,
+  type EntityResolver,
+  LLMResolver,
+  type LLMResolverOptions,
+  type ResolutionDecision,
+  type ResolverMode,
+} from "./resolution.js";
 export type {
+  ConsolidateOptions,
+  DecayOptions,
   DecisionCreateOptions,
   DecisionListOptions,
   DecisionUpdateFields,
@@ -89,13 +109,15 @@ export type {
   PreferenceCreateOptions,
   PreferenceListOptions,
   PreferenceUpdateOptions,
+  PruneOptions,
   RelationCreateOptions,
   RelationListOptions,
   RelationUpdateOptions,
 } from "./resources/index.js";
-export type { RetrieveOptions } from "./retrieval.js";
+export type { RetrieveOptions, Strategy } from "./retrieval.js";
 export { DEFAULT_SETTINGS, type GraphSettings, STORES, settingsFromEnv, version } from "./runtime.js";
 export {
+  type ContradictionMode,
   EntityType,
   type ParsedSchema,
   PropertySpec,
@@ -107,6 +129,6 @@ export {
 } from "./schema.js";
 export { CypherStore, type CypherStoreOptions, Neo4jStore } from "./stores/cypher.js";
 export { CypherPrimitives } from "./stores/cypherPrimitives.js";
-export { FalkorDBStore, type FalkorDBStoreOptions } from "./stores/falkordb.js";
+export { type FalkorDBSocketOptions, FalkorDBStore, type FalkorDBStoreOptions } from "./stores/falkordb.js";
 export { HydraDBStore, type HydraDBStoreOptions } from "./stores/hydradb.js";
 export { KuzuStore, type KuzuStoreOptions } from "./stores/kuzu.js";

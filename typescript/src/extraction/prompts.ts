@@ -1,10 +1,14 @@
 import { PromptTemplateError } from "../errors.js";
 import { pyRepr } from "../internal/py.js";
+import { EDGE_TYPES } from "../labels.js";
 import type { ExtractionInstructions, ExtractionPrompts, PromptTemplate } from "../models.js";
 
 export type ObjectType = "entities" | "relations" | "preferences" | "decisions";
 
 const PLACEHOLDER = /\{(text|instructions)\}/g;
+const RESERVED = [...EDGE_TYPES].sort().join(", ");
+const ANY_PLACEHOLDER = /\{(\w+)\}/g;
+const VARIABLES = ["text", "instructions"];
 
 const ENTITY_SYSTEM =
   "You extract entities for a knowledge graph. An entity is a distinct real-world " +
@@ -20,7 +24,8 @@ const RELATION_SYSTEM =
   "when the text states when the relationship held. " +
   "Connect entities directly to each other when the text relates them; do not route " +
   "every relationship through one central entity, since a hub-and-spoke shape hides " +
-  "the connections between the others and makes the graph hard to traverse.";
+  "the connections between the others and makes the graph hard to traverse. " +
+  `Never use these reserved relationship types: ${RESERVED}.`;
 const RELATION_USER =
   "Extract every relationship from the text below as (from, TYPE, to) triples.\n" +
   '{instructions}\n\nText:\n"""\n{text}\n"""';
@@ -37,7 +42,10 @@ const DECISION_SYSTEM =
   "You extract decision traces. A decision records that an actor decided something, " +
   "the ordered relationships that justify it (as (from, TYPE, to) step triples), the " +
   "outcome entity, the alternatives considered, and a short rationale. Only extract a " +
-  "decision when the text makes an explicit decision with a reason.";
+  "decision when the text makes an explicit decision with a reason. " +
+  "Step types use SCREAMING_SNAKE_CASE and never these reserved relationship types: " +
+  `${RESERVED}. Put the alternatives considered in alternative_names ` +
+  "and the chosen outcome in outcome_name, never as CONSIDERED or RESULTED_IN steps.";
 const DECISION_USER =
   "Extract every decision from the text below, with its ordered justifying steps.\n" +
   '{instructions}\n\nText:\n"""\n{text}\n"""';
@@ -46,7 +54,7 @@ export const DEFAULT_PROMPTS: Readonly<Record<ObjectType, PromptTemplate>> = Obj
   entities: { system: ENTITY_SYSTEM, user: ENTITY_USER, version: "entities-v1" },
   relations: { system: RELATION_SYSTEM, user: RELATION_USER, version: "relations-v1" },
   preferences: { system: PREFERENCE_SYSTEM, user: PREFERENCE_USER, version: "preferences-v1" },
-  decisions: { system: DECISION_SYSTEM, user: DECISION_USER, version: "decisions-v1" },
+  decisions: { system: DECISION_SYSTEM, user: DECISION_USER, version: "decisions-v2" },
 });
 
 /**
@@ -90,17 +98,54 @@ export function effectiveInstruction(
 }
 
 /**
+ * Reject a template whose user message lacks {text} or uses a placeholder other than {text} and {instructions}.
+ *
+ * @param template (PromptTemplate): the template to check.
+ * @param name (string | null): the prompt's key (entities, relations, ...) for the error, else its version.
+ */
+function checkTemplate(template: PromptTemplate, name: string | null = null): void {
+  const label = pyRepr(name || template.version);
+  if (!template.user.includes("{text}")) {
+    throw new PromptTemplateError(`prompt ${label} is missing required variable {text}`);
+  }
+  const used = [...new Set(Array.from(template.user.matchAll(ANY_PLACEHOLDER), (m) => m[1]!))];
+  const unknown = used.filter((v) => !VARIABLES.includes(v));
+  if (unknown.length) {
+    const noun = unknown.length === 1 ? "variable" : "variables";
+    const named = unknown.map((v) => `{${v}}`).join(", ");
+    const allowed = VARIABLES.map((v) => `{${v}}`).join(", ");
+    throw new PromptTemplateError(`prompt ${label} uses unknown ${noun} ${named}; allowed variables: ${allowed}`);
+  }
+}
+
+/**
+ * Check every template a prompts override sets, so a bad template fails when the graph or extractor is built.
+ *
+ * @param prompts (ExtractionPrompts | null | undefined): the overrides.
+ */
+export function checkPrompts(prompts: ExtractionPrompts | null | undefined): void {
+  for (const key of Object.keys(DEFAULT_PROMPTS) as ObjectType[]) {
+    const template = prompts?.[key];
+    if (template) checkTemplate(template, key);
+  }
+}
+
+/**
  * Render a template to its [system, user] messages, throwing if {text} is missing.
  *
  * @param template (PromptTemplate): the template.
  * @param text (string): the document text substituted for {text}.
  * @param instructions (string | null): extra instructions substituted or appended.
+ * @param name (string | null): the prompt's key (entities, relations, ...) for the error, else its version.
  * @return ([string, string]): the [system, user] pair.
  */
-export function render(template: PromptTemplate, text: string, instructions: string | null): [string, string] {
-  if (!template.user.includes("{text}")) {
-    throw new PromptTemplateError(`prompt ${pyRepr(template.version)} is missing required variable {text}`);
-  }
+export function render(
+  template: PromptTemplate,
+  text: string,
+  instructions: string | null,
+  name: string | null = null,
+): [string, string] {
+  checkTemplate(template, name);
   const extra = instructions || "";
   let user = template.user.replace(PLACEHOLDER, (_, name: string) => (name === "text" ? text : extra));
   if (extra && !template.user.includes("{instructions}")) user = `${user}\n\nAdditional instructions:\n${extra}`;

@@ -2,11 +2,20 @@ import { blake2b } from "@noble/hashes/blake2.js";
 import { bytesToHex, concatBytes } from "@noble/hashes/utils.js";
 
 import { ValidationError } from "./errors.js";
-import { cpLen, PY_WORD_CLASS, PY_WS_CLASS, pyCollapseWs, pySplit, pyStrip, utf8 } from "./internal/py.js";
+import { cpLen, PY_WORD_CLASS, PY_WS_CLASS, pyCollapseWs, pyRepr, pySplit, pyStrip, utf8 } from "./internal/py.js";
 import type { Evidence } from "./models.js";
 import { requireStr } from "./validate.js";
 
-const ID_PREFIXES = ["relation", "preference", "decision", "profile", "source", "sv", "evidence"] as const;
+const ID_PREFIXES = [
+  "relation",
+  "preference",
+  "decision",
+  "profile",
+  "source",
+  "sv",
+  "evidence",
+  "entitymerge",
+] as const;
 
 export const RESERVED_ID_PREFIXES: ReadonlySet<string> = new Set(ID_PREFIXES);
 
@@ -14,6 +23,7 @@ const tagged = (prefix: (typeof ID_PREFIXES)[number], rest: string): string => `
 
 const PUNCT = new RegExp(`[^${PY_WORD_CLASS}${PY_WS_CLASS}]+`, "gu");
 const NON_IDENT = new RegExp(`[^${PY_WORD_CLASS}]+`, "gu");
+const CAMEL = /(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/g;
 const ENTITY_SUFFIXES = new Set([
   "inc",
   "incorporated",
@@ -114,14 +124,55 @@ export function entityId(type: string, name: string): string {
 }
 
 /**
- * Canonicalise a relation type to UPPER_SNAKE so case and spacing variants collapse.
+ * Canonicalise an entity id without validating it.
+ *
+ * @param eid (T): the entity id as given; text without a colon, or a non-string, is returned as is.
+ * @return (T): the type prefix and the name part, each NFC-normalized and slugified.
+ */
+export function canonicalId<T>(eid: T): T {
+  if (typeof eid !== "string" || !eid.includes(":")) return eid;
+  const at = eid.indexOf(":");
+  return `${slug(normalizeText(eid.slice(0, at)))}:${slug(normalizeText(eid.slice(at + 1)))}` as T;
+}
+
+/**
+ * Reject an entity id that is not "type:name" with a non-empty type and name.
+ *
+ * @param eid (string): the entity id.
+ * @return (void): nothing; throws ValidationError on a malformed id.
+ */
+export function requireEntityShape(eid: string): void {
+  const sep = eid.indexOf(":");
+  if (sep < 0) throw new ValidationError(`entity id must be 'type:name', e.g. 'person:jane', got ${pyRepr(eid)}`);
+  if (!pyStrip(eid.slice(0, sep)) || !pyStrip(eid.slice(sep + 1))) {
+    throw new ValidationError(`entity id must be 'type:name' with a non-empty prefix and name, got ${pyRepr(eid)}`);
+  }
+}
+
+/**
+ * Canonicalise an explicit entity id the way entityId shapes a derived one, so case and spacing variants match.
+ *
+ * @param eid (unknown): the entity id as given.
+ * @return (string): the type prefix and the name part, each NFC-normalized and slugified; throws ValidationError when
+ *   it is not a "type:name" string with a non-empty type and name.
+ */
+export function canonicalEntityId(eid: unknown): string {
+  requireStr("entity id", eid);
+  const canonical = canonicalId(eid);
+  requireEntityShape(canonical);
+  return canonical;
+}
+
+/**
+ * Canonicalise a relation type to UPPER_SNAKE so case, spacing, and camelCase variants collapse.
  *
  * @param type (string): the raw relation type.
  * @return (string): the canonical relation type.
  */
 export function normalizeRelType(type: string): string {
   requireStr("relation type", type);
-  const normalized = pyStrip(pyStrip(normalizeText(type)).toLowerCase().replace(NON_IDENT, "_"), "_").toUpperCase();
+  const split = pyStrip(normalizeText(type)).replace(CAMEL, "_");
+  const normalized = pyStrip(split.toLowerCase().replace(NON_IDENT, "_"), "_").toUpperCase();
   if (!normalized) {
     throw new ValidationError("relation type cannot be empty; use a verb phrase, e.g. 'works at' or 'WORKS_AT'");
   }
@@ -248,6 +299,19 @@ export function evidenceId(targetId: string, ev: Evidence): string {
       offset(ev.end_offset),
     ),
   );
+}
+
+/**
+ * The id of the record of one entity merge: a hash of the surviving and the absorbed entity ids.
+ *
+ * @param survivorId (string): the id of the entity that absorbed the other.
+ * @param absorbedId (string): the id the absorbed entity would have had.
+ * @return (string): the derived merge record id.
+ */
+export function entityMergeId(survivorId: string, absorbedId: string): string {
+  requireStr("survivor_id", survivorId);
+  requireStr("absorbed_id", absorbedId);
+  return tagged("entitymerge", hashParts(survivorId, absorbedId));
 }
 
 /**

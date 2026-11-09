@@ -1,8 +1,8 @@
 import pytest
-from helpers import FakeLLM, new_graph, run
+from helpers import KUZU, extracting_llm, fresh_graph, new_graph, run
 
-from selfgraph import EntityInput, ValidationError
-from selfgraph.extraction.extractor import _EntitiesOut
+from selfgraph import ValidationError
+from selfgraph.extraction.chunking import count_tokens
 
 
 def _graph():
@@ -64,38 +64,20 @@ def test_retrieve_reaches_decision():
     assert "temporal graph history" in res.context
 
 
-def test_retrieve_bfs_and_dfs_reach_target():
+def test_retrieve_strategies_and_depth_bound_traversal():
     g = _graph()
     for strategy in ("bfs", "dfs"):
         res = run(g.retrieve("team", strategy=strategy, depth=3))
         assert "company:hydradb" in {e.id for e in res.subgraph.entities}
-
-
-def test_retrieve_depth_bounds_traversal():
-    g = _graph()
-    res = run(g.retrieve("team", depth=1))
-    ids = {e.id for e in res.subgraph.entities}
+    ids = {e.id for e in run(g.retrieve("team", depth=1)).subgraph.entities}
     assert "company:hydradb" in ids
     assert "feature:temporal" not in ids
-
-
-def test_retrieve_rejects_bad_strategy():
-    g = _graph()
     with pytest.raises(ValidationError):
         run(g.retrieve("team", strategy="sideways"))
 
 
 def test_retrieve_includes_source_passage():
-    llm = FakeLLM(
-        {
-            "_EntitiesOut": _EntitiesOut(
-                entities=[
-                    EntityInput(type="Person", name="Soham"),
-                    EntityInput(type="Company", name="HydraDB"),
-                ]
-            )
-        }
-    )
+    llm = extracting_llm([("Person", "Soham"), ("Company", "HydraDB")])
     g = new_graph(llm=llm)
     passage = "Soham praised HydraDB for its bitemporal provenance ledger."
     run(g.insert.text(passage, source_id="m1"))
@@ -111,9 +93,42 @@ def test_retrieve_surfaces_preferences():
     assert "Soham prefers HydraDB (database)" in res.context
 
 
-def test_retrieve_empty_query_returns_nothing():
+def test_stopword_query_returns_nothing_and_an_empty_query_is_rejected():
     g = _graph()
     res = run(g.retrieve("the and of"))
     assert res.seeds == []
     assert res.subgraph.entities == []
     assert res.context == ""
+    for query in ("", "   "):
+        with pytest.raises(ValidationError, match="^query cannot be empty$"):
+            run(g.retrieve(query))
+
+
+def test_tiny_budgets_cut_to_fit_and_one_letter_names_seed():
+    g = fresh_graph("q4")
+    run(g.entities.create("A", "Person", id="person:a"))
+    run(g.entities.create("Bob Builder", "Person", id="person:bob"))
+    run(g.relations.create("person:a", "KNOWS", "person:bob", properties={"since": "a long time ago" * 20}))
+    tiny = run(g.retrieve("Bob Builder", budget_tokens=1))
+    assert tiny.subgraph.entities
+    assert tiny.context.splitlines() == [tiny.context] and tiny.context
+    assert [s.id for s in run(g.retrieve("A")).seeds] == ["person:a"]
+    g = fresh_graph("budget")
+    run(g.insert.ontology({"entities": [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}]}))
+    run(g.insert.text("Ann works at Acme in Paris as a senior engineer.", source_id="note"))
+    full = run(g.retrieve("Ann Acme")).context
+    previous = ""
+    for budget in (1, 2, 3):
+        context = run(g.retrieve("Ann Acme", budget_tokens=budget)).context
+        assert context and count_tokens(context) <= budget
+        assert full.startswith(context) and context.startswith(previous)
+        previous = context
+
+
+@pytest.mark.skipif(not KUZU, reason="a bulk insert; the paged scan is the same on every backend")
+def test_retrieve_scores_every_entity_past_five_thousand():
+    g = fresh_graph("bulk")
+    fillers = [{"type": "Filler", "name": f"filler {i:05d} common"} for i in range(5100)]
+    run(g.insert.ontology({"entities": [*fillers, {"type": "Tool", "name": "Zebracorn common"}]}))
+    assert [s.id for s in run(g.retrieve("zebracorn", k=3)).seeds] == ["tool:zebracorn-common"]
+    assert run(g.retrieve("filler 05099", k=1)).seeds[0].id == "filler:filler-05099-common"

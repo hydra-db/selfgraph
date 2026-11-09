@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -38,6 +41,19 @@ HYDRADB_URI = _env("SG_HYDRADB_URI", "HYDRADB_URI", default="bolt://127.0.0.1:17
 HYDRADB_TOKEN = _env("SG_HYDRADB_TOKEN", "HYDRADB_TOKEN", default="local-dev-auth-token-32-characters-long")
 skip_on_falkordb = pytest.mark.skipif(FALKORDB, reason="raw Cypher delete semantics are Neo4j dialect")
 skip_on_generic = pytest.mark.skipif(not RAW_CYPHER, reason="raw Cypher is the Neo4j dialect, not a generic backend")
+WORKS_AT_SPEC = {
+    "entities": [{"name": "Person"}, {"name": "Company"}],
+    "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"], "max_count": 1}}],
+}
+ANN_ACME_GLOBEX = [
+    {"type": "Person", "name": "Ann"},
+    {"type": "Company", "name": "Acme"},
+    {"type": "Company", "name": "Globex"},
+]
+AB_ONTOLOGY = {
+    "entities": [{"name": "A", "type": "T", "id": "t:a"}, {"name": "B", "type": "T", "id": "t:b"}],
+    "relations": [{"id": "relation:ab", "from_entity": "t:a", "type": "KNOWS", "to_entity": "t:b"}],
+}
 
 _LOOP = None
 
@@ -121,6 +137,90 @@ def new_graph(**kwargs) -> SelfGraph:
     return graph
 
 
+def fresh_graph(prefix: str = "test", **kwargs) -> SelfGraph:
+    return new_graph(namespace=unique_ns(prefix), **kwargs)
+
+
+def employment_graph(prefix: str = "test", **kwargs) -> SelfGraph:
+    g = fresh_graph(prefix, schema=WORKS_AT_SPEC, **kwargs)
+    run(g.insert.ontology({"entities": ANN_ACME_GLOBEX}))
+    return g
+
+
+def utc(year: int, month: int = 1, day: int = 1) -> datetime:
+    return datetime(year, month, day, tzinfo=timezone.utc)
+
+
+def works_at(company: str, year: int | None = None, person: str = "ann", **extra) -> dict[str, Any]:
+    rel = {"from_entity": f"person:{person}", "type": "WORKS_AT", "to_entity": f"company:{company}", **extra}
+    if year is not None:
+        rel["event_time"] = f"{year}-01-01T00:00:00+00:00"
+    return rel
+
+
+def create_entities(g: SelfGraph, *specs: str) -> None:
+    for spec in specs:
+        type_, _, name = spec.partition(":")
+        run(g.entities.create(name, type_))
+
+
+def t_entities(g: SelfGraph, *names: str) -> None:
+    create_entities(g, *(f"T:{name.upper()}" for name in names))
+
+
+def json_file(tmp_path: Any, name: str, data: Any) -> str:
+    path = tmp_path / name
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return str(path)
+
+
+def preference_update_recorder() -> tuple[Any, list[tuple[str, dict[str, Any]]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class Preferences:
+        async def update(self, id: str, **changes: Any) -> dict[str, Any]:
+            calls.append((id, changes))
+            return {}
+
+    class Graph:
+        preferences = Preferences()
+
+    return Graph(), calls
+
+
+def cli(g: SelfGraph, argv: list[str], capsys: Any) -> Any:
+    from selfgraph.cli import build_parser, dispatch
+
+    run(dispatch(g, build_parser().parse_args(argv)))
+    return json.loads(capsys.readouterr().out)
+
+
+def kuzu_main(tmp_path: Any, *argv: str) -> int:
+    pytest.importorskip("kuzu")
+    from selfgraph.cli import main
+
+    return main(["--store", "kuzu", "--uri", str(tmp_path / "cli.kuzu"), *argv])
+
+
+@contextmanager
+def mcp_session(prefix: str = "mcp", **over) -> Iterator[Any]:
+    import selfgraph.mcp.server as srv
+
+    run(srv.close())
+    over.setdefault("namespace", unique_ns(prefix))
+    srv.configure(store_settings(**over))
+    try:
+        yield srv
+    finally:
+        run(srv.close())
+
+
+class DriverError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class FakeLLM:
     def __init__(self, responses: dict[str, Any] | None = None) -> None:
         """An LLM client that returns scripted structured output per schema type.
@@ -140,3 +240,17 @@ class FakeLLM:
         if isinstance(spec, Callable):
             return spec(system, user)
         return spec
+
+
+def extracting_llm(entities: list[tuple[str, str]], relations: list[tuple[str, str, str]] = ()) -> FakeLLM:
+    from selfgraph import EntityInput
+    from selfgraph.extraction.extractor import _EntitiesOut, _RelationsOut, _RelOut
+
+    return FakeLLM(
+        {
+            "_EntitiesOut": _EntitiesOut(entities=[EntityInput(type=t, name=n) for t, n in entities]),
+            "_RelationsOut": _RelationsOut(
+                relations=[_RelOut(from_name=a, type=b, to_name=c) for a, b, c in relations]
+            ),
+        }
+    )

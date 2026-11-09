@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { ValidationError } from "../errors.js";
+import { STORE_CLOSED_MESSAGE, StoreError, ValidationError } from "../errors.js";
 import { comparePy, pyStrip } from "../internal/py.js";
 import type { CypherResult, CypherRow, JsonValue } from "../models.js";
 import {
@@ -31,6 +31,18 @@ export const WRITE_COUNTER_NAMES: ReadonlyArray<readonly [CounterName, string]> 
   ["propertiesSet", "properties_set"],
 ];
 
+const WRITE_BATCH = 500;
+const INTERNAL_PROPERTIES: ReadonlySet<string> = new Set(["_lock"]);
+
+/**
+ * The properties of a returned node or relationship, without SelfGraph's internal ones such as _lock.
+ *
+ * @param properties (Record<string, unknown>): the stored properties.
+ * @return (Record<string, unknown>): the properties to return.
+ */
+export function graphProperties(properties: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(properties).filter(([key]) => !INTERNAL_PROPERTIES.has(key)));
+}
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -53,6 +65,25 @@ export function quoteLabel(name: string): string {
  */
 export function sortedEntries(equals: Props | null | undefined): Array<[string, unknown]> {
   return Object.entries(equals ?? {}).sort(([a], [b]) => comparePy(a, b));
+}
+
+/**
+ * Split keyed write rows into runs of at most WRITE_BATCH that share a key, in write order.
+ *
+ * @param rows (Iterable<readonly [K, Props]>): [key, row] pairs; a key change (compared as JSON) starts a new batch.
+ * @return (Array<[K, Props[]]>): [key, rows] batches, one UNWIND statement each.
+ */
+export function writeBatches<K>(rows: Iterable<readonly [K, Props]>): Array<[K, Props[]]> {
+  const batches: Array<[K, Props[]]> = [];
+  let lastKey: string | undefined;
+  for (const [key, row] of rows) {
+    const json = JSON.stringify(key);
+    const last = batches.at(-1);
+    if (last === undefined || json !== lastKey || last[1].length >= WRITE_BATCH) batches.push([key, [row]]);
+    else last[1].push(row);
+    lastKey = json;
+  }
+  return batches;
 }
 
 /**
@@ -102,27 +133,27 @@ function whereAnyOf(
 }
 
 /**
- * Bind each value as `$<prefix><i>` and build one clause per value.
+ * Add a `column > $id_gt` clause for keyset paging when idGt is given, and bind its parameter.
  *
- * @param values (readonly string[]): the values to bind.
- * @param prefix (string): the parameter name prefix.
+ * @param column (string): the id column, qualified with its variable.
+ * @param idGt (string | null | undefined): the id to resume after, or null for no clause.
+ * @param where (string[]): the clauses to extend.
  * @param params (Props): the parameters to extend.
- * @param clause ((param: string) => string): builds the clause for one parameter reference.
- * @return (string[]): the clauses, in value order.
  */
-export function bindList(
-  values: readonly string[],
-  prefix: string,
-  params: Props,
-  clause: (param: string) => string,
-): string[] {
-  return values.map((value, i) => {
-    params[`${prefix}${i}`] = value;
-    return clause(`$${prefix}${i}`);
-  });
+export function whereAfter(column: string, idGt: string | null | undefined, where: string[], params: Props): void {
+  if (idGt == null) return;
+  where.push(`${column} > $id_gt`);
+  params.id_gt = idGt;
 }
 
 abstract class CypherRunner {
+  protected closed = false;
+
+  /** Fail with a plain StoreError once the store is closed, instead of a driver error. */
+  protected requireOpen(): void {
+    if (this.closed) throw new StoreError(STORE_CLOSED_MESSAGE);
+  }
+
   /**
    * Run one statement against the engine; subclasses implement it and every primitive goes through it.
    *
@@ -234,16 +265,68 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     await this._run(`MERGE (n:${label} {id:$id, ns:$ns}) SET n += $props${extra}`, { id, ns, props });
   }
 
+  /**
+   * Merge many nodes of one label by id, a batch per statement, and set their properties.
+   *
+   * @param ns (string): namespace.
+   * @param label (string): the primary label matched on.
+   * @param rows (readonly NodeRow[]): [node id, properties] pairs.
+   * @param options (UpsertNodeOptions): an additional label to add to every node.
+   */
+  override async upsertNodes(
+    ns: string,
+    label: string,
+    rows: readonly NodeRow[],
+    options: UpsertNodeOptions = {},
+  ): Promise<void> {
+    const extra = options.extra_label != null ? `, n:${quoteLabel(options.extra_label)}` : "";
+    for (const [, batch] of writeBatches(rows.map(([id, props]) => [null, { id, props }] as const))) {
+      await this._run(`UNWIND $rows AS row MERGE (n:${label} {id: row.id, ns: $ns}) SET n += row.props${extra}`, {
+        rows: batch,
+        ns,
+      });
+    }
+  }
+
+  /**
+   * Create or update many edges, a batch per statement and edge type, skipping rows with a missing endpoint.
+   *
+   * @param ns (string): namespace.
+   * @param fromLabel (string): source node label.
+   * @param toLabel (string): destination node label.
+   * @param rows (readonly EdgeWrite[]): [edge type, source id, destination id, properties] rows.
+   */
+  override async createEdges(
+    ns: string,
+    fromLabel: string,
+    toLabel: string,
+    rows: readonly EdgeWrite[],
+  ): Promise<void> {
+    const keyed = rows.map(([type, fromId, toId, props]) => {
+      const row = { f: fromId, t: toId, rid: props.id ?? null, rev: props.revision ?? null, props };
+      return [[type, "id" in props && "revision" in props], row] as const;
+    });
+    const match = `UNWIND $rows AS row MATCH (a:${fromLabel} {id: row.f, ns: $ns}), (b:${toLabel} {id: row.t, ns: $ns}) `;
+    for (const [[type, versioned], batch] of writeBatches(keyed)) {
+      const rel = quoteLabel(type);
+      const write = versioned
+        ? `MERGE (a)-[r:${rel} {id: row.rid, ns: $ns, revision: row.rev}]->(b)`
+        : `CREATE (a)-[r:${rel}]->(b)`;
+      await this._run(`${match}${write} SET r += row.props`, { rows: batch, ns });
+    }
+  }
+
   async removeNodeLabel(ns: string, label: string, id: string, dropLabel: string): Promise<void> {
     await this._run(`MATCH (n:${label} {id:$id, ns:$ns}) REMOVE n:${quoteLabel(dropLabel)}`, { id, ns });
   }
 
   async matchNodes(ns: string, label: string, options: MatchNodesOptions = {}): Promise<Props[]> {
-    const { equals, any_of, skip = 0, limit = DEFAULT_MATCH_LIMIT } = options;
+    const { equals, any_of, skip = 0, limit = DEFAULT_MATCH_LIMIT, id_gt } = options;
     const where = ["n.ns = $ns"];
     const params: Props = { ns, skip, limit };
     whereEquals("n", equals, where, params);
     whereAnyOf("n", any_of, where, params);
+    whereAfter("n.id", id_gt, where, params);
     const query = `MATCH (n:${label}) WHERE ${where.join(" AND ")} RETURN n ORDER BY n.id SKIP $skip LIMIT $limit`;
     const res = await this._run(query, params);
     return res.rows.map((r) => r.n as Props);
@@ -251,6 +334,11 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
 
   async deleteNode(ns: string, label: string, id: string): Promise<void> {
     await this._run(`MATCH (n:${label} {id:$id, ns:$ns}) DETACH DELETE n`, { id, ns });
+  }
+
+  async deleteNodes(ns: string, label: string, ids: readonly string[]): Promise<void> {
+    if (ids.length)
+      await this._run(`MATCH (n:${label}) WHERE n.ns = $ns AND n.id IN $ids DETACH DELETE n`, { ns, ids });
   }
 
   async deleteNodesBy(ns: string, label: string, equals: Props): Promise<number> {
@@ -334,6 +422,7 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
       equals,
       skip = 0,
       limit = DEFAULT_MATCH_LIMIT,
+      id_gt,
     } = options;
     const blabel = to_label ? `:${to_label}` : "";
     const where = ["r.ns = $ns"];
@@ -360,31 +449,13 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
       params.etype = type;
     }
     whereEquals("r", equals, where, params);
+    whereAfter("r.id", id_gt, where, params);
     const query =
       `MATCH (a:${from_label})-[r]->(b${blabel}) WHERE ${where.join(" AND ")} ` +
       `RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t ` +
       "ORDER BY r.id SKIP $skip LIMIT $limit";
     const res = await this._run(query, params);
     return res.rows.map(edgeRow);
-  }
-
-  async versionedRelationIds(
-    ns: string,
-    label: string,
-    id: string,
-    options: { exclude_types: readonly string[] },
-  ): Promise<string[]> {
-    const params: Props = { id, ns };
-    const clauses = [
-      "r.id IS NOT NULL",
-      "r.revision IS NOT NULL",
-      ...bindList(options.exclude_types, "ex", params, (p) => `type(r) <> ${p}`),
-    ];
-    const res = await this._run(
-      `MATCH (x:${label} {id:$id, ns:$ns})-[r]-(o) WHERE ${clauses.join(" AND ")} RETURN DISTINCT r.id AS rid`,
-      params,
-    );
-    return res.rows.map((r) => r.rid as string);
   }
 
   async childNodes(
@@ -399,21 +470,6 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
       { id: parentId, ns },
     );
     return res.rows.map((r) => r.c as Props);
-  }
-
-  async countOutEdges(ns: string, label: string, id: string): Promise<number> {
-    const res = await this._run(`MATCH (p:${label} {id:$id, ns:$ns})-[r]->() RETURN count(r) AS n`, { id, ns });
-    return toCount(res.rows);
-  }
-
-  async countInEdgesTyped(ns: string, label: string, id: string, types: readonly string[]): Promise<number> {
-    const params: Props = { id, ns };
-    const ors = bindList(types, "t", params, (p) => `type(r) = ${p}`);
-    const res = await this._run(
-      `MATCH (p)-[r]->(x:${label} {id:$id, ns:$ns}) WHERE ${ors.join(" OR ")} RETURN count(r) AS n`,
-      params,
-    );
-    return toCount(res.rows);
   }
 
   async deleteEdgesTouchingByType(ns: string, label: string, id: string, type: string): Promise<void> {

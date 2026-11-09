@@ -5,10 +5,19 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from ..errors import StoreError, TransientError
+from ..errors import OTHER_ENGINE_HINT, TOKEN_HINT, StoreError
 from ..ids import quote_label
 from ..models import CypherResult
-from ._cypher import AutoCommitStore, bind_list, bolt_driver, count_of, records_to_result
+from ._cypher import (
+    AutoCommitStore,
+    bolt_auth,
+    bolt_driver,
+    bolt_failure,
+    count_of,
+    query_error,
+    records_to_result,
+    where_after,
+)
 from ._docrows import docs, edge_row, first_doc, merged_current_edge
 
 __all__ = ["HydraDBStore"]
@@ -18,6 +27,15 @@ _SCALARS = (str, int, float, bool)
 _MAX_STRING_BYTES = 32000
 _WRITE_BATCH = 1000
 _DELETE_BATCH = 1024
+_TRANSIENT_MARKERS = ("snapshot", "epoch", "transient", "serializ", "conflict", "lock")
+_PROTOCOL_MARKERS = ("protocol version", "unsupported protocol")
+_OTHER_ENGINE_MARKERS = (*_PROTOCOL_MARKERS, "neo.clienterror.database.databasenotfound", "memgraph")
+_OTHER_ENGINE_HINT = f"; if this is Neo4j or Memgraph, {OTHER_ENGINE_HINT}"
+_NO_TOKEN = f"HydraDB needs a token: {TOKEN_HINT}"
+
+
+def _transient(lowered: str) -> bool:
+    return any(k in lowered for k in _TRANSIENT_MARKERS)
 
 
 def _guard_sizes(row: Mapping[str, Any]) -> None:
@@ -56,6 +74,19 @@ def _sk(ns: str, sid: str) -> int:
 
 def _scalars(props: dict) -> dict:
     return {k: v for k, v in props.items() if k not in ("id", "ns") and isinstance(v, _SCALARS)}
+
+
+def _unset(props: Mapping[str, Any]) -> tuple[str, ...]:
+    """The properties set to None, whose stored columns must be removed since the engine cannot write a null.
+
+    @param props (Mapping[str, Any]): the encoded properties about to be written.
+    @return (tuple[str, ...]): the cleared property names, sorted.
+    """
+    return tuple(sorted(k for k, v in props.items() if v is None and k not in ("id", "ns")))
+
+
+def _removes(alias: str, keys: tuple[str, ...]) -> str:
+    return ", ".join(f"{alias}.`{k}`" for k in keys)
 
 
 def _doc(props: Mapping[str, Any]) -> str:
@@ -113,14 +144,18 @@ class HydraDBStore(AutoCommitStore):
         self,
         uri: str,
         *,
-        auth: tuple[str, str] | None = None,
+        auth: str | tuple[str, str] | None = None,
         database: str | None = None,
         **driver_kwargs: Any,
     ) -> None:
+        auth = bolt_auth(auth)
         self._driver = bolt_driver(uri, auth, **driver_kwargs)
+        self._uri = uri
+        self._has_auth = auth is not None
         self._database = database or "default"
 
     def _session(self):
+        self._require_open()
         return self._driver.session(database=self._database)
 
     async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
@@ -129,17 +164,36 @@ class HydraDBStore(AutoCommitStore):
                 result = await session.run(query, dict(params or {}))
                 return await records_to_result(result)
             except Exception as exc:  # noqa: BLE001
-                lowered = f"{getattr(exc, 'code', '') or ''} {exc}".lower()
-                if any(k in lowered for k in ("snapshot", "epoch", "transient", "serializ", "conflict", "lock")):
-                    raise TransientError(f"HydraDB transaction conflict: {exc}") from exc
-                raise StoreError(f"HydraDB query failed: {exc}") from exc
+                raise self._error(exc) from exc
+
+    def _error(self, exc: BaseException) -> StoreError:
+        """Map a driver error to a library error, saying when a token is missing or the server is another engine.
+
+        A missing database on HydraDB itself gets no engine hint; only a protocol mismatch or a Neo4j or Memgraph
+        error code does.
+
+        @param exc (BaseException): the driver exception.
+        @return (StoreError): the error to raise.
+        """
+        failure = bolt_failure(exc)
+        if failure == "auth" and not self._has_auth:
+            return StoreError(_NO_TOKEN)
+        err = query_error(exc, self._uri, self._database, "HydraDB", _transient)
+        lowered = f"{getattr(exc, 'code', '') or ''} {exc}".lower()
+        if any(k in lowered for k in _OTHER_ENGINE_MARKERS):
+            return StoreError(f"{err}{_OTHER_ENGINE_HINT}")
+        return err
 
     async def initialize(self) -> None:
-        """Set up the store. HydraDB manages identity natively, so nothing is created."""
-        return None
+        """Check the server is reachable and accepts the credentials with one cheap read; nothing is created.
+
+        @return (None): nothing; raises StoreError when the server cannot be reached or rejects the login.
+        """
+        await self._run("MATCH (n:_SgInit) RETURN count(*) AS n")
 
     async def close(self) -> None:
-        """Close the driver and its connection pool."""
+        """Close the driver and its connection pool; later calls fail with StoreError."""
+        self._closed = True
         await self._driver.close()
 
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
@@ -167,15 +221,24 @@ class HydraDBStore(AutoCommitStore):
         if extra_label is not None:
             quote_label(extra_label)
         out = []
+        cleared: dict[tuple[str, ...], list[int]] = {}
         for id, props in rows:
             row = {"id": _sk(ns, id), "sid": id, "ns": ns, "label": label, "doc": _doc(props), **_scalars(props)}
             _guard_sizes(row)
             out.append(row)
+            if keys := _unset(props):
+                cleared.setdefault(keys, []).append(row["id"])
         for batch in _by_columns(out):
             await self._run(
                 f"UNWIND $rows AS row MERGE (n {{id: row.id}}) SET n:{label}, {_sets('n', batch[0], ('id',))}",
                 {"rows": batch},
             )
+        for keys, iids in cleared.items():
+            for i in range(0, len(iids), _DELETE_BATCH):
+                await self._run(
+                    f"MATCH (n:{label}) WHERE n.id IN $iids REMOVE {_removes('n', keys)}",
+                    {"iids": iids[i : i + _DELETE_BATCH]},
+                )
 
     async def remove_node_label(self, ns: str, label: str, id: str, drop_label: str) -> None:
         await self._run(
@@ -193,6 +256,7 @@ class HydraDBStore(AutoCommitStore):
         order_by: str = "id",
         skip: int = 0,
         limit: int = 1000,
+        id_gt: str | None = None,
     ) -> list[dict]:
         params: dict[str, Any] = {"ns": ns, "label": label, "skip": skip, "limit": limit}
         ids = (any_of or {}).get("id")
@@ -210,6 +274,7 @@ class HydraDBStore(AutoCommitStore):
             if key != "id":
                 where.append(f"n.`{key}` IN $in{i}")
                 params[f"in{i}"] = list(values)
+        where_after("n.sid", id_gt, where, params)
         ob = "sid" if order_by == "id" else order_by
         res = await self._run(
             f"MATCH ({pattern}) WHERE {' AND '.join(where)} "
@@ -220,6 +285,11 @@ class HydraDBStore(AutoCommitStore):
 
     async def delete_node(self, ns: str, label: str, id: str) -> None:
         await self._run(f"MATCH (n:{label} {{id: $iid}}) DETACH DELETE n", {"iid": _sk(ns, id)})
+
+    async def delete_nodes(self, ns: str, label: str, ids: list[str]) -> None:
+        for batch in range(0, len(ids), _DELETE_BATCH):
+            iids = [_sk(ns, i) for i in ids[batch : batch + _DELETE_BATCH]]
+            await self._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", {"iids": iids})
 
     async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
         params: dict[str, Any] = {"ns": ns, "batch": _DELETE_BATCH}
@@ -301,6 +371,8 @@ class HydraDBStore(AutoCommitStore):
             f"{_BY_SID} AND r.is_current = true SET {', '.join(sets)}",
             params,
         )
+        if keys := _unset(merged):
+            await self._run(f"{_BY_SID} AND r.is_current = true REMOVE {_removes('r', keys)}", {"ns": ns, "sid": id})
 
     async def count_edges(self, ns: str, id: str) -> int:
         res = await self._run(f"{_BY_SID} RETURN count(*) AS n", {"ns": ns, "sid": id})
@@ -328,6 +400,7 @@ class HydraDBStore(AutoCommitStore):
         order_by: str = "id",
         skip: int = 0,
         limit: int = 1000,
+        id_gt: str | None = None,
     ) -> list[dict]:
         params: dict[str, Any] = {"ns": ns, "skip": skip, "limit": limit}
         apat = f"a:{from_label}"
@@ -352,6 +425,7 @@ class HydraDBStore(AutoCommitStore):
             params[f"eq{i}"] = value
         if current_only:
             where.append("r.is_current = true")
+        where_after("r.sid", id_gt, where, params)
         ob = "sid" if order_by == "id" else order_by
         res = await self._run(
             f"MATCH ({apat})-[r:{_EDGE}]->({bpat}) WHERE {' AND '.join(where)} "
@@ -360,19 +434,6 @@ class HydraDBStore(AutoCommitStore):
             params,
         )
         return [edge_row(r) for r in res.rows]
-
-    async def versioned_relation_ids(self, ns: str, label: str, id: str, *, exclude_types: list[str]) -> list[str]:
-        params: dict[str, Any] = {"iid": _sk(ns, id), "ns": ns}
-        where = [
-            _same("r", "ns", "ns"),
-            "r.revision IS NOT NULL",
-            *bind_list(exclude_types, "ex", params, lambda p: f"r.etype <> {p}"),
-        ]
-        res = await self._run(
-            f"MATCH (x:{label} {{id: $iid}})-[r:{_EDGE}]-(o) WHERE {' AND '.join(where)} RETURN DISTINCT r.sid AS rid",
-            params,
-        )
-        return list(dict.fromkeys(r["rid"] for r in res.rows))
 
     async def child_nodes(
         self,
@@ -392,23 +453,6 @@ class HydraDBStore(AutoCommitStore):
             {"iid": _sk(ns, parent_id), "ns": ns, "et": edge_type},
         )
         return docs(res.rows)
-
-    async def count_out_edges(self, ns: str, label: str, id: str) -> int:
-        res = await self._run(
-            f"MATCH (p:{label} {{id: $iid}})-[r:{_EDGE}]->(o) WHERE {_same('r', 'ns', 'ns')} RETURN count(*) AS n",
-            {"iid": _sk(ns, id), "ns": ns},
-        )
-        return count_of(res.rows)
-
-    async def count_in_edges_typed(self, ns: str, label: str, id: str, types: list[str]) -> int:
-        params: dict[str, Any] = {"iid": _sk(ns, id), "ns": ns}
-        ors = bind_list(types, "t", params, lambda p: f"r.etype = {p}")
-        res = await self._run(
-            f"MATCH (p)-[r:{_EDGE}]->(x:{label} {{id: $iid}}) WHERE {_same('r', 'ns', 'ns')} AND ({' OR '.join(ors)}) "
-            "RETURN count(*) AS n",
-            params,
-        )
-        return count_of(res.rows)
 
     async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:
         await self._run(

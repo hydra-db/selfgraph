@@ -85,7 +85,7 @@ export function jsonIso(d: Date): string {
  */
 export function parseIso(text: string): Date {
   const m = ISO_RE.exec(text);
-  if (!m) throw new RangeError(`Invalid isoformat string: ${JSON.stringify(text)}`);
+  if (!m) throw new RangeError(`Invalid ISO 8601 string: ${JSON.stringify(text)}`);
   const [, ys, mos, ds, hs, mis, ss, frac, tz] = m;
   const year = Number(ys);
   const month = Number(mos);
@@ -95,7 +95,7 @@ export function parseIso(text: string): Date {
   const second = ss ? Number(ss) : 0;
   const micro = frac ? Number(frac.slice(0, 6).padEnd(6, "0")) : 0;
   if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) {
-    throw new RangeError(`Invalid isoformat string: ${JSON.stringify(text)}`);
+    throw new RangeError(`Invalid ISO 8601 string: ${JSON.stringify(text)}`);
   }
   const d = new Date(0);
   d.setUTCFullYear(year, month - 1, day);
@@ -124,7 +124,7 @@ export function fromIso(value: unknown): Date | null {
   if (value === null || value === undefined) return null;
   if (value instanceof Date) return value;
   if (typeof value === "string") return parseIso(value);
-  throw new TypeError(`fromisoformat: argument must be str, not ${typeof value}`);
+  throw new TypeError(`fromIso: argument must be a string, not ${typeof value}`);
 }
 
 /**

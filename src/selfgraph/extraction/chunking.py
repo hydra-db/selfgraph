@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .._ops import _require_int
+from ..errors import ValidationError
+
 __all__ = ["Chunk", "chunk_text", "count_tokens"]
 
 _ENCODER = None
@@ -45,19 +48,36 @@ class Chunk:
     end_offset: int
 
 
-def chunk_text(text: str, *, max_tokens: int = 512, overlap_tokens: int = 64) -> list[Chunk]:
-    """Split text into overlapping chunks sized by tokens, falling back to characters.
+def _require_count(field: str, value: object, *, minimum: int) -> None:
+    """Validate a chunking size is an integer no smaller than the minimum.
+
+    @param field (str): the parameter name, for the message.
+    @param value (object): the value to check.
+    @param minimum (int): the smallest accepted value.
+    @return (None): nothing; raises ValidationError on a non-integer or a value below the minimum.
+    """
+    _require_int(field, value)
+    if value < minimum:
+        raise ValidationError(f"{field} must be at least {minimum}, got {value}")
+
+
+def chunk_text(text: str, *, max_tokens: int = 512, overlap_tokens: int | None = None) -> list[Chunk]:
+    """Split text into overlapping chunks sized by tokens, falling back to characters cut on whitespace.
 
     @param text (str): the text to split.
-    @param max_tokens (int): the maximum tokens per chunk.
-    @param overlap_tokens (int): the token overlap between consecutive chunks.
+    @param max_tokens (int): the maximum tokens per chunk, at least 1.
+    @param overlap_tokens (int | None): the token overlap between consecutive chunks, from 0 to max_tokens - 1, or
+        None for min(64, max_tokens // 4).
     @return (list[Chunk]): the chunks, in order.
     """
-    if max_tokens <= 0:
-        raise ValueError("max_tokens must be positive")
+    _require_count("max_tokens", max_tokens, minimum=1)
+    if overlap_tokens is None:
+        overlap_tokens = min(64, max_tokens // 4)
+    _require_count("overlap_tokens", overlap_tokens, minimum=0)
+    if overlap_tokens >= max_tokens:
+        raise ValidationError(f"overlap_tokens ({overlap_tokens}) must be smaller than max_tokens ({max_tokens})")
     if not text.strip():
         return []
-    overlap_tokens = max(0, min(overlap_tokens, max_tokens - 1))
 
     enc = _encoder()
     if enc is None:
@@ -82,7 +102,10 @@ def chunk_text(text: str, *, max_tokens: int = 512, overlap_tokens: int = 64) ->
 
 
 def _chunk_by_chars(text: str, *, size: int, overlap: int) -> list[Chunk]:
-    """Split text into overlapping chunks sized by characters, cutting on whitespace.
+    """Split text into overlapping chunks sized by characters, starting and ending each on a word boundary.
+
+    A chunk ends at the last whitespace within its size, and the next one starts at the first word that begins
+    inside the overlap; a single word longer than the size is cut.
 
     @param text (str): the text to split.
     @param size (int): the maximum characters per chunk.
@@ -98,15 +121,21 @@ def _chunk_by_chars(text: str, *, size: int, overlap: int) -> list[Chunk]:
     while start < n:
         end = min(start + size, n)
         if end < n:
-            window = text[start:end]
-            cut = max(window.rfind(" "), window.rfind("\n"))
-            if cut > size // 2:
-                end = start + cut + 1
+            cut = end
+            while cut > start and not text[cut].isspace():
+                cut -= 1
+            if cut > start:
+                end = cut
         piece = text[start:end]
         if piece.strip():
             chunks.append(Chunk(index=index, text=piece, start_offset=start, end_offset=end))
             index += 1
         if end >= n:
             break
-        start = max(end - overlap, start + 1)
+        nxt = max(end - overlap, start + 1)
+        while nxt < end and not text[nxt - 1].isspace():
+            nxt += 1
+        while nxt < n and text[nxt].isspace():
+            nxt += 1
+        start = nxt
     return chunks

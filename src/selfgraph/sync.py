@@ -77,6 +77,7 @@ class SyncSelfGraph:
         self.relations = _SyncProxy(graph.relations, self._run)
         self.preferences = _SyncProxy(graph.preferences, self._run)
         self.decisions = _SyncProxy(graph.decisions, self._run)
+        self.maintenance = _SyncProxy(graph.maintenance, self._run)
         self.insert = _SyncProxy(graph.insert, self._run)
 
     @property

@@ -1,5 +1,6 @@
 import { GraphAccess } from "./access.js";
 import { ValidationError } from "./errors.js";
+import { checkPrompts } from "./extraction/prompts.js";
 import { Insert } from "./insert.js";
 import { pyStrip } from "./internal/py.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
@@ -12,11 +13,29 @@ import {
   type RetrievalResult,
 } from "./models.js";
 import type { Extractor, GraphStore } from "./protocols.js";
-import { Decisions, Entities, Preferences, Relations } from "./resources/index.js";
+import { asResolver, type EntityResolver, type ResolverMode } from "./resolution.js";
+import { Decisions, Entities, Maintenance, Preferences, Relations } from "./resources/index.js";
 import { type RetrieveOptions, retrieve } from "./retrieval.js";
-import { buildLlm, buildStore, DEFAULT_SETTINGS, type GraphSettings, readJson, settingsFromEnv } from "./runtime.js";
-import { asSchema, type ParsedSchema, requireSchemaMode, type Schema, type SchemaMode } from "./schema.js";
-import { pyTypeName, requireJsonMapping, requireText } from "./validate.js";
+import {
+  buildLlm,
+  buildStore,
+  checkSettings,
+  DEFAULT_SETTINGS,
+  type GraphSettings,
+  SETTING_KEYS,
+  settingsFromEnv,
+} from "./runtime.js";
+import {
+  asSchema,
+  type ContradictionMode,
+  type ParsedSchema,
+  requireContradictionMode,
+  requireSchemaForMode,
+  requireSchemaMode,
+  type Schema,
+  type SchemaMode,
+} from "./schema.js";
+import { checkOptions, keysOf, requireJsonMapping, requireNamespace, typeName } from "./validate.js";
 
 export interface SelfGraphOptions {
   llm?: LLMArg;
@@ -26,7 +45,21 @@ export interface SelfGraphOptions {
   namespace?: string;
   schema?: Schema | ParsedSchema | null;
   schema_mode?: SchemaMode;
+  resolver?: EntityResolver | ResolverMode;
+  contradiction?: ContradictionMode;
 }
+
+const OPTION_KEYS = keysOf<SelfGraphOptions>({
+  llm: true,
+  instructions: true,
+  prompts: true,
+  extractor: true,
+  namespace: true,
+  schema: true,
+  schema_mode: true,
+  resolver: true,
+  contradiction: true,
+});
 
 const asyncDispose: typeof Symbol.asyncDispose =
   (Symbol as { asyncDispose?: typeof Symbol.asyncDispose }).asyncDispose ??
@@ -39,6 +72,7 @@ export class SelfGraph {
   readonly relations: Relations;
   readonly preferences: Preferences;
   readonly decisions: Decisions;
+  readonly maintenance: Maintenance;
   readonly insert: Insert;
   readonly schema: ParsedSchema | null;
   private readonly graph: GraphAccess;
@@ -47,25 +81,34 @@ export class SelfGraph {
    * A knowledge graph over any GraphStore, initialized lazily on first use.
    *
    * @param store (GraphStore): the graph store.
-   * @param options (SelfGraphOptions): the LLM, extraction instructions and prompts, a custom extractor, the namespace, and an optional schema.
+   * @param options (SelfGraphOptions): the LLM, extraction instructions and prompts, a custom extractor, the namespace, an optional schema, the schema mode, the entity resolver, and the contradiction mode.
    */
   constructor(store: GraphStore, options: SelfGraphOptions = {}) {
+    checkOptions("SelfGraph", options, OPTION_KEYS);
     const namespace = options.namespace ?? DEFAULT_SETTINGS.namespace;
-    requireText("namespace", namespace);
+    requireNamespace(namespace);
     const schemaMode = options.schema_mode ?? "warn";
     requireSchemaMode(schemaMode);
+    const contradiction = options.contradiction ?? "warn";
+    requireContradictionMode(contradiction);
     this.store = store;
     this.namespace = namespace;
     this.schema = asSchema(options.schema);
-    this.graph = new GraphAccess(store, namespace, this.schema, schemaMode);
+    requireSchemaForMode(schemaMode, this.schema);
+    this.graph = new GraphAccess(store, namespace, this.schema, schemaMode, contradiction);
     this.entities = new Entities(this.graph);
     this.relations = new Relations(this.graph);
     this.preferences = new Preferences(this.graph);
     this.decisions = new Decisions(this.graph);
+    this.maintenance = new Maintenance(this.graph);
+    const llm = resolveLlm(options.llm);
+    const prompts = asInput(ExtractionPrompts, options.prompts, "prompts");
+    checkPrompts(prompts);
     this.insert = new Insert(this.graph, {
-      llm: resolveLlm(options.llm),
+      llm,
+      resolver: asResolver(options.resolver ?? "exact", llm),
       instructions: asInput(ExtractionInstructions, options.instructions, "instructions"),
-      prompts: asInput(ExtractionPrompts, options.prompts, "prompts"),
+      prompts,
       extractor: options.extractor ?? null,
     });
   }
@@ -87,6 +130,7 @@ export class SelfGraph {
    * @return (SelfGraph): the constructed graph.
    */
   static connect(settings: Partial<GraphSettings> = {}): SelfGraph {
+    checkOptions("connect", settings, SETTING_KEYS);
     return buildGraph({ ...DEFAULT_SETTINGS, ...settings });
   }
 
@@ -116,9 +160,9 @@ export class SelfGraph {
    * @return (CypherResult): the rows and counters.
    */
   async runCypher(query: string, params?: Record<string, JsonValue> | null): Promise<CypherResult> {
-    if (typeof query !== "string") throw new ValidationError(`query must be a string, got ${pyTypeName(query)}`);
+    if (typeof query !== "string") throw new ValidationError(`query must be a string, got ${typeName(query)}`);
     if (!pyStrip(query)) throw new ValidationError("query cannot be empty");
-    requireJsonMapping("params", params);
+    requireJsonMapping("params", params, false);
     return this.graph.read((store) => store.runCypher(query, params));
   }
 
@@ -126,7 +170,7 @@ export class SelfGraph {
    * Retrieve graph context for a query via keyword seeds and bounded traversal.
    *
    * @param query (string): the natural-language query to seed from.
-   * @param options (RetrieveOptions): strategy ("bfs", "dfs", or "ppr"), depth, k, max_nodes, and budget_tokens.
+   * @param options (RetrieveOptions): strategy ("bfs", "dfs", or "ppr"), depth, k, max_nodes, budget_tokens, and as_of (read on the valid-time axis: relations and preferences valid then, with their entities).
    * @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
    */
   async retrieve(query: string, options: RetrieveOptions = {}): Promise<RetrievalResult> {
@@ -137,16 +181,20 @@ export class SelfGraph {
 /**
  * Construct a SelfGraph from settings; does not initialize the store.
  *
- * @param settings (GraphSettings): the resolved store, LLM, and schema configuration.
+ * @param value (GraphSettings): the resolved store, LLM, and schema configuration.
  * @return (SelfGraph): the constructed graph.
  */
-export function buildGraph(settings: GraphSettings): SelfGraph {
+export function buildGraph(value: GraphSettings): SelfGraph {
+  const settings = checkSettings(value);
   const namespace = settings.namespace ?? DEFAULT_SETTINGS.namespace;
-  requireText("namespace", namespace);
   return new SelfGraph(buildStore(settings), {
     llm: buildLlm(settings),
+    instructions: settings.instructions as ExtractionInstructions | null,
+    prompts: settings.prompts as ExtractionPrompts | null,
     namespace,
-    schema: typeof settings.schema === "string" ? (readJson(settings.schema) as Schema) : settings.schema,
+    schema: settings.schema as ParsedSchema | null,
     schema_mode: (settings.schema_mode || "warn") as SchemaMode,
+    resolver: (settings.resolver || "exact") as ResolverMode,
+    contradiction: (settings.contradiction || "warn") as ContradictionMode,
   });
 }

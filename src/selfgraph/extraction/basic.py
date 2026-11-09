@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 
+from ..errors import LLM_HINT
 from ..models import EntityInput, InsertWarning, Ontology, ParsedDocument
 from .extractor import _FALLBACK_TYPE, DefaultExtractor, _RelOut, _WarningSink
+
+_log = logging.getLogger("selfgraph")
 
 __all__ = ["BasicExtractor"]
 
@@ -117,14 +121,17 @@ class BasicExtractor(_WarningSink):
 
     async def extract(self, document: ParsedDocument) -> Ontology:
         nlp = _nlp()
+        code = "basic_extraction"
         if nlp is not None:
             entities, relations = _spacy_extract(nlp, document.text)
-            engine = "spaCy NER"
+            code, engine = "ner_extraction", "spaCy NER"
         else:
             entities, relations = _regex_extract(document.text)
             if _SPACY_HAS_LIB:
                 engine = "heuristic regex; run 'python -m spacy download en_core_web_sm' for spaCy NER"
             else:
                 engine = "heuristic regex; install the 'ner' extra for spaCy NER"
-        self._warnings = [InsertWarning(code="basic_extraction", message=f"extracted without an LLM using {engine}")]
+        message = f"extracted without an LLM using {engine}; for model-based extraction, {LLM_HINT}"
+        _log.warning("%s: %s", code, message)
+        self._warnings = [InsertWarning(code=code, message=message)]
         return DefaultExtractor._assemble(entities, relations, [], [])

@@ -1,14 +1,22 @@
-import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from types import UnionType
 from typing import Any, ClassVar, Generic, Literal, TypeVar, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic import ValidationError as PydanticValidationError
 
 from .errors import ValidationError
-from .ids import _has_surrogate, _require_clean_json, _require_no_control, normalize_rel_type
+from .ids import _has_surrogate, _require_clean_json, _require_no_control, _require_unit, normalize_rel_type
 
 __all__ = [
     "JsonValue",
@@ -22,6 +30,10 @@ __all__ = [
     "InsertWarning",
     "Page",
     "DeleteResult",
+    "DecayResult",
+    "PruneResult",
+    "ConsolidateGroup",
+    "ConsolidateResult",
     "CypherResult",
     "EntityInput",
     "EvidenceInput",
@@ -39,7 +51,43 @@ __all__ = [
     "RetrievalResult",
     "Kind",
     "Status",
+    "MergeRewrite",
+    "MergeRecord",
+    "UnmergeResult",
+    "validation_message",
 ]
+
+_KEY_SYNONYMS = {
+    "entity_types": "entities",
+    "node_types": "entities",
+    "nodes": "entities",
+    "relation_types": "relations",
+    "relationship_types": "relations",
+    "edge_types": "relations",
+    "edges": "relations",
+    "graph_name": "graph",
+    "graphName": "graph",
+}
+
+
+_LISTED_KEYS = 8
+_JSON_TYPES = {
+    "string": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "list": "array",
+    "tuple": "array",
+    "dict": "object",
+    "model": "object",
+    "model_attributes": "object",
+}
+_BOUNDS = {
+    "greater_than": ("gt", ">"),
+    "greater_than_equal": ("ge", ">="),
+    "less_than": ("lt", "<"),
+    "less_than_equal": ("le", "<="),
+}
 
 
 def _edit_distance(a: str, b: str) -> int:
@@ -58,20 +106,63 @@ def _edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
-def suggest_key(key: str, valid: list[str]) -> str | None:
-    """Pick the valid key closest to an unknown one: edit distance at most 2 and below the key's length, ties by order.
+def suggest_key(key: str, valid: list[str], max_edits: int = 2) -> str | None:
+    """Pick the valid key closest to an unknown one: a synonym, else the nearest within max_edits, else one ending _key.
 
     @param key (str): the unknown key.
     @param valid (list[str]): the accepted keys in declared order.
+    @param max_edits (int): the most edits a suggestion may be away.
     @return (str | None): the suggestion, or None when nothing is close.
     """
+    synonym = _KEY_SYNONYMS.get(key)
+    if synonym is not None and synonym in valid:
+        return synonym
     best: str | None = None
-    limit = min(2, len(key) - 1)
+    limit = min(max_edits, len(key) - 1)
     for candidate in valid:
         distance = _edit_distance(key, candidate)
         if distance <= limit:
             best, limit = candidate, distance - 1
+    if best is None:
+        best = next((candidate for candidate in valid if candidate.endswith(f"_{key}")), None)
     return best
+
+
+def did_you_mean(suggestion: str | None) -> str:
+    """The suffix that offers a suggested name, or "" without one.
+
+    @param suggestion (str | None): the suggested name.
+    @return (str): the suffix, such as "; did you mean 'name'?".
+    """
+    return f"; did you mean {suggestion!r}?" if suggestion else ""
+
+
+def key_hint(key: str, valid: list[str], noun: str = "keys") -> str:
+    """The suffix of an unknown-key error: the closest valid key, and every valid key when there are few.
+
+    @param key (str): the unknown key.
+    @param valid (list[str]): the accepted keys in declared order.
+    @param noun (str): what the keys are called in the list, such as "keys" or "options".
+    @return (str): the suffix, such as "; did you mean 'name'? (valid keys: id, type, name)", or "".
+    """
+    hint = did_you_mean(suggest_key(key, valid))
+    if 0 < len(valid) <= _LISTED_KEYS:
+        hint += f" (valid {noun}: {', '.join(valid)})"
+    return hint
+
+
+def check_options(method: str, given: Iterable[str], allowed: Iterable[str]) -> None:
+    """Reject option names a method does not accept, naming the first unknown one and the closest accepted one.
+
+    @param method (str): the method the options belong to, for the message.
+    @param given (Iterable[str]): the option names the caller passed.
+    @param allowed (Iterable[str]): the accepted names in declared order.
+    @return (None): nothing; raises ValidationError on an unknown name.
+    """
+    accepted = list(allowed)
+    unknown = sorted(str(k) for k in given if k not in accepted)
+    if unknown:
+        raise ValidationError(f"unknown option {unknown[0]!r} for {method}{key_hint(unknown[0], accepted, 'options')}")
 
 
 def _nested_input(annotation: Any) -> "tuple[type[InputModel] | None, bool]":
@@ -109,9 +200,7 @@ def _unknown_key(model: "type[InputModel]", value: Any, where: str) -> str | Non
     accepted = set(keys) | set(model.model_fields)
     unknown = sorted(str(k) for k in value if k not in accepted)
     if unknown:
-        suggestion = suggest_key(unknown[0], keys)
-        hint = f"; did you mean {suggestion!r}?" if suggestion else ""
-        return f"unknown key {unknown[0]!r} in {where}{hint}"
+        return f"unknown key {unknown[0]!r} in {where}{key_hint(unknown[0], keys)}"
     for name, field in model.model_fields.items():
         key = field.alias or name
         nested, many = _nested_input(field.annotation)
@@ -156,6 +245,21 @@ class InputModel(BaseModel):
         return data
 
 
+class TopInputModel(InputModel):
+    def __init__(self, /, **data: Any) -> None:
+        """Validate keyword fields, raising SelfGraph's ValidationError with one "path: message" line per issue.
+
+        Only top-level inputs override __init__: pydantic calls a custom __init__ for nested models too, which
+        would cut the path of an error inside them.
+
+        @param data (Any): the model fields.
+        """
+        try:
+            super().__init__(**data)
+        except PydanticValidationError as exc:
+            raise ValidationError(validation_message(f"invalid {self.input_label}", exc)) from exc
+
+
 M = TypeVar("M", bound=BaseModel)
 
 
@@ -172,7 +276,58 @@ def as_input(model: type[M], value: Any, what: str) -> M | None:
     try:
         return model.model_validate(value)
     except PydanticValidationError as exc:
-        raise ValidationError(f"invalid {what}: {exc}") from exc
+        raise ValidationError(validation_message(f"invalid {what}", exc)) from exc
+
+
+def _issue_message(err: Mapping[str, Any]) -> str:
+    """Describe one pydantic error in the wording the TypeScript port uses for the same zod issue.
+
+    @param err (Mapping[str, Any]): one entry of a pydantic ValidationError's errors().
+    @return (str): the message, such as "field required" or "expected string".
+    """
+    kind, ctx = err["type"], err.get("ctx") or {}
+    if kind == "missing":
+        return "field required"
+    base = kind.removesuffix("_type").removesuffix("_parsing")
+    if base != kind and base in _JSON_TYPES:
+        return f"expected {_JSON_TYPES[base]}"
+    if kind == "literal_error" and "expected" in ctx:
+        return f"expected {ctx['expected']}"
+    key, op = _BOUNDS.get(kind, ("", ""))
+    if key in ctx:
+        bound = ctx[key]
+        return f"must be {op} {int(bound) if isinstance(bound, float) and bound.is_integer() else bound}"
+    msg = str(err["msg"]).removeprefix("Value error, ")
+    return msg[:1].lower() + msg[1:]
+
+
+def issue_line(err: Mapping[str, Any]) -> str:
+    """Format one pydantic error as an "entities[0].name: message" line, or the message alone at the root.
+
+    @param err (Mapping[str, Any]): one entry of a pydantic ValidationError's errors().
+    @return (str): the line.
+    """
+    path = ""
+    for part in err["loc"]:
+        if isinstance(part, int) and not isinstance(part, bool):
+            path += f"[{part}]"
+        else:
+            path += f".{part}" if path else str(part)
+    message = _issue_message(err)
+    return f"{path}: {message}" if path else message
+
+
+def validation_message(head: str, exc: PydanticValidationError) -> str:
+    """Format a pydantic ValidationError as one "path: message" line per issue, with entities[0].name paths.
+
+    One issue stays inline after the heading; several go on indented lines.
+
+    @param head (str): what failed, such as "invalid ontology".
+    @param exc (PydanticValidationError): the error.
+    @return (str): the message.
+    """
+    lines = [issue_line(err) for err in exc.errors()]
+    return f"{head}: {lines[0]}" if len(lines) == 1 else head + ":" + "".join(f"\n  {line}" for line in lines)
 
 
 T = TypeVar("T")
@@ -201,6 +356,8 @@ class Entity(BaseModel):
     source_count: int = 0
     created_at: datetime
     updated_at: datetime
+    relevance: float | None = None
+    relevance_at: datetime | None = None
 
 
 class Relation(BaseModel):
@@ -214,6 +371,10 @@ class Relation(BaseModel):
     created_at: datetime
     is_current: bool
     source_count: int = 0
+    invalidated_at: datetime | None = None
+    invalidated_by: str | None = None
+    relevance: float | None = None
+    relevance_at: datetime | None = None
 
 
 class Preference(BaseModel):
@@ -259,6 +420,33 @@ class InsertWarning(BaseModel):
     message: str
     source_id: str | None = None
     chunk_id: str | None = None
+    merge_id: str | None = None
+
+
+class MergeRewrite(BaseModel):
+    kind: Literal["relation", "preference", "decision"]
+    id: str
+    original: dict[str, JsonValue] = Field(default_factory=dict)
+    rewritten: dict[str, JsonValue] = Field(default_factory=dict)
+    existed: bool = False
+    dropped: bool = False
+
+
+class MergeRecord(BaseModel):
+    id: str
+    survivor_id: str
+    absorbed_id: str
+    absorbed: dict[str, JsonValue] = Field(default_factory=dict)
+    reason: str
+    confidence: float
+    source_id: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    added_aliases: list[str] = Field(default_factory=list)
+    added_external_ids: list[str] = Field(default_factory=list)
+    added_properties: list[str] = Field(default_factory=list)
+    rewrites: list[MergeRewrite] = Field(default_factory=list)
+    created_at: datetime
+    reverted_at: datetime | None = None
 
 
 class InsertResult(BaseModel):
@@ -270,6 +458,16 @@ class InsertResult(BaseModel):
     preferences: list[Preference] = Field(default_factory=list)
     decisions: list[DecisionTrace] = Field(default_factory=list)
     warnings: list[InsertWarning] = Field(default_factory=list)
+    merges: list[MergeRecord] = Field(default_factory=list)
+
+
+class UnmergeResult(BaseModel):
+    merge: MergeRecord
+    entity: Entity
+    survivor: Entity | None = None
+    relations: list[Relation] = Field(default_factory=list)
+    preferences: list[Preference] = Field(default_factory=list)
+    decisions: list[DecisionTrace] = Field(default_factory=list)
 
 
 class Page(BaseModel, Generic[T]):
@@ -282,6 +480,55 @@ class DeleteResult(BaseModel):
     deleted_relation_versions: int = 0
     deleted_decisions: int = 0
     deleted_preference_versions: int = 0
+
+
+class DecayResult(BaseModel):
+    dry_run: bool
+    half_life_days: float
+    now: datetime
+    entities: dict[str, float] = Field(default_factory=dict)
+    relations: dict[str, float] = Field(default_factory=dict)
+    updated_entities: int = 0
+    updated_relations: int = 0
+
+
+class _PlanResult(BaseModel):
+    @model_serializer(mode="wrap")
+    def _omit_plan_deletes(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Serialize the result, leaving out the deleted block a dry run never fills.
+
+        @param handler (SerializerFunctionWrapHandler): pydantic's default serializer.
+        @return (dict[str, Any]): the serialized result.
+        """
+        data = handler(self)
+        if getattr(self, "deleted", None) is None:
+            data.pop("deleted", None)
+        return data
+
+
+class PruneResult(_PlanResult):
+    dry_run: bool
+    entity_ids: list[str] = Field(default_factory=list)
+    relation_ids: list[str] = Field(default_factory=list)
+    deleted: DeleteResult | None = None
+    note: str | None = None
+
+
+class ConsolidateGroup(BaseModel):
+    from_entity: str
+    type: str
+    to_entity: str
+    survivor: str
+    duplicates: list[str] = Field(default_factory=list)
+    conflicts: dict[str, list[str]] = Field(default_factory=dict)
+    versions_lost: dict[str, int] = Field(default_factory=dict)
+
+
+class ConsolidateResult(_PlanResult):
+    dry_run: bool
+    groups: list[ConsolidateGroup] = Field(default_factory=list)
+    deleted: DeleteResult | None = None
+    note: str | None = None
 
 
 class CypherResult(BaseModel):
@@ -325,12 +572,20 @@ class EvidenceInput(InputModel):
     input_label: ClassVar[str] = "evidence"
 
     source_id: str
+    chunk_id: str | None = None
     quote: str | None = None
     start_offset: int | None = None
     end_offset: int | None = None
     confidence: float | None = None
 
     _clean_source_id = _check(_require_no_control, "evidence source_id", "source_id")
+
+    @field_validator("chunk_id")
+    @classmethod
+    def _clean_chunk_id(cls, value: str | None) -> str | None:
+        if value is not None:
+            _require_no_control("evidence chunk_id", value)
+        return value
 
     @field_validator("quote")
     @classmethod
@@ -342,8 +597,8 @@ class EvidenceInput(InputModel):
     @field_validator("confidence")
     @classmethod
     def _finite_confidence(cls, value: float | None) -> float | None:
-        if value is not None and not math.isfinite(value):
-            raise ValidationError("evidence confidence must be a finite number")
+        if value is not None:
+            _require_unit("evidence confidence", value, finite=True)
         return value
 
 
@@ -388,7 +643,7 @@ class DecisionTraceInput(InputModel):
 
     id: str | None = None
     title: str
-    steps: list[str]
+    steps: list[str] = Field(default_factory=list)
     actor_entity: str | None = None
     summary: str | None = None
     rationale: str | None = None
@@ -398,7 +653,7 @@ class DecisionTraceInput(InputModel):
     event_time: datetime | None = None
 
 
-class Ontology(InputModel):
+class Ontology(TopInputModel):
     input_label: ClassVar[str] = "ontology"
 
     entities: list[EntityInput] = Field(default_factory=list)
@@ -407,13 +662,56 @@ class Ontology(InputModel):
     decisions: list[DecisionTraceInput] = Field(default_factory=list)
 
 
-class LLMConfig(BaseModel):
+LLM_TIMEOUT = 120.0
+LLM_CONCURRENCY = 4
+_DIRECT_PROVIDERS = frozenset(
+    ("anthropic", "openai", "gemini", "google", "mistral", "xai", "deepseek", "cohere", "perplexity")
+)
+_KNOWN_PROVIDERS = _DIRECT_PROVIDERS | {
+    "azure",
+    "bedrock",
+    "cerebras",
+    "fireworks",
+    "fireworks_ai",
+    "gateway",
+    "groq",
+    "ollama",
+    "openrouter",
+    "together_ai",
+    "togetherai",
+    "vertex",
+    "vertex_ai",
+}
+_SAME_PROVIDER = {"google": "gemini"}
+
+
+class LLMConfig(TopInputModel):
+    input_label: ClassVar[str] = "llm config"
+
     provider: str
     model: str
     api_key: str | None = None
     base_url: str | None = None
     temperature: float = 0.0
-    max_retries: int = 3
+    max_retries: int = Field(default=3, ge=0)
+    timeout: float | None = Field(default=LLM_TIMEOUT, gt=0)
+    concurrency: int = Field(default=LLM_CONCURRENCY, ge=1)
+
+    @model_validator(mode="after")
+    def _matching_prefix(self) -> "LLMConfig":
+        """Reject a first-party provider's model prefixed with another provider, such as anthropic with gemini/x.
+
+        Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed
+        models, so only a first-party provider without a base_url is checked, and only against a known prefix.
+
+        @return (LLMConfig): the config; raises ValidationError on a conflict.
+        """
+        prefix, sep, _ = self.model.partition("/")
+        own, other = self.provider.lower(), prefix.lower()
+        known = sep and not self.base_url and own in _DIRECT_PROVIDERS and other in _KNOWN_PROVIDERS
+        if known and _SAME_PROVIDER.get(own, own) != _SAME_PROVIDER.get(other, other):
+            raise ValidationError(f"provider {self.provider!r} conflicts with model prefix {prefix!r}")
+        return self
 
 
 class PromptTemplate(InputModel):

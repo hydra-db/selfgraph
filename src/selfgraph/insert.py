@@ -4,8 +4,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from ._ops import _require_json_mapping, _require_optional_text
-from ._serde import now
+from ._ops import _require_json_mapping, _require_optional_text, parse_time
 from .errors import ExtractionError, SelfGraphError, ValidationError
 from .extraction.extractor import DefaultExtractor
 from .ids import _unstorable
@@ -19,7 +18,8 @@ from .models import (
     ParsedDocument,
     as_input,
 )
-from .schema import Schema, SchemaMode, as_schema
+from .resolution import EntityResolver, ResolverMode, as_resolver
+from .schema import ContradictionMode, Schema, SchemaMode, as_schema, require_schema_for_mode
 
 if TYPE_CHECKING:
     from .client import SelfGraph
@@ -44,30 +44,35 @@ class Insert:
         text: str,
         *,
         source_id: str | None = None,
-        event_time: datetime | None = None,
+        event_time: datetime | str | None = None,
         metadata: dict[str, JsonValue] | None = None,
         instructions: ExtractionInstructions | Mapping[str, Any] | None = None,
         prompts: ExtractionPrompts | Mapping[str, Any] | None = None,
         schema: Schema | Mapping[str, Any] | None = None,
         schema_mode: SchemaMode | None = None,
+        resolver: EntityResolver | ResolverMode | None = None,
+        contradiction: ContradictionMode | None = None,
     ) -> InsertResult:
+        if resolver is not None:
+            as_resolver(resolver, self._c._llm)
         if not isinstance(text, str):
             raise ValidationError(f"text must be a string, got {type(text).__name__}")
         if _unstorable(text):
             raise ValidationError("text cannot contain NUL or unpaired surrogate characters")
         _require_optional_text("source_id", source_id)
         _require_json_mapping("metadata", metadata)
+        event_time = parse_time(event_time, "event_time")
         if not text.strip():
-            return InsertResult(
-                source_id=source_id,
-                created_at=now(),
-                warnings=[InsertWarning(code="empty_text", message="text was empty; nothing was ingested")],
-            )
+            raise ValidationError("text cannot be empty or whitespace")
         active_schema = as_schema(schema)
+        require_schema_for_mode(
+            self._c._schema_mode if schema_mode is None else schema_mode,
+            self._c.schema if active_schema is None else active_schema,
+        )
         instructions = as_input(ExtractionInstructions, instructions, "instructions")
         prompts = as_input(ExtractionPrompts, prompts, "prompts")
-        extractor = self._c._build_extractor(instructions, prompts, schema=active_schema)
-        document = ParsedDocument(text=text, media_type="text/plain")
+        extractor = self._c._build_extractor(instructions, prompts, schema=active_schema, source_id=source_id)
+        document = ParsedDocument(text=text, media_type="text/plain", metadata=dict(metadata or {}))
         ontology = await self._extract(extractor, document)
         drain = getattr(extractor, "pop_warnings", None)
         warnings = drain() if callable(drain) else []
@@ -89,6 +94,9 @@ class Insert:
             warnings=warnings,
             schema=active_schema,
             schema_mode=schema_mode,
+            resolver=resolver,
+            contradiction=contradiction,
+            extracted=True,
         )
 
     async def ontology(
@@ -96,8 +104,11 @@ class Insert:
         ontology: Ontology | Mapping[str, Any],
         *,
         source_id: str | None = None,
+        event_time: datetime | str | None = None,
         schema: Schema | Mapping[str, Any] | None = None,
         schema_mode: SchemaMode | None = None,
+        resolver: EntityResolver | ResolverMode | None = None,
+        contradiction: ContradictionMode | None = None,
     ) -> InsertResult:
         """Merge a ready ontology into the graph as idempotent upserts.
 
@@ -108,7 +119,12 @@ class Insert:
 
         @param ontology (Ontology | Mapping[str, Any]): the ontology to merge.
         @param source_id (str | None): optional source id to attach as provenance.
-        @return (InsertResult): the inserted entities, relations, preferences, and decisions.
+        @param event_time (datetime | str | None): the default event time (a datetime or ISO 8601 text) for
+            relations, preferences, and decisions that carry none of their own.
+        @param resolver (EntityResolver | ResolverMode | None): entity resolution for this call, else the graph's.
+        @param contradiction (ContradictionMode | None): how to handle a relation that breaks a schema max_count,
+            or None for the graph's mode.
+        @return (InsertResult): the inserted entities, relations, preferences, decisions, and merges.
         """
         _require_optional_text("source_id", source_id)
         return await self._c._apply_ontology(
@@ -117,7 +133,9 @@ class Insert:
             parsed_text=None,
             media_type=None,
             metadata=None,
-            default_event_time=None,
+            default_event_time=parse_time(event_time, "event_time"),
             schema=as_schema(schema),
             schema_mode=schema_mode,
+            resolver=resolver,
+            contradiction=contradiction,
         )

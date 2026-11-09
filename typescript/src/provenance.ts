@@ -12,7 +12,7 @@ import { evidenceOf } from "./serde.js";
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
- * @param args ({ source_id: string; parsed_text: string; media_type: string; metadata: JsonObject | null; created_at: Date }): the source id, parsed text, media type, metadata, and insert timestamp.
+ * @param args ({ source_id: string; parsed_text: string; media_type: string; metadata: JsonObject | null; created_at: Date; event_time?: Date | null }): the source id, parsed text, media type, metadata, insert timestamp, and the time the content took effect.
  * @return ([string, Evidence[]]): the source version id and the base evidence.
  */
 export async function recordSource(
@@ -24,6 +24,7 @@ export async function recordSource(
     media_type: string;
     metadata: JsonObject | null;
     created_at: Date;
+    event_time?: Date | null;
   },
 ): Promise<[string, Evidence[]]> {
   const { source_id: sourceId, parsed_text: text } = args;
@@ -37,6 +38,7 @@ export async function recordSource(
     source_id: sourceId,
     media_type: args.media_type,
     created_at: toIso(args.created_at),
+    event_time: toIso(args.event_time),
     metadata_json: pyJsonDumps(args.metadata ?? {}, { sortKeys: true, default: pyStr }),
   });
   await runner.createEdge(ns, R_HAS_VERSION, L_SOURCE, sourceNode, L_SOURCE_VERSION, sv, {

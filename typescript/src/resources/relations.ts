@@ -1,22 +1,26 @@
-import {
-  type DateTimeInput,
-  type DeleteResult,
-  type Evidence,
-  type EvidenceInput,
-  type JsonObject,
-  type Page,
-  parseDate,
-  type Relation,
+import { NotFoundError } from "../errors.js";
+import { pyStrip } from "../internal/py.js";
+import type {
+  DateTimeInput,
+  DeleteResult,
+  Evidence,
+  EvidenceInput,
+  InsertWarning,
+  JsonObject,
+  Page,
+  Relation,
 } from "../models.js";
 import * as ops from "../ops.js";
-import { keysOf, rejectUnknown } from "../validate.js";
-import { type PageOptions, paginate, parseEvidence, Resource } from "./common.js";
+import { type ContradictionMode, canonicalRelationType, warnSchema } from "../schema.js";
+import { checkOptions, keysOf, parseTime } from "../validate.js";
+import { PAGE_KEYS, type PageOptions, paginate, parseEvidence, Resource, VERSIONS_KEYS } from "./common.js";
 
 export interface RelationCreateOptions {
   id?: string | null;
   properties?: JsonObject | null;
   event_time?: DateTimeInput | null;
   evidence?: readonly EvidenceInput[];
+  contradiction?: ContradictionMode | null;
 }
 
 export interface RelationListOptions {
@@ -25,6 +29,7 @@ export interface RelationListOptions {
   to_entity?: string | null;
   cursor?: string | null;
   limit?: number;
+  include_invalidated?: boolean;
 }
 
 export interface RelationUpdateOptions {
@@ -34,6 +39,21 @@ export interface RelationUpdateOptions {
   evidence?: readonly EvidenceInput[] | null;
 }
 
+const CREATE_KEYS = keysOf<RelationCreateOptions>({
+  id: true,
+  properties: true,
+  event_time: true,
+  evidence: true,
+  contradiction: true,
+});
+const LIST_KEYS = keysOf<RelationListOptions>({
+  from_entity: true,
+  type: true,
+  to_entity: true,
+  cursor: true,
+  limit: true,
+  include_invalidated: true,
+});
 const UPDATE_KEYS = keysOf<RelationUpdateOptions>({
   set_properties: true,
   remove_properties: true,
@@ -42,21 +62,40 @@ const UPDATE_KEYS = keysOf<RelationUpdateOptions>({
 });
 
 export class Relations extends Resource {
+  /**
+   * Create a relation, or reassert one a contradiction invalidated, as a new current version.
+   *
+   * A reassertion carries exactly the given properties and emits a "relation_reasserted" warning naming the retired revision.
+   *
+   * In strict schema mode a max_count conflict with the stored graph throws ValidationError, unless the contradiction mode is supersede, which retires the older relation instead, or off, which skips max_count checks.
+   *
+   * @param fromEntity (string): the source entity id.
+   * @param type (string): the relation type, normalized to UPPER_SNAKE; a schema alias becomes the schema's type.
+   * @param toEntity (string): the destination entity id.
+   * @param options (RelationCreateOptions): an explicit id, properties, event time, evidence, and a per-call contradiction mode whose warnings go to stderr.
+   * @return (Relation): the created relation; throws ConflictError when the id already exists.
+   */
   async create(
     fromEntity: string,
     type: string,
     toEntity: string,
     options: RelationCreateOptions = {},
   ): Promise<Relation> {
-    const eventTime = parseDate(options.event_time);
+    checkOptions("relations.create", options, CREATE_KEYS);
+    const eventTime = parseTime(options.event_time, "event_time");
     const evidence = parseEvidence(options.evidence ?? []);
-    return this.graph.write((tx, ns) =>
-      ops.createRelation(
+    const conflicts = this.graph.contradictionFor(options.contradiction, this.graph.schema);
+    const strict = this.graph.schemaMode === "strict" && conflicts.contradiction === "warn";
+    const rtype = typeof type === "string" && pyStrip(type) ? canonicalRelationType(type, this.graph.schema) : type;
+    const warnings: InsertWarning[] = [];
+    const rel = await this.graph.write((tx, ns) => {
+      warnings.length = 0;
+      return ops.createRelation(
         tx,
         ns,
         {
           from_entity: fromEntity,
-          type,
+          type: rtype,
           to_entity: toEntity,
           id: options.id,
           properties: options.properties ?? null,
@@ -64,26 +103,49 @@ export class Relations extends Resource {
           evidence,
         },
         this.graph.schemaCheck,
-      ),
-    );
+        { ...conflicts, ...(strict && { contradiction: "strict" }), warnings },
+      );
+    });
+    warnSchema(warnings);
+    return rel;
   }
 
+  /**
+   * Fetch the current version of a relation.
+   *
+   * @param id (string): the relation id.
+   * @return (Relation | null): the current version, or null when the id is unknown or a contradiction retired it; versions and list({ include_invalidated: true }) still return a retired relation.
+   */
   async get(id: string): Promise<Relation | null> {
+    ops.validateOwnId("relation", id);
     return this.graph.read((store, ns) => ops.getRelationCurrent(store, ns, id));
   }
 
   async list(options: RelationListOptions = {}): Promise<Page<Relation>> {
-    return this.page(options, (store, ns, window) =>
+    checkOptions("relations.list", options, LIST_KEYS);
+    return this.pageById("relation", options, (store, ns, window) =>
       ops.listRelations(store, ns, {
         from_entity: options.from_entity,
         type: options.type,
         to_entity: options.to_entity,
+        include_invalidated: options.include_invalidated,
         ...window,
       }),
     );
   }
 
+  /**
+   * Yield every match across pages, following the list cursor.
+   *
+   * @param options (object): the list filters, and limit: the page size per fetch, not a cap; iteration yields every match.
+   * @return (AsyncGenerator<Relation>): every matching relation.
+   */
   iterate(options: Omit<RelationListOptions, "cursor"> = {}): AsyncGenerator<Relation> {
+    checkOptions(
+      "relations.iterate",
+      options,
+      LIST_KEYS.filter((k) => k !== "cursor"),
+    );
     return paginate((cursor) => this.list({ ...options, cursor }));
   }
 
@@ -95,8 +157,9 @@ export class Relations extends Resource {
    * @return (Relation): the current version.
    */
   async update(id: string, options: RelationUpdateOptions = {}): Promise<Relation> {
-    rejectUnknown("relation", options, UPDATE_KEYS);
-    const eventTime = parseDate(options.event_time);
+    checkOptions("relations.update", options, UPDATE_KEYS);
+    ops.validateOwnId("relation", id);
+    const eventTime = parseTime(options.event_time, "event_time");
     const evidence = options.evidence == null ? null : parseEvidence(options.evidence);
     return this.graph.write((tx, ns) =>
       ops.updateRelation(
@@ -122,13 +185,28 @@ export class Relations extends Resource {
    * @return (Page<Evidence>): evidence ordered by evidence id; throws NotFoundError for an unknown relation.
    */
   async evidence(id: string, options: PageOptions = {}): Promise<Page<Evidence>> {
+    checkOptions("relations.evidence", options, PAGE_KEYS);
+    ops.validateOwnId("relation", id);
     return this.page(options, (store, ns, window) =>
       ops.listEvidence(store, ns, id, "relation", window.skip, window.limit),
     );
   }
 
+  /**
+   * List every version of a relation, retired ones included.
+   *
+   * @param id (string): the relation id.
+   * @param options ({ newest_first?: boolean }): newest_first (default true).
+   * @return (Relation[]): the versions; throws NotFoundError when the id has none.
+   */
   async versions(id: string, options: { newest_first?: boolean } = {}): Promise<Relation[]> {
-    return this.graph.read((store, ns) => ops.listRelationVersions(store, ns, id, options.newest_first ?? true));
+    checkOptions("relations.versions", options, VERSIONS_KEYS);
+    ops.validateOwnId("relation", id);
+    const versions = await this.graph.read((store, ns) =>
+      ops.listRelationVersions(store, ns, id, options.newest_first ?? true),
+    );
+    if (!versions.length) throw new NotFoundError("Relation", id);
+    return versions;
   }
 
   /**
@@ -138,6 +216,7 @@ export class Relations extends Resource {
    * @return (DeleteResult): counts of what was removed.
    */
   async delete(id: string): Promise<DeleteResult> {
+    ops.validateOwnId("relation", id);
     return this.graph.write((tx, ns) => ops.deleteRelation(tx, ns, id));
   }
 }

@@ -20,7 +20,17 @@ from helpers import (  # noqa: E402
     neo4j_auth,
 )
 
-_LABELS = ("Entity", "Profile", "DecisionTrace", "DecisionStep", "Source", "SourceVersion", "Chunk", "Evidence")
+_LABELS = (
+    "Entity",
+    "Profile",
+    "DecisionTrace",
+    "DecisionStep",
+    "Source",
+    "SourceVersion",
+    "Chunk",
+    "Evidence",
+    "EntityMerge",
+)
 _HYDRADB_DELETE_BATCH = 1024
 
 

@@ -9,7 +9,7 @@ match the surrounding code, and respect the invariants below.
 - Python 3.10+. The core depends on `pydantic` and the `neo4j` Bolt driver.
 - Install for development: `pip install -e ".[dev]"`. Add `[llm]` to run extraction, `[tokenizer]` for token-aware chunking and budgets. BM25 seeding is built in, no extra needed.
 - Build the package: `python -m build`.
-- `typescript/` is a pure TypeScript port with identical behavior. When you change ids, encoding, validation, or retrieval in Python, port the change there and run `npm test` in `typescript/` with `SELFGRAPH_PY` set to a Python that has this checkout installed; the conformance test compares both sides byte for byte.
+- `typescript/` is a pure TypeScript port that derives the same ids, stores the same encoding, and versions, validates, and retrieves the same way (it has no spaCy path and no sync client). When you change ids, encoding, validation, or retrieval in Python, port the change there and run `npm test` in `typescript/` with `SELFGRAPH_PY` set to a Python that has this checkout installed; the conformance test compares both sides byte for byte.
 - Lint and format before pushing: `ruff check .` and `ruff format .` (config lives in `pyproject.toml`; CI runs `ruff check` and `ruff format --check`).
 - In `typescript/`, lint and format with Biome before pushing: `npm run lint` checks and `npm run format` fixes (config lives in `typescript/biome.json`; CI runs `npm run lint`, `typecheck`, `build`, and `test`).
 - The test suite lives in `tests/` and needs a graph backend: a Bolt server (Neo4j by default, or Memgraph), FalkorDB, HydraDB, or embedded Kuzu, selected with `SELFGRAPH_TEST_STORE` (or the first entry of `SELFGRAPH_TEST_STORES`, the TypeScript suite's plural selector). Backend connection details accept the TypeScript `SG_*` names first (`SG_NEO4J_URI`, `SG_NEO4J_PASSWORD`, `SG_MEMGRAPH_URI`, `SG_FALKOR_PORT`, `SG_HYDRADB_URI`, `SG_HYDRADB_TOKEN`), then the bare names (`NEO4J_URI`, `NEO4J_AUTH`, `CYPHER_URI`, `FALKOR_PORT`, `HYDRADB_URI`, `HYDRADB_TOKEN`), so one set of variables drives both suites. If you add tests, drive async code with `asyncio.run(...)` and do not add `pytest-asyncio`.
@@ -21,7 +21,7 @@ The SDK owns all logic. Merge, versioning, ID derivation, and validation live in
 (`upsert_node`, `create_edge`, `get_node`, `match_nodes`, `match_edges`,
 `update_current_edge`, and so on); `_ops.py` calls only those and never writes
 dialect. Each backend translates the primitives to its own engine: `CypherStore`
-to standard openCypher over Bolt (with `Neo4jStore` adding Neo4j constraints),
+to standard openCypher over Bolt (`Neo4jStore` is the same store under the Neo4j name),
 `FalkorDBStore` reusing the Cypher primitives over FalkorDB's Redis protocol,
 `KuzuStore` to embedded Kuzu over one generic node table and one rel table with
 json_extract filtering, `HydraDBStore` to HydraDB's dialect with integer surrogate keys and
@@ -29,7 +29,9 @@ auto-commit. Never put business logic in a store, and never make `_ops` backend-
 
 Where things live: `client.py` is the `SelfGraph` entry point. `insert.py` is the
 insert namespace, `schema.py` is the optional TBox that guides extraction and
-validates inserts, `resources/` holds the typed CRUD, `extraction/` runs LLM
+validates inserts (`_neo4j_schema.py` converts it to and from the Neo4j graph
+schema), `resolution.py` merges duplicate entities on insert, `resources/` holds the
+typed CRUD and `graph.maintenance` (with `_maintenance.py`), `extraction/` runs LLM
 extraction, `retrieval.py` does keyword-seeded BFS/DFS/PageRank retrieval, `llm/` wraps the
 LLM through litellm, `stores/` holds the backends (`_cypher.py` is the Cypher
 primitive base, `cypher.py` holds `CypherStore` and `Neo4jStore`, `falkordb.py`, `kuzu.py`, `hydradb.py`),

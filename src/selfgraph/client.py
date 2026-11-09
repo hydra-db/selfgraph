@@ -8,9 +8,11 @@ from datetime import datetime
 from typing import Any
 
 from . import _ops
-from ._serde import now
+from ._serde import aware, now
 from .errors import CLOSED_MESSAGE, StoreError, TransientError, ValidationError
 from .extraction.extractor import DefaultExtractor
+from .extraction.prompts import check_prompts
+from .ids import _require_namespace
 from .insert import Insert
 from .llm.base import resolve_llm
 from .models import (
@@ -24,12 +26,27 @@ from .models import (
     Ontology,
     RetrievalResult,
     as_input,
+    check_options,
 )
 from .protocols import Extractor, GraphStore, LLMClient
 from .provenance import record_source
-from .resources import Decisions, Entities, Preferences, Relations
+from .resolution import EntityResolver, ResolverMode, as_resolver, merge_warnings, plan_resolution, save_merges
+from .resources import Decisions, Entities, Maintenance, Preferences, Relations
 from .retrieval import retrieve as _retrieve
-from .schema import Schema, SchemaMode, as_schema, enforce_schema, log_schema_warnings, require_schema_mode
+from .schema import (
+    ContradictionMode,
+    Schema,
+    SchemaMode,
+    as_schema,
+    canonicalize_types,
+    contradiction_caps,
+    drop_off_schema,
+    enforce_schema,
+    log_schema_warnings,
+    require_contradiction_mode,
+    require_schema_for_mode,
+    require_schema_mode,
+)
 
 __all__ = ["SelfGraph"]
 
@@ -52,17 +69,24 @@ class SelfGraph:
         namespace: str = "default",
         schema: Schema | Mapping[str, Any] | None = None,
         schema_mode: SchemaMode = "warn",
+        resolver: EntityResolver | ResolverMode = "exact",
+        contradiction: ContradictionMode = "warn",
     ) -> None:
-        _ops._require_text("namespace", namespace)
+        _require_namespace(namespace)
         require_schema_mode(schema_mode)
+        require_contradiction_mode(contradiction)
         self.store = store
         self.namespace = namespace
         self._llm = resolve_llm(llm)
+        self._resolver = as_resolver(resolver, self._llm)
         self._instructions = as_input(ExtractionInstructions, instructions, "instructions")
         self._prompts = as_input(ExtractionPrompts, prompts, "prompts")
+        check_prompts(self._prompts)
         self._extractor = extractor
         self._schema = as_schema(schema)
+        require_schema_for_mode(schema_mode, self._schema)
         self._schema_mode: SchemaMode = schema_mode
+        self._contradiction: ContradictionMode = contradiction
         self._ready = False
         self._closed = False
 
@@ -70,6 +94,7 @@ class SelfGraph:
         self.relations = Relations(self)
         self.preferences = Preferences(self)
         self.decisions = Decisions(self)
+        self.maintenance = Maintenance(self)
         self.insert = Insert(self)
 
     @property
@@ -98,8 +123,9 @@ class SelfGraph:
         @param settings (Any): GraphSettings fields such as store, uri, namespace, llm_model, and schema.
         @return (SelfGraph): the constructed graph.
         """
-        from .runtime import GraphSettings, build_graph
+        from .runtime import SETTING_KEYS, GraphSettings, build_graph
 
+        check_options("connect", settings, SETTING_KEYS)
         return build_graph(GraphSettings(**settings))
 
     async def initialize(self) -> None:
@@ -162,7 +188,7 @@ class SelfGraph:
             raise ValidationError(f"query must be a string, got {type(query).__name__}")
         if not query.strip():
             raise ValidationError("query cannot be empty")
-        _ops._require_json_mapping("params", params)
+        _ops._require_json_mapping("params", params, safe_ints=False)
         await self._ensure_ready()
         return await self.store.run_cypher(query, params)
 
@@ -175,6 +201,7 @@ class SelfGraph:
         k: int = 20,
         max_nodes: int = 200,
         budget_tokens: int = 3000,
+        as_of: datetime | str | None = None,
     ) -> RetrievalResult:
         """Retrieve graph context for a query via keyword seeds and bounded traversal.
 
@@ -184,14 +211,21 @@ class SelfGraph:
         @param k (int): the maximum number of seed entities.
         @param max_nodes (int): the maximum number of entities to collect.
         @param budget_tokens (int): the assembled-context token budget.
+        @param as_of (datetime | str | None): a point in time to read the graph at on the valid-time axis (relations and
+            preferences valid then, with their entities; naive means UTC), or None for now.
         @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
         """
         if not isinstance(query, str):
             raise ValidationError(f"query must be a string, got {type(query).__name__}")
+        if not query.strip():
+            raise ValidationError("query cannot be empty")
         if not isinstance(strategy, str):
             raise ValidationError(f"strategy must be a string, got {type(strategy).__name__}")
         for name, value in (("depth", depth), ("k", k), ("max_nodes", max_nodes), ("budget_tokens", budget_tokens)):
             _ops._require_int(name, value)
+        as_of = _ops.parse_time(as_of, "as_of")
+        if as_of is not None:
+            as_of = aware(as_of)
         await self._ensure_ready()
         return await _retrieve(
             self,
@@ -201,6 +235,7 @@ class SelfGraph:
             k=k,
             max_nodes=max_nodes,
             budget_tokens=budget_tokens,
+            as_of=as_of,
         )
 
     async def _in_tx(self, fn: Callable[[Any], Awaitable[Any]]) -> Any:
@@ -226,21 +261,64 @@ class SelfGraph:
         """
         return await self._in_tx(lambda tx: op(tx, self.namespace, *args, **kwargs))
 
-    async def _schema_check(self, runner: Any, ontology: Ontology) -> None:
+    async def _schema_check(self, runner: Any, ontology: Ontology, before: Ontology | None = None) -> None:
         """Check a single entity or relation write against the graph schema, logging warnings in warn mode.
 
         @param runner (Any): graph runner.
         @param ontology (Ontology): the one entity or relation about to be written.
+        @param before (Ontology | None): its stored state for an update, so only new violations count.
         """
         log_schema_warnings(
-            await enforce_schema(runner, self.namespace, ontology, self._schema, self._schema_mode, cardinality=False)
+            await enforce_schema(
+                runner, self.namespace, ontology, self._schema, self._schema_mode, cardinality=False, before=before
+            )
         )
+
+    def _contradiction_for(
+        self, contradiction: ContradictionMode | None, schema: Schema | None
+    ) -> tuple[ContradictionMode, dict[str, Any]]:
+        """Resolve a per-call contradiction mode against the graph's and collect the schema's max_count limits.
+
+        @param contradiction (ContradictionMode | None): the per-call mode, or None for the graph's.
+        @param schema (Schema | None): the schema the write is checked against.
+        @return (tuple[ContradictionMode, dict[str, Any]]): the mode and the limits by relation type.
+        """
+        mode = self._contradiction if contradiction is None else contradiction
+        require_contradiction_mode(mode)
+        return mode, contradiction_caps(schema)
+
+    async def _create_relation(self, contradiction: ContradictionMode | None, **fields: Any) -> Any:
+        """Create one relation under the contradiction mode, logging contradiction warnings like schema warnings.
+
+        In strict schema mode a max_count conflict with the stored graph raises ValidationError, unless the mode is
+        supersede, which retires the older relation instead, or off, which skips max_count checks.
+
+        @param contradiction (ContradictionMode | None): the per-call mode, or None for the graph's.
+        @param fields (Any): the create_relation keyword arguments.
+        @return (Relation): the created relation.
+        """
+        mode, caps = self._contradiction_for(contradiction, self._schema)
+        if self._schema_mode == "strict" and mode == "warn":
+            mode = "strict"
+        found: list[InsertWarning] = []
+
+        async def create(tx: Any) -> Any:
+            found.clear()
+            check = self._schema_check
+            return await _ops.create_relation(
+                tx, self.namespace, **fields, schema_check=check, contradiction=mode, caps=caps, warnings=found
+            )
+
+        rel = await self._in_tx(create)
+        log_schema_warnings(found)
+        return rel
 
     def _build_extractor(
         self,
         call_instructions: ExtractionInstructions | None,
         call_prompts: ExtractionPrompts | None,
         schema: Schema | None = None,
+        source_id: str | None = None,
     ) -> Extractor:
         if self._extractor is not None:
             return self._extractor
@@ -255,6 +333,7 @@ class SelfGraph:
             call_prompts=call_prompts,
             call_instructions=call_instructions,
             schema=schema if schema is not None else self._schema,
+            source_id=source_id,
         )
 
     async def _apply_ontology(
@@ -269,6 +348,9 @@ class SelfGraph:
         warnings: list[InsertWarning] | None = None,
         schema: Schema | None = None,
         schema_mode: SchemaMode | None = None,
+        resolver: EntityResolver | ResolverMode | None = None,
+        contradiction: ContradictionMode | None = None,
+        extracted: bool = False,
     ) -> InsertResult:
         created_at = now()
         ns = self.namespace
@@ -276,11 +358,27 @@ class SelfGraph:
         active_schema = schema if schema is not None else self._schema
         mode = schema_mode if schema_mode is not None else self._schema_mode
         require_schema_mode(mode)
+        require_schema_for_mode(mode, active_schema)
+        active_resolver = self._resolver if resolver is None else as_resolver(resolver, self._llm)
+        conflicts, caps = self._contradiction_for(contradiction, active_schema)
 
         async def _apply(tx: Any) -> InsertResult:
             _ops._require_datetime("event_time", default_event_time)
-            await _ops.validate_ontology(tx, ns, ontology)
-            warnings.extend(await enforce_schema(tx, ns, ontology, active_schema, mode))
+            canonical = await _ops.validate_ontology(
+                tx, ns, ontology, rewrite=lambda o: canonicalize_types(o, active_schema)
+            )
+            dropped: list[InsertWarning] = []
+            if extracted and mode == "strict":
+                canonical, dropped = await drop_off_schema(tx, ns, canonical, active_schema)
+            max_count = mode == "strict" and conflicts != "off"
+            checked = await enforce_schema(tx, ns, canonical, active_schema, mode, max_count=max_count)
+            found: list[InsertWarning] = []
+            resolution = None
+            if active_resolver is not None:
+                resolution = await plan_resolution(tx, ns, canonical, active_resolver, active_schema, created_at)
+            resolved = resolution.ontology if resolution is not None else canonical
+            if mode == "strict" and conflicts == "warn":
+                await _ops.require_max_count(tx, ns, caps, resolved.relations)
             source_version: str | None = None
             base_evidence = []
 
@@ -293,10 +391,11 @@ class SelfGraph:
                     media_type=media_type or "application/octet-stream",
                     metadata=metadata,
                     created_at=created_at,
+                    event_time=default_event_time,
                 )
 
             entities = await _ops.upsert_entities(
-                tx, ns, list(ontology.entities), evidence=list(base_evidence), created_at=created_at
+                tx, ns, list(resolved.entities), evidence=list(base_evidence), created_at=created_at
             )
             relations = await _ops.upsert_relations(
                 tx,
@@ -304,22 +403,26 @@ class SelfGraph:
                 [
                     (
                         rel,
-                        list(base_evidence)
-                        + _ops.evidence_from_inputs(rel.evidence, source_id=source_id, source_version=source_version),
+                        _ops.relation_evidence(
+                            rel.evidence, base_evidence, source_id=source_id, source_version=source_version
+                        ),
                     )
-                    for rel in ontology.relations
+                    for rel in resolved.relations
                 ],
                 default_event_time=default_event_time,
                 created_at=created_at,
+                contradiction=conflicts,
+                caps=caps,
+                warnings=found,
             )
 
             preferences = [
                 await _ops.upsert_preference(tx, ns, pref, default_event_time=default_event_time, created_at=created_at)
-                for pref in ontology.preferences
+                for pref in resolved.preferences
             ]
 
             decisions = []
-            for dec in ontology.decisions:
+            for dec in resolved.decisions:
                 decisions.append(
                     await _ops.upsert_trace(
                         tx,
@@ -338,6 +441,9 @@ class SelfGraph:
                     )
                 )
 
+            merges = []
+            if resolution is not None:
+                merges = await save_merges(tx, ns, resolution, source_id=source_id, created_at=created_at)
             _log.debug(
                 "inserted %d entities, %d relations, %d preferences, %d decisions (source=%s)",
                 len(entities),
@@ -350,11 +456,22 @@ class SelfGraph:
                 source_id=source_id,
                 source_version=source_version,
                 created_at=created_at,
-                entities=entities,
-                relations=relations,
-                preferences=preferences,
-                decisions=decisions,
-                warnings=warnings,
+                entities=_ops.unique_by_id(entities),
+                relations=_ops.unique_by_id(relations),
+                preferences=_ops.unique_by_id(preferences),
+                decisions=_ops.unique_by_id(decisions),
+                warnings=[
+                    w if w.source_id is not None else w.model_copy(update={"source_id": source_id})
+                    for w in (
+                        *warnings,
+                        *dropped,
+                        *checked,
+                        *merge_warnings(merges),
+                        *(resolution.warnings if resolution is not None else []),
+                        *found,
+                    )
+                ],
+                merges=merges,
             )
 
         return await self._in_tx(_apply)

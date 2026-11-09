@@ -1,11 +1,12 @@
 import type { FalkorDB, FalkorDBOptions, Graph, GraphReply, QueryParams } from "falkordb";
 
-import { errorMessage, StoreError, TransientError } from "../errors.js";
+import { errorMessage, errorReason, StoreError, TransientError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import type { CypherResult, JsonValue } from "../models.js";
 import type { GraphStore } from "../protocols.js";
-import { autoCommit, CypherPrimitives, WRITE_COUNTER_NAMES } from "./cypherPrimitives.js";
+import { checkOptions, keysOf } from "../validate.js";
+import { autoCommit, CypherPrimitives, graphProperties, WRITE_COUNTER_NAMES } from "./cypherPrimitives.js";
 
 const TRANSIENT_MARKERS = [
   "max pending queries",
@@ -22,10 +23,37 @@ interface FalkorConnection {
   graph: Graph;
 }
 
-export interface FalkorDBStoreOptions {
-  graph?: string;
+export interface FalkorDBSocketOptions {
+  host?: string;
+  port?: number;
+  tls?: boolean;
+  connectTimeout?: number;
   [option: string]: unknown;
 }
+
+export interface FalkorDBStoreOptions {
+  graph?: string;
+  username?: string;
+  password?: string;
+  socket?: FalkorDBSocketOptions;
+  name?: string;
+  pingInterval?: number;
+  disableClientInfo?: boolean;
+  clientInfoTag?: string;
+  retryWritesOnConnectionLoss?: boolean;
+}
+
+const OPTION_KEYS = keysOf<FalkorDBStoreOptions>({
+  graph: true,
+  username: true,
+  password: true,
+  socket: true,
+  name: true,
+  pingInterval: true,
+  disableClientInfo: true,
+  clientInfoTag: true,
+  retryWritesOnConnectionLoss: true,
+});
 
 function isGraphEntity(value: Record<string, unknown>): boolean {
   return (
@@ -35,12 +63,20 @@ function isGraphEntity(value: Record<string, unknown>): boolean {
   );
 }
 
+/**
+ * Convert a FalkorDB reply value to plain JSON, keeping an integer beyond Number.MAX_SAFE_INTEGER as a bigint.
+ *
+ * @param value (unknown): the reply value; integers arrive as bigint.
+ * @return (unknown): the plain value.
+ */
 function toJson(value: unknown): unknown {
   if (value === null || value === undefined) return null;
+  if (typeof value === "bigint")
+    return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value;
   if (Array.isArray(value)) return value.map(toJson);
   if (typeof value === "object") {
     const obj = value as Record<string, unknown>;
-    if (isGraphEntity(obj)) return toJson(obj.properties);
+    if (isGraphEntity(obj)) return toJson(graphProperties(obj.properties as Record<string, unknown>));
     if ("nodes" in obj && ("edges" in obj || "relationships" in obj) && Array.isArray(obj.nodes)) {
       return {
         nodes: (obj.nodes as unknown[]).map(toJson),
@@ -67,7 +103,7 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
     );
     const Client = (mod.FalkorDB ?? mod.default?.FalkorDB ?? mod.default) as typeof FalkorDB;
     const socket = { host: this.host, port: this.port, ...((this.clientOptions.socket as object) ?? {}) };
-    const client = await Client.connect({ ...this.clientOptions, socket } as FalkorDBOptions);
+    const client = await Client.connect({ integers: "bigint", ...this.clientOptions, socket } as FalkorDBOptions);
     return { client, graph: client.selectGraph(this.graphName) };
   });
 
@@ -80,6 +116,7 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
    */
   constructor(host = "localhost", port = 6379, options: FalkorDBStoreOptions = {}) {
     super();
+    checkOptions("FalkorDBStore", options, OPTION_KEYS);
     const { graph = "selfgraph", ...clientOptions } = options;
     this.host = host;
     this.port = port;
@@ -88,14 +125,14 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
   }
 
   protected async _run(query: string, params?: Record<string, unknown> | null): Promise<CypherResult> {
+    this.requireOpen();
     let graph: Graph;
     try {
       graph = (await this.connection.get()).graph;
     } catch (exc) {
       if (exc instanceof StoreError) throw exc;
-      throw new StoreError(`failed connecting to FalkorDB at ${this.host}:${this.port}: ${errorMessage(exc)}`, {
-        cause: exc,
-      });
+      const reason = errorReason(exc).replace(/^Failed to connect to FalkorDB: /, "");
+      throw new StoreError(`failed connecting to FalkorDB at ${this.host}:${this.port}: ${reason}`, { cause: exc });
     }
     let res: GraphReply<Record<string, unknown>>;
     try {
@@ -127,6 +164,7 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     await this.connection.release((connection) => connection.client.close());
   }
 }

@@ -41,21 +41,10 @@ asyncio.run(main())
 
 ## The graph object
 
-`SelfGraph(store=...)` takes a backend and exposes the write and read API. The
-first argument is always a store; see [Backends](backends.md).
-
-`async with` initializes the store on entry and closes it on exit. The store also
-initializes on first use, so a plain `SelfGraph(...)` works without the context
-manager. Call `await graph.close()` when you are done with it.
-
-The namespace defaults to `default`. Pass `namespace=` to isolate graphs in one
-store:
-
-```python
-SelfGraph(store=KuzuStore("graph.kuzu"), namespace="tenant-1")
-```
-
-## Without async
+`SelfGraph(store=...)` takes a [backend](backends.md). `async with` initializes
+the store on entry and closes it on exit; without it, the store initializes on
+first use and you call `await graph.close()` yourself. Pass `namespace=` (default
+`default`) to keep several graphs in one store.
 
 `SyncSelfGraph` has the same API without `await`:
 
@@ -64,15 +53,7 @@ from selfgraph import KuzuStore, SyncSelfGraph
 
 with SyncSelfGraph(store=KuzuStore("graph.kuzu")) as graph:
     graph.entities.create("Acme", "Company", id="company:acme")
-    for company in graph.entities.iterate(type="Company"):
-        print(company.name)
 ```
 
-## From the environment
-
-`from_env` reads `SELFGRAPH_*` variables; `connect` takes the same settings as
-keyword arguments. Both build the store and the LLM config for you.
-
-```python
-graph = SelfGraph.connect(store="neo4j", uri="bolt://localhost:7687", auth="neo4j:password")
-```
+`SelfGraph.connect(store=..., uri=..., auth=...)` and `SelfGraph.from_env()` build
+the store and LLM config from settings; see [From settings](backends.md#from-settings).

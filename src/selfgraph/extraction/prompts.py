@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import re
 
+from .._serde import EDGE_TYPES
 from ..errors import PromptTemplateError
 from ..models import ExtractionInstructions, ExtractionPrompts, PromptTemplate
 
-__all__ = ["DEFAULT_PROMPTS", "render", "effective_prompt", "effective_instruction"]
+__all__ = ["DEFAULT_PROMPTS", "render", "check_prompts", "effective_prompt", "effective_instruction"]
 
 _PLACEHOLDER = re.compile(r"\{(text|instructions)\}")
+_ANY_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+_VARIABLES = ("text", "instructions")
 
 
 _ENTITY_SYSTEM = (
@@ -25,7 +28,8 @@ _RELATION_SYSTEM = (
     "when the text states when the relationship held. "
     "Connect entities directly to each other when the text relates them; do not route "
     "every relationship through one central entity, since a hub-and-spoke shape hides "
-    "the connections between the others and makes the graph hard to traverse."
+    "the connections between the others and makes the graph hard to traverse. "
+    f"Never use these reserved relationship types: {', '.join(sorted(EDGE_TYPES))}."
 )
 _RELATION_USER = (
     "Extract every relationship from the text below as (from, TYPE, to) triples.\n"
@@ -46,7 +50,10 @@ _DECISION_SYSTEM = (
     "You extract decision traces. A decision records that an actor decided something, "
     "the ordered relationships that justify it (as (from, TYPE, to) step triples), the "
     "outcome entity, the alternatives considered, and a short rationale. Only extract a "
-    "decision when the text makes an explicit decision with a reason."
+    "decision when the text makes an explicit decision with a reason. "
+    "Step types use SCREAMING_SNAKE_CASE and never these reserved relationship types: "
+    f"{', '.join(sorted(EDGE_TYPES))}. Put the alternatives considered in alternative_names "
+    "and the chosen outcome in outcome_name, never as CONSIDERED or RESULTED_IN steps."
 )
 _DECISION_USER = (
     "Extract every decision from the text below, with its ordered justifying steps.\n"
@@ -58,7 +65,7 @@ DEFAULT_PROMPTS = ExtractionPrompts(
     entities=PromptTemplate(system=_ENTITY_SYSTEM, user=_ENTITY_USER, version="entities-v1"),
     relations=PromptTemplate(system=_RELATION_SYSTEM, user=_RELATION_USER, version="relations-v1"),
     preferences=PromptTemplate(system=_PREFERENCE_SYSTEM, user=_PREFERENCE_USER, version="preferences-v1"),
-    decisions=PromptTemplate(system=_DECISION_SYSTEM, user=_DECISION_USER, version="decisions-v1"),
+    decisions=PromptTemplate(system=_DECISION_SYSTEM, user=_DECISION_USER, version="decisions-v2"),
 )
 
 
@@ -102,16 +109,50 @@ def effective_instruction(
     return None
 
 
-def render(template: PromptTemplate, *, text: str, instructions: str | None) -> tuple[str, str]:
+def check_template(template: PromptTemplate, name: str | None = None) -> None:
+    """Reject a template whose user message lacks {text} or uses a placeholder other than {text} and {instructions}.
+
+    @param template (PromptTemplate): the template to check.
+    @param name (str | None): the prompt's key (entities, relations, ...) for the error, else its version.
+    @return (None): nothing; raises PromptTemplateError on a bad template.
+    """
+    label = name or template.version
+    if "{text}" not in template.user:
+        raise PromptTemplateError(f"prompt {label!r} is missing required variable {{text}}")
+    unknown = [v for v in dict.fromkeys(_ANY_PLACEHOLDER.findall(template.user)) if v not in _VARIABLES]
+    if unknown:
+        noun = "variable" if len(unknown) == 1 else "variables"
+        allowed = ", ".join(f"{{{v}}}" for v in _VARIABLES)
+        named = ", ".join(f"{{{v}}}" for v in unknown)
+        raise PromptTemplateError(f"prompt {label!r} uses unknown {noun} {named}; allowed variables: {allowed}")
+
+
+def check_prompts(prompts: ExtractionPrompts | None) -> None:
+    """Check every template a prompts override sets, so a bad template fails when the graph or extractor is built.
+
+    @param prompts (ExtractionPrompts | None): the overrides, or None.
+    @return (None): nothing; raises PromptTemplateError on a bad template.
+    """
+    if prompts is None:
+        return
+    for name in type(prompts).model_fields:
+        template = getattr(prompts, name)
+        if template is not None:
+            check_template(template, name)
+
+
+def render(
+    template: PromptTemplate, *, text: str, instructions: str | None, name: str | None = None
+) -> tuple[str, str]:
     """Render ``(system, user)``. Raises if ``{text}`` is missing.
 
     @param template (PromptTemplate): the template to render.
     @param text (str): the document text substituted for ``{text}``.
     @param instructions (str | None): extra instructions substituted or appended.
+    @param name (str | None): the prompt's key (entities, relations, ...) for the error, else its version.
     @return (tuple[str, str]): the rendered ``(system, user)`` pair.
     """
-    if "{text}" not in template.user:
-        raise PromptTemplateError(f"prompt {template.version!r} is missing required variable {{text}}")
+    check_template(template, name)
     extra = instructions or ""
     user = _PLACEHOLDER.sub(lambda m: text if m.group(1) == "text" else extra, template.user)
     if extra and "{instructions}" not in template.user:

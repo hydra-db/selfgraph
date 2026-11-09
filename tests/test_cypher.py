@@ -1,5 +1,5 @@
 import pytest
-from helpers import new_graph, run, skip_on_falkordb, skip_on_generic
+from helpers import DriverError, create_entities, new_graph, run, skip_on_falkordb, skip_on_generic
 
 from selfgraph import StoreError, TransientError
 from selfgraph.stores.cypher import _translate_cypher_error
@@ -8,8 +8,7 @@ pytestmark = skip_on_generic
 
 
 def seed(g):
-    run(g.entities.create("Soham", "Person", id="person:soham"))
-    run(g.entities.create("HydraDB", "Company", id="company:hydradb"))
+    create_entities(g, "Person:Soham", "Company:HydraDB")
     run(g.relations.create("person:soham", "WORKS_AT", "company:hydradb"))
 
 
@@ -45,12 +44,6 @@ def test_raw_cypher_write_adds_no_version():
     )
     versions = run(g.relations.versions(rel.id))
     assert len(versions) == 1
-
-
-def test_invalid_query_raises_store_error():
-    g = new_graph()
-    with pytest.raises(StoreError):
-        run(g.run_cypher("THIS IS NOT VALID CYPHER"))
 
 
 def test_multi_key_order_by():
@@ -94,20 +87,14 @@ def test_run_cypher_write_is_atomic():
     assert res.rows == [{"x": 1}]
 
 
-class _DriverError(Exception):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
 def test_syntax_error_is_not_a_conflict():
     memgraph = "Memgraph.ClientError.MemgraphError.MemgraphError"
-    syntax = _DriverError(memgraph, "The underlying parsing error is mismatched input expecting {CONSTRAINT, UNIQUE}")
-    assert type(_translate_cypher_error(syntax)) is StoreError
-    unique = _DriverError(memgraph, "Unable to commit due to unique constraint violation on :Entity(id)")
-    assert isinstance(_translate_cypher_error(unique), TransientError)
-    neo4j = _DriverError("Neo.ClientError.Schema.ConstraintValidationFailed", "Node(1) already exists")
-    assert isinstance(_translate_cypher_error(neo4j), TransientError)
+    syntax = DriverError(memgraph, "The underlying parsing error is mismatched input expecting {CONSTRAINT, UNIQUE}")
+    assert type(_translate_cypher_error(syntax, "bolt://x", None)) is StoreError
+    unique = DriverError(memgraph, "Unable to commit due to unique constraint violation on :Entity(id)")
+    assert isinstance(_translate_cypher_error(unique, "bolt://x", None), TransientError)
+    neo4j = DriverError("Neo.ClientError.Schema.ConstraintValidationFailed", "Node(1) already exists")
+    assert isinstance(_translate_cypher_error(neo4j, "bolt://x", None), TransientError)
     with pytest.raises(StoreError) as err:
         run(new_graph().run_cypher("RETURN"))
     assert not isinstance(err.value, TransientError)

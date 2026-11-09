@@ -1,17 +1,13 @@
 import pytest
-from helpers import HYDRADB, make_store, new_graph, run, unique_ns
+from helpers import HYDRADB, create_entities, fresh_graph, make_store, run, unique_ns
 
-from selfgraph import EvidenceInput, NotFoundError, Ontology, SyncSelfGraph, relation_id
+from selfgraph import EvidenceInput, NotFoundError, Ontology, SyncSelfGraph, ValidationError, relation_id
 
 ONTOLOGY = {
     "entities": [{"type": "Person", "name": "Ada"}, {"type": "Company", "name": "Acme"}],
     "relations": [{"from_entity": "person:ada", "type": "WORKS_AT", "to_entity": "company:acme"}],
 }
 REL = relation_id("person:ada", "WORKS_AT", "company:acme")
-
-
-def _graph():
-    return new_graph(namespace=unique_ns("ev"))
 
 
 def _all(page_fn, id):
@@ -29,7 +25,7 @@ def _records(g):
 
 
 def test_sources_counted_once_and_evidence_paginated():
-    g = _graph()
+    g = fresh_graph("ev")
     for i in range(5):
         res = run(g.insert.ontology(ONTOLOGY, source_id=f"doc-{i}"))
     again = run(g.insert.ontology(ONTOLOGY, source_id="doc-0"))
@@ -44,20 +40,20 @@ def test_sources_counted_once_and_evidence_paginated():
 
 
 def test_repeated_entity_in_one_insert_counts_its_source_once():
-    g = _graph()
+    g = fresh_graph("ev")
     res = run(
         g.insert.ontology(
             {"entities": [{"type": "Person", "name": "Ada"}, {"type": "Person", "name": "Ada", "aliases": ["A"]}]},
             source_id="s",
         )
     )
-    assert [e.source_count for e in res.entities] == [1, 1]
-    assert res.entities[1].aliases == ["A"]
+    assert [e.source_count for e in res.entities] == [1]
+    assert res.entities[0].aliases == ["A"]
     assert len(_all(g.entities.evidence, "person:ada")) == 1
 
 
 def test_relation_update_adds_evidence_and_never_clears_it():
-    g = _graph()
+    g = fresh_graph("ev")
     run(g.insert.ontology(ONTOLOGY, source_id="s1"))
     same = run(g.relations.update(REL, evidence=[EvidenceInput(source_id="s2", quote="works there")]))
     assert (same.revision, same.source_count) == (1, 2)
@@ -70,9 +66,8 @@ def test_relation_update_adds_evidence_and_never_clears_it():
 
 
 def test_created_relation_records_its_evidence():
-    g = _graph()
-    run(g.entities.create("Ada", "Person"))
-    run(g.entities.create("Acme", "Company"))
+    g = fresh_graph("ev")
+    create_entities(g, "Person:Ada", "Company:Acme")
     rel = run(
         g.relations.create(
             "person:ada",
@@ -94,7 +89,7 @@ def test_created_relation_records_its_evidence():
 
 
 def test_deletes_cascade_to_evidence():
-    g = _graph()
+    g = fresh_graph("ev")
     run(g.insert.ontology(ONTOLOGY, source_id="s1"))
     run(g.insert.ontology({"entities": [{"type": "Person", "name": "Bob"}]}, source_id="s1"))
     run(g.relations.delete(REL))
@@ -106,7 +101,7 @@ def test_deletes_cascade_to_evidence():
 
 
 def test_evidence_for_another_source_keeps_its_own_version():
-    g = _graph()
+    g = fresh_graph("ev")
     ont = Ontology.model_validate(
         {
             "entities": [{"type": "Person", "name": "A"}, {"type": "Person", "name": "B"}],
@@ -129,7 +124,7 @@ def test_evidence_for_another_source_keeps_its_own_version():
 
 
 def test_evidence_of_unknown_object_raises():
-    g = _graph()
+    g = fresh_graph("ev")
     with pytest.raises(NotFoundError):
         run(g.entities.evidence("person:nobody"))
     with pytest.raises(NotFoundError):
@@ -148,10 +143,44 @@ def test_sync_client_lists_evidence():
 
 @pytest.mark.skipif(not HYDRADB, reason="the per-document size limit this guards is HydraDB's")
 def test_entity_from_300_sources_still_writes_on_hydradb():
-    g = _graph()
+    g = fresh_graph("ev")
     for i in range(300):
         res = run(g.insert.ontology({"entities": [{"type": "Person", "name": "Ada"}]}, source_id=f"src-{i}"))
     assert res.entities[0].source_count == 300
     assert run(g.entities.get("person:ada")).source_count == 300
     page = run(g.entities.evidence("person:ada", limit=1000))
     assert len(page.items) == 300 and page.next_cursor is None
+
+
+def test_relation_evidence_accepts_dicts_and_rejects_bad_offsets():
+    g = fresh_graph("evdict")
+    run(g.insert.ontology(ONTOLOGY))
+    rel = run(g.relations.update(REL, evidence=[{"source_id": "m", "start_offset": 0, "end_offset": 3}]))
+    assert [(e.source_id, e.start_offset, e.end_offset) for e in run(g.relations.evidence(rel.id)).items] == [
+        ("m", 0, 3)
+    ]
+    for bad, message in (
+        ({"start_offset": -1}, "evidence start_offset cannot be negative, got -1"),
+        ({"end_offset": -2}, "evidence end_offset cannot be negative, got -2"),
+        ({"start_offset": 5, "end_offset": 2}, "evidence start_offset 5 is greater than end_offset 2"),
+        ({"confidence": 1.5}, "evidence confidence must be between 0 and 1, got 1.5"),
+        ({"confidence": -0.5}, "evidence confidence must be between 0 and 1, got -0.5"),
+    ):
+        with pytest.raises(ValidationError, match=f"^{message}$"):
+            run(g.relations.create("person:ada", "KNOWS", "company:acme", evidence=[{"source_id": "m", **bad}]))
+        with pytest.raises(ValidationError, match=f"^{message}$"):
+            run(g.relations.update(REL, evidence=[EvidenceInput(source_id="m", **bad)]))
+    with pytest.raises(ValidationError, match="^evidence confidence must be between 0 and 1, got 1.5$"):
+        run(g.relations.update(REL, evidence=[EvidenceInput.model_construct(source_id="m", confidence=1.5)]))
+
+
+def test_relation_evidence_for_the_inserted_source_replaces_the_bare_record():
+    g = fresh_graph("ev")
+    rel = dict(ONTOLOGY["relations"][0], evidence=[{"source_id": "doc", "quote": "Ada works at Acme"}])
+    res = run(g.insert.ontology({**ONTOLOGY, "relations": [rel]}, source_id="doc"))
+    [ev] = run(g.relations.evidence(REL)).items
+    assert (ev.source_id, ev.source_version, ev.quote) == ("doc", res.source_version, "Ada works at Acme")
+    assert len(run(g.entities.evidence("person:ada")).items) == 1
+    other = dict(rel, evidence=[{"source_id": "elsewhere", "quote": "q"}])
+    run(g.insert.ontology({**ONTOLOGY, "relations": [other]}, source_id="doc2"))
+    assert sorted(e.source_id for e in run(g.relations.evidence(REL)).items) == ["doc", "doc2", "elsewhere"]

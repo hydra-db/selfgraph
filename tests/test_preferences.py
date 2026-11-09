@@ -1,13 +1,11 @@
 import pytest
-from helpers import RAW_CYPHER, new_graph, run
+from helpers import RAW_CYPHER, create_entities, fresh_graph, new_graph, run
 
 from selfgraph import ConflictError, NotFoundError, ValidationError
 
 
 def seed(g):
-    run(g.entities.create("Soham", "Person", id="person:soham"))
-    run(g.entities.create("HydraDB", "Company", id="company:hydradb"))
-    run(g.entities.create("Neo4j", "Company", id="company:neo4j"))
+    create_entities(g, "Person:Soham", "Company:HydraDB", "Company:Neo4j")
 
 
 def test_create_preference_makes_profile():
@@ -67,7 +65,7 @@ def test_missing_refs_and_errors():
     with pytest.raises(ValidationError):
         run(g.preferences.create("person:soham", "database", "company:ghost"))
     with pytest.raises(NotFoundError):
-        run(g.preferences.update("nope", strength=1.0))
+        run(g.preferences.update("preference:nope", strength=1.0))
     run(g.preferences.create("person:soham", "database", "company:hydradb", id="preference:x"))
     with pytest.raises(ConflictError):
         run(g.preferences.create("person:soham", "database", "company:hydradb", id="preference:x"))
@@ -93,9 +91,28 @@ def test_list_relations_excludes_preference_edges():
     assert all(not r.from_entity.startswith("profile:") for r in listed.items)
 
 
-def test_update_with_none_keeps_strength():
+def test_insert_result_lists_each_preference_once():
     g = new_graph()
     seed(g)
-    pref = run(g.preferences.create("person:soham", "none-keeps", "company:neo4j", strength=0.3))
-    same = run(g.preferences.update(pref.id, strength=None))
-    assert same.strength == 0.3 and same.revision == pref.revision
+    pref = {"subject_entity": "person:soham", "key": "database", "value_entity": "company:hydradb"}
+    result = run(g.insert.ontology({"preferences": [pref, {**pref, "strength": 0.5}, {**pref, "strength": 0.7}]}))
+    assert [(p.id, p.strength) for p in result.preferences] == [(result.preferences[0].id, 0.7)]
+
+
+def test_update_clears_named_fields_and_null_keeps():
+    g = fresh_graph("q4")
+    seed(g)
+    pref = run(
+        g.preferences.create("person:soham", "database", "company:hydradb", about_entity="company:neo4j", strength=0.9)
+    )
+    same = run(g.preferences.update(pref.id, strength=None, properties={}))
+    assert (same.strength, same.revision) == (0.9, 1)
+    with pytest.raises(ValidationError, match="nothing to update"):
+        run(g.preferences.update(pref.id, strength=None))
+    cleared = run(g.preferences.update(pref.id, clear=["strength", "about_entity"], event_time="2024-01-02"))
+    assert (cleared.strength, cleared.about_entity, cleared.revision) == (None, None, 2)
+    assert cleared.event_time.isoformat() == "2024-01-02T00:00:00+00:00"
+    with pytest.raises(ValidationError, match="cannot clear 'key'"):
+        run(g.preferences.update(pref.id, clear=["key"]))
+    with pytest.raises(ValidationError, match="cannot both set and clear 'strength'"):
+        run(g.preferences.update(pref.id, strength=0.5, clear=["strength"]))

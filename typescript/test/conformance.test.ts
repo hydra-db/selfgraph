@@ -4,18 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { KuzuStore, SelfGraph } from "../src/index.js";
 import { conformanceStore, dump, schemaWarnings, write } from "./conformance/ts_side.js";
-import { reachable, selectedStores, uniqueNs } from "./helpers.js";
+import { reachable, selectedStores, tempKuzu, uniqueNs } from "./helpers.js";
 
 const PY = process.env.SELFGRAPH_PY;
 const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url));
-const KUZU_DIR = mkdtempSync(join(tmpdir(), "selfgraph-conf-"));
-const KUZU = join(KUZU_DIR, "graph.kuzu");
-
-afterAll(() => rmSync(KUZU_DIR, { recursive: true, force: true }));
+const KUZU = tempKuzu("selfgraph-conf-");
 
 function py(cmd: "write" | "dump" | "schema", store: string, ns: string): unknown {
   const out = execFileSync(PY!, [SCRIPT, cmd, store, ns, KUZU], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });

@@ -1,11 +1,8 @@
-from helpers import new_graph, run, skip_on_generic, unique_ns
+from helpers import create_entities, fresh_graph, new_graph, run, skip_on_generic
 
 
 def build(g):
-    run(g.entities.create("Soham", "Person", id="person:soham"))
-    run(g.entities.create("HydraDB", "Company", id="company:hydradb"))
-    run(g.entities.create("Neo4j", "Company", id="company:neo4j"))
-    run(g.entities.create("Feature", "Feature", id="feature:temporal"))
+    create_entities(g, "Person:Soham", "Company:HydraDB", "Company:Neo4j", "Feature:Temporal")
     r1 = run(g.relations.create("person:soham", "WORKS_AT", "company:hydradb"))
     r2 = run(g.relations.create("company:hydradb", "REQUIRES", "feature:temporal"))
     run(g.relations.update(r1.id, set_properties={"role": "CEO"}))
@@ -47,10 +44,8 @@ def test_entity_delete_removes_profile():
 
 
 def test_entity_delete_clears_preference_about_entity():
-    g = new_graph(namespace=unique_ns("about"))
-    run(g.entities.create("Soham", "Person", id="person:soham"))
-    run(g.entities.create("HydraDB", "Company", id="company:hydradb"))
-    run(g.entities.create("Graphs", "Topic", id="topic:graphs"))
+    g = fresh_graph("about")
+    create_entities(g, "Person:Soham", "Company:HydraDB", "Topic:Graphs")
     pref = run(
         g.preferences.create("person:soham", "database", "company:hydradb", about_entity="topic:graphs", strength=0.4)
     )

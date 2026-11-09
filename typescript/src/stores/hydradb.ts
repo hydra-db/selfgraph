@@ -1,7 +1,7 @@
 import { blake2b } from "@noble/hashes/blake2.js";
 import type { Driver, Session } from "neo4j-driver";
 
-import { errorMessage, StoreError, TransientError } from "../errors.js";
+import { errorMessage, OTHER_ENGINE_HINT, StoreError, TOKEN_HINT } from "../errors.js";
 import { pyJsonDumps, pyRepr, pyStr, utf8 } from "../internal/py.js";
 import type { CypherResult } from "../models.js";
 import {
@@ -15,8 +15,16 @@ import {
   type Props,
   type UpsertNodeOptions,
 } from "../protocols.js";
-import { type BoltStoreOptions, errorCode, openDriver, recordsToResult, toBoltParams } from "./bolt.js";
-import { AutoCommitStore, bindList, quoteLabel, sortedEntries, toCount } from "./cypherPrimitives.js";
+import {
+  type BoltStoreOptions,
+  boltFailure,
+  errorCode,
+  openDriver,
+  queryError,
+  recordsToResult,
+  toBoltParams,
+} from "./bolt.js";
+import { AutoCommitStore, quoteLabel, sortedEntries, toCount, whereAfter } from "./cypherPrimitives.js";
 import { docs, edgeRow, firstDoc, mergedCurrentEdge } from "./docRows.js";
 
 const EDGE = "RELATES";
@@ -28,6 +36,12 @@ const MAX_STRING_BYTES = 32000;
 const WRITE_BATCH = 1000;
 const DELETE_BATCH = 1024;
 const TRANSIENT_MARKERS = ["snapshot", "epoch", "transient", "serializ", "conflict", "lock"];
+const OTHER_ENGINE_MARKERS = [
+  "protocol version",
+  "unsupported protocol",
+  "neo.clienterror.database.databasenotfound",
+  "memgraph",
+];
 
 /**
  * Reject a write whose stored strings exceed the engine's per-string size limit.
@@ -94,6 +108,20 @@ function scalars(props: Props): Props {
   return out;
 }
 
+/**
+ * The properties set to null, whose stored columns must be removed since the engine cannot write a null.
+ *
+ * @param props (Props): the encoded properties about to be written.
+ * @return (string[]): the cleared property names, sorted.
+ */
+function unset(props: Props): string[] {
+  return Object.keys(props)
+    .filter((k) => props[k] == null && k !== "id" && k !== "ns")
+    .sort();
+}
+
+const removes = (alias: string, keys: readonly string[]): string => keys.map((k) => `${alias}.\`${k}\``).join(", ");
+
 const docOf = (value: unknown): string => pyJsonDumps(value, { default: pyStr });
 
 /**
@@ -157,7 +185,9 @@ export type HydraDBStoreOptions = BoltStoreOptions;
 
 export class HydraDBStore extends AutoCommitStore implements GraphStore {
   private readonly driver: Driver;
+  private readonly uri: string;
   private readonly database: string;
+  private readonly hasAuth: boolean;
 
   /**
    * A store for HydraDB over Bolt, using integer surrogate keys and auto-commit writes.
@@ -169,7 +199,9 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     super();
     const { auth, database, ...config } = options;
     this.driver = openDriver(uri, auth, config);
+    this.uri = uri;
     this.database = database || "default";
+    this.hasAuth = Boolean(auth);
   }
 
   private session(): Session {
@@ -184,6 +216,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
    * @return (CypherResult): the rows.
    */
   protected async _run(query: string, params?: Record<string, unknown> | null): Promise<CypherResult> {
+    this.requireOpen();
     const boltParams = toBoltParams(params);
     try {
       return await withHandshakeRetry(async () => {
@@ -195,27 +228,47 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
         }
       });
     } catch (exc) {
-      const message = errorMessage(exc);
-      const lowered = `${errorCode(exc)} ${message}`.toLowerCase();
-      if (TRANSIENT_MARKERS.some((k) => lowered.includes(k))) {
-        throw new TransientError(`HydraDB transaction conflict: ${message}`, { cause: exc });
-      }
-      throw new StoreError(`HydraDB query failed: ${message}`, { cause: exc });
+      throw this.error(exc);
     }
   }
 
   /**
-   * Open a first pooled connection, retrying the split handshake with jitter; later queries reuse it.
+   * Map a driver error to a library error, saying when a token is missing or the server is another engine.
+   *
+   * A missing database on HydraDB itself gets no engine hint; only a protocol mismatch or a Neo4j or Memgraph error code does.
+   *
+   * @param exc (unknown): the driver error.
+   * @return (StoreError): the error to throw.
+   */
+  private error(exc: unknown): StoreError {
+    const failure = boltFailure(exc);
+    if (failure === "auth" && !this.hasAuth)
+      return new StoreError(`HydraDB needs a token: ${TOKEN_HINT}`, { cause: exc });
+    const err = queryError(exc, this.uri, this.database, "HydraDB", (lowered) =>
+      TRANSIENT_MARKERS.some((k) => lowered.includes(k)),
+    );
+    const lowered = `${errorCode(exc)} ${errorMessage(exc)}`.toLowerCase();
+    if (OTHER_ENGINE_MARKERS.some((k) => lowered.includes(k))) {
+      return new StoreError(`${err.message}; if this is Neo4j or Memgraph, ${OTHER_ENGINE_HINT}`, { cause: exc });
+    }
+    return err;
+  }
+
+  /**
+   * Open a first pooled connection, retrying the split handshake with jitter, then check the server accepts the credentials with one cheap read; nothing is created.
    */
   async initialize(): Promise<void> {
+    this.requireOpen();
     try {
       await withHandshakeRetry(() => this.driver.verifyConnectivity({ database: this.database }));
     } catch (exc) {
-      throw new StoreError(`HydraDB connection failed: ${errorMessage(exc)}`, { cause: exc });
+      throw this.error(exc);
     }
+    await this._run("MATCH (n:_SgInit) RETURN count(*) AS n");
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     await this.driver.close();
   }
 
@@ -255,15 +308,28 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     options: UpsertNodeOptions = {},
   ): Promise<void> {
     if (options.extra_label != null) quoteLabel(options.extra_label);
+    const cleared = new Map<string, bigint[]>();
     const out = rows.map(([id, props]) => {
       const row: Props = { id: surrogateKey(ns, id), sid: id, ns, label, doc: docOf(props), ...scalars(props) };
       guardSizes(row);
+      const keys = unset(props);
+      if (keys.length) {
+        const removal = removes("n", keys);
+        cleared.set(removal, [...(cleared.get(removal) ?? []), row.id as bigint]);
+      }
       return row;
     });
     for (const batch of byColumns(out)) {
       await this._run(`UNWIND $rows AS row MERGE (n {id: row.id}) SET n:${label}, ${sets("n", batch[0]!, ["id"])}`, {
         rows: batch,
       });
+    }
+    for (const [removal, iids] of cleared) {
+      for (let i = 0; i < iids.length; i += DELETE_BATCH) {
+        await this._run(`MATCH (n:${label}) WHERE n.id IN $iids REMOVE ${removal}`, {
+          iids: iids.slice(i, i + DELETE_BATCH),
+        });
+      }
     }
   }
 
@@ -272,7 +338,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   }
 
   async matchNodes(ns: string, label: string, options: MatchNodesOptions = {}): Promise<Props[]> {
-    const { equals, any_of, skip = 0, limit = DEFAULT_MATCH_LIMIT } = options;
+    const { equals, any_of, skip = 0, limit = DEFAULT_MATCH_LIMIT, id_gt } = options;
     const params: Props = { ns, label, skip, limit };
     const ids = any_of?.id;
     let pattern: string;
@@ -294,6 +360,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       where.push(`n.\`${key}\` IN $in${i}`);
       params[`in${i}`] = [...(values as unknown[])];
     });
+    whereAfter("n.sid", id_gt, where, params);
     const res = await this._run(
       `MATCH (${pattern}) WHERE ${where.join(" AND ")} ` +
         "RETURN n.doc AS doc, n.`sid` AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
@@ -304,6 +371,13 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async deleteNode(ns: string, label: string, id: string): Promise<void> {
     await this._run(`MATCH (n:${label} {id: $iid}) DETACH DELETE n`, { iid: surrogateKey(ns, id) });
+  }
+
+  async deleteNodes(ns: string, _label: string, ids: readonly string[]): Promise<void> {
+    for (let i = 0; i < ids.length; i += DELETE_BATCH) {
+      const iids = ids.slice(i, i + DELETE_BATCH).map((id) => surrogateKey(ns, id));
+      await this._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", { iids });
+    }
   }
 
   async deleteNodesBy(ns: string, label: string, equals: Props): Promise<number> {
@@ -396,6 +470,8 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     }
     guardSizes(params);
     await this._run(`${BY_SID} AND r.is_current = true SET ${assignments.join(", ")}`, params);
+    const keys = unset(merged);
+    if (keys.length) await this._run(`${BY_SID} AND r.is_current = true REMOVE ${removes("r", keys)}`, { ns, sid: id });
   }
 
   private async countEdges(ns: string, id: string): Promise<number> {
@@ -422,6 +498,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       equals,
       skip = 0,
       limit = DEFAULT_MATCH_LIMIT,
+      id_gt,
     } = options;
     const params: Props = { ns, skip, limit };
     let apat = `a:${from_label}`;
@@ -454,6 +531,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       params[`eq${i}`] = value;
     });
     if (current_only) where.push("r.is_current = true");
+    whereAfter("r.sid", id_gt, where, params);
     const res = await this._run(
       `MATCH (${apat})-[r:${EDGE}]->(${bpat}) WHERE ${where.join(" AND ")} ` +
         "RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.`sid` AS __ob " +
@@ -461,25 +539,6 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       params,
     );
     return res.rows.map(edgeRow);
-  }
-
-  async versionedRelationIds(
-    ns: string,
-    label: string,
-    id: string,
-    options: { exclude_types: readonly string[] },
-  ): Promise<string[]> {
-    const params: Props = { iid: surrogateKey(ns, id), ns };
-    const where = [
-      same("r", "ns", "ns"),
-      "r.revision IS NOT NULL",
-      ...bindList(options.exclude_types, "ex", params, (p) => `r.etype <> ${p}`),
-    ];
-    const res = await this._run(
-      `MATCH (x:${label} {id: $iid})-[r:${EDGE}]-(o) WHERE ${where.join(" AND ")} RETURN DISTINCT r.sid AS rid`,
-      params,
-    );
-    return [...new Set(res.rows.map((r) => r.rid as string))];
   }
 
   async childNodes(
@@ -495,25 +554,6 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       { iid: surrogateKey(ns, parentId), ns, et: edgeType },
     );
     return docs(res.rows);
-  }
-
-  async countOutEdges(ns: string, label: string, id: string): Promise<number> {
-    const res = await this._run(
-      `MATCH (p:${label} {id: $iid})-[r:${EDGE}]->(o) WHERE ${same("r", "ns", "ns")} RETURN count(*) AS n`,
-      { iid: surrogateKey(ns, id), ns },
-    );
-    return toCount(res.rows);
-  }
-
-  async countInEdgesTyped(ns: string, label: string, id: string, types: readonly string[]): Promise<number> {
-    const params: Props = { iid: surrogateKey(ns, id), ns };
-    const ors = bindList(types, "t", params, (p) => `r.etype = ${p}`);
-    const res = await this._run(
-      `MATCH (p)-[r:${EDGE}]->(x:${label} {id: $iid}) WHERE ${same("r", "ns", "ns")} AND (${ors.join(" OR ")}) ` +
-        "RETURN count(*) AS n",
-      params,
-    );
-    return toCount(res.rows);
   }
 
   async deleteEdgesTouchingByType(ns: string, label: string, id: string, type: string): Promise<void> {
