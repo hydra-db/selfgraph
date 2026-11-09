@@ -1,44 +1,8 @@
 # CLI
 
-Installing the package puts a `selfgraph` command on your path (`npx @hydradb/selfgraph`
-for TypeScript, with the same flags, commands, and JSON output). It wraps the same API as
-the library. With no `--store` and no `--uri` it uses embedded Kuzu at
-`~/.selfgraph/default.kuzu`, which needs `pip install "selfgraph[kuzu]"`.
-
-## Connection flags
-
-These go before or after the subcommand; a subcommand's own flag of the same name
-(`--resolver` or `--contradiction` on an insert or `relation create`) wins after it.
-Each falls back to its `SELFGRAPH_*` environment variable (`--llm-api-key` reads
-`SELFGRAPH_LLM_API_KEY`).
-
-| Flag | Meaning |
-|------|---------|
-| `--store` | `hydradb`, `neo4j`, `cypher`, `memgraph`, `falkordb`, or `kuzu`. Default: embedded `kuzu` at `~/.selfgraph/default.kuzu`, or `hydradb` when `--uri` is given, so a Kuzu path needs `--store kuzu --uri graph.kuzu`. A scheme-less `--uri` that ends in `.kuzu` or contains a path separator fails for any other store with a hint to pass `--store kuzu`. |
-| `--uri` | Bolt URI for the Bolt stores; file path for `kuzu`; `host:port` or a `redis://`, `rediss://`, `falkor://`, or `falkors://` URL for `falkordb` ([details](backends.md#from-settings)). An empty value is an error, not the default store. |
-| `--auth` | `user:password`, or a bare token with user `neo4j`. For `falkordb`, `user:password` or a bare password for the default user; it wins over credentials in the URI. |
-| `--database` | Bolt: database name (default: the server default). FalkorDB: graph name (default `selfgraph`). |
-| `--namespace` | Graph namespace, default `default`. An empty value, a control character, or leading or trailing whitespace is an error. |
-| `--llm-provider`, `--llm-model`, `--llm-api-key`, `--llm-base-url` | LLM settings for `insert text`. A provider-prefixed model such as `openai/gpt-4o-mini` needs no `--llm-provider`; a provider alone fails with `pass --llm-model`. An unknown provider, or a first-party provider with another provider's prefix (`--llm-provider anthropic --llm-model gemini/x`), fails as described in [errors](errors.md#messages); routers such as `openrouter`, and any `--llm-base-url`, take vendor-prefixed models. |
-| `--llm-timeout` | Seconds to wait for each LLM call, default 120; must be positive. |
-| `--llm-concurrency` | Chunks `insert text` extracts at once, each running four LLM calls, default 4; must be a positive integer. Results merge in chunk order. |
-| `--schema` | A [schema](schema.md) JSON file applied to every insert, or inline JSON when the value starts with `{`. |
-| `--instructions`, `--prompts` | Extraction instructions and prompt templates, as a JSON file or inline JSON, like the library's `instructions` and `prompts` ([custom prompts](inserting.md#custom-prompts)). |
-| `--schema-mode` | `warn` (default), `strict`, or `off`. `strict` without a schema fails (`schema_mode 'strict' needs a schema`). |
-| `--resolver` | [Entity resolution](resolution.md) on insert: `exact` (default), `default`, `fuzzy`, or `llm`. |
-| `--contradiction` | `warn` (default), `supersede`, or `off`; see [contradictions](schema.md#contradictions). |
-
-Every setting is validated before any command runs, `version` and `mcp` included, so a
-bad namespace, empty, missing, or path-like URI (`--uri graph.kuzu version`), unknown
-store, mode, timeout, concurrency, or LLM provider fails with exit code 2 even when the
-command needs no graph (Python checks the provider only when litellm is installed).
-`--schema`, `--instructions`, and `--prompts` (and their `SELFGRAPH_*` variables) are
-read and validated then too: a missing file, invalid JSON, a bad schema, or a prompt
-template without `{text}` fails before the command runs. `kuzu` ignores `--auth` and
-`--database`: passing either flag prints `warning: --database is ignored by store kuzu`
-on stderr, while the same settings from the environment are ignored silently.
-
-## Commands
+Installing the package puts a `selfgraph` command on your path. For TypeScript,
+`npx @hydradb/selfgraph` takes the same flags and commands and prints the same
+JSON. The CLI wraps the same API as the library.
 
 ```bash
 selfgraph --store kuzu --uri graph.kuzu init
@@ -48,74 +12,161 @@ selfgraph --store kuzu --uri graph.kuzu entity list --type Company
 selfgraph --version
 ```
 
+With no `--store` and no `--uri`, it uses embedded Kuzu at
+`~/.selfgraph/default.kuzu`, which needs `pip install "selfgraph[kuzu]"`. Run any
+command with `--help` for its arguments.
+
+## Connection flags
+
+These flags go before or after the subcommand. Each falls back to its
+`SELFGRAPH_*` environment variable, so `--llm-api-key` reads
+`SELFGRAPH_LLM_API_KEY`. A subcommand's own flag of the same name (`--resolver`
+or `--contradiction` on an insert or `relation create`) wins after it.
+
+| Flag | Meaning |
+|------|---------|
+| `--store` | `hydradb`, `neo4j`, `cypher`, `memgraph`, `falkordb`, or `kuzu`. Default: embedded `kuzu` at `~/.selfgraph/default.kuzu`, or `hydradb` when `--uri` is given. So a Kuzu path needs `--store kuzu --uri graph.kuzu`. |
+| `--uri` | Bolt URI for the Bolt stores. File path for `kuzu`. `host:port` or a `redis://`, `rediss://`, `falkor://`, or `falkors://` URL for `falkordb` ([details](backends.md#from-settings)). |
+| `--auth` | `user:password`, or a bare token with user `neo4j`. For `falkordb`, `user:password` or a bare password for the default user; it wins over credentials in the URI. |
+| `--database` | Bolt: database name (default: the server default). FalkorDB: graph name (default `selfgraph`). |
+| `--namespace` | Graph namespace, default `default`. |
+| `--llm-provider`, `--llm-model`, `--llm-api-key`, `--llm-base-url` | LLM settings for `insert text`. A provider-prefixed model such as `openai/gpt-4o-mini` needs no `--llm-provider`. Routers such as `openrouter`, and any `--llm-base-url`, take vendor-prefixed models. |
+| `--llm-timeout` | Seconds to wait for each LLM call, default 120. Must be positive. |
+| `--llm-concurrency` | Chunks `insert text` extracts at once, default 4, each running four LLM calls. Must be a positive integer. Results merge in chunk order. |
+| `--schema` | A [schema](schema.md) JSON file applied to every insert, or inline JSON when the value starts with `{`. |
+| `--instructions`, `--prompts` | Extraction instructions and prompt templates, as a JSON file or inline JSON ([custom prompts](inserting.md#custom-prompts)). |
+| `--schema-mode` | `warn` (default), `strict`, or `off`. |
+| `--resolver` | [Entity resolution](resolution.md) on insert: `exact` (default), `default`, `fuzzy`, or `llm`. |
+| `--contradiction` | `warn` (default), `supersede`, or `off`. See [contradictions](schema.md#contradictions). |
+
+### Validation
+
+Every setting is validated before any command runs, `version` and `mcp` included.
+A bad setting fails with exit code 2 even when the command needs no graph.
+
+| Bad input | Error |
+|-----------|-------|
+| `--uri` empty | An error, not the default store. |
+| `--uri` scheme-less and ending in `.kuzu` or containing a path separator, with a store other than `kuzu` (`--uri graph.kuzu version`) | A hint to pass `--store kuzu`. |
+| `--namespace` empty, with a control character, or with leading or trailing whitespace | An error. |
+| `--llm-provider` without `--llm-model` | `pass --llm-model` |
+| Unknown LLM provider, or a first-party provider with another provider's prefix (`--llm-provider anthropic --llm-model gemini/x`) | See [errors](errors.md#messages). Python checks the provider only when litellm is installed. |
+| `--schema-mode strict` without a schema | `schema_mode 'strict' needs a schema` |
+| `--schema`, `--instructions`, `--prompts`: missing file, invalid JSON, bad schema, or a prompt template without `{text}` | An error before the command runs. The `SELFGRAPH_*` variables are checked the same way. |
+| Unknown store, mode, timeout, or concurrency | An error. |
+
+`kuzu` ignores `--auth` and `--database`. Passing either flag prints a warning
+such as `warning: --database is ignored by store kuzu` on stderr. The same
+settings from the environment are ignored silently.
+
+## Commands
+
 | Command | Does |
 |---------|------|
-| `init` | Check the connection, create the store's indexes or constraints where the backend has them, and print the store and namespace in use. |
-| `version` | Print the installed version as JSON; `--version` or `-V` prints it bare. |
-| `mcp` | Run the [MCP](mcp.md) server over stdio with the global flags. |
-| `schema` | Print the active schema, or `null` with a hint on stderr. `schema import FILE` and `schema export` convert from and to a [Neo4j graph schema](schema.md#neo4j-graph-schema-interop). Importing a file that is already a SelfGraph schema fails with a hint to pass it as `--schema`. |
-| `query` | Run one raw Cypher statement in the backend's own dialect. Unlike the MCP `run_cypher` tool it can write; neither is scoped to the namespace. `query --help` shows a namespace-scoped example per backend. Every `$name` the query references (outside literals and comments) needs a `--param`, else it fails with `missing parameter $name`; unreferenced params are dropped. |
-| `retrieve` | Retrieve context for a query. Unquoted words join into one query, so `retrieve who works at Acme` works. Flags: `--strategy` (`bfs`, `dfs`, or `ppr`; default `bfs`), `--depth` (hops, default 3), `--k` (seeds, default 20), `--max-nodes` (entity cap, default 200), `--budget-tokens` (context budget, default 3000), `--as-of` (read the graph at this time), and `--context-only` (print just the context text instead of the JSON result). See [Retrieval](retrieval.md). |
-| `insert text` | Extract from text, or `-` for stdin, with the configured LLM, else spaCy or the regex fallback. Rejects empty or whitespace-only text. `--metadata` takes a JSON object or `KEY=VALUE` pairs, repeatable and merged in order. |
-| `insert ontology` | Insert an ontology from a JSON file, or `-` for stdin. |
+| `init` | Checks the connection, creates the store's indexes or constraints where the backend has them, and prints the store and namespace in use. |
+| `version` | Prints the installed version as JSON. `--version` or `-V` prints it bare. |
+| `mcp` | Runs the [MCP](mcp.md) server over stdio with the global flags. |
+| `schema` | Prints the active schema, or `null` with a hint on stderr. `schema import FILE` and `schema export` convert from and to a [Neo4j graph schema](schema.md#neo4j-graph-schema-interop). Importing a file that is already a SelfGraph schema fails with a hint to pass it as `--schema`. |
+| `query` | Runs one raw Cypher statement in the backend's own dialect. See [`query`](#query). |
+| `retrieve` | Retrieves context for a query. See [`retrieve`](#retrieve). |
+| `insert text` | Extracts from text, or `-` for stdin, with the configured LLM, else spaCy or the regex fallback ([inserting](inserting.md#from-text)). `--metadata` takes a JSON object or `KEY=VALUE` pairs, repeatable and merged in order. |
+| `insert ontology` | Inserts an ontology from a JSON file, or `-` for stdin. |
 | `entity` | `create`, `get`, `list`, `evidence`, `merges`, `unmerge`, `update`, `delete`. |
 | `relation` | `create`, `get`, `list`, `versions`, `evidence`, `update`, `delete`. |
 | `preference` | `create`, `get`, `list`, `versions`, `update`, `delete`. |
 | `decision` | `create`, `get`, `list`, `update`, `delete`. `create` without `--step` records no steps. |
-| `maintenance` | `decay`, `prune`, `consolidate`. Each prints the plan or scores and writes only with `--apply`. A plan has no `deleted` counts, and a prune `note` appears only in the JSON; see [Maintenance](maintenance.md). |
+| `maintenance` | `decay`, `prune`, `consolidate`. Each prints the plan or scores, and writes only with `--apply`. A plan has no `deleted` counts. A prune `note` appears only in the JSON. See [Maintenance](maintenance.md). |
 
-Both inserts print the result JSON on stdout and each warning on stderr as
-`selfgraph: CODE: message` (the warnings stay in the JSON too). An LLM insert of more
-than one chunk prints `selfgraph: extracting chunk N/M` on stderr. Hints name CLI flags
+An unknown command fails with exit code 2.
+
+**Insert output.** Both inserts print the result JSON on stdout. Each warning
+also goes to stderr as `selfgraph: CODE: message`. An LLM insert of more than one
+chunk prints `selfgraph: extracting chunk N/M` on stderr. Hints name CLI flags
 rather than library settings ([errors](errors.md#messages)).
 
-Run any command with `--help` for its arguments. An unknown command fails with exit
-code 2.
+### `retrieve`
+
+Unquoted words join into one query, so `retrieve who works at Acme` works. See
+[Retrieval](retrieval.md).
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--strategy` | `bfs` | `bfs`, `dfs`, or `ppr`. |
+| `--depth` | 3 | Hops from each seed. |
+| `--k` | 20 | Seed entities. |
+| `--max-nodes` | 200 | Entity cap. |
+| `--budget-tokens` | 3000 | Context budget. |
+| `--as-of` | | Read the graph at this time. |
+| `--context-only` | | Print just the context text instead of the JSON result. |
+
+### `query`
+
+`query CYPHER --param KEY=VALUE` runs one statement.
+
+- Unlike the MCP `run_cypher` tool, it can write. Neither is scoped to the
+  namespace.
+- `query --help` shows a namespace-scoped example per backend.
+- Every `$name` the query references (outside literals and comments) needs a
+  `--param`, else it fails with `missing parameter $name`. Unreferenced params
+  are dropped.
 
 ### Arguments
 
-- A relation, preference, or decision id must start with `relation:`, `preference:`, or
-  `decision:` for every command that takes one.
-- `KEY=VALUE` flags (`--prop`, `--set`, `--param`) parse VALUE as JSON when it is valid
-  JSON, so `zip=12345` stores the number; write `zip='"12345"'` to keep text. A pair
-  without `=` fails naming the flag (`--prop expects KEY=VALUE`).
-- Repeatable flags merge into what is stored: `entity update --alias` and `--prop` add,
-  `--remove-alias` and `--remove-prop` drop, `--external-id SYSTEM=ID` sets.
-  `relation update` takes `--set` and `--remove` (aliases `--prop` and `--remove-prop`);
-  removing an absent key is ignored.
-- `entity update --type` cannot change the type, since it is part of the id. A spelling
-  with the same id form (`person` for `Person`) is adopted only when it is a schema type
-  name; otherwise the stored type is kept.
-- `decision update --step` and `--alternative` replace their lists. `--clear FIELD`
-  (repeatable) clears `actor_entity`, `summary`, `rationale`, `outcome_entity`,
-  `event_time`, `alternative_entities`, or `steps` on a decision, and `strength`,
-  `about_entity`, or `event_time` on a preference. Setting and clearing the same field
-  fails, and an `update` that names no field fails with `nothing to update`.
-- `preference list` without a subject lists every subject and filters by `--key` and
-  `--kind`; `preference create --about` sets the entity a preference is about, and its
-  `VALUE` must be an existing entity id.
-- `relation versions` and `preference versions` list newest first; `--oldest-first`
-  reverses them.
-- `relation create` and `relation update` take `--evidence JSON` (repeatable): an object
-  `{"source_id": ..., "quote": ..., "start_offset": ..., "end_offset": ...,
-  "confidence": ...}` or an array of them, with `confidence` from 0 to 1; `update` adds
-  to the existing evidence.
-- Both inserts take `--resolver` and `--contradiction`, and `relation create` takes
-  `--contradiction`, to override the global flag for one call. `relation list
-  --include-invalidated` adds relations a contradiction retired; `relation get` on one
-  fails with the relation that retired it.
-- Time flags (`--event-time`, `--as-of`, `--now`, `--older-than`) take ISO 8601 text;
-  no offset, or a bare date, means UTC. Times in output are UTC with a `Z` suffix.
-  `insert ontology --event-time` is the default for items without their own.
-- A bad input file or setting fails with one `path: message` line per problem, such as
-  `invalid ontology: entities[0].name: field required`; see [errors](errors.md#messages).
+**Ids.** A relation, preference, or decision id must start with `relation:`,
+`preference:`, or `decision:` for every command that takes one.
+
+**`KEY=VALUE` flags** (`--prop`, `--set`, `--param`) parse VALUE as JSON when it
+is valid JSON. So `zip=12345` stores the number. Write `zip='"12345"'` to keep
+text. A pair without `=` fails naming the flag (`--prop expects KEY=VALUE`).
+
+**Time flags** (`--event-time`, `--as-of`, `--now`, `--older-than`) take ISO 8601
+text. No offset, or a bare date, means UTC. Times in output are UTC with a `Z`
+suffix. `insert ontology --event-time` is the default for items without their
+own.
+
+**Updates.**
+
+- Repeatable flags merge into what is stored. `entity update --alias` and
+  `--prop` add, `--remove-alias` and `--remove-prop` drop, and
+  `--external-id SYSTEM=ID` sets.
+- `relation update` takes `--set` and `--remove` (aliases `--prop` and
+  `--remove-prop`). Removing an absent key is ignored.
+- `entity update --type` cannot change the type, since it is part of the id. A
+  spelling with the same id form (`person` for `Person`) is adopted only when it
+  is a schema type name. Otherwise the stored type is kept.
+- `decision update --step` and `--alternative` replace their lists.
+- `--clear FIELD` (repeatable) clears a decision or preference field. The
+  clearable fields are listed in [Clearing fields](resources.md#clearing-fields).
+
+**Preferences.** `preference list` without a subject lists every subject and
+filters by `--key` and `--kind`. `preference create --about` sets the entity a
+preference is about. Its `VALUE` must be an existing entity id.
+
+**Versions.** `relation versions` and `preference versions` list newest first.
+`--oldest-first` reverses them.
+
+**Evidence.** `relation create` and `relation update` take `--evidence JSON`
+(repeatable). It is an object `{"source_id": ..., "quote": ...,
+"start_offset": ..., "end_offset": ..., "confidence": ...}` or an array of them,
+with `confidence` from 0 to 1. `update` adds to the existing evidence.
+
+**Per-call overrides.** Both inserts take `--resolver` and `--contradiction`, and
+`relation create` takes `--contradiction`, to override the global flag for one
+call.
+
+**Retired relations.** `relation list --include-invalidated` adds relations a
+[contradiction](schema.md#contradictions) retired.
+
+**Bad input.** A bad input file or setting fails with one `path: message` line per
+problem, such as `invalid ontology: entities[0].name: field required`. See
+[errors](errors.md#messages).
 
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success. |
-| `1` | A runtime failure: a missing id (`get`, `update`, `delete`, `NotFoundError`), a conflict (`ConflictError`), a backend or connection error (`StoreError`, `TransientError`), or an LLM error (`ExtractionError`). A `get` for a missing id prints the error on stderr and nothing on stdout, where the library returns `None` (`null` in TypeScript) and MCP returns `null`. |
+| `1` | A runtime failure: a missing id (`get`, `update`, `delete`, `NotFoundError`), a conflict (`ConflictError`), a backend or connection error (`StoreError`, `TransientError`), or an LLM error (`ExtractionError`). A `get` for a missing id prints the error on stderr and nothing on stdout. The library and MCP return `null` instead. |
 | `2` | Invalid input or usage (`ValidationError`, `PromptTemplateError`): a bad flag or setting, a missing or unreadable file (`insert ontology nofile.json`, `--instructions nofile.json`), invalid JSON or `--schema`, `--instructions`, or `--prompts` content, or a malformed prompt template. |
 | `130` | Interrupted with Ctrl-C. |
 | `141` | The reader of stdout closed early, as with `head`. |
@@ -123,7 +174,7 @@ code 2.
 ## Secrets
 
 Command-line arguments are visible to other users through `ps` and land in shell
-history, so pass credentials through the environment:
+history. Pass credentials through the environment:
 
 ```bash
 export SELFGRAPH_AUTH=neo4j:password       # instead of --auth
@@ -135,9 +186,10 @@ selfgraph --store neo4j --uri bolt://localhost:7687 \
 
 ## Names across surfaces
 
-The CLI and MCP name some arguments differently from the library. MCP tools take the
-library's keyword names. TypeScript uses the Python names with camelCase methods
-(`runCypher`) and options in a trailing object (`entities.create(name, type, { id })`).
+The CLI and MCP name some arguments differently from the library. MCP tools take
+the library's keyword names. TypeScript uses the Python names, with camelCase
+methods (`runCypher`) and options in a trailing object
+(`entities.create(name, type, { id })`).
 
 | Library | CLI | MCP |
 |---------|-----|-----|
@@ -163,5 +215,6 @@ library's keyword names. TypeScript uses the Python names with camelCase methods
 | `run_cypher(query, params)` | `query CYPHER --param KEY=VALUE` | `run_cypher` `query`, `params` (read-only) |
 | `maintenance.decay`, `prune`, `consolidate(dry_run=True)` | `maintenance decay`, `prune`, `consolidate`, `--apply` to write | `maintenance_*` with `dry_run: false` to write |
 
-`entities.update` and `preferences.update` take `properties=` (CLI `--prop`), while
-`relations.update` takes `set_properties=` (CLI `--set`).
+Watch the property argument: `entities.update` and `preferences.update` take
+`properties=` (CLI `--prop`), while `relations.update` takes `set_properties=`
+(CLI `--set`).

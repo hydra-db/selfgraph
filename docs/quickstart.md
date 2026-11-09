@@ -1,8 +1,8 @@
 # Quickstart
 
-This builds a graph, reads an entity back, iterates a type, and retrieves
-context. It uses the embedded Kuzu backend, so there is no server to start and no
-LLM to configure.
+Build a graph, read an entity back, iterate a type, and retrieve context. This
+uses the embedded Kuzu backend, so there is no server to start and no LLM to
+configure.
 
 ```bash
 pip install "selfgraph[kuzu]"
@@ -41,10 +41,12 @@ asyncio.run(main())
 
 ## The graph object
 
-`SelfGraph(store=...)` takes a [backend](backends.md). `async with` initializes
-the store on entry and closes it on exit; without it, the store initializes on
-first use and you call `await graph.close()` yourself. Pass `namespace=` (default
-`default`) to keep several graphs in one store.
+`SelfGraph(store=...)` takes a [backend](backends.md).
+
+- `async with` initializes the store on entry and closes it on exit.
+- Without `async with`, the store initializes on first use. Call
+  `await graph.close()` yourself.
+- `namespace=` (default `default`) keeps several graphs in one store.
 
 `SyncSelfGraph` has the same API without `await`:
 
@@ -55,5 +57,6 @@ with SyncSelfGraph(store=KuzuStore("graph.kuzu")) as graph:
     graph.entities.create("Acme", "Company", id="company:acme")
 ```
 
-`SelfGraph.connect(store=..., uri=..., auth=...)` and `SelfGraph.from_env()` build
-the store and LLM config from settings; see [From settings](backends.md#from-settings).
+To build the store and LLM config from settings or environment variables, use
+`SelfGraph.connect(store=..., uri=..., auth=...)` or `SelfGraph.from_env()`. See
+[From settings](backends.md#from-settings).
