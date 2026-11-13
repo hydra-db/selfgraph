@@ -42,6 +42,10 @@ Which extractor runs depends on what you configure:
 | Neither, with spaCy and a model installed (Python only) | spaCy. See [Without an LLM](#without-an-llm). |
 | Neither | The built-in regex pass. |
 
+`extraction=` on the graph pins the choice: `"regex"` or `"spacy"` keeps the LLM
+out of extraction even when `llm=` is set, and `"llm"` requires one. The result's
+`tiers["extraction"]` names the engine that ran. See [tiers](tiers.md).
+
 ### With an LLM
 
 ```python
