@@ -20,7 +20,8 @@ const BYPASSES = [
 
 const READS = ["MATCH (n) RETURN n.set AS x;", "RETURN 1; MATCH (n) RETURN n"];
 
-const TOOL_NAMES = `create_decision create_entity create_preference create_relation delete_decision delete_entity
+const TOOL_NAMES =
+  `coverage create_decision create_entity create_preference create_relation delete_decision delete_entity
   delete_preference delete_relation entity_evidence entity_merges get_decision get_entity get_preference get_relation
   get_schema insert_ontology insert_text list_decisions list_entities list_preferences list_relations
   maintenance_consolidate maintenance_decay maintenance_prune preference_versions relation_evidence relation_versions
@@ -259,7 +260,7 @@ describe("MCP tools over Kuzu", () => {
     }
   });
 
-  it("lists 34 tools over a transport and reports bad arguments as path: message lines", async () => {
+  it("lists 35 tools over a transport and reports bad arguments as path: message lines", async () => {
     await configure();
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
@@ -280,6 +281,7 @@ describe("MCP tools over Kuzu", () => {
         expect(hints[name]).toMatchObject({ destructiveHint: true, idempotentHint: true });
       }
       expect(hints.retrieve).toMatchObject({ readOnlyHint: true });
+      expect(hints.coverage).toMatchObject({ readOnlyHint: true });
       expect(hints.create_entity).toMatchObject({ destructiveHint: false, idempotentHint: false });
       expect(hints.insert_ontology).toMatchObject({ idempotentHint: true });
       for (const [tool, args, message] of [

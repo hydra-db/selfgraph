@@ -331,17 +331,18 @@ async def _embedding_seeds(
     best: list[tuple[Entity, float]] = []
     async for page in _entity_pages(graph, ns, as_of, valid):
         texts = {e.id: _entity_text(e) for e in page}
-        stale = [e.id for e in page if cache.get((ns, e.id), ("", []))[0] != texts[e.id]]
+        found = {e.id: cache[(ns, e.id)][1] for e in page if cache.get((ns, e.id), ("", []))[0] == texts[e.id]}
+        stale = [e.id for e in page if e.id not in found]
         for start in range(0, len(stale), _EMBED_BATCH):
             chunk = stale[start : start + _EMBED_BATCH]
             vectors = await embedder.embed([texts[eid] for eid in chunk])
             if len(vectors) != len(chunk):
                 raise ValidationError(f"embedder returned {len(vectors)} vectors for {len(chunk)} texts")
-            if len(cache) + len(chunk) > _EMBED_CACHE:
-                cache.clear()
-            for eid, vector in zip(chunk, vectors, strict=True):
-                cache[(ns, eid)] = (texts[eid], list(vector))
-        scored = [(e, _cosine(target, cache[(ns, e.id)][1])) for e in page if (ns, e.id) in cache]
+            found.update((eid, list(vector)) for eid, vector in zip(chunk, vectors, strict=True))
+        if len(cache) + len(stale) > _EMBED_CACHE:
+            cache.clear()
+        cache.update(((ns, eid), (texts[eid], found[eid])) for eid in stale)
+        scored = [(e, _cosine(target, found[e.id])) for e in page]
         best = heapq.nsmallest(k, [*best, *((e, s) for e, s in scored if s > 0)], key=_seed_rank)
     return best
 

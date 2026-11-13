@@ -1,4 +1,4 @@
-import type { GraphAccess } from "./access.js";
+import { type GraphAccess, seedTier } from "./access.js";
 import { loadTokenizer } from "./chunking.js";
 import { ValidationError } from "./errors.js";
 import { normalizeText } from "./ids.js";
@@ -7,6 +7,7 @@ import { comparePy, cpLen, NON_ASCII, pyFloatRepr, pyRepr, pyStr, pyStrip } from
 import { epochMicros, fromIso } from "./internal/time.js";
 import { L_CHUNK, L_ENTITY, L_EVIDENCE, L_SOURCE_VERSION, preferenceEdgeType, R_HAS_CHUNK } from "./labels.js";
 import type {
+  Coverage,
   DateTimeInput,
   DecisionTrace,
   Entity,
@@ -19,6 +20,8 @@ import type {
 import * as ops from "./ops.js";
 import type { GraphPrimitives } from "./protocols.js";
 import { decodeEntity } from "./serde.js";
+import { expandTokens, matchTerms, stem } from "./terms.js";
+import type { SeedTier } from "./tiers.js";
 import { checkOptions, keysOf, parseTime, requireInt, typeName } from "./validate.js";
 
 const STOPWORDS = new Set(
@@ -41,6 +44,9 @@ const POOL_FACTOR = 4;
 const PPR_DAMPING = 0.5;
 const PPR_MAX_ITERATIONS = 50;
 const PPR_TOLERANCE = 1e-6;
+const EMBED_BATCH = 64;
+const EMBED_CACHE = 50_000;
+const RRF_K = 60;
 
 export const STRATEGIES = ["bfs", "dfs", "ppr"] as const;
 
@@ -233,18 +239,8 @@ async function scanSeeds(
   asOf: Date | null,
   valid: Preference[] | null,
 ): Promise<Array<[Entity, number]>> {
-  async function* pages(): AsyncGenerator<Entity[]> {
-    for await (const page of ops.keyset((after, limit) => ops.listEntities(store, ns, { skip: 0, limit, after }))) {
-      if (asOf === null || valid === null) {
-        yield page;
-        continue;
-      }
-      const visible = await visibleAt(store, ns, page, asOf, valid);
-      yield page.filter((e) => visible.has(e.id));
-    }
-  }
   let stats: CorpusStats | null = null;
-  for await (const page of pages()) {
+  for await (const page of entityPages(store, ns, asOf, valid)) {
     stats = corpusStats(
       queryTokens,
       page.map((e) => [...tokens(entityText(e))]),
@@ -252,8 +248,137 @@ async function scanSeeds(
     );
   }
   let best: Array<[Entity, number]> = [];
-  for await (const page of pages()) best = bestSeeds([...best, ...seedScores(page, queryTokens, exact, stats!)], k);
+  for await (const page of entityPages(store, ns, asOf, valid)) {
+    best = bestSeeds([...best, ...seedScores(page, queryTokens, exact, stats!)], k);
+  }
   return best;
+}
+
+/**
+ * Stream every entity in id-ordered pages, keeping only those visible at asOf when it is set.
+ *
+ * @param store (GraphPrimitives): the graph reader.
+ * @param ns (string): the namespace to read.
+ * @param asOf (Date | null): keep only the entities visible at this time, or null for all.
+ * @param valid (Preference[] | null): the preference versions valid at asOf.
+ * @return (AsyncGenerator<Entity[]>): the pages.
+ */
+async function* entityPages(
+  store: GraphPrimitives,
+  ns: string,
+  asOf: Date | null,
+  valid: Preference[] | null,
+): AsyncGenerator<Entity[]> {
+  for await (const page of ops.keyset((after, limit) => ops.listEntities(store, ns, { skip: 0, limit, after }))) {
+    if (asOf === null || valid === null) {
+      yield page;
+      continue;
+    }
+    const visible = await visibleAt(store, ns, page, asOf, valid);
+    yield page.filter((e) => visible.has(e.id));
+  }
+}
+
+/**
+ * The cosine similarity of two vectors, 0 when either has no length.
+ *
+ * @param a (readonly number[]): one vector.
+ * @param b (readonly number[]): the other vector.
+ * @return (number): the similarity.
+ */
+function cosine(a: readonly number[], b: readonly number[]): number {
+  const dot = (x: readonly number[], y: readonly number[]): number => {
+    let sum = 0;
+    for (let i = 0; i < Math.min(x.length, y.length); i++) sum += x[i]! * y[i]!;
+    return sum;
+  };
+  const norm = Math.sqrt(dot(a, a)) * Math.sqrt(dot(b, b));
+  return norm ? dot(a, b) / norm : 0;
+}
+
+/**
+ * Rank every entity by the embedder's similarity between its text and the query, best first.
+ *
+ * An entity's vector is kept in memory on the graph and reused while its text is unchanged, so each entity is
+ * embedded once per process.
+ *
+ * @param graph (GraphAccess): the graph, with an embedder.
+ * @param store (GraphPrimitives): the graph reader.
+ * @param query (string): the query text.
+ * @param k (number): the maximum number of seeds to keep.
+ * @param asOf (Date | null): score only the entities visible at this time, or null for all.
+ * @param valid (Preference[] | null): the preference versions valid at asOf.
+ * @return (Array<[Entity, number]>): the entities with a positive similarity, with it.
+ */
+async function embeddingSeeds(
+  graph: GraphAccess,
+  store: GraphPrimitives,
+  query: string,
+  k: number,
+  asOf: Date | null,
+  valid: Preference[] | null,
+): Promise<Array<[Entity, number]>> {
+  const ns = graph.namespace;
+  const { embeddings: cache } = graph.tiers;
+  const embedder = graph.tiers.embedder!;
+  const embed = async (texts: string[]): Promise<number[][]> => {
+    const vectors = await embedder.embed(texts);
+    if (!Array.isArray(vectors) || vectors.length !== texts.length) {
+      const count = Array.isArray(vectors) ? vectors.length : 0;
+      throw new ValidationError(`embedder returned ${count} vectors for ${texts.length} texts`);
+    }
+    return vectors;
+  };
+  const [target] = await embed([query]);
+  const key = (eid: string): string => JSON.stringify([ns, eid]);
+  let best: Array<[Entity, number]> = [];
+  for await (const page of entityPages(store, ns, asOf, valid)) {
+    const texts = new Map(page.map((e) => [e.id, entityText(e)]));
+    const found = new Map<string, number[]>();
+    for (const e of page) {
+      const kept = cache.get(key(e.id));
+      if (kept !== undefined && kept[0] === texts.get(e.id)) found.set(e.id, kept[1]);
+    }
+    const stale = page.map((e) => e.id).filter((eid) => !found.has(eid));
+    for (let start = 0; start < stale.length; start += EMBED_BATCH) {
+      const chunk = stale.slice(start, start + EMBED_BATCH);
+      const vectors = await embed(chunk.map((eid) => texts.get(eid)!));
+      chunk.forEach((eid, i) => {
+        found.set(eid, [...vectors[i]!]);
+      });
+    }
+    if (cache.size + stale.length > EMBED_CACHE) cache.clear();
+    for (const eid of stale) cache.set(key(eid), [texts.get(eid)!, found.get(eid)!]);
+    const scored: Array<[Entity, number]> = [];
+    for (const e of page) {
+      const score = cosine(target!, found.get(e.id)!);
+      if (score > 0) scored.push([e, score]);
+    }
+    best = bestSeeds([...best, ...scored], k);
+  }
+  return best;
+}
+
+/**
+ * Merge seed rankings by reciprocal rank fusion, so an entity high in either list ranks high.
+ *
+ * @param rankings (ReadonlyArray<ReadonlyArray<[Entity, number]>>): the rankings, each best first.
+ * @param k (number): the maximum number of seeds to keep.
+ * @return (Array<[Entity, number]>): the fused seeds with their fused scores, best first.
+ */
+function fuse(rankings: ReadonlyArray<ReadonlyArray<[Entity, number]>>, k: number): Array<[Entity, number]> {
+  const entities = new Map<string, Entity>();
+  const scores = new Map<string, number>();
+  for (const ranking of rankings) {
+    for (const [rank, [entity]] of ranking.entries()) {
+      entities.set(entity.id, entity);
+      scores.set(entity.id, (scores.get(entity.id) ?? 0) + 1 / (RRF_K + rank + 1));
+    }
+  }
+  return bestSeeds(
+    [...scores].map(([eid, score]) => [entities.get(eid)!, score] as [Entity, number]),
+    k,
+  );
 }
 
 /**
@@ -707,12 +832,13 @@ function truncate(text: string, budget: number, countTokens: (text: string) => n
 export type Strategy = (typeof STRATEGIES)[number];
 
 export interface RetrieveOptions {
-  strategy?: Strategy;
+  strategy?: Strategy | null;
   depth?: number;
   k?: number;
   max_nodes?: number;
   budget_tokens?: number;
   as_of?: DateTimeInput | null;
+  seeds?: SeedTier | null;
 }
 
 const RETRIEVE_KEYS = keysOf<RetrieveOptions>({
@@ -722,14 +848,15 @@ const RETRIEVE_KEYS = keysOf<RetrieveOptions>({
   max_nodes: true,
   budget_tokens: true,
   as_of: true,
+  seeds: true,
 });
 
 /**
- * Retrieve graph context for a query via keyword seeds and bounded traversal, optionally ranked by PageRank. With as_of, the graph is read on the valid-time axis: each relation and preference at its version valid then, and an entity when it was stored by then or is an endpoint, subject, value, or about entity of one of those versions. Decisions effective by then are kept unless they name an entity not visible then, and passages come from source versions stored by then.
+ * Retrieve graph context for a query via keyword seeds and bounded traversal, optionally ranked by PageRank. Seeding climbs a ladder: "bm25" scores entities lexically; "synonyms" first adds the name of each schema entity type the query names by alias or synonym; "embeddings" also ranks entities by the graph embedder and fuses the two rankings. With as_of, the graph is read on the valid-time axis: each relation and preference at its version valid then, and an entity when it was stored by then or is an endpoint, subject, value, or about entity of one of those versions. Decisions effective by then are kept unless they name an entity not visible then, and passages come from source versions stored by then.
  *
  * @param graph (GraphAccess): the graph to read.
  * @param query (string): the natural-language query to seed from.
- * @param options (RetrieveOptions): the strategy, hop depth, seed count, entity cap, token budget, and as_of, the point in time to read the graph at (no offset means UTC; null for now).
+ * @param options (RetrieveOptions): the strategy and seeding tier (the graph's defaults when null), hop depth, seed count, entity cap, token budget, and as_of, the point in time to read the graph at (no offset means UTC; null for now).
  * @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
  */
 export async function retrieve(
@@ -740,7 +867,9 @@ export async function retrieve(
   if (typeof query !== "string") throw new ValidationError(`query must be a string, got ${typeName(query)}`);
   if (!pyStrip(query)) throw new ValidationError("query cannot be empty");
   checkOptions("retrieve", options, RETRIEVE_KEYS);
-  if (options.strategy !== undefined && typeof options.strategy !== "string") {
+  const { embedder, max_tier: maxTier } = graph.tiers;
+  const seeds = options.seeds == null ? graph.tiers.seeds : seedTier(options.seeds, embedder, maxTier);
+  if (options.strategy != null && typeof options.strategy !== "string") {
     throw new ValidationError(`strategy must be a string, got ${typeName(options.strategy)}`);
   }
   for (const key of ["depth", "k", "max_nodes", "budget_tokens"] as const) {
@@ -748,7 +877,7 @@ export async function retrieve(
   }
   const asOf = parseTime(options.as_of, "as_of");
   const { depth, k, max_nodes: maxNodes, budget_tokens: budgetTokens } = { ...RETRIEVE_DEFAULTS, ...options };
-  const strategy = (options.strategy ?? RETRIEVE_DEFAULTS.strategy).toLowerCase();
+  const strategy = (options.strategy ?? graph.tiers.strategy).toLowerCase();
   if (!(STRATEGIES as readonly string[]).includes(strategy)) {
     throw new ValidationError(`strategy must be one of ${STRATEGIES.join(", ")}, got ${pyRepr(strategy)}`);
   }
@@ -761,31 +890,55 @@ export async function retrieve(
   for (const [name, value, least] of bounds) {
     if (value < least) throw new ValidationError(`${name} must be >= ${least}, got ${value}`);
   }
-  return graph.read((store, ns) => run(store, ns, query, { strategy, depth, k, maxNodes, budgetTokens, asOf }));
+  return graph.read((store, ns) =>
+    run(graph, store, ns, query, { strategy, depth, k, maxNodes, budgetTokens, asOf, seeds }),
+  );
+}
+
+interface RunOptions {
+  strategy: string;
+  depth: number;
+  k: number;
+  maxNodes: number;
+  budgetTokens: number;
+  asOf: Date | null;
+  seeds: SeedTier;
 }
 
 /**
  * Seed, traverse, collect, and assemble the context, with validated options.
  *
+ * @param graph (GraphAccess): the graph, for its schema and embedder.
  * @param store (GraphPrimitives): the graph reader.
  * @param ns (string): the namespace.
  * @param query (string): the query.
- * @param opts ({ strategy: string; depth: number; k: number; maxNodes: number; budgetTokens: number; asOf: Date | null }): the options.
+ * @param opts (RunOptions): the validated options.
  * @return (RetrievalResult): the retrieval result.
  */
 async function run(
+  graph: GraphAccess,
   store: GraphPrimitives,
   ns: string,
   query: string,
-  opts: { strategy: string; depth: number; k: number; maxNodes: number; budgetTokens: number; asOf: Date | null },
+  opts: RunOptions,
 ): Promise<RetrievalResult> {
-  const { strategy, depth, k, maxNodes, budgetTokens, asOf } = opts;
+  const { strategy, depth, k, maxNodes, budgetTokens, asOf, seeds } = opts;
   const { countTokens } = await loadTokenizer();
   const queryTokens = tokens(query);
   const exact = shortTokens(query);
+  let seedTokens = queryTokens;
+  let seeded: SeedTier = "bm25";
+  if (seeds !== "bm25" && graph.schema !== null) {
+    seedTokens = expandTokens(queryTokens, graph.schema, tokens);
+    seeded = "synonyms";
+  }
   const valid = asOf === null ? null : await ops.preferencesAsOf(store, ns, asOf);
-  const seedsScored =
-    queryTokens.size || exact.size ? await scanSeeds(store, ns, queryTokens, k, exact, asOf, valid) : [];
+  let seedsScored = seedTokens.size || exact.size ? await scanSeeds(store, ns, seedTokens, k, exact, asOf, valid) : [];
+  if (seeds === "embeddings" && graph.tiers.embedder !== null) {
+    const semantic = await embeddingSeeds(graph, store, query, k, asOf, valid);
+    seedsScored = fuse([seedsScored, semantic], k);
+    seeded = "embeddings";
+  }
   const seedIds = seedsScored.map(([e]) => e.id);
   const known = new Map(seedsScored.map(([e]) => [e.id, e]));
 
@@ -837,5 +990,52 @@ async function run(
   const subgraph = { entities, relations, preferences, decisions };
   const context = assemble(passages, subgraph, names, dist, budgetTokens, countTokens);
 
-  return { query, strategy, seeds: seedsScored.map(([e, score]) => ({ id: e.id, score })), subgraph, context };
+  return {
+    query,
+    strategy,
+    seeds: seedsScored.map(([e, score]) => ({ id: e.id, score })),
+    subgraph,
+    context,
+    tiers: { seeds: seeded, traversal: strategy },
+  };
+}
+
+/**
+ * Report which content words of a question a schema term or a stored entity grounds.
+ *
+ * Words compare ignoring case and a plain plural ending. The scan over entities stops once every word is covered.
+ *
+ * @param graph (GraphAccess): the graph to read.
+ * @param question (string): the natural-language question.
+ * @return (Coverage): the matched terms, the covered and uncovered words in sorted order, and the covered share.
+ */
+export async function coverage(graph: GraphAccess, question: string): Promise<Coverage> {
+  if (typeof question !== "string") throw new ValidationError(`question must be a string, got ${typeName(question)}`);
+  if (!pyStrip(question)) throw new ValidationError("question cannot be empty");
+  return graph.read(async (store, ns) => {
+    const asked = tokens(question);
+    const terms = matchTerms(asked, graph.schema, tokens);
+    const covered = new Set(terms.flatMap((term) => term.tokens));
+    const stems = new Map<string, string[]>();
+    for (const token of asked) {
+      if (covered.has(token)) continue;
+      stems.set(stem(token), [...(stems.get(stem(token)) ?? []), token]);
+    }
+    for await (const page of entityPages(store, ns, null, null)) {
+      if (!stems.size) break;
+      for (const entity of page) {
+        for (const token of tokens(entityText(entity))) {
+          for (const word of stems.get(stem(token)) ?? []) covered.add(word);
+          stems.delete(stem(token));
+        }
+      }
+    }
+    return {
+      question,
+      terms,
+      covered: [...covered].sort(comparePy),
+      uncovered: [...asked].filter((t) => !covered.has(t)).sort(comparePy),
+      ratio: asked.size ? covered.size / asked.size : 0,
+    };
+  });
 }

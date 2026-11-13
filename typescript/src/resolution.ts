@@ -36,6 +36,7 @@ import type { GraphPrimitives, LLMClient, Props } from "./protocols.js";
 import { fold, tokens } from "./retrieval.js";
 import { entityIndex, lineage, type ParsedSchema, requireMode } from "./schema.js";
 import { decodeEntity, decodeEvidence } from "./serde.js";
+import { clamp, type Level } from "./tiers.js";
 import { checkOptions, requireInt, requireStr, typeName } from "./validate.js";
 
 type Runner = GraphPrimitives;
@@ -434,6 +435,25 @@ export function asResolver(value: EntityResolver | ResolverMode, llm: LLMClient 
     return new LLMResolver(llm);
   }
   return value;
+}
+
+/**
+ * Build a resolver from a mode or an object, lowering a mode to the cost cap.
+ *
+ * @param value (EntityResolver | ResolverMode): the mode name or a resolver object.
+ * @param llm (LLMClient | null): the graph's LLM, needed for "llm".
+ * @param maxTier (Level): the cost cap.
+ * @return ([string, EntityResolver | null]): the tier name, "custom" for an object, and the resolver.
+ */
+export function resolverFor(
+  value: EntityResolver | ResolverMode,
+  llm: LLMClient | null,
+  maxTier: Level,
+): [string, EntityResolver | null] {
+  if (typeof value !== "string") return ["custom", asResolver(value, llm)];
+  requireResolver(value);
+  const tier = clamp("resolution", value, maxTier) as ResolverMode;
+  return [tier, asResolver(tier, llm)];
 }
 
 /**

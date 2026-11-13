@@ -49,6 +49,7 @@ import {
   version,
 } from "./runtime.js";
 import { CONTRADICTION_MODES, type ContradictionMode, SCHEMA_MODES } from "./schema.js";
+import { LEVELS, SEED_TIERS } from "./tiers.js";
 import { parseTime } from "./validate.js";
 
 const JSON_VALUE = "; KEY=VALUE, VALUE parsed as JSON when valid (so 12345 is a number), else kept as text";
@@ -67,7 +68,7 @@ examples, scoped to one namespace (stored property names differ per backend):
 const contradictionOption = () =>
   new Option(
     "--contradiction <mode>",
-    "how to handle a relation that breaks a schema max_count (default warn)",
+    "how to handle a contradicting relation; llm also judges with no max_count (default warn)",
   ).choices(CONTRADICTION_MODES);
 
 type GlobalOptions = {
@@ -88,6 +89,8 @@ type GlobalOptions = {
   schemaMode?: string;
   resolver?: string;
   contradiction?: string;
+  level?: string;
+  maxTier?: string;
 };
 
 const collect = (value: string, prev: string[]): string[] => [...prev, value];
@@ -676,8 +679,12 @@ export function buildParser(): Command<[], GlobalOptions> {
     .option("--instructions <path>", "extraction instructions JSON file, or inline JSON when it starts with '{'")
     .option("--prompts <path>", "extraction prompt templates JSON file, or inline JSON when it starts with '{'")
     .addOption(new Option("--schema-mode <mode>", "default warn; strict needs --schema").choices(SCHEMA_MODES))
-    .addOption(new Option("--resolver <mode>", "entity resolution on insert (default exact)").choices(RESOLVER_MODES))
+    .addOption(
+      new Option("--resolver <mode>", "entity resolution on insert (default: by level)").choices(RESOLVER_MODES),
+    )
     .addOption(contradictionOption())
+    .addOption(new Option("--level <level>", "sets every capability's default tier (default balanced)").choices(LEVELS))
+    .addOption(new Option("--max-tier <level>", "cost cap no capability climbs past (default max)").choices(LEVELS))
     .hook("preAction", (_program, action) => {
       checkedSettings.set(action, checkSettings(settingsOf(action)));
     });
@@ -754,11 +761,8 @@ export function buildParser(): Command<[], GlobalOptions> {
   program
     .command("retrieve <query...>")
     .description("retrieve graph context for a query; unquoted words join into one query")
-    .addOption(
-      new Option("--strategy <s>", "traversal order, or ppr for PageRank ranking")
-        .choices(STRATEGIES)
-        .default(RETRIEVE_DEFAULTS.strategy),
-    )
+    .addOption(new Option("--strategy <s>", "traversal order, or ppr for PageRank ranking").choices(STRATEGIES))
+    .addOption(new Option("--seeds <tier>", "seeding tier (default: the level's)").choices(SEED_TIERS))
     .option("--depth <n>", "traversal hops", intArg("--depth"), RETRIEVE_DEFAULTS.depth)
     .option("--k <n>", "seed count", intArg("--k"), RETRIEVE_DEFAULTS.k)
     .option("--max-nodes <n>", "entity cap", intArg("--max-nodes"), RETRIEVE_DEFAULTS.max_nodes)
@@ -774,10 +778,15 @@ export function buildParser(): Command<[], GlobalOptions> {
           max_nodes: o.maxNodes,
           budget_tokens: o.budgetTokens,
           as_of: o.asOf,
+          seeds: o.seeds,
         });
         return o.contextOnly ? new Text(result.context) : result;
       }),
     );
+  program
+    .command("coverage <question...>")
+    .description("report which words of a question the schema and graph can ground")
+    .action((words, _o, cmd) => emit(cmd, (g) => g.coverage(words.join(" "))));
 
   const insert = program.command("insert").description("insert text or an ontology");
   insert

@@ -94,8 +94,8 @@ Every capability is a ladder of tiers, and `level` sets them all. The default, `
 | Traversal | BFS | BFS | PageRank |
 
 ```python
-graph = SelfGraph(store=store, llm=llm, level="max")              # everything on
-graph = SelfGraph(store=store, llm=llm, contradiction="llm")      # one capability
+graph = SelfGraph(store=store, llm=llm, level="max")  # everything on
+graph = SelfGraph(store=store, llm=llm, contradiction="llm")  # one capability
 graph = SelfGraph(store=store, llm=llm, level="max", max_tier="balanced")  # cap: no LLM calls
 print(graph.tiers)
 ```
@@ -116,8 +116,8 @@ graph = SelfGraph(store=store, llm=llm, contradiction="llm")
 await graph.relations.create("person:ann", "WORKS_AT", "company:acme", event_time="2020-01-01")
 await graph.relations.create("person:ann", "WORKS_AT", "company:globex", event_time="2022-01-01")
 
-await graph.retrieve("where does Ann work")                       # Globex
-await graph.retrieve("where does Ann work", as_of="2021-06-01")   # Acme
+await graph.retrieve("where does Ann work")  # Globex
+await graph.retrieve("where does Ann work", as_of="2021-06-01")  # Acme
 ```
 
 Nothing is deleted. The retired relation keeps its history and records what replaced it. See [contradictions](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md#contradictions).
@@ -139,8 +139,8 @@ schema = {
 graph = SelfGraph(store=store, schema=schema)
 
 cov = await graph.coverage("What is the staff size of the firm Acme by ad spend?")
-cov.uncovered                               # ["ad", "spend"]
-await graph.retrieve("which employers")     # seeds Company entities through the synonym
+cov.uncovered  # ["ad", "spend"]
+await graph.retrieve("which employers")  # seeds Company entities through the synonym
 ```
 
 `Schema.from_tables` drafts a schema from table and column metadata, with no database connection. See [ontology](https://github.com/hydra-db/selfgraph/blob/main/docs/ontology.md).

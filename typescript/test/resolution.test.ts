@@ -108,7 +108,7 @@ function suite(spec: StoreSpec) {
   const seed = (g: SelfGraph, ...entities: Ontology["entities"] & object[]) => g.insert.ontology({ entities });
 
   it("leaves exact mode unchanged", async () => {
-    const g = open();
+    const g = open({ resolver: "exact" });
     await seed(g, { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } });
     const res = await g.insert.ontology({
       entities: [{ type: "Company", name: "Big Blue", external_ids: { ticker: "IBM" } }],

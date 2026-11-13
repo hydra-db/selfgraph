@@ -32,7 +32,15 @@ from .models import (
 )
 from .protocols import Embedder, Extractor, GraphStore, LLMClient
 from .provenance import record_source
-from .resolution import EntityResolver, ResolverMode, as_resolver, merge_warnings, plan_resolution, save_merges
+from .resolution import (
+    EntityResolver,
+    ResolverMode,
+    as_resolver,
+    merge_warnings,
+    plan_resolution,
+    require_resolver,
+    save_merges,
+)
 from .resources import Decisions, Entities, Maintenance, Preferences, Relations
 from .retrieval import coverage as _coverage
 from .retrieval import retrieve as _retrieve
@@ -87,7 +95,7 @@ class SelfGraph:
         self.store = store
         self.namespace = namespace
         self._llm = resolve_llm(llm)
-        if level == "max" and self._llm is None:
+        if level == "max" and max_tier == "max" and self._llm is None:
             raise ValidationError(f"level 'max' needs an LLM: {LLM_HINT}")
         if embedder is not None and not callable(getattr(embedder, "embed", None)):
             raise ValidationError(f"embedder must have an embed method, got {type(embedder).__name__}")
@@ -100,9 +108,9 @@ class SelfGraph:
             tiers.require_tier("extraction", extraction)
         elif extractor is None:
             extraction = "llm" if self._llm is not None else preset["extraction"]
-        if extraction == "llm" and self._llm is None:
-            raise ValidationError(f"extraction 'llm' needs an LLM: {LLM_HINT}")
         self._extraction = None if extraction is None else tiers.clamp("extraction", extraction, max_tier)
+        if self._extraction == "llm" and self._llm is None:
+            raise ValidationError(f"extraction 'llm' needs an LLM: {LLM_HINT}")
         if seeds is None:
             seeds = preset["seeds"] if embedder is not None or preset["seeds"] != "embeddings" else "synonyms"
         self._seeds = self._seed_tier(seeds)
@@ -171,7 +179,7 @@ class SelfGraph:
         @return (tuple[str, EntityResolver | None]): the tier name, "custom" for an object, and the resolver.
         """
         if isinstance(resolver, str):
-            as_resolver(resolver, self._llm)
+            require_resolver(resolver)
             tier = tiers.clamp("resolution", resolver, self._max_tier)
             return tier, as_resolver(tier, self._llm)
         return "custom", as_resolver(resolver, self._llm)
@@ -183,9 +191,10 @@ class SelfGraph:
         @return (ContradictionMode): the mode to apply; raises ValidationError for llm without an LLM.
         """
         require_contradiction_mode(mode)
-        if mode == "llm" and self._llm is None:
+        tier = tiers.clamp("contradiction", str(mode), self._max_tier)
+        if tier == "llm" and self._llm is None:
             raise ValidationError(f"contradiction 'llm' needs an LLM: {LLM_HINT}")
-        return tiers.clamp("contradiction", str(mode), self._max_tier)  # type: ignore[return-value]
+        return tier  # type: ignore[return-value]
 
     @classmethod
     def from_env(cls, **overrides: Any) -> SelfGraph:

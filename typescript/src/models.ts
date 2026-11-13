@@ -227,6 +227,7 @@ export interface InsertResult {
   decisions: DecisionTrace[];
   warnings: InsertWarning[];
   merges: MergeRecord[];
+  tiers: Record<string, string>;
 }
 
 export interface UnmergeResult {
@@ -483,6 +484,23 @@ export interface RetrievalResult {
   seeds: RetrievalSeed[];
   subgraph: Subgraph;
   context: string;
+  tiers: Record<string, string>;
+}
+
+export interface TermMatch {
+  term: string;
+  kind: "entity" | "relation" | "definition";
+  matched: string;
+  tokens: string[];
+  certified: boolean;
+}
+
+export interface Coverage {
+  question: string;
+  terms: TermMatch[];
+  covered: string[];
+  uncovered: string[];
+  ratio: number;
 }
 
 /**

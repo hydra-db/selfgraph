@@ -81,6 +81,8 @@ def test_max_tier_caps_graph_and_per_call_options():
     assert (g.tiers["resolution"], g.tiers["contradiction"], g.tiers["seeds"]) == ("fuzzy", "supersede", "synonyms")
     res = run(g.insert.ontology({"entities": [BOB]}, resolver="llm", contradiction="llm"))
     assert res.tiers == {"resolution": "fuzzy", "contradiction": "supersede"}
+    quiet = fresh_graph("tier", level="max", max_tier="balanced", resolver="llm", contradiction="llm")
+    assert (quiet.tiers["resolution"], quiet.tiers["contradiction"]) == ("fuzzy", "supersede")
     capped = fresh_graph("tier", max_tier="light")
     assert (capped.tiers["resolution"], capped.tiers["seeds"]) == ("exact", "bm25")
 

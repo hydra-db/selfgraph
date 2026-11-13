@@ -22,7 +22,7 @@ const PropertyTypeSchema = z.enum(["string", "integer", "float", "boolean", "dat
 export type PropertyType = z.infer<typeof PropertyTypeSchema>;
 export const SCHEMA_MODES = ["off", "warn", "strict"] as const;
 export type SchemaMode = (typeof SCHEMA_MODES)[number];
-export const CONTRADICTION_MODES = ["off", "warn", "supersede"] as const;
+export const CONTRADICTION_MODES = ["off", "warn", "supersede", "llm"] as const;
 export type ContradictionMode = (typeof CONTRADICTION_MODES)[number];
 
 export const PropertySpec = z.strictObject({
@@ -32,12 +32,30 @@ export const PropertySpec = z.strictObject({
   description: optString,
 });
 
+export const TermMapping = z.strictObject({
+  source: optString,
+  table: optString,
+  column: optString,
+});
+
+export const Definition = z.strictObject({
+  name: z.string(),
+  expression: z.string(),
+  description: optString,
+  synonyms: z.array(z.string()).default([]),
+  certified: z.boolean().default(false),
+});
+
 export const EntityType = z.strictObject({
   name: z.string(),
   description: optString,
   aliases: z.array(z.string()).default([]),
+  synonyms: z.array(z.string()).default([]),
   properties: z.array(PropertySpec).default([]),
   parent: optString,
+  mappings: z.array(TermMapping).default([]),
+  definitions: z.array(Definition).default([]),
+  certified: z.boolean().default(false),
 });
 
 export const RelationEndpoint = z.strictObject({
@@ -50,6 +68,8 @@ export const RelationType = z.strictObject({
   type: z.string(),
   description: optString,
   aliases: z.array(z.string()).default([]),
+  synonyms: z.array(z.string()).default([]),
+  certified: z.boolean().default(false),
   from: RelationEndpoint.default({ types: [], min_count: null, max_count: null }),
   to: RelationEndpoint.default({ types: [], min_count: null, max_count: null }),
   properties: z.array(PropertySpec).default([]),
@@ -137,7 +157,7 @@ export function requireSchemaForMode(mode: unknown, schema: unknown): void {
 }
 
 /**
- * Reject a contradiction mode other than off, warn, or supersede.
+ * Reject a contradiction mode other than off, warn, supersede, or llm.
  *
  * @param mode (unknown): the contradiction mode.
  */

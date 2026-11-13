@@ -1446,7 +1446,7 @@ const isRelationType = (rtype: string): boolean => !EDGE_TYPES.has(rtype);
 
 type RelationEnds = Pick<Relation, "from_entity" | "type" | "to_entity">;
 
-const relationOf = (e: EdgeRow): Relation =>
+export const relationOf = (e: EdgeRow): Relation =>
   decodeRelation(e.props, { from_entity: e.from_id, to_entity: e.to_id, type: e.type });
 const isPreferenceType = (rtype: string): boolean => preferenceKindOf(rtype) !== null;
 
@@ -1951,6 +1951,78 @@ async function contradictionCheck(
   if (contradiction === "off" || !caps?.size) return [null, new Map()];
   const [existing, history] = await constrainedCurrent(runner, ns, caps, ends);
   return [new Contradictions(caps, contradiction, [...existing.values()].map(relationOf), history), existing];
+}
+
+/**
+ * Find the older current relations each written relation may make untrue, for a judge to rule on.
+ *
+ * A rival shares the written relation's source entity and either its type with another destination, or its
+ * destination with another type. It took effect no later than the written relation and is not part of the same
+ * write. A written relation whose type carries a max_count has none, since the cardinality rule already settled it.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param written (readonly Relation[]): the relations a write just stored.
+ * @param caps (ReadonlyMap<string, RelationCap> | null): the schema's max_count limits by relation type.
+ * @param limit (number): the most rivals to list per relation, lowest id first.
+ * @return (Map<string, EdgeRow[]>): each written relation id with a rival, mapped to the rivals' edge rows.
+ */
+export async function rivalRelations(
+  runner: Runner,
+  ns: string,
+  written: readonly Relation[],
+  caps: ReadonlyMap<string, RelationCap> | null,
+  limit: number,
+): Promise<Map<string, EdgeRow[]>> {
+  const fresh = written.filter((r) => r.is_current && !caps?.has(r.type));
+  const batch = new Set(written.map((r) => r.id));
+  const current = new Map<string, EdgeRow[]>();
+  for (const source of dedupList(fresh.map((r) => r.from_entity))) {
+    const found = new Map<string, EdgeRow>();
+    const filter = { from_label: L_ENTITY, to_label: L_ENTITY, from_id: source };
+    for (const edge of await allEdges(runner, ns, filter)) keepNewest(found, edge);
+    const rows = [...found].sort((a, b) => comparePy(a[0], b[0])).map(([, e]) => e);
+    current.set(
+      source,
+      rows.filter((e) => e.props.is_current),
+    );
+  }
+  const out = new Map<string, EdgeRow[]>();
+  for (const rel of fresh) {
+    const rivals = current
+      .get(rel.from_entity)!
+      .filter(
+        (e) =>
+          !batch.has(idOf(e.props)) &&
+          (e.type === rel.type) !== (e.to_id === rel.to_entity) &&
+          epochMicros(effectiveTime(relationOf(e))) <= epochMicros(effectiveTime(rel)),
+      );
+    if (rivals.length) out.set(rel.id, rivals.slice(0, limit));
+  }
+  return out;
+}
+
+/**
+ * Retire current relations that newer relations displaced, each once, by the first relation named for it.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param pairs (Iterable<readonly [EdgeRow, Relation]>): each current edge row with the relation that displaced it.
+ * @return (Relation[]): the retired versions.
+ */
+export async function retireRelations(
+  runner: Runner,
+  ns: string,
+  pairs: Iterable<readonly [EdgeRow, Relation]>,
+): Promise<Relation[]> {
+  const gone = new Map<string, EdgeRow>();
+  for (const [edge, by] of pairs) {
+    if (!gone.has(idOf(edge.props))) gone.set(idOf(edge.props), retiredEdge(edge, by.id, effectiveTime(by)));
+  }
+  for (const edge of gone.values()) precheckWrite(runner, edge.props);
+  const rows: EdgeWrite[] = [...gone.values()].map((e) => [e.type, e.from_id, e.to_id, e.props]);
+  if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
+  return [...gone.values()].map(relationOf);
 }
 
 /**

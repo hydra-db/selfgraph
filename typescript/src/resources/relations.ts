@@ -1,3 +1,4 @@
+import { judgeContradictions } from "../contradiction.js";
 import { NotFoundError } from "../errors.js";
 import { pyStrip } from "../internal/py.js";
 import type {
@@ -67,6 +68,8 @@ export class Relations extends Resource {
    *
    * A reassertion carries exactly the given properties and emits a "relation_reasserted" warning naming the retired revision.
    *
+   * Under contradiction mode llm the cardinality rules run as supersede, then the LLM judges older rival relations and retires the ones the new relation makes untrue.
+   *
    * In strict schema mode a max_count conflict with the stored graph throws ValidationError, unless the contradiction mode is supersede, which retires the older relation instead, or off, which skips max_count checks.
    *
    * @param fromEntity (string): the source entity id.
@@ -84,13 +87,14 @@ export class Relations extends Resource {
     checkOptions("relations.create", options, CREATE_KEYS);
     const eventTime = parseTime(options.event_time, "event_time");
     const evidence = parseEvidence(options.evidence ?? []);
-    const conflicts = this.graph.contradictionFor(options.contradiction, this.graph.schema);
+    const { judged, ...conflicts } = this.graph.contradictionFor(options.contradiction, this.graph.schema);
     const strict = this.graph.schemaMode === "strict" && conflicts.contradiction === "warn";
     const rtype = typeof type === "string" && pyStrip(type) ? canonicalRelationType(type, this.graph.schema) : type;
+    const { llm } = this.graph.tiers;
     const warnings: InsertWarning[] = [];
-    const rel = await this.graph.write((tx, ns) => {
+    const rel = await this.graph.write(async (tx, ns) => {
       warnings.length = 0;
-      return ops.createRelation(
+      const created = await ops.createRelation(
         tx,
         ns,
         {
@@ -105,6 +109,8 @@ export class Relations extends Resource {
         this.graph.schemaCheck,
         { ...conflicts, ...(strict && { contradiction: "strict" }), warnings },
       );
+      if (judged && llm !== null) warnings.push(...(await judgeContradictions(tx, ns, llm, [created], conflicts.caps)));
+      return created;
     });
     warnSchema(warnings);
     return rel;
