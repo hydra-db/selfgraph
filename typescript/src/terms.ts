@@ -22,7 +22,7 @@ export function stem(token: string): string {
  * @param name (string): the type name.
  * @return (string): the name as space-separated words.
  */
-function spaced(name: string): string {
+export function spaced(name: string): string {
   return name.replace(/(?<=[a-z0-9])(?=[A-Z])/g, " ").replaceAll("_", " ");
 }
 

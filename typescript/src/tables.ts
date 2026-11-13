@@ -1,7 +1,8 @@
 import { ValidationError } from "./errors.js";
-import { cpLen, isPlainObject, PY_WORD_CLASS, pyRepr, pyStr } from "./internal/py.js";
+import { isPlainObject, PY_WORD_CLASS, pyRepr, pyStr } from "./internal/py.js";
 import { asInput } from "./models.js";
 import { type ParsedSchema, Schema } from "./schema.js";
+import { spaced, stem } from "./terms.js";
 import { checkOptions, typeName } from "./validate.js";
 
 const TYPES: ReadonlyArray<readonly [readonly string[], string]> = [
@@ -30,21 +31,7 @@ interface DraftRelation {
  * @return (string[]): the words.
  */
 function words(name: string): string[] {
-  const bare = name.slice(name.lastIndexOf(".") + 1);
-  const spaced = bare.replace(/(?<=[a-z0-9])(?=[A-Z])/g, " ");
-  return Array.from(spaced.matchAll(WORD), (m) => m[0].toLowerCase());
-}
-
-/**
- * Strip a plain English plural ending from a word.
- *
- * @param word (string): the lowercase word.
- * @return (string): its singular form.
- */
-function singular(word: string): string {
-  if (word.endsWith("ies") && cpLen(word) > 4) return `${word.slice(0, -3)}y`;
-  if (word.endsWith("s") && !word.endsWith("ss") && cpLen(word) > 3) return word.slice(0, -1);
-  return word;
+  return Array.from(spaced(name.slice(name.lastIndexOf(".") + 1)).matchAll(WORD), (m) => m[0].toLowerCase());
 }
 
 /**
@@ -56,7 +43,7 @@ function singular(word: string): string {
 function typeNameOf(table: string): string {
   const parts = words(table);
   if (!parts.length) throw new ValidationError(`tables: table name ${pyRepr(table)} has no letters or digits`);
-  parts[parts.length - 1] = singular(parts[parts.length - 1]!);
+  parts[parts.length - 1] = stem(parts[parts.length - 1]!);
   return parts
     .map((w) => {
       const [first = "", ...rest] = Array.from(w);

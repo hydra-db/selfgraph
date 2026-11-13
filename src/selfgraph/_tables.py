@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .errors import ValidationError
+from .terms import _spaced, stem
 
 __all__ = ["from_tables"]
 
@@ -23,22 +24,7 @@ def _words(name: str) -> list[str]:
     @param name (str): the name, such as sales.invoice_lines or InvoiceLines.
     @return (list[str]): the words.
     """
-    bare = name.rsplit(".", 1)[-1]
-    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", bare)
-    return [w.lower() for w in re.findall(r"[^\W_]+", spaced)]
-
-
-def _singular(word: str) -> str:
-    """Strip a plain English plural ending from a word.
-
-    @param word (str): the lowercase word.
-    @return (str): its singular form.
-    """
-    if word.endswith("ies") and len(word) > 4:
-        return word[:-3] + "y"
-    if word.endswith("s") and not word.endswith("ss") and len(word) > 3:
-        return word[:-1]
-    return word
+    return [w.lower() for w in re.findall(r"[^\W_]+", _spaced(name.rsplit(".", 1)[-1]))]
 
 
 def _type_name(table: str) -> str:
@@ -50,7 +36,7 @@ def _type_name(table: str) -> str:
     words = _words(table)
     if not words:
         raise ValidationError(f"tables: table name {table!r} has no letters or digits")
-    words[-1] = _singular(words[-1])
+    words[-1] = stem(words[-1])
     return "".join(w.capitalize() for w in words)
 
 
@@ -95,8 +81,8 @@ def from_tables(tables: Sequence[Mapping[str, Any]], name: str | None = None) ->
             if target is not None:
                 if target not in names:
                     raise ValidationError(f"tables[{i}].columns[{j}].references: unknown table {target!r}")
-                stem = [w for w in _words(column["name"]) if w != "id"] or _words(target)
-                rtype = "HAS_" + "_".join(stem).upper()
+                own = [w for w in _words(column["name"]) if w != "id"] or _words(target)
+                rtype = "HAS_" + "_".join(own).upper()
                 relation = relations.setdefault(
                     rtype, {"type": rtype, "from": {"types": [], "max_count": 1}, "to": {"types": []}}
                 )
