@@ -5,10 +5,10 @@ from helpers import FakeLLM, extracting_llm, fresh_graph, new_graph, run
 
 from selfgraph import (
     EntityInput,
+    Extraction,
     ExtractionError,
     ExtractionInstructions,
     ExtractionPrompts,
-    Ontology,
     ParsedDocument,
     PromptTemplate,
     PromptTemplateError,
@@ -17,7 +17,7 @@ from selfgraph import (
 )
 from selfgraph import ids as _ids
 from selfgraph.extraction.extractor import (
-    DefaultExtractor,
+    LLMExtractor,
     _DecisionsOut,
     _DecOut,
     _PreferencesOut,
@@ -32,7 +32,7 @@ def _full_responses():
     return {
         **extracting_llm([("Person", "Soham"), ("Company", "HydraDB")], [("Soham", "WORKS_AT", "HydraDB")]).responses,
         "_PreferencesOut": _PreferencesOut(
-            preferences=[_PrefOut(subject_name="Soham", kind="preference", key="database", value_name="HydraDB")]
+            preferences=[_PrefOut(subject_name="Soham", stance="preference", key="database", value_name="HydraDB")]
         ),
         "_DecisionsOut": _DecisionsOut(
             decisions=[
@@ -82,7 +82,7 @@ def test_noise_entities_are_filtered():
     assert all("74" not in r.to_entity for r in res.relations)
 
 
-def test_insert_text_without_llm_uses_basic_extractor(caplog):
+def test_insert_text_without_llm_uses_ner_extractor(caplog):
     g = new_graph()
     res = run(g.insert.text("Acme acquired Globex."))
     ids = {e.id for e in res.entities}
@@ -97,9 +97,9 @@ def test_custom_extractor_bypasses_the_llm_and_receives_the_insert_metadata():
     seen = []
 
     class Recorder:
-        async def extract(self, document: ParsedDocument) -> Ontology:
+        async def extract(self, document: ParsedDocument) -> Extraction:
             seen.append((document.media_type, document.metadata))
-            return Ontology(entities=[EntityInput(type="Person", name="Zed")])
+            return Extraction(entities=[EntityInput(type="Person", name="Zed")])
 
     llm = FakeLLM()
     g = fresh_graph("ext", llm=llm, extractor=Recorder())
@@ -121,9 +121,9 @@ def test_prompt_templates_are_checked_and_rendered_without_resubstitution():
     with pytest.raises(PromptTemplateError, match=expected):
         SelfGraph(store=object(), prompts=bogus)
     with pytest.raises(PromptTemplateError, match=expected):
-        DefaultExtractor(FakeLLM({}), call_prompts=bogus)
+        LLMExtractor(FakeLLM({}), call_prompts=bogus)
     ok = PromptTemplate(system="s", user='{instructions} {text} {"json": 1}', version="v1")
-    DefaultExtractor(FakeLLM({}), prompts=ExtractionPrompts(entities=ok))
+    LLMExtractor(FakeLLM({}), prompts=ExtractionPrompts(entities=ok))
     slotted = PromptTemplate(system="s", user="{instructions}|{text}", version="v1")
     _, user = render(slotted, text="doc {instructions} {text}", instructions="be brief {text}")
     assert user == "be brief {text}|doc {instructions} {text}"
@@ -160,14 +160,14 @@ def test_reserved_preference_relation_becomes_a_preference():
         [("Person", "Soham"), ("Database", "Postgres")],
         [("Soham", "prefers", "Postgres"), ("Soham", "AVOIDS", "Mongo")],
     )
-    extractor = DefaultExtractor(llm)
-    ontology = run(
+    extractor = LLMExtractor(llm)
+    facts = run(
         extractor.extract(ParsedDocument(text="Soham prefers Postgres and avoids Mongo.", media_type="text/plain"))
     )
-    assert [(p.kind, p.key, p.value_entity) for p in ontology.preferences] == [
+    assert [(p.stance, p.key, p.value_entity) for p in facts.preferences] == [
         ("preference", "database", "database:postgres")
     ]
-    assert ontology.relations == []
+    assert facts.relations == []
     dropped = [(w.code, w.message) for w in extractor.pop_warnings()]
     assert (
         len(dropped) == 1 and dropped[0][0] == "dropped_reserved_relation" and "'AVOIDS' is reserved" in dropped[0][1]
@@ -181,9 +181,9 @@ def test_reserved_preference_relation_becomes_a_preference():
     step = _StepOut(from_name="Team", type="CONSIDERED", to_name="Neo4j")
     decision = _DecOut(title="Pick a DB", actor_name="Team", outcome_name="HydraDB", steps=[step, step])
     sink = []
-    ontology = DefaultExtractor._assemble([], [], [], [decision], sink)
+    facts = LLMExtractor._assemble([], [], [], [decision], sink)
     assert [w.code for w in sink] == ["dropped_reserved_relation", "dropped_reserved_relation"]
-    assert ontology.relations == [] and ontology.decisions[0].steps == []
+    assert facts.relations == [] and facts.decisions[0].steps == []
 
 
 def test_partial_failure_warnings_are_summarized_and_carry_the_source():
@@ -229,7 +229,7 @@ def test_unrecoverable_extraction_raises(responses, match):
         run(g.insert.text("Soham prefers HydraDB.", source_id="fail"))
 
 
-def test_strict_text_insert_drops_off_schema_extractions_but_ontology_insert_raises():
+def test_strict_text_insert_drops_off_schema_extractions_but_facts_insert_raises():
     schema = {
         "entities": [{"name": "Person"}, {"name": "Company"}],
         "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"]}, "to": {"types": ["Company"]}}],
@@ -243,7 +243,7 @@ def test_strict_text_insert_drops_off_schema_extractions_but_ontology_insert_rai
     assert dropped[0] == "dropped extracted entity thing:team: entity thing:team has unknown type 'Thing'"
     assert any("relation" in m and "thing:team was dropped" in m for m in dropped)
     with pytest.raises(ValidationError, match="unknown type 'Team'"):
-        run(g.insert.ontology({"entities": [{"type": "Team", "name": "Core"}]}))
+        run(g.insert.facts({"entities": [{"type": "Team", "name": "Core"}]}))
 
 
 def test_llm_relations_cite_their_chunk_and_progress_is_logged(caplog):

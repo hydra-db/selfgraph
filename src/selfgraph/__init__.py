@@ -13,22 +13,23 @@ from .errors import (
     TransientError,
     ValidationError,
 )
-from .extraction import DEFAULT_PROMPTS, BasicExtractor, DefaultExtractor
+from .extraction import DEFAULT_PROMPTS, LLMExtractor, NERExtractor
 from .ids import decision_id, entity_id, normalize_rel_type, preference_id, profile_id, relation_id
 from .llm import build_llm_client
 from .models import (
-    ConsolidateGroup,
-    ConsolidateResult,
     CypherResult,
     DecayResult,
     DecisionStep,
     DecisionTrace,
     DecisionTraceInput,
+    DedupeGroup,
+    DedupeResult,
     DeleteResult,
     Entity,
     EntityInput,
     Evidence,
     EvidenceInput,
+    Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
     InsertResult,
@@ -36,7 +37,6 @@ from .models import (
     LLMConfig,
     MergeRecord,
     MergeRewrite,
-    Ontology,
     Page,
     ParsedDocument,
     Preference,
@@ -55,7 +55,7 @@ from .resolution import DefaultResolver, EntityResolver, LLMResolver, Resolution
 from .schema import EntityType, PropertySpec, RelationEndpoint, RelationType, Schema
 from .sync import SyncSelfGraph
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 if TYPE_CHECKING:
     from .stores.cypher import CypherStore, Neo4jStore
@@ -109,15 +109,15 @@ __all__ = [
     "DeleteResult",
     "DecayResult",
     "PruneResult",
-    "ConsolidateGroup",
-    "ConsolidateResult",
+    "DedupeGroup",
+    "DedupeResult",
     "CypherResult",
     "EntityInput",
     "EvidenceInput",
     "RelationInput",
     "PreferenceInput",
     "DecisionTraceInput",
-    "Ontology",
+    "Extraction",
     "Schema",
     "EntityType",
     "RelationType",
@@ -139,8 +139,8 @@ __all__ = [
     "MergeRecord",
     "MergeRewrite",
     "UnmergeResult",
-    "DefaultExtractor",
-    "BasicExtractor",
+    "LLMExtractor",
+    "NERExtractor",
     "DEFAULT_PROMPTS",
     "build_llm_client",
     "entity_id",

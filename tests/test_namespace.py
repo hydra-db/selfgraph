@@ -27,7 +27,7 @@ def test_transaction_rolls_back_on_error():
     run(g.entities.create("A", "T", id="t:a"))
     with pytest.raises(ValidationError):
         run(
-            g.insert.ontology(
+            g.insert.facts(
                 {
                     "entities": [{"id": "t:b", "type": "T", "name": "B"}],
                     "relations": [{"from_entity": "t:b", "type": "R", "to_entity": "t:ghost"}],

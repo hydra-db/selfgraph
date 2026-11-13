@@ -194,20 +194,20 @@ export function relationId(fromEntity: string, type: string, toEntity: string): 
 }
 
 /**
- * A hash of the subject, kind, NFC key, and value entity.
+ * A hash of the subject, stance, NFC key, and value entity.
  *
  * @param subjectEntity (string): the subject entity id.
- * @param kind (string): the preference kind.
+ * @param stance (string): the preference stance.
  * @param key (string): the preference dimension key.
  * @param valueEntity (string): the value entity id.
  * @return (string): the derived preference id.
  */
-export function preferenceId(subjectEntity: string, kind: string, key: string, valueEntity: string): string {
+export function preferenceId(subjectEntity: string, stance: string, key: string, valueEntity: string): string {
   requireStr("subject_entity", subjectEntity);
-  requireStr("preference kind", kind);
+  requireStr("preference stance", stance);
   requireStr("preference key", key);
   requireStr("value_entity", valueEntity);
-  return tagged("preference", hashParts(subjectEntity, kind, normalizeText(key), valueEntity));
+  return tagged("preference", hashParts(subjectEntity, stance, normalizeText(key), valueEntity));
 }
 
 /**

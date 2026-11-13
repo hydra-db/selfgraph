@@ -1,11 +1,19 @@
 import type { GraphAccess } from "./access.js";
 import { loadTokenizer } from "./chunking.js";
 import { ValidationError } from "./errors.js";
-import { normalizeText } from "./ids.js";
+import { normalizeText, profileId } from "./ids.js";
 import { casefold } from "./internal/casefold.js";
 import { comparePy, cpLen, NON_ASCII, pyFloatRepr, pyRepr, pyStr, pyStrip } from "./internal/py.js";
 import { epochMicros, fromIso } from "./internal/time.js";
-import { L_CHUNK, L_ENTITY, L_EVIDENCE, L_SOURCE_VERSION, preferenceEdgeType, R_HAS_CHUNK } from "./labels.js";
+import {
+  L_CHUNK,
+  L_ENTITY,
+  L_EVIDENCE,
+  L_PROFILE,
+  L_SOURCE_VERSION,
+  preferenceEdgeType,
+  R_HAS_CHUNK,
+} from "./labels.js";
 import type {
   DateTimeInput,
   DecisionTrace,
@@ -30,6 +38,8 @@ const STOPWORDS = new Set(
 
 const PAGE = 500;
 const MAX_POOL = 5000;
+const SEED_PAGE = 5000;
+const NEIGHBOR_PARTS = 8;
 const MAX_PASSAGE_SOURCES = 12;
 const MAX_PASSAGES = 6;
 const PASSAGE_BUDGET_PERCENT = 60;
@@ -213,7 +223,7 @@ export function selectSeeds(entities: Entity[], queryTokens: Set<string>, k: num
 }
 
 /**
- * Rank every entity as a seed, as selectSeeds does, in two streaming passes over id-ordered pages: the first gathers the BM25 corpus statistics and the second scores each page and keeps the best k, so memory holds one page and the seeds, never the whole graph.
+ * Rank every entity as a seed, as selectSeeds does, in two streaming passes over id-ordered pages: the first gathers the BM25 corpus statistics and the second scores each page and keeps the best k, so memory holds one page and the seeds, never the whole graph. When the first pass read a single page, the second scores that page instead of reading it again.
  *
  * @param store (GraphPrimitives): the graph reader.
  * @param ns (string): the namespace.
@@ -234,7 +244,10 @@ async function scanSeeds(
   valid: Preference[] | null,
 ): Promise<Array<[Entity, number]>> {
   async function* pages(): AsyncGenerator<Entity[]> {
-    for await (const page of ops.keyset((after, limit) => ops.listEntities(store, ns, { skip: 0, limit, after }))) {
+    for await (const page of ops.keyset(
+      (after, limit) => ops.listEntities(store, ns, { skip: 0, limit, after }),
+      SEED_PAGE,
+    )) {
       if (asOf === null || valid === null) {
         yield page;
         continue;
@@ -244,15 +257,23 @@ async function scanSeeds(
     }
   }
   let stats: CorpusStats | null = null;
+  let pagesRead = 0;
+  let first: Entity[] = [];
   for await (const page of pages()) {
     stats = corpusStats(
       queryTokens,
       page.map((e) => [...tokens(entityText(e))]),
       stats,
     );
+    pagesRead += 1;
+    first = pagesRead === 1 ? page : [];
+  }
+  async function* scored(): AsyncGenerator<Entity[]> {
+    if (pagesRead === 1) yield first;
+    else yield* pages();
   }
   let best: Array<[Entity, number]> = [];
-  for await (const page of pages()) best = bestSeeds([...best, ...seedScores(page, queryTokens, exact, stats!)], k);
+  for await (const page of scored()) best = bestSeeds([...best, ...seedScores(page, queryTokens, exact, stats!)], k);
   return best;
 }
 
@@ -292,7 +313,36 @@ async function visibleAt(
 }
 
 /**
- * Fetch each entity's outgoing then incoming relations; one-sided queries, as OR scans every edge. With asOf, each relation is read as the version valid then; its other entity is visible through it, so only one whose other entity is gone is dropped.
+ * Fetch the outgoing and incoming relations of some entities, both sides at once. With asOf, each relation is read as the version valid then; its other entity is visible through it, so only one whose other entity is gone is dropped.
+ *
+ * @param store (GraphPrimitives): the graph reader.
+ * @param ns (string): the namespace to read.
+ * @param nodes (string[]): the entity ids to expand.
+ * @param asOf (Date | null): read the relations valid at this time instead of the current ones.
+ * @return ([Relation[], Relation[]]): the outgoing and the incoming relations.
+ */
+async function adjacent(
+  store: GraphPrimitives,
+  ns: string,
+  nodes: string[],
+  asOf: Date | null,
+): Promise<[Relation[], Relation[]]> {
+  if (asOf === null) {
+    const page = (filter: { from_in?: string[]; to_in?: string[] }) => (skip: number, limit: number) =>
+      ops.listRelations(store, ns, { skip, limit, ...filter });
+    return Promise.all([ops.scan(page({ from_in: nodes })), ops.scan(page({ to_in: nodes }))]);
+  }
+  const [out, inc] = await Promise.all([
+    ops.relationsAsOf(store, ns, asOf, { from_in: nodes }),
+    ops.relationsAsOf(store, ns, asOf, { to_in: nodes }),
+  ]);
+  const others = [...new Set([...out.map((r) => r.to_entity), ...inc.map((r) => r.from_entity)])];
+  const alive = new Set((await ops.nodesById(store, ns, L_ENTITY, others)).keys());
+  return [out.filter((r) => alive.has(r.to_entity)), inc.filter((r) => alive.has(r.from_entity))];
+}
+
+/**
+ * Fetch each entity's outgoing then incoming relations; one-sided queries, as OR scans every edge. Each page of entities is read as a few smaller id batches in parallel, which engines that serve one query per session run on separate cores.
  *
  * @param store (GraphPrimitives): the graph reader.
  * @param ns (string): the namespace to read.
@@ -308,25 +358,15 @@ async function neighbors(
 ): Promise<Map<string, Relation[]>> {
   const outgoing = new Map<string, Relation[]>(nodes.map((n) => [n, []]));
   const incoming = new Map<string, Relation[]>(nodes.map((n) => [n, []]));
-  const page = (filter: { from_in?: string[]; to_in?: string[] }) => (skip: number, limit: number) =>
-    ops.listRelations(store, ns, { skip, limit, ...filter });
   for (let start = 0; start < nodes.length; start += PAGE) {
     const chunk = nodes.slice(start, start + PAGE);
-    let out: Relation[];
-    let inc: Relation[];
-    if (asOf === null) {
-      out = await ops.scan(page({ from_in: chunk }));
-      inc = await ops.scan(page({ to_in: chunk }));
-    } else {
-      out = await ops.relationsAsOf(store, ns, asOf, { from_in: chunk });
-      inc = await ops.relationsAsOf(store, ns, asOf, { to_in: chunk });
-      const others = [...new Set([...out.map((r) => r.to_entity), ...inc.map((r) => r.from_entity)])];
-      const alive = new Set((await ops.nodesById(store, ns, L_ENTITY, others)).keys());
-      out = out.filter((r) => alive.has(r.to_entity));
-      inc = inc.filter((r) => alive.has(r.from_entity));
+    const parts: string[][] = [];
+    const size = Math.ceil(chunk.length / NEIGHBOR_PARTS);
+    for (let i = 0; i < chunk.length; i += size) parts.push(chunk.slice(i, i + size));
+    for (const [out, inc] of await Promise.all(parts.map((part) => adjacent(store, ns, part, asOf)))) {
+      for (const rel of out) outgoing.get(rel.from_entity)?.push(rel);
+      for (const rel of inc) incoming.get(rel.to_entity)?.push(rel);
     }
-    for (const rel of out) outgoing.get(rel.from_entity)?.push(rel);
-    for (const rel of inc) incoming.get(rel.to_entity)?.push(rel);
   }
   return new Map(nodes.map((n) => [n, [...(outgoing.get(n) ?? []), ...(incoming.get(n) ?? [])]]));
 }
@@ -517,14 +557,12 @@ async function collectDecisions(
 ): Promise<DecisionTrace[]> {
   if (!relationIds.size) return [];
   const found: DecisionTrace[] = [];
-  for await (const page of ops.keyset((after, limit) => ops.listTraces(store, ns, { skip: 0, limit, after }))) {
-    found.push(
-      ...page.filter(
-        (t) =>
-          t.steps.some((s) => relationIds.has(s.relation_id)) &&
-          (asOf === null || epochMicros(ops.effectiveTime(t)) <= epochMicros(asOf)),
-      ),
-    );
+  const tids = await ops.tracesTouchingRelations(store, ns, [...relationIds].sort(comparePy));
+  for (const tid of [...tids].sort(comparePy)) {
+    const trace = await ops.getTrace(store, ns, tid);
+    if (trace !== null && (asOf === null || epochMicros(ops.effectiveTime(trace)) <= epochMicros(asOf))) {
+      found.push(trace);
+    }
   }
   return found;
 }
@@ -602,7 +640,17 @@ async function collectPreferences(
   const order = new Map<string, number>();
   for (const eid of entityIds) order.set(eid, order.size);
   if (!order.size) return [];
-  const prefs = valid ?? (await ops.scan((skip, limit) => ops.listPreferences(store, ns, { skip, limit })));
+  const prefs =
+    valid ??
+    (
+      await ops.edgesAt(
+        store,
+        ns,
+        { from_label: L_PROFILE, current_only: true },
+        "from_in",
+        [...order.keys()].map(profileId),
+      )
+    ).map(ops.preferenceOf);
   return prefs
     .filter((p) => order.has(p.subject_entity))
     .sort((a, b) => (order.get(a.subject_entity) ?? 0) - (order.get(b.subject_entity) ?? 0));
@@ -663,7 +711,7 @@ function assemble(
   }
 
   for (const p of [...preferences].sort((a, b) => distOf(a.subject_entity) - distOf(b.subject_entity))) {
-    const verb = preferenceEdgeType(p.kind).toLowerCase();
+    const verb = preferenceEdgeType(p.stance).toLowerCase();
     let line = `${nameOf(p.subject_entity)} ${verb} ${nameOf(p.value_entity)} (${p.key})`;
     if (p.strength !== null) line += ` [strength ${pyFloatRepr(p.strength)}]`;
     if (!add(line, budgetTokens)) break;

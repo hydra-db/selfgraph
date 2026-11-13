@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { chunkByChars, chunkText, loadTokenizer } from "../src/chunking.js";
 import { errorReason, ValidationError } from "../src/errors.js";
-import { BasicExtractor } from "../src/extraction/basic.js";
-import { assembleOntology, isNoiseName } from "../src/extraction/extractor.js";
+import { NERExtractor } from "../src/extraction/basic.js";
+import { assembleExtraction, isNoiseName } from "../src/extraction/extractor.js";
 import {
   canonicalEntityId,
   contentHash,
@@ -148,16 +148,16 @@ describe("extraction, chunking, and retrieval helpers match Python", () => {
     expect(fx.extract.map((c: { text: string }) => countTokens(c.text))).toEqual(fx.chunks.count_tokens);
   });
 
-  it("the LLM-free regex extractor assembles the same ontology", async () => {
+  it("the LLM-free regex extractor assembles the same facts", async () => {
     for (const c of fx.extract) {
-      const ontology = await new BasicExtractor().extract({ text: c.text, media_type: "text/plain", metadata: {} });
-      expect(toJsonable(ontology), c.text).toEqual(c.ontology);
+      const facts = await new NERExtractor().extract({ text: c.text, media_type: "text/plain", metadata: {} });
+      expect(toJsonable(facts), c.text).toEqual(c.facts);
     }
   });
 
   it("assembles relation endpoints by canonical name, flags noise names, and renders context properties", () => {
-    const { entities, relations, ontology } = fx.assemble;
-    expect(toJsonable(assembleOntology(entities, relations, [], []))).toEqual(ontology);
+    const { entities, relations, facts } = fx.assemble;
+    expect(toJsonable(assembleExtraction(entities, relations, [], []))).toEqual(facts);
     for (const [name, expected] of Object.entries(fx.noise)) expect(isNoiseName(name), name).toBe(expected);
     for (const [props, expected] of fx.format_props) expect(formatProps(props)).toBe(expected);
   });

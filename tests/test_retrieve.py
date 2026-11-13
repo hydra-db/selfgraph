@@ -8,7 +8,7 @@ from selfgraph.extraction.chunking import count_tokens
 def _graph():
     g = new_graph()
     run(
-        g.insert.ontology(
+        g.insert.facts(
             {
                 "entities": [
                     {"id": "person:soham", "type": "Person", "name": "Soham"},
@@ -114,7 +114,7 @@ def test_tiny_budgets_cut_to_fit_and_one_letter_names_seed():
     assert tiny.context.splitlines() == [tiny.context] and tiny.context
     assert [s.id for s in run(g.retrieve("A")).seeds] == ["person:a"]
     g = fresh_graph("budget")
-    run(g.insert.ontology({"entities": [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}]}))
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}]}))
     run(g.insert.text("Ann works at Acme in Paris as a senior engineer.", source_id="note"))
     full = run(g.retrieve("Ann Acme")).context
     previous = ""
@@ -129,6 +129,6 @@ def test_tiny_budgets_cut_to_fit_and_one_letter_names_seed():
 def test_retrieve_scores_every_entity_past_five_thousand():
     g = fresh_graph("bulk")
     fillers = [{"type": "Filler", "name": f"filler {i:05d} common"} for i in range(5100)]
-    run(g.insert.ontology({"entities": [*fillers, {"type": "Tool", "name": "Zebracorn common"}]}))
+    run(g.insert.facts({"entities": [*fillers, {"type": "Tool", "name": "Zebracorn common"}]}))
     assert [s.id for s in run(g.retrieve("zebracorn", k=3)).seeds] == ["tool:zebracorn-common"]
     assert run(g.retrieve("filler 05099", k=1)).seeds[0].id == "filler:filler-05099-common"

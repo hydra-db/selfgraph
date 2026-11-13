@@ -34,15 +34,65 @@ jobs:
 
   pytest:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install ".[dev,tokenizer,kuzu]"
+      - run: pytest --cov=selfgraph --cov-report=term
+        env:
+          SELFGRAPH_TEST_STORES: kuzu
+
+  backends:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [neo4j, memgraph, falkordb]
+    services:
+      neo4j:
+        image: neo4j:5.26
+        env:
+          NEO4J_AUTH: neo4j/testpassword123
+        ports: ["7687:7687"]
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p testpassword123 'RETURN 1'"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+      memgraph:
+        image: memgraph/memgraph:latest
+        ports: ["7688:7687"]
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      SELFGRAPH_TEST_STORES: ${{ matrix.store }}
+      SG_NEO4J_PASSWORD: testpassword123
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ".[dev,tokenizer,kuzu]"
-      - run: pytest tests/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - run: pip install ".[dev,tokenizer,falkordb]"
+      - run: |
+          for i in $(seq 1 30); do (echo > /dev/tcp/127.0.0.1/7688) 2>/dev/null && break; sleep 2; done
+      - run: pytest
+      - run: npm ci
+        working-directory: typescript
+      - run: npm test
+        working-directory: typescript
         env:
-          SELFGRAPH_TEST_STORES: kuzu
+          SELFGRAPH_PY: python
 
   typescript:
     runs-on: ubuntu-latest

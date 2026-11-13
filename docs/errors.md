@@ -36,8 +36,8 @@ name types the Python way (`str`, `NoneType`).
 |-----------|---------|
 | Empty or whitespace-only text | `<field> cannot be empty` |
 | Wrong value type | `<field> must be a string, got int` |
-| A model fails validation (ontology, instructions, prompts, LLM config, MCP tool arguments) | One `path: message` line per problem, such as `invalid ontology: entities[0].name: field required` |
-| Unknown key | `unknown key 'nmae' in ontology.entities[0]; did you mean 'name'? (valid keys: id, type, name, ...)`. The valid keys are listed when there are at most eight. |
+| A model fails validation (facts, instructions, prompts, LLM config, MCP tool arguments) | One `path: message` line per problem, such as `invalid facts: entities[0].name: field required` |
+| Unknown key | `unknown key 'nmae' in facts.entities[0]; did you mean 'name'? (valid keys: id, type, name, ...)`. The valid keys are listed when there are at most eight. |
 | Malformed list cursor ([paging](resources.md#listing-and-iterating)) | `invalid cursor '...'` |
 | Evidence `confidence` outside 0 to 1 (a preference `strength` reports the same way) | `evidence confidence must be between 0 and 1, got 1.5` |
 

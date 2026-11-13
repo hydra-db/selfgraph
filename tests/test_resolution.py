@@ -15,7 +15,13 @@ from selfgraph import (
     relation_id,
 )
 from selfgraph.cli import build_parser
-from selfgraph.resolution import _SameEntity, distinct_names, jaro_winkler, name_similarity, token_jaccard
+from selfgraph.resolution import (
+    _SameEntity,
+    distinct_names,
+    jaro_winkler,
+    name_similarity,
+    token_jaccard,
+)
 from selfgraph.runtime import settings_from_env
 
 AT = utc(2024)
@@ -38,7 +44,7 @@ def _entity(eid, type_, name, aliases=(), external_ids=None):
 
 
 def _seed(g, *entities):
-    run(g.insert.ontology({"entities": list(entities)}))
+    run(g.insert.facts({"entities": list(entities)}))
 
 
 def _people(*names):
@@ -115,7 +121,7 @@ def test_resolver_arguments_are_validated():
         fresh_graph("res", resolver="llm")
     g = fresh_graph("res")
     with pytest.raises(ValidationError):
-        run(g.insert.ontology({"entities": []}, resolver="nope"))
+        run(g.insert.facts({"entities": []}, resolver="nope"))
     with pytest.raises(ValidationError, match="needs an LLM"):
         run(g.insert.text("Ada met Bob.", resolver="llm"))
 
@@ -124,18 +130,18 @@ def test_exact_mode_explicit_ids_and_per_call_resolver():
     g = fresh_graph("res")
     _seed(g, IBM_SEED, ROBERT)
     res = run(
-        g.insert.ontology({"entities": [{"type": "Company", "name": "Big Blue", "external_ids": {"ticker": "IBM"}}]})
+        g.insert.facts({"entities": [{"type": "Company", "name": "Big Blue", "external_ids": {"ticker": "IBM"}}]})
     )
     assert res.merges == []
     assert not [w for w in res.warnings if w.code == "entity_merged"]
     assert _ids(g) == [BIG_BLUE, IBM, ROBERT_ID]
     explicit = {"id": "company:ibm", "type": "Company", "name": "IBM", "external_ids": {"ticker": "IBM"}}
-    assert run(g.insert.ontology({"entities": [explicit]}, resolver="default")).merges == []
+    assert run(g.insert.facts({"entities": [explicit]}, resolver="default")).merges == []
     assert "company:ibm" in _ids(g)
-    assert len(run(g.insert.ontology({"entities": [BOB]}, resolver="default")).merges) == 1
+    assert len(run(g.insert.facts({"entities": [BOB]}, resolver="default")).merges) == 1
     g = fresh_graph("res", resolver="default")
     _seed(g, ROBERT)
-    assert run(g.insert.ontology({"entities": [BOB]}, resolver="exact")).merges == []
+    assert run(g.insert.facts({"entities": [BOB]}, resolver="exact")).merges == []
 
 
 def test_external_id_merge_rewrites_relations_and_records_the_merge():
@@ -143,7 +149,7 @@ def test_external_id_merge_rewrites_relations_and_records_the_merge():
     _seed(g, IBM_SEED, {"type": "Person", "name": "Ada"})
     big_blue = {"type": "Company", "name": "Big Blue", "aliases": ["IBM"], "external_ids": {"ticker": "IBM"}}
     rel = {"from_entity": ADA, "type": "WORKS_AT", "to_entity": BIG_BLUE}
-    res = run(g.insert.ontology({"entities": [big_blue], "relations": [rel]}, source_id="doc-1"))
+    res = run(g.insert.facts({"entities": [big_blue], "relations": [rel]}, source_id="doc-1"))
     assert _ids(g) == [IBM, ADA]
     assert [e.id for e in res.entities] == [IBM]
     assert res.relations[0].to_entity == IBM
@@ -165,12 +171,12 @@ def test_alias_merge_and_type_gating_with_and_without_schema():
     g = fresh_graph("res", resolver="default")
     _seed(g, {"type": "Person", "name": "Robert Smith", "aliases": ["Bob Smith"]})
     _seed(g, {"type": "Company", "name": "Apple Inc", "aliases": ["Apple"]})
-    res = run(g.insert.ontology({"entities": [{"type": "Person", "name": "bob smith", "properties": {"age": 40}}]}))
+    res = run(g.insert.facts({"entities": [{"type": "Person", "name": "bob smith", "properties": {"age": 40}}]}))
     [merge] = res.merges
     assert (merge.reason, merge.confidence) == ("alias", 0.95)
     survivor = run(g.entities.get(entity_id("Person", "Robert Smith")))
     assert (survivor.properties, survivor.type) == ({"age": 40}, "Person")
-    assert run(g.insert.ontology({"entities": [{"type": "Fruit", "name": "Apple"}]})).merges == []
+    assert run(g.insert.facts({"entities": [{"type": "Fruit", "name": "Apple"}]})).merges == []
 
     schema = {
         "entities": [
@@ -183,11 +189,11 @@ def test_alias_merge_and_type_gating_with_and_without_schema():
     _seed(g, {"type": "Person", "name": "Grace Hopper", "aliases": ["Amazing Grace"]})
     _seed(g, {"type": "Manager", "name": "Linus Torvalds", "aliases": ["Linus"]})
     _seed(g, {"type": "Engineer", "name": "Ken Thompson", "aliases": ["Ken"]})
-    down = run(g.insert.ontology({"entities": [{"type": "Manager", "name": "Amazing Grace"}]}))
+    down = run(g.insert.facts({"entities": [{"type": "Manager", "name": "Amazing Grace"}]}))
     assert [m.survivor_id for m in down.merges] == [entity_id("Person", "Grace Hopper")]
-    up = run(g.insert.ontology({"entities": [{"type": "Person", "name": "Linus"}]}))
+    up = run(g.insert.facts({"entities": [{"type": "Person", "name": "Linus"}]}))
     assert [m.survivor_id for m in up.merges] == [entity_id("Manager", "Linus Torvalds")]
-    assert run(g.insert.ontology({"entities": [{"type": "Manager", "name": "Ken"}]})).merges == []
+    assert run(g.insert.facts({"entities": [{"type": "Manager", "name": "Ken"}]})).merges == []
 
 
 def test_within_batch_needs_fuzzy():
@@ -196,11 +202,11 @@ def test_within_batch_needs_fuzzy():
         "relations": [{"from_entity": BIG_BLUE, "type": "OWNS", "to_entity": IBM}],
     }
     g = fresh_graph("res", resolver="default")
-    assert run(g.insert.ontology(batch)).merges == []
+    assert run(g.insert.facts(batch)).merges == []
     assert _ids(g) == [BIG_BLUE, IBM]
 
     g = fresh_graph("res", resolver="fuzzy")
-    res = run(g.insert.ontology(batch))
+    res = run(g.insert.facts(batch))
     assert [(m.absorbed_id, m.survivor_id) for m in res.merges] == [(BIG_BLUE, IBM)]
     assert _ids(g) == [IBM]
     assert res.relations == []
@@ -221,13 +227,13 @@ def test_insert_result_lists_each_entity_and_relation_once_after_a_merge():
     g = fresh_graph("res", resolver="fuzzy")
     batch = [IBM_SEED, {"type": "Company", "name": "Big Blue", "external_ids": {"ticker": "IBM"}}, BOB]
     rels = [{"from_entity": BOB_ID, "type": "WORKS_AT", "to_entity": c} for c in (IBM, BIG_BLUE)]
-    res = run(g.insert.ontology({"entities": batch, "relations": rels}))
+    res = run(g.insert.facts({"entities": batch, "relations": rels}))
     assert [r.id for r in res.relations] == [relation_id(BOB_ID, "WORKS_AT", IBM)]
     assert len({e.id for e in res.entities}) == len(res.entities)
 
     janes = _people("Jane Doe", "Jane Does")
     janes["entities"].append({"type": "Person", "name": "jane doe", "aliases": ["Janie"]})
-    res = run(g.insert.ontology(janes))
+    res = run(g.insert.facts(janes))
     assert [e.id for e in res.entities] == [JANE]
     assert res.entities[0].aliases == ["Jane Does", "Janie"]
     assert [(m.absorbed_id, m.survivor_id) for m in res.merges] == [(JANE_DOES, JANE)]
@@ -244,8 +250,8 @@ def test_merge_rewrites_every_reference_and_unmerge_restores_them():
     g = fresh_graph("res", resolver="default")
     tool = entity_id("Tool", "Hammer")
     _seed(g, ROBERT, {"type": "Person", "name": "Ada"})
-    run(g.insert.ontology({"relations": [{"from_entity": ADA, "type": "KNOWS", "to_entity": ROBERT_ID}]}))
-    ontology = {
+    run(g.insert.facts({"relations": [{"from_entity": ADA, "type": "KNOWS", "to_entity": ROBERT_ID}]}))
+    facts = {
         "entities": [BOB, {"type": "Tool", "name": "Hammer"}],
         "relations": [
             {
@@ -271,7 +277,7 @@ def test_merge_rewrites_every_reference_and_unmerge_restores_them():
             }
         ],
     }
-    res = run(g.insert.ontology(ontology, source_id="doc-1"))
+    res = run(g.insert.facts(facts, source_id="doc-1"))
     assert BOB_ID not in _ids(g)
     assert [(r.from_entity, r.to_entity) for r in res.relations] == [(ROBERT_ID, tool), (ADA, ROBERT_ID)]
     assert res.relations[0].properties == {"since": 2020}
@@ -320,10 +326,10 @@ def test_unmerge_restores_a_retired_merge_relation_without_superseding():
     g = fresh_graph("res", resolver="default", schema=WORKS_AT_SPEC, contradiction="supersede")
     acme, globex, initech = (entity_id("Company", n) for n in ("Acme", "Globex", "Initech"))
     _seed(g, ROBERT, *({"type": "Company", "name": n} for n in ("Acme", "Globex", "Initech")))
-    run(g.insert.ontology({"relations": [works_at("acme", 2020, person="robert")]}))
-    res = run(g.insert.ontology({"entities": [BOB], "relations": [works_at("globex", 2021, person="bob")]}))
+    run(g.insert.facts({"relations": [works_at("acme", 2020, person="robert")]}))
+    res = run(g.insert.facts({"entities": [BOB], "relations": [works_at("globex", 2021, person="bob")]}))
     [merge] = res.merges
-    run(g.insert.ontology({"relations": [works_at("initech", 2022, person="robert")]}))
+    run(g.insert.facts({"relations": [works_at("initech", 2022, person="robert")]}))
 
     run(g.entities.unmerge(merge.id))
     current = sorted(r.id for r in run(g.relations.list()).items)
@@ -355,7 +361,7 @@ def test_merge_keeps_survivor_values_and_unmerge_restores_both_exactly():
         "external_ids": {"hr": "B2", "crm": "C3"},
         "properties": {"team": "blue", "level": 2},
     }
-    [merge] = run(g.insert.ontology({"entities": [absorbed]})).merges
+    [merge] = run(g.insert.facts({"entities": [absorbed]})).merges
     assert (merge.added_aliases, merge.added_external_ids, merge.added_properties) == (["Abby"], ["crm"], ["level"])
     merged = run(g.entities.get(keeper))
     assert merged.external_ids == {"hr": "A1", "crm": "C3"}
@@ -369,11 +375,11 @@ def test_merge_keeps_survivor_values_and_unmerge_restores_both_exactly():
 def test_reinserting_the_same_merge_is_idempotent_and_counts_every_source():
     g = fresh_graph("res", resolver="default")
     _seed(g, ROBERT, {"type": "Person", "name": "Ada"})
-    ontology = {
+    facts = {
         "entities": [{"type": "Person", "name": "Bob", "aliases": ["Bobby"]}],
         "relations": [{"from_entity": ADA, "type": "KNOWS", "to_entity": BOB_ID}],
     }
-    merges = [run(g.insert.ontology(ontology, source_id=s)).merges[0] for s in ("s1", "s2", "s1")]
+    merges = [run(g.insert.facts(facts, source_id=s)).merges[0] for s in ("s1", "s2", "s1")]
     assert len({m.id for m in merges}) == 1
     last = merges[-1]
     assert (last.source_id, last.source_ids, last.added_aliases) == ("s1", ["s1", "s2"], ["Bobby"])
@@ -387,11 +393,11 @@ def test_reinserting_the_same_merge_is_idempotent_and_counts_every_source():
 def test_deleting_either_side_drops_merge_records_so_a_later_merge_starts_fresh():
     g = fresh_graph("res", resolver="default")
     _seed(g, ROBERT)
-    first = run(g.insert.ontology({"entities": [BOB]}, source_id="s1")).merges[0]
+    first = run(g.insert.facts({"entities": [BOB]}, source_id="s1")).merges[0]
     run(g.entities.create("Bob", "Person"))
     run(g.entities.delete(BOB_ID))
     assert run(g.entities.merges(ROBERT_ID)).items == []
-    again = run(g.insert.ontology({"entities": [BOB]}, source_id="s2")).merges[0]
+    again = run(g.insert.facts({"entities": [BOB]}, source_id="s2")).merges[0]
     assert again.id == first.id and again.source_ids == ["s2"] and again.created_at > first.created_at
     run(g.entities.delete(ROBERT_ID))
     assert run(g.store.match_nodes(g.namespace, "EntityMerge")) == []
@@ -420,7 +426,7 @@ def test_custom_resolvers_see_compatible_candidates_and_must_return_a_complete_d
         {"type": "Thing", "name": "Box"},
     )
     batch = {"entities": [{"type": "Person", "name": "Ray"}, {"type": "Thing", "name": "ann"}]}
-    assert run(g.insert.ontology(batch, resolver=Custom(lambda existing: ResolutionDecision()))).merges == []
+    assert run(g.insert.facts(batch, resolver=Custom(lambda existing: ResolutionDecision()))).merges == []
     assert seen == {"Ray": ["person:ann", "person:zed"], "ann": ["person:ann", "thing:box"]}
     for match, decision in (
         ("is missing confidence", ResolutionDecision(target_id="person:ann", reason="x")),
@@ -431,27 +437,27 @@ def test_custom_resolvers_see_compatible_candidates_and_must_return_a_complete_d
         ),
     ):
         with pytest.raises(ValidationError, match=match):
-            run(g.insert.ontology(_people("Cy"), resolver=Custom(lambda existing, d=decision: d)))
+            run(g.insert.facts(_people("Cy"), resolver=Custom(lambda existing, d=decision: d)))
 
 
 def test_llm_resolver_asks_only_inside_the_band():
     yes = FakeLLM({"_SameEntity": _SameEntity(same=True)})
     g = fresh_graph("res", llm=yes, resolver="llm")
     _seed(g, *_people("John Smith", "Alice Wong", "Employee1")["entities"], {"type": "Project", "name": "Project 12"})
-    [merge] = run(g.insert.ontology(_people("Jon Smyth"))).merges
+    [merge] = run(g.insert.facts(_people("Jon Smyth"))).merges
     assert (merge.survivor_id, merge.reason) == (entity_id("Person", "John Smith"), "llm")
     assert merge.confidence == pytest.approx(name_similarity("Jon Smyth", "John Smith"))
     assert len(yes.calls) == 1
     assert "Jon Smyth" in yes.calls[0][2] and "John Smith" in yes.calls[0][2]
-    assert run(g.insert.ontology(_people("Zed Quincy"))).merges == []
+    assert run(g.insert.facts(_people("Zed Quincy"))).merges == []
     numbered = {"entities": [{"type": "Person", "name": "Employee2"}, {"type": "Project", "name": "Project 13"}]}
-    assert run(g.insert.ontology(numbered)).merges == []
+    assert run(g.insert.facts(numbered)).merges == []
     assert len(yes.calls) == 1
 
     no = FakeLLM({"_SameEntity": _SameEntity(same=False)})
     g = fresh_graph("res", llm=no, resolver="llm")
     _seed(g, {"type": "Person", "name": "John Smith"})
-    assert run(g.insert.ontology(_people("Jon Smyth"))).merges == []
+    assert run(g.insert.facts(_people("Jon Smyth"))).merges == []
     assert len(no.calls) == 1
     stored = [_entity("person:robert", "Person", "Robert", aliases=["Bob"])]
     assert run(LLMResolver(no).resolve(EntityInput(type="Person", name="Bob"), stored)).reason == "alias"
@@ -462,7 +468,7 @@ def test_id_derivation_merges_and_the_name_never_repeats_as_an_alias():
     g = fresh_graph("res")
     names = [{"type": "Company", "name": n} for n in ("Acme Inc", "Acme Corp", "ACME")]
     names.append({"type": "Company", "name": "Acme", "aliases": ["acme inc", "Acme Inc ", "Acme Corp"]})
-    run(g.insert.ontology({"entities": names}))
+    run(g.insert.facts({"entities": names}))
     [acme] = run(g.entities.list()).items
     assert (acme.id, acme.name, acme.aliases) == ("company:acme", "Acme Inc", ["Acme Corp", "ACME", "Acme"])
     updated = run(g.entities.update(acme.id, name="Acme Corp", aliases=["ACME INC"]))
@@ -513,7 +519,7 @@ def test_fuzzy_mode_keeps_distinct_names_apart():
     assets += ["Project 12", "Project 13", "Model A", "Model B", "Jonathan Smith", "Jonathon Smith"]
     batch = _people("Katherine Zorkfuzzy", "Jonathon Smithers", "Bobby Tables Jr")
     batch["entities"] += [{"type": "Asset", "name": n} for n in assets]
-    res = run(g.insert.ontology(batch))
+    res = run(g.insert.facts(batch))
     assert sorted((m.absorbed_id, m.survivor_id) for m in res.merges) == [
         (entity_id("Asset", "Jonathon Smith"), entity_id("Asset", "Jonathan Smith")),
         (entity_id("Person", "Jonathon Smithers"), entity_id("Person", "Jonathan Smithers")),
@@ -525,29 +531,29 @@ def test_fuzzy_mode_keeps_distinct_names_apart():
 def test_a_thing_merges_into_a_typed_entity_by_name_but_never_the_reverse():
     g = fresh_graph("res", resolver="default")
     things = {"entities": [{"type": "Thing", "name": "Robert Johnson"}, {"type": "Person", "name": "Robert Johnson"}]}
-    res = run(g.insert.ontology(things))
+    res = run(g.insert.facts(things))
     assert [(m.absorbed_id, m.survivor_id, m.reason) for m in res.merges] == [
         ("thing:robert-johnson", "person:robert-johnson", "alias")
     ]
     assert _ids(g) == ["person:robert-johnson"]
     things = {"entities": [{"type": "Thing", "name": "robert johnson"}, {"type": "Thing", "name": "Bob J"}]}
-    assert [m.survivor_id for m in run(g.insert.ontology(things)).merges] == ["person:robert-johnson"]
+    assert [m.survivor_id for m in run(g.insert.facts(things)).merges] == ["person:robert-johnson"]
     assert _ids(g) == ["person:robert-johnson", "thing:bob-j"]
-    assert run(g.insert.ontology({"entities": [{"type": "Company", "name": "Bob J"}]})).merges == []
+    assert run(g.insert.facts({"entities": [{"type": "Company", "name": "Bob J"}]})).merges == []
     assert _ids(g) == ["company:bob-j", "person:robert-johnson", "thing:bob-j"]
 
 
 def test_cli_and_mcp_resolver_merges_and_unmerge(capsys, tmp_path):
     g = fresh_graph("res")
     _seed(g, ROBERT)
-    path = json_file(tmp_path, "ont.json", {"entities": [BOB]})
-    merge_id = cli(g, ["insert", "ontology", path, "--resolver", "default"], capsys)["merges"][0]["id"]
+    path = json_file(tmp_path, "facts.json", {"entities": [BOB]})
+    merge_id = cli(g, ["insert", "facts", path, "--resolver", "default"], capsys)["merges"][0]["id"]
     assert [m["id"] for m in cli(g, ["entity", "merges", ROBERT_ID], capsys)["items"]] == [merge_id]
     assert cli(g, ["entity", "unmerge", merge_id], capsys)["entity"]["id"] == BOB_ID
 
     with mcp_session("resmcp") as srv:
-        run(srv.insert_ontology({"entities": [ROBERT]}))
-        res = run(srv.insert_ontology({"entities": [BOB]}, resolver="default"))
+        run(srv.insert_facts({"entities": [ROBERT]}))
+        res = run(srv.insert_facts({"entities": [BOB]}, resolver="default"))
         merge_id = res["merges"][0]["id"]
         assert [w["code"] for w in res["warnings"]] == ["entity_merged"]
         assert [m["id"] for m in run(srv.entity_merges(ROBERT_ID))["items"]] == [merge_id]
@@ -559,7 +565,7 @@ def test_unmerging_chained_merges_in_any_order_restores_the_exact_relations(orde
     g = fresh_graph("res", resolver="fuzzy")
     _seed(g, {"type": "Person", "name": "Jane Doe", "aliases": ["JD"]})
     rel = {"from_entity": JD, "type": "KNOWS", "to_entity": JANE_DOES}
-    res = run(g.insert.ontology({**_people("JD", "Jane Does"), "relations": [rel]}))
+    res = run(g.insert.facts({**_people("JD", "Jane Does"), "relations": [rel]}))
     assert [(m.absorbed_id, m.survivor_id) for m in res.merges] == [(JD, JANE), (JANE_DOES, JANE)]
     assert run(g.relations.list()).items == []
     for merge in run(g.entities.merges(JANE)).items:

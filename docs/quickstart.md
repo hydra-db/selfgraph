@@ -16,7 +16,7 @@ from selfgraph import KuzuStore, SelfGraph
 
 async def main() -> None:
     async with SelfGraph(store=KuzuStore("graph.kuzu")) as graph:
-        await graph.insert.ontology({
+        await graph.insert.facts({
             "entities": [
                 {"id": "person:jane", "type": "Person", "name": "Jane Doe"},
                 {"id": "company:acme", "type": "Company", "name": "Acme"},

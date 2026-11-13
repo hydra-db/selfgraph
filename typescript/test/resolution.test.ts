@@ -5,11 +5,11 @@ import {
   DefaultResolver,
   decisionId,
   EntityInput,
+  type Extraction,
   entityId,
   type LLMClient,
   LLMResolver,
   NotFoundError,
-  type Ontology,
   preferenceId,
   type ResolutionDecision,
   relationId,
@@ -72,7 +72,7 @@ const BOB = entityId("Person", "Bob");
 const ROBERT = entityId("Person", "Robert");
 const TOOL = entityId("Tool", "Hammer");
 
-const RICH: Ontology = {
+const RICH: Extraction = {
   entities: [
     { type: "Person", name: "Bob" },
     { type: "Tool", name: "Hammer" },
@@ -105,12 +105,12 @@ const RICH: Ontology = {
 function suite(spec: StoreSpec) {
   const open = freshGraphs(spec, "res");
   const ids = async (g: SelfGraph) => (await g.entities.list({ limit: 1000 })).items.map((e) => e.id).sort();
-  const seed = (g: SelfGraph, ...entities: Ontology["entities"] & object[]) => g.insert.ontology({ entities });
+  const seed = (g: SelfGraph, ...entities: Extraction["entities"] & object[]) => g.insert.facts({ entities });
 
   it("leaves exact mode unchanged", async () => {
     const g = open();
     await seed(g, { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } });
-    const res = await g.insert.ontology({
+    const res = await g.insert.facts({
       entities: [{ type: "Company", name: "Big Blue", external_ids: { ticker: "IBM" } }],
     });
     expect(res.merges).toEqual([]);
@@ -125,7 +125,7 @@ function suite(spec: StoreSpec) {
       { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } },
       { type: "Person", name: "Ada" },
     );
-    const res = await g.insert.ontology(
+    const res = await g.insert.facts(
       {
         entities: [{ type: "Company", name: "Big Blue", aliases: ["IBM"], external_ids: { ticker: "IBM" } }],
         relations: [{ from_entity: ADA, type: "WORKS_AT", to_entity: BIG_BLUE }],
@@ -150,7 +150,7 @@ function suite(spec: StoreSpec) {
     const survivor = (await g.entities.get(IBM))!;
     expect([survivor.name, survivor.aliases]).toEqual(["International Business Machines", ["IBM", "Big Blue"]]);
     expect((await g.entities.merges(IBM)).items.map((m) => m.id)).toEqual([merge!.id]);
-    const explicit = await g.insert.ontology({
+    const explicit = await g.insert.facts({
       entities: [{ id: "company:ibm", type: "Company", name: "IBM", external_ids: { ticker: "IBM" } }],
     });
     expect(explicit.merges).toEqual([]);
@@ -160,7 +160,7 @@ function suite(spec: StoreSpec) {
   it("gates merges by type, with schema parent closure, and merges a Thing into a typed entity only", async () => {
     let g = open({ resolver: "default" });
     await seed(g, { type: "Company", name: "Apple Inc", aliases: ["Apple"] });
-    expect((await g.insert.ontology({ entities: [{ type: "Fruit", name: "Apple" }] })).merges).toEqual([]);
+    expect((await g.insert.facts({ entities: [{ type: "Fruit", name: "Apple" }] })).merges).toEqual([]);
 
     const schema = {
       entities: [{ name: "Person" }, { name: "Manager", parent: "Person" }, { name: "Engineer", parent: "Person" }],
@@ -169,14 +169,14 @@ function suite(spec: StoreSpec) {
     await seed(g, { type: "Person", name: "Grace Hopper", aliases: ["Amazing Grace"] });
     await seed(g, { type: "Manager", name: "Linus Torvalds", aliases: ["Linus"] });
     await seed(g, { type: "Engineer", name: "Ken Thompson", aliases: ["Ken"] });
-    const down = await g.insert.ontology({ entities: [{ type: "Manager", name: "Amazing Grace" }] });
+    const down = await g.insert.facts({ entities: [{ type: "Manager", name: "Amazing Grace" }] });
     expect(down.merges.map((m) => m.survivor_id)).toEqual([entityId("Person", "Grace Hopper")]);
-    const up = await g.insert.ontology({ entities: [{ type: "Person", name: "Linus" }] });
+    const up = await g.insert.facts({ entities: [{ type: "Person", name: "Linus" }] });
     expect(up.merges.map((m) => m.survivor_id)).toEqual([entityId("Manager", "Linus Torvalds")]);
-    expect((await g.insert.ontology({ entities: [{ type: "Manager", name: "Ken" }] })).merges).toEqual([]);
+    expect((await g.insert.facts({ entities: [{ type: "Manager", name: "Ken" }] })).merges).toEqual([]);
 
     g = open({ resolver: "default" });
-    const res = await g.insert.ontology({
+    const res = await g.insert.facts({
       entities: [
         { type: "Thing", name: "Robert Johnson" },
         { type: "Person", name: "Robert Johnson" },
@@ -186,13 +186,13 @@ function suite(spec: StoreSpec) {
       ["thing:robert-johnson", "person:robert-johnson", "alias"],
     ]);
     expect(await ids(g)).toEqual(["person:robert-johnson"]);
-    await g.insert.ontology({ entities: [{ type: "Thing", name: "Bob J" }] });
-    expect((await g.insert.ontology({ entities: [{ type: "Company", name: "Bob J" }] })).merges).toEqual([]);
+    await g.insert.facts({ entities: [{ type: "Thing", name: "Bob J" }] });
+    expect((await g.insert.facts({ entities: [{ type: "Company", name: "Bob J" }] })).merges).toEqual([]);
     expect(await ids(g)).toEqual(["company:bob-j", "person:robert-johnson", "thing:bob-j"]);
   });
 
   it("merges within one batch only when fuzzy", async () => {
-    const batch: Ontology = {
+    const batch: Extraction = {
       entities: [
         { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } },
         { type: "Company", name: "Big Blue", external_ids: { ticker: "IBM" } },
@@ -200,10 +200,10 @@ function suite(spec: StoreSpec) {
       relations: [{ from_entity: BIG_BLUE, type: "OWNS", to_entity: IBM }],
     };
     let g = open({ resolver: "default" });
-    expect((await g.insert.ontology(batch)).merges).toEqual([]);
+    expect((await g.insert.facts(batch)).merges).toEqual([]);
     expect(await ids(g)).toEqual([BIG_BLUE, IBM]);
     g = open({ resolver: "fuzzy" });
-    const res = await g.insert.ontology(batch);
+    const res = await g.insert.facts(batch);
     expect(res.merges.map((m) => [m.absorbed_id, m.survivor_id])).toEqual([[BIG_BLUE, IBM]]);
     expect(await ids(g)).toEqual([IBM]);
     expect(res.relations).toEqual([]);
@@ -230,7 +230,7 @@ function suite(spec: StoreSpec) {
     it(`restores the exact relations when chained merges are unmerged in order ${order}`, async () => {
       const g = open({ resolver: "fuzzy" });
       await seed(g, { type: "Person", name: "Jane Doe", aliases: ["JD"] });
-      const res = await g.insert.ontology({
+      const res = await g.insert.facts({
         entities: [
           { type: "Person", name: "JD" },
           { type: "Person", name: "Jane Does" },
@@ -259,7 +259,7 @@ function suite(spec: StoreSpec) {
 
   it("lists each inserted entity and relation once and keeps the merge", async () => {
     const g = open({ resolver: "fuzzy" });
-    const res = await g.insert.ontology({
+    const res = await g.insert.facts({
       entities: [
         { type: "Person", name: "Jane Doe" },
         { type: "Person", name: "Jane Does" },
@@ -282,7 +282,7 @@ function suite(spec: StoreSpec) {
       },
     ]);
     const both = open({ resolver: "fuzzy" });
-    const batch = await both.insert.ontology({
+    const batch = await both.insert.facts({
       entities: [
         { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } },
         { type: "Company", name: "Big Blue", external_ids: { ticker: "IBM" } },
@@ -302,25 +302,25 @@ function suite(spec: StoreSpec) {
     const names = [...[1, 2, 3, 4, 5].map((i) => `Employee${i}`), ...[0, 1, 2, 3, 4].map((i) => `Server0${i}`)];
     names.push("Project 12", "Project 13", "Model A", "Model B", "Jonathan Smith", "Jonathon Smith");
     names.push("Katherine Zorkdefault", "Katherine Zorkfuzzy");
-    const res = await g.insert.ontology({ entities: names.map((name) => ({ type: "Asset", name })) });
+    const res = await g.insert.facts({ entities: names.map((name) => ({ type: "Asset", name })) });
     expect(res.merges.map((m) => [m.absorbed_id, m.survivor_id])).toEqual([
       [entityId("Asset", "Jonathon Smith"), entityId("Asset", "Jonathan Smith")],
     ]);
     expect(await ids(g)).toHaveLength(names.length - 1);
     await seed(g, { type: "Person", name: "Bobby Tables" });
-    const suffixed = await g.insert.ontology({ entities: [{ type: "Person", name: "Bobby Tables Jr" }] });
+    const suffixed = await g.insert.facts({ entities: [{ type: "Person", name: "Bobby Tables Jr" }] });
     expect(suffixed.merges).toEqual([]);
     expect(suffixed.entities.map((e) => e.id)).toEqual(["person:bobby-tables-jr"]);
     const yes = new FakeLLM(true);
     const h = open({ llm: yes, resolver: "llm" });
     await seed(h, { type: "Person", name: "Employee1" });
-    expect((await h.insert.ontology({ entities: [{ type: "Person", name: "Employee2" }] })).merges).toEqual([]);
+    expect((await h.insert.facts({ entities: [{ type: "Person", name: "Employee2" }] })).merges).toEqual([]);
     expect(yes.calls).toEqual([]);
   });
 
   it("derives one id for Acme Inc, Acme Corp, and ACME and never repeats the name as an alias", async () => {
     const g = open();
-    await g.insert.ontology({
+    await g.insert.facts({
       entities: [
         { type: "Company", name: "Acme Inc" },
         { type: "Company", name: "Acme Corp" },
@@ -340,24 +340,24 @@ function suite(spec: StoreSpec) {
   it("merges on an alias keeping the survivor's type, and lets a per-call resolver override the graph", async () => {
     let g = open({ resolver: "default" });
     await seed(g, { type: "Person", name: "Robert Smith", aliases: ["Bob Smith", "Bob"] });
-    const res = await g.insert.ontology({ entities: [{ type: "Person", name: "bob smith", properties: { age: 40 } }] });
+    const res = await g.insert.facts({ entities: [{ type: "Person", name: "bob smith", properties: { age: 40 } }] });
     expect(res.merges.map((m) => [m.reason, m.confidence])).toEqual([["alias", 0.95]]);
     const survivor = (await g.entities.get(entityId("Person", "Robert Smith")))!;
     expect([survivor.type, survivor.properties]).toEqual(["Person", { age: 40 }]);
     const one = { entities: [{ type: "Person", name: "Bob" }] };
-    expect((await g.insert.ontology(one, { resolver: "exact" })).merges).toEqual([]);
+    expect((await g.insert.facts(one, { resolver: "exact" })).merges).toEqual([]);
     g = open();
     await seed(g, { type: "Person", name: "Robert Smith", aliases: ["Bob"] });
-    expect((await g.insert.ontology(one, { resolver: "default" })).merges).toHaveLength(1);
-    await expect(g.insert.ontology(one, { resolver: "nope" as never })).rejects.toThrow(ValidationError);
+    expect((await g.insert.facts(one, { resolver: "default" })).merges).toHaveLength(1);
+    await expect(g.insert.facts(one, { resolver: "nope" as never })).rejects.toThrow(ValidationError);
     await expect(g.insert.text("Ada met Bob.", { resolver: "llm" })).rejects.toThrow(/needs an LLM/);
   });
 
   it("rewrites references in relations, preferences, and decisions, and round-trips the merge through unmerge", async () => {
     const g = open({ resolver: "default" });
     await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] }, { type: "Person", name: "Ada" });
-    await g.insert.ontology({ relations: [{ from_entity: ADA, type: "KNOWS", to_entity: ROBERT }] });
-    const res = await g.insert.ontology(RICH, { source_id: "doc-1" });
+    await g.insert.facts({ relations: [{ from_entity: ADA, type: "KNOWS", to_entity: ROBERT }] });
+    const res = await g.insert.facts(RICH, { source_id: "doc-1" });
     expect(await ids(g)).not.toContain(BOB);
     expect(res.relations.map((r) => [r.from_entity, r.to_entity])).toEqual([
       [ROBERT, TOOL],
@@ -424,13 +424,13 @@ function suite(spec: StoreSpec) {
       { type: "Person", name: "Robert", aliases: ["Bob"] },
       ...["Acme", "Globex", "Initech"].map((name) => ({ type: "Company", name })),
     );
-    await g.insert.ontology({ relations: [worksAt(ROBERT, acme!, 2020)] });
-    const res = await g.insert.ontology({
+    await g.insert.facts({ relations: [worksAt(ROBERT, acme!, 2020)] });
+    const res = await g.insert.facts({
       entities: [{ type: "Person", name: "Bob" }],
       relations: [worksAt(BOB, globex!, 2021)],
     });
     const [merge] = res.merges;
-    await g.insert.ontology({ relations: [worksAt(ROBERT, initech!, 2022)] });
+    await g.insert.facts({ relations: [worksAt(ROBERT, initech!, 2022)] });
 
     await g.entities.unmerge(merge!.id);
     const current = (await g.relations.list()).items.map((r) => r.id).sort();
@@ -451,7 +451,7 @@ function suite(spec: StoreSpec) {
       properties: { team: "red" },
     });
     const before = (await g.entities.get(keeper))!;
-    const res = await g.insert.ontology({
+    const res = await g.insert.facts({
       entities: [
         {
           type: "Person",
@@ -483,13 +483,13 @@ function suite(spec: StoreSpec) {
   it("keeps one record across repeated inserts of the same merge and restores every merged source", async () => {
     const g = open({ resolver: "default" });
     await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] }, { type: "Person", name: "Ada" });
-    const ontology: Ontology = {
+    const facts: Extraction = {
       entities: [{ type: "Person", name: "Bob", aliases: ["Bobby"] }],
       relations: [{ from_entity: ADA, type: "KNOWS", to_entity: BOB }],
     };
     const merges = [];
     for (const source of ["s1", "s2", "s1"])
-      merges.push((await g.insert.ontology(ontology, { source_id: source })).merges[0]!);
+      merges.push((await g.insert.facts(facts, { source_id: source })).merges[0]!);
     const last = merges[2]!;
     expect(new Set(merges.map((m) => m.id)).size).toBe(1);
     expect([last.added_aliases, last.rewrites.map((r) => r.existed)]).toEqual([["Bobby"], [false]]);
@@ -503,18 +503,18 @@ function suite(spec: StoreSpec) {
   it("drops merge records with a deleted survivor, or a deleted absorbed id so a later merge starts fresh", async () => {
     const gone = open({ resolver: "default" });
     await seed(gone, { type: "Person", name: "Robert", aliases: ["Bob"] });
-    await gone.insert.ontology({ entities: [{ type: "Person", name: "Bob" }] });
+    await gone.insert.facts({ entities: [{ type: "Person", name: "Bob" }] });
     await gone.entities.delete(ROBERT);
     expect(await gone.store.matchNodes(gone.namespace, "EntityMerge")).toEqual([]);
     await expect(gone.entities.merges(ROBERT)).rejects.toThrow(NotFoundError);
     const g = open({ resolver: "default" });
     await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] });
     const bob = { entities: [{ type: "Person", name: "Bob" }] };
-    const first = (await g.insert.ontology(bob, { source_id: "s1" })).merges[0]!;
+    const first = (await g.insert.facts(bob, { source_id: "s1" })).merges[0]!;
     await g.entities.create("Bob", "Person");
     await g.entities.delete(BOB);
     expect((await g.entities.merges(ROBERT)).items).toEqual([]);
-    const again = (await g.insert.ontology(bob, { source_id: "s2" })).merges[0]!;
+    const again = (await g.insert.facts(bob, { source_id: "s2" })).merges[0]!;
     expect([again.id, again.source_ids]).toEqual([first.id, ["s2"]]);
     expect(again.created_at.getTime()).toBeGreaterThan(first.created_at.getTime());
   });
@@ -540,11 +540,11 @@ function suite(spec: StoreSpec) {
       { type: "Person", name: "Ray" },
       { type: "Thing", name: "ann" },
     ];
-    await g.insert.ontology({ entities: two }, { resolver: recorder });
+    await g.insert.facts({ entities: two }, { resolver: recorder });
     expect(seen).toEqual({ Ray: ["person:ann", "person:zed"], ann: ["person:ann", "thing:box"] });
     const picky = (decision: ResolutionDecision) => ({ resolve: async () => decision });
     const decide = (name: string, decision: ResolutionDecision) =>
-      g.insert.ontology({ entities: [{ type: "Person", name }] }, { resolver: picky(decision) });
+      g.insert.facts({ entities: [{ type: "Person", name }] }, { resolver: picky(decision) });
     await decide("Bob", { target_id: null });
     expect(await g.entities.get("person:bob")).not.toBeNull();
     for (const [field, decision] of [
@@ -562,20 +562,20 @@ function suite(spec: StoreSpec) {
     const yes = new FakeLLM(true);
     let g = open({ llm: yes, resolver: "llm" });
     await seed(g, { type: "Person", name: "John Smith" }, { type: "Person", name: "Alice Wong" });
-    const res = await g.insert.ontology({ entities: [{ type: "Person", name: "Jon Smyth" }] });
+    const res = await g.insert.facts({ entities: [{ type: "Person", name: "Jon Smyth" }] });
     const [merge] = res.merges;
     expect([merge!.survivor_id, merge!.reason]).toEqual([entityId("Person", "John Smith"), "llm"]);
     expect(merge!.confidence).toBe(nameSimilarity("Jon Smyth", "John Smith"));
     expect(yes.calls).toHaveLength(1);
     expect(yes.calls[0]!.user).toContain("Jon Smyth");
     expect(yes.calls[0]!.user).toContain("John Smith");
-    expect((await g.insert.ontology({ entities: [{ type: "Person", name: "Zed Quincy" }] })).merges).toEqual([]);
+    expect((await g.insert.facts({ entities: [{ type: "Person", name: "Zed Quincy" }] })).merges).toEqual([]);
     expect(yes.calls).toHaveLength(1);
 
     const no = new FakeLLM(false);
     g = open({ llm: no, resolver: "llm" });
     await seed(g, { type: "Person", name: "John Smith" });
-    expect((await g.insert.ontology({ entities: [{ type: "Person", name: "Jon Smyth" }] })).merges).toEqual([]);
+    expect((await g.insert.facts({ entities: [{ type: "Person", name: "Jon Smyth" }] })).merges).toEqual([]);
     expect(no.calls).toHaveLength(1);
   });
 }

@@ -50,7 +50,7 @@ ANN_ACME_GLOBEX = [
     {"type": "Company", "name": "Acme"},
     {"type": "Company", "name": "Globex"},
 ]
-AB_ONTOLOGY = {
+AB_FACTS = {
     "entities": [{"name": "A", "type": "T", "id": "t:a"}, {"name": "B", "type": "T", "id": "t:b"}],
     "relations": [{"id": "relation:ab", "from_entity": "t:a", "type": "KNOWS", "to_entity": "t:b"}],
 }
@@ -143,7 +143,7 @@ def fresh_graph(prefix: str = "test", **kwargs) -> SelfGraph:
 
 def employment_graph(prefix: str = "test", **kwargs) -> SelfGraph:
     g = fresh_graph(prefix, schema=WORKS_AT_SPEC, **kwargs)
-    run(g.insert.ontology({"entities": ANN_ACME_GLOBEX}))
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))
     return g
 
 

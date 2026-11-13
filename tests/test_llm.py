@@ -8,7 +8,7 @@ from selfgraph import EntityInput, LLMConfig, ValidationError
 from selfgraph._ops import _require_text
 from selfgraph.errors import error_reason, surface_hint
 from selfgraph.extraction.chunking import _chunk_by_chars, chunk_text
-from selfgraph.extraction.extractor import DefaultExtractor, _EntitiesOut
+from selfgraph.extraction.extractor import LLMExtractor, _EntitiesOut
 from selfgraph.llm.base import _fatal, _require_provider, _sends_temperature, resolve_llm, summarize_error
 from selfgraph.models import ParsedDocument
 from selfgraph.runtime import GraphSettings, _build_llm
@@ -219,6 +219,6 @@ def test_chunks_extract_concurrently_up_to_the_setting_and_merge_in_order():
     orders = []
     for concurrency, peak in ((1, 4), (2, 8)):
         llm = Gauge(concurrency)
-        orders.append([e.name for e in run(DefaultExtractor(llm).extract(document)).entities])
+        orders.append([e.name for e in run(LLMExtractor(llm).extract(document)).entities])
         assert llm.peak == peak
     assert orders[0] == orders[1] == [f"Chunk{i}" for i in range(6)]

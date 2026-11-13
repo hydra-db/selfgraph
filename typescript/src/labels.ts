@@ -1,6 +1,6 @@
-export const KINDS = ["preference", "disinterest"] as const;
+export const STANCES = ["preference", "disinterest"] as const;
 
-type Kind = (typeof KINDS)[number];
+type Stance = (typeof STANCES)[number];
 
 export const L_ENTITY = "Entity";
 export const L_PROFILE = "Profile";
@@ -50,28 +50,28 @@ export const EDGE_TYPES: ReadonlySet<string> = new Set([
   R_HAS_CHUNK,
 ]);
 
-const PREFERENCE_EDGES: Readonly<Record<Kind, string>> = { preference: R_PREFERS, disinterest: R_AVOIDS };
+const PREFERENCE_EDGES: Readonly<Record<Stance, string>> = { preference: R_PREFERS, disinterest: R_AVOIDS };
 export const PREFERENCE_EDGE_TYPES: readonly string[] = Object.values(PREFERENCE_EDGES);
-const KIND_OF_EDGE = new Map(Object.entries(PREFERENCE_EDGES).map(([kind, type]) => [type, kind as Kind]));
+const STANCE_OF_EDGE = new Map(Object.entries(PREFERENCE_EDGES).map(([stance, type]) => [type, stance as Stance]));
 
 /**
- * The edge type that stores a preference of the given kind.
+ * The edge type that stores a preference of the given stance.
  *
- * @param kind (Kind): the preference kind.
+ * @param stance (Stance): the preference stance.
  * @return (string): R_PREFERS or R_AVOIDS.
  */
-export function preferenceEdgeType(kind: Kind): string {
-  return PREFERENCE_EDGES[kind];
+export function preferenceEdgeType(stance: Stance): string {
+  return PREFERENCE_EDGES[stance];
 }
 
 /**
- * The preference kind an edge type stores, or null when the edge is not a preference.
+ * The preference stance an edge type stores, or null when the edge is not a preference.
  *
  * @param type (string): the edge type.
- * @return (Kind | null): the kind.
+ * @return (Stance | null): the stance.
  */
-export function preferenceKindOf(type: string): Kind | null {
-  return KIND_OF_EDGE.get(type) ?? null;
+export function preferenceStanceOf(type: string): Stance | null {
+  return STANCE_OF_EDGE.get(type) ?? null;
 }
 
 /**

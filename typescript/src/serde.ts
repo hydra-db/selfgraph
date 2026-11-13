@@ -7,9 +7,9 @@ import {
   type Evidence,
   EvidenceSchema,
   type JsonObject,
-  type Kind,
   type Preference,
   type Relation,
+  type Stance,
   type Status,
 } from "./models.js";
 import type { Props } from "./protocols.js";
@@ -177,14 +177,14 @@ export function encodePreferenceProps(args: {
 
 export function decodePreference(
   props: Props,
-  edge: { value_entity: string; profile_id: string; kind: Kind },
+  edge: { value_entity: string; profile_id: string; stance: Stance },
 ): Preference {
   return {
     id: str(props.id),
     revision: Math.trunc(Number(props.revision)),
     profile_id: edge.profile_id,
     subject_entity: str(props.subject_entity),
-    kind: edge.kind,
+    stance: edge.stance,
     key: str(props.key),
     value_entity: edge.value_entity,
     about_entity: optStr(props.about_entity),

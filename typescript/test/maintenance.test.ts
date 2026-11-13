@@ -138,7 +138,7 @@ function suite(spec: StoreSpec) {
     expect(await g.entities.get("person:keep")).toBeNull();
   });
 
-  it("consolidates duplicate relations into the lowest id, unioning properties and reporting losses", async () => {
+  it("dedupes duplicate relations into the lowest id, unioning properties and reporting losses", async () => {
     const g = open();
     await g.entities.create("A", "T", { id: "t:a" });
     await g.entities.create("B", "T", { id: "t:b" });
@@ -165,7 +165,7 @@ function suite(spec: StoreSpec) {
     await g.relations.create("t:b", "KNOWS", "t:a", { id: "relation:x4" });
     const dec = await g.decisions.create("D", { steps: ["relation:x2", "relation:x4"], id: "decision:d" });
 
-    const plan = await g.maintenance.consolidate();
+    const plan = await g.maintenance.dedupeRelations();
     expect(plan.dry_run).toBe(true);
     expect(plan.groups.map((p) => [p.survivor, p.duplicates, p.type, p.conflicts, p.versions_lost])).toEqual([
       [
@@ -180,8 +180,8 @@ function suite(spec: StoreSpec) {
     expect(plan.note).toContain("versions_lost");
     expect(await g.relations.get("relation:x2")).not.toBeNull();
 
-    const { result: done, logged } = await captureLog(() => g.maintenance.consolidate({ dry_run: false }));
-    expect(logged).toEqual([expect.stringMatching(/^info: consolidated 1 relation groups/)]);
+    const { result: done, logged } = await captureLog(() => g.maintenance.dedupeRelations({ dry_run: false }));
+    expect(logged).toEqual([expect.stringMatching(/^info: deduplicated 1 relation groups/)]);
     expect(done.groups[0]!.conflicts).toEqual(plan.groups[0]!.conflicts);
     expect([done.deleted?.deleted_relation_versions, done.deleted?.deleted_decisions]).toEqual([3, 0]);
     expect(await g.relations.get("relation:x2")).toBeNull();
@@ -194,7 +194,7 @@ function suite(spec: StoreSpec) {
       ["s2", "two"],
     ]);
     expect((await g.decisions.get(dec.id))!.steps.map((s) => s.relation_id)).toEqual(["relation:x1", "relation:x4"]);
-    const after = await g.maintenance.consolidate();
+    const after = await g.maintenance.dedupeRelations();
     expect([after.groups, after.note]).toEqual([[], null]);
   });
 
@@ -251,27 +251,27 @@ function suite(spec: StoreSpec) {
 
   it("skips relations a contradiction invalidated", async () => {
     const g = open({ contradiction: "supersede", schema: SINGLE_EMPLOYER });
-    await g.insert.ontology({ entities: ANN_AT_ACME.entities });
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
     const ids: string[] = [];
     for (const [company, year] of [
       ["acme", 2020],
       ["globex", 2021],
     ] as const) {
-      const res = await g.insert.ontology({ relations: [worksAt("person:ann", `company:${company}`, year)] });
+      const res = await g.insert.facts({ relations: [worksAt("person:ann", `company:${company}`, year)] });
       ids.push(res.relations[0]!.id);
     }
     const [acme, globex] = ids;
     const decay = await g.maintenance.decay({ now: later(0), dry_run: false });
     expect(Object.keys(decay.relations)).toEqual([globex]);
     expect(decay.updated_relations).toBe(1);
-    expect((await g.maintenance.consolidate()).groups).toEqual([]);
+    expect((await g.maintenance.dedupeRelations()).groups).toEqual([]);
     const plan = await g.maintenance.prune({ older_than: later(0.0005), relation_types: ["WORKS_AT"] });
     expect(plan.relation_ids).toEqual([globex]);
     await g.maintenance.prune({ older_than: later(0.0005), relation_types: ["WORKS_AT"], dry_run: false });
     expect((await g.relations.list({ include_invalidated: true })).items.map((r) => r.id)).toEqual([acme]);
   });
 
-  it("repoints every step on consolidate and never deletes a decision", async () => {
+  it("repoints every step on dedupeRelations and never deletes a decision", async () => {
     const g = open();
     for (const n of ["a", "b", "c"]) await g.entities.create(n.toUpperCase(), "T", { id: `t:${n}` });
     for (const id of ["relation:x1", "relation:x2", "relation:x3"])
@@ -285,7 +285,7 @@ function suite(spec: StoreSpec) {
       "decision:groups": ["relation:x3", "relation:y2", "relation:x2"],
     };
     for (const [id, rels] of Object.entries(steps)) await g.decisions.create(id, { steps: rels, id });
-    const done = await g.maintenance.consolidate({ dry_run: false });
+    const done = await g.maintenance.dedupeRelations({ dry_run: false });
     expect([done.deleted?.deleted_decisions, done.deleted?.deleted_relation_versions]).toEqual([0, 5]);
     const got: Record<string, string[]> = {};
     for (const id of Object.keys(steps)) got[id] = (await g.decisions.get(id))!.steps.map((s) => s.relation_id);
@@ -295,12 +295,12 @@ function suite(spec: StoreSpec) {
       "decision:groups": ["relation:x1", "relation:y1", "relation:x1"],
     });
     const h = open({ contradiction: "supersede", schema: SINGLE_EMPLOYER });
-    await h.insert.ontology({ entities: ANN_AT_ACME.entities });
+    await h.insert.facts({ entities: ANN_AT_ACME.entities });
     const old = await h.relations.create("person:ann", "WORKS_AT", "company:acme");
     await h.relations.create("person:ann", "WORKS_AT", "company:globex", { id: "relation:g1" });
     await h.relations.create("person:ann", "WORKS_AT", "company:globex", { id: "relation:g2", contradiction: "off" });
     await h.decisions.create("Move", { steps: [old.id, "relation:g2"], id: "decision:move" });
-    const merged = await h.maintenance.consolidate({ dry_run: false });
+    const merged = await h.maintenance.dedupeRelations({ dry_run: false });
     expect(merged.groups.map((p) => [p.survivor, p.duplicates])).toEqual([["relation:g1", ["relation:g2"]]]);
     expect(merged.deleted?.deleted_decisions).toBe(0);
     expect((await h.decisions.get("decision:move"))!.steps.map((s) => s.relation_id)).toEqual([old.id, "relation:g1"]);

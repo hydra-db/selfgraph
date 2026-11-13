@@ -9,7 +9,7 @@ from selfgraph._maintenance import relevance_score
 from selfgraph._ops import Contradictions, version_as_of
 from selfgraph.extraction import chunking
 from selfgraph.extraction.basic import _regex_extract
-from selfgraph.extraction.extractor import DefaultExtractor, _is_noise_name, _RelOut
+from selfgraph.extraction.extractor import LLMExtractor, _is_noise_name, _RelOut
 from selfgraph.mcp.server import _is_blocked_query
 from selfgraph.models import Entity, EntityInput, Evidence, Preference, Relation
 from selfgraph.resolution import DefaultResolver, distinct_names, jaro_winkler, name_similarity, token_jaccard
@@ -479,7 +479,7 @@ def as_of_cases():
         revision=1,
         profile_id="profile:x",
         subject_entity="person:ann",
-        kind="preference",
+        stance="preference",
         key="db",
         value_entity="db:x",
         created_at=day(0),
@@ -643,8 +643,8 @@ def extract_cases():
     out = []
     for text in TEXTS:
         entities, relations = _regex_extract(text)
-        ontology = DefaultExtractor._assemble(entities, relations, [], [])
-        out.append({"text": text, "ontology": ontology.model_dump(mode="json")})
+        facts = LLMExtractor._assemble(entities, relations, [], [])
+        out.append({"text": text, "facts": facts.model_dump(mode="json")})
     return out
 
 
@@ -656,13 +656,13 @@ ASSEMBLE_RELATIONS = [
 
 
 def assemble_case():
-    ontology = DefaultExtractor._assemble(
+    facts = LLMExtractor._assemble(
         [EntityInput(**e) for e in ASSEMBLE_ENTITIES], [_RelOut(**r) for r in ASSEMBLE_RELATIONS], [], []
     )
     return {
         "entities": ASSEMBLE_ENTITIES,
         "relations": ASSEMBLE_RELATIONS,
-        "ontology": ontology.model_dump(mode="json"),
+        "facts": facts.model_dump(mode="json"),
     }
 
 

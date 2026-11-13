@@ -1,7 +1,7 @@
 import type { GraphAccess } from "../access.js";
 import { ValidationError } from "../errors.js";
 import { pyRepr, pyStrip } from "../internal/py.js";
-import { type Evidence, EvidenceInput, Kind, type Page, parseOrThrow, Status } from "../models.js";
+import { type Evidence, EvidenceInput, type Page, parseOrThrow, Stance, Status } from "../models.js";
 import { evidenceFromInputs } from "../ops.js";
 import type { GraphPrimitives } from "../protocols.js";
 import { hasControl, keysOf, requireInt, typeName } from "../validate.js";
@@ -92,7 +92,7 @@ export async function* paginate<T>(list: (cursor: string | null) => Promise<Page
   }
 }
 
-export const parseKind = (value: unknown): Kind => parseOrThrow(Kind, value, "kind");
+export const parseStance = (value: unknown): Stance => parseOrThrow(Stance, value, "stance");
 
 export const parseStatus = (value: unknown): Status => parseOrThrow(Status, value, "status");
 

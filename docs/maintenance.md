@@ -6,7 +6,7 @@
 |-----------|------|
 | [`decay`](#decay) | Scores how relevant each entity and relation still is. |
 | [`prune`](#prune) | Removes what falls below a bar. |
-| [`consolidate`](#consolidate) | Merges duplicate relations. |
+| [`dedupe_relations`](#dedupe_relations) | Merges duplicate relations. |
 
 Nothing runs on its own. All three are dry runs by default. Pass `dry_run=False`
 to write.
@@ -16,7 +16,7 @@ scores = await graph.maintenance.decay(half_life_days=30)
 stored = await graph.maintenance.decay(half_life_days=30, dry_run=False)
 plan = await graph.maintenance.prune(min_relevance=0.05)
 done = await graph.maintenance.prune(min_relevance=0.05, dry_run=False)
-merged = await graph.maintenance.consolidate(dry_run=False)
+merged = await graph.maintenance.dedupe_relations(dry_run=False)
 ```
 
 ## decay
@@ -91,9 +91,9 @@ says `no items have a relevance score yet; run maintenance.decay(dry_run=False) 
 The CLI and MCP word it `run maintenance decay --apply first` and show it only in
 the JSON.
 
-## consolidate
+## dedupe_relations
 
-`consolidate(dry_run=True)` finds current relations that share the same source,
+`dedupe_relations(dry_run=True)` finds current relations that share the same source,
 normalized type, and target but have different ids. This happens when relations
 are created with explicit ids. Each group collapses into its lowest id:
 
@@ -113,7 +113,7 @@ are created with explicit ids. Each group collapses into its lowest id:
 
 Relations a contradiction invalidated are never grouped.
 
-The `ConsolidateResult` lists each group's `survivor`, `duplicates`, `conflicts`,
+The `DedupeResult` lists each group's `survivor`, `duplicates`, `conflicts`,
 and `versions_lost` (each duplicate's version count, all deleted). It also has a
 `note` stating the survivor rule. Once applied, it adds `deleted` counts and logs
 one INFO line. Review `versions_lost` in the dry run before applying.
@@ -121,7 +121,7 @@ one INFO line. Review `versions_lost` in the dry run before applying.
 ## Scale
 
 Each operation reads a page at a time and writes in batches of up to 1000 ids.
-`decay` and `prune` use one transaction per batch, and `consolidate` one per
+`decay` and `prune` use one transaction per batch, and `dedupe_relations` one per
 group. The scan holds every id in memory, so maintain very large graphs from a
 worker rather than a request path.
 
@@ -132,17 +132,17 @@ selfgraph maintenance decay --half-life-days 14 --apply
 selfgraph maintenance prune --older-than 2025-01-01 --type Session
 selfgraph maintenance prune --older-than 2025-01-01 --relation-type VISITED
 selfgraph maintenance prune --min-relevance 0.05 --apply
-selfgraph maintenance consolidate --apply
+selfgraph maintenance dedupe-relations --apply
 ```
 
 - The CLI writes only with `--apply`. `decay` also takes `--now`.
 - The MCP tools `maintenance_decay`, `maintenance_prune`, and
-  `maintenance_consolidate` take the same arguments, with `dry_run` defaulting to
+  `maintenance_dedupe_relations` take the same arguments, with `dry_run` defaulting to
   true.
 - In TypeScript the options keep their Python names:
 
 ```ts
 await graph.maintenance.decay({ half_life_days: 30, dry_run: false });
 await graph.maintenance.prune({ older_than: "2025-01-01", dry_run: false });
-await graph.maintenance.consolidate({ dry_run: false });
+await graph.maintenance.dedupeRelations({ dry_run: false });
 ```

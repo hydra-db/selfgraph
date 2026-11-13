@@ -32,15 +32,15 @@ __all__ = [
     "DeleteResult",
     "DecayResult",
     "PruneResult",
-    "ConsolidateGroup",
-    "ConsolidateResult",
+    "DedupeGroup",
+    "DedupeResult",
     "CypherResult",
     "EntityInput",
     "EvidenceInput",
     "RelationInput",
     "PreferenceInput",
     "DecisionTraceInput",
-    "Ontology",
+    "Extraction",
     "LLMConfig",
     "PromptTemplate",
     "ExtractionInstructions",
@@ -49,7 +49,7 @@ __all__ = [
     "RetrievalSeed",
     "Subgraph",
     "RetrievalResult",
-    "Kind",
+    "Stance",
     "Status",
     "MergeRewrite",
     "MergeRecord",
@@ -322,7 +322,7 @@ def validation_message(head: str, exc: PydanticValidationError) -> str:
 
     One issue stays inline after the heading; several go on indented lines.
 
-    @param head (str): what failed, such as "invalid ontology".
+    @param head (str): what failed, such as "invalid facts".
     @param exc (PydanticValidationError): the error.
     @return (str): the message.
     """
@@ -332,7 +332,7 @@ def validation_message(head: str, exc: PydanticValidationError) -> str:
 
 T = TypeVar("T")
 
-Kind = Literal["preference", "disinterest"]
+Stance = Literal["preference", "disinterest"]
 Status = Literal["active", "completed", "reversed"]
 
 
@@ -382,7 +382,7 @@ class Preference(BaseModel):
     revision: int
     profile_id: str
     subject_entity: str
-    kind: Kind
+    stance: Stance
     key: str
     value_entity: str
     about_entity: str | None = None
@@ -514,7 +514,7 @@ class PruneResult(_PlanResult):
     note: str | None = None
 
 
-class ConsolidateGroup(BaseModel):
+class DedupeGroup(BaseModel):
     from_entity: str
     type: str
     to_entity: str
@@ -524,9 +524,9 @@ class ConsolidateGroup(BaseModel):
     versions_lost: dict[str, int] = Field(default_factory=dict)
 
 
-class ConsolidateResult(_PlanResult):
+class DedupeResult(_PlanResult):
     dry_run: bool
-    groups: list[ConsolidateGroup] = Field(default_factory=list)
+    groups: list[DedupeGroup] = Field(default_factory=list)
     deleted: DeleteResult | None = None
     note: str | None = None
 
@@ -626,7 +626,7 @@ class PreferenceInput(InputModel):
 
     id: str | None = None
     subject_entity: str
-    kind: Kind = "preference"
+    stance: Stance = "preference"
     key: str
     value_entity: str
     about_entity: str | None = None
@@ -653,8 +653,8 @@ class DecisionTraceInput(InputModel):
     event_time: datetime | None = None
 
 
-class Ontology(TopInputModel):
-    input_label: ClassVar[str] = "ontology"
+class Extraction(TopInputModel):
+    input_label: ClassVar[str] = "facts"
 
     entities: list[EntityInput] = Field(default_factory=list)
     relations: list[RelationInput] = Field(default_factory=list)

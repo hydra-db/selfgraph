@@ -12,7 +12,7 @@ Relations and preferences keep their version history.
 |------|--------|
 | [Install](install.md) | The package and its optional extras. |
 | [Quickstart](quickstart.md) | A first graph with no server and no LLM. |
-| [Inserting](inserting.md) | Extracting from text, and writing a ready ontology. |
+| [Inserting](inserting.md) | Extracting from text, and writing ready facts. |
 | [Schema](schema.md) | Optional types that guide extraction and check writes. |
 | [Entity resolution](resolution.md) | Merging duplicate entities on insert, and undoing a merge. |
 | [Resources](resources.md) | Typed CRUD over entities, relations, preferences, and decisions. |

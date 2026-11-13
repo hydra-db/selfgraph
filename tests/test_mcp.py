@@ -3,7 +3,7 @@ import json
 import logging
 
 import pytest
-from helpers import AB_ONTOLOGY, HYDRADB, RAW_CYPHER, mcp_session, preference_update_recorder, run
+from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, mcp_session, preference_update_recorder, run
 
 import selfgraph
 import selfgraph.mcp.server as srv
@@ -127,16 +127,16 @@ def test_server_metadata_tools_and_annotations(server):
     tools = {t.name: t.annotations.model_dump(by_alias=True) for t in listed}
     for name in ("get_entity", "list_relations", "relation_versions", "entity_evidence", "run_cypher", "retrieve"):
         assert tools[name]["readOnlyHint"] is True
-    for name in ("delete_entity", "maintenance_prune", "maintenance_consolidate"):
+    for name in ("delete_entity", "maintenance_prune", "maintenance_dedupe_relations"):
         assert tools[name]["destructiveHint"] is True and tools[name]["idempotentHint"] is True
     assert tools["create_entity"]["destructiveHint"] is False and tools["create_entity"]["idempotentHint"] is False
-    assert tools["insert_ontology"]["idempotentHint"] is True
+    assert tools["insert_facts"]["idempotentHint"] is True
     assert "case or spacing" in srv.update_entity.__doc__
 
 
 @needs_mcp
 def test_call_tool_arguments_results_and_errors(server):
-    run(srv.insert_ontology(AB_ONTOLOGY))
+    run(srv.insert_facts(AB_FACTS))
     dec = run(srv.create_decision("Pick", ["relation:ab"], summary="s", rationale="r"))
 
     async def update(args):
@@ -178,7 +178,7 @@ def test_call_tool_arguments_results_and_errors(server):
         for tool, args in (
             ("maintenance_prune", {"min_relevance": 2.0}),
             ("maintenance_decay", {}),
-            ("maintenance_consolidate", {}),
+            ("maintenance_dedupe_relations", {}),
         ):
             with pytest.raises(Exception, match="dry_run"):
                 run(server.call_tool(tool, {**args, "dry_run": flag}))
@@ -189,7 +189,7 @@ def test_call_tool_arguments_results_and_errors(server):
     assert sorted(e["id"] for e in run(srv.list_entities())["items"]) == ["t:a", "t:b"]
     for tool, args in (
         ("list_decisions", {"status": "bogus"}),
-        ("list_preferences", {"kind": "bogus"}),
+        ("list_preferences", {"stance": "bogus"}),
         ("create_decision", {"title": "D", "steps": ["relation:ab"], "status": "bogus"}),
     ):
         with pytest.raises(Exception, match="invalid arguments"):
@@ -212,11 +212,11 @@ def test_run_cypher_needs_every_parameter_and_ids_need_their_prefix():
                 run(call)
 
 
-def test_ontology_evidence_versions_dry_runs_and_decision_steps():
+def test_facts_evidence_versions_dry_runs_and_decision_steps():
     with mcp_session():
-        out = run(srv.insert_ontology(AB_ONTOLOGY, source_id="s1", event_time="2020-05-01"))
+        out = run(srv.insert_facts(AB_FACTS, source_id="s1", event_time="2020-05-01"))
         assert out["relations"][0]["event_time"] == "2020-05-01T00:00:00Z"
-        run(srv.insert_ontology(AB_ONTOLOGY, source_id="s2"))
+        run(srv.insert_facts(AB_FACTS, source_id="s2"))
         assert run(srv.get_entity("t:a"))["source_count"] == 2
         first = run(srv.entity_evidence("t:a", limit=1))
         rest = run(srv.entity_evidence("t:a", limit=1, cursor=first["next_cursor"]))
@@ -232,8 +232,8 @@ def test_ontology_evidence_versions_dry_runs_and_decision_steps():
         assert [v["revision"] for v in run(srv.relation_versions("relation:ab"))] == [3, 2, 1]
 
         assert "deleted" not in run(srv.maintenance_prune(min_relevance=0.5))
-        assert "deleted" not in run(srv.maintenance_consolidate())
-        assert "deleted" in run(srv.maintenance_consolidate(dry_run=False))
+        assert "deleted" not in run(srv.maintenance_dedupe_relations())
+        assert "deleted" in run(srv.maintenance_dedupe_relations(dry_run=False))
         assert run(srv.create_decision("No steps"))["steps"] == []
         dec = run(srv.create_decision("Pick", ["relation:ab"], summary="s"))
         assert run(srv.update_decision(dec["id"], steps=[]))["steps"] == []
@@ -245,7 +245,7 @@ def test_ontology_evidence_versions_dry_runs_and_decision_steps():
 
         schema = {"entities": [{"name": "Person"}]}
         with pytest.raises(ValidationError, match="unknown type"):
-            run(srv.insert_ontology({"entities": [{"name": "X", "type": "T"}]}, schema=schema, schema_mode="strict"))
+            run(srv.insert_facts({"entities": [{"name": "X", "type": "T"}]}, schema=schema, schema_mode="strict"))
         result = run(srv.insert_text("Ann met Bob.", schema=schema, schema_mode="off", instructions={"entities": "x"}))
         assert "prompts_ignored" in [w["code"] for w in result["warnings"]]
 

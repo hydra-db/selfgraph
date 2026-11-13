@@ -5,7 +5,7 @@ export {
   type DecisionUpdateFields,
 } from "./decisions.js";
 export { Entities, type EntityCreateOptions, type EntityListOptions, type EntityUpdateFields } from "./entities.js";
-export { type ConsolidateOptions, type DecayOptions, Maintenance, type PruneOptions } from "./maintenance.js";
+export { type DecayOptions, type DedupeRelationsOptions, Maintenance, type PruneOptions } from "./maintenance.js";
 export {
   type PreferenceCreateOptions,
   type PreferenceListOptions,
