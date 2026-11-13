@@ -16,7 +16,7 @@ import {
   LABELS,
   PREFERENCE_EDGE_TYPES,
   preferenceEdgeType,
-  preferenceKindOf,
+  preferenceStanceOf,
   R_CONSIDERED,
   R_FROM,
   R_HAS_PROFILE,
@@ -26,7 +26,7 @@ import {
   R_TO,
 } from "./labels.js";
 import {
-  DEFAULT_KIND,
+  DEFAULT_STANCE,
   type DecisionStep,
   type DecisionTrace,
   type DeleteResult,
@@ -35,14 +35,14 @@ import {
   type InsertWarning,
   insertWarning,
   type JsonObject,
-  Kind,
   type ParsedEntityInput,
   type ParsedEvidenceInput,
-  type ParsedOntology,
+  type ParsedExtraction,
   type ParsedPreferenceInput,
   type ParsedRelationInput,
   type Preference,
   type Relation,
+  Stance,
   Status,
 } from "./models.js";
 import type {
@@ -127,7 +127,7 @@ export const DECISION_CLEARABLE = [
   "event_time",
 ] as const;
 const LIST_FIELDS: readonly string[] = ["alternative_entities", "steps"];
-const KINDS: readonly Kind[] = [...Kind.options].sort();
+const STANCES: readonly Stance[] = [...Stance.options].sort();
 const STATUSES: readonly Status[] = [...Status.options].sort();
 const MAX_ID_BYTES = 1024;
 
@@ -707,24 +707,24 @@ async function requireTraceRefs(
 }
 
 /**
- * Canonicalise every explicit entity id and entity reference in an ontology with canonicalEntityId.
+ * Canonicalise every explicit entity id and entity reference in facts with canonicalEntityId.
  *
- * @param ontology (ParsedOntology): the ontology.
- * @return (ParsedOntology): a copy whose entity ids and references are canonical.
+ * @param facts (ParsedExtraction): the facts.
+ * @return (ParsedExtraction): a copy whose entity ids and references are canonical.
  */
-function canonicalRefs(ontology: ParsedOntology): ParsedOntology {
+function canonicalRefs(facts: ParsedExtraction): ParsedExtraction {
   const c = ids.canonicalId;
   return {
-    ...ontology,
-    entities: ontology.entities.map((e) => ({ ...e, id: c(e.id) })),
-    relations: ontology.relations.map((r) => ({ ...r, from_entity: c(r.from_entity), to_entity: c(r.to_entity) })),
-    preferences: ontology.preferences.map((p) => ({
+    ...facts,
+    entities: facts.entities.map((e) => ({ ...e, id: c(e.id) })),
+    relations: facts.relations.map((r) => ({ ...r, from_entity: c(r.from_entity), to_entity: c(r.to_entity) })),
+    preferences: facts.preferences.map((p) => ({
       ...p,
       subject_entity: c(p.subject_entity),
       value_entity: c(p.value_entity),
       about_entity: c(p.about_entity),
     })),
-    decisions: ontology.decisions.map((d) => ({
+    decisions: facts.decisions.map((d) => ({
       ...d,
       actor_entity: c(d.actor_entity),
       outcome_entity: c(d.outcome_entity),
@@ -736,44 +736,44 @@ function canonicalRefs(ontology: ParsedOntology): ParsedOntology {
 }
 
 /**
- * Check every reference and value in an ontology before any write, so a bad one fails atomically.
+ * Check every reference and value in facts before any write, so a bad one fails atomically.
  *
  * Explicit entity ids and entity references are canonicalized first (see canonicalEntityId), and entity identities checked, before the rewrite.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
- * @param given (ParsedOntology): the ontology to check.
- * @param rewrite ((ontology: ParsedOntology) => ParsedOntology | undefined): applied after id canonicalization and before the reference checks, such as the schema's type alias canonicalization, so references in either form resolve.
- * @return (ParsedOntology): the ontology with canonical entity ids.
+ * @param given (ParsedExtraction): the facts to check.
+ * @param rewrite ((facts: ParsedExtraction) => ParsedExtraction | undefined): applied after id canonicalization and before the reference checks, such as the schema's type alias canonicalization, so references in either form resolve.
+ * @return (ParsedExtraction): the facts with canonical entity ids.
  */
-export async function validateOntology(
+export async function validateFacts(
   runner: Runner,
   ns: string,
-  given: ParsedOntology,
-  rewrite?: (ontology: ParsedOntology) => ParsedOntology,
-): Promise<ParsedOntology> {
-  let ontology = canonicalRefs(given);
-  const idsOf = (o: ParsedOntology) => o.entities.map((e) => e.id || ids.entityId(e.type, e.name));
-  let entityIds = idsOf(ontology);
-  for (const [i, ent] of ontology.entities.entries()) validateEntityIdentity(entityIds[i], ent.type, ent.name);
+  given: ParsedExtraction,
+  rewrite?: (facts: ParsedExtraction) => ParsedExtraction,
+): Promise<ParsedExtraction> {
+  let facts = canonicalRefs(given);
+  const idsOf = (o: ParsedExtraction) => o.entities.map((e) => e.id || ids.entityId(e.type, e.name));
+  let entityIds = idsOf(facts);
+  for (const [i, ent] of facts.entities.entries()) validateEntityIdentity(entityIds[i], ent.type, ent.name);
   if (rewrite) {
-    ontology = rewrite(ontology);
-    entityIds = idsOf(ontology);
+    facts = rewrite(facts);
+    entityIds = idsOf(facts);
   }
-  for (const [i, ent] of ontology.entities.entries()) requireIdMatchesType(entityIds[i]!, ent.type);
+  for (const [i, ent] of facts.entities.entries()) requireIdMatchesType(entityIds[i]!, ent.type);
   const entities = new Set(entityIds);
-  const relations = new Set(ontology.relations.map((r) => r.id || ids.relationId(r.from_entity, r.type, r.to_entity)));
+  const relations = new Set(facts.relations.map((r) => r.id || ids.relationId(r.from_entity, r.type, r.to_entity)));
 
-  for (const item of [...ontology.entities, ...ontology.relations, ...ontology.preferences]) {
+  for (const item of [...facts.entities, ...facts.relations, ...facts.preferences]) {
     if (item.properties == null) throw new ValidationError("properties must be a mapping, got null");
     requireJsonMapping("properties", item.properties);
   }
-  for (const ent of ontology.entities) {
+  for (const ent of facts.entities) {
     requireStrMapping("external_ids", ent.external_ids);
     requireList("entity aliases", ent.aliases);
   }
 
-  for (const rel of ontology.relations) {
+  for (const rel of facts.relations) {
     validateOwnId("relation", rel.id);
     requireDatetime("relation event_time", rel.event_time);
     rejectReservedRelType(ids.normalizeRelType(rel.type), rel.type);
@@ -785,16 +785,16 @@ export async function validateOntology(
       ns,
       rel.from_entity,
       rel.to_entity,
-      "endpoints must be entity ids ('type:name') listed in this ontology's entities or already in the graph. " +
+      "endpoints must be entity ids ('type:name') listed in these facts' entities or already in the graph. " +
         "Ids are canonicalized; compute one with entityId(type, name)",
       entities,
     );
   }
 
-  for (const pref of ontology.preferences) {
+  for (const pref of facts.preferences) {
     validateOwnId("preference", pref.id);
     requireDatetime("preference event_time", pref.event_time);
-    requireChoice("preference kind", pref.kind, KINDS);
+    requireChoice("preference stance", pref.stance, STANCES);
     requireStr("preference key", pref.key);
     validateStrength(pref.strength);
     if (!(await entityKnown(runner, ns, pref.subject_entity, entities))) {
@@ -803,7 +803,7 @@ export async function validateOntology(
     await requirePreferenceRefs(runner, ns, pref, entities);
   }
 
-  for (const dec of ontology.decisions) {
+  for (const dec of facts.decisions) {
     validateOwnId("decision", dec.id);
     requireDatetime("decision event_time", dec.event_time);
     requireChoice("decision status", dec.status, STATUSES);
@@ -819,7 +819,7 @@ export async function validateOntology(
     }
     await requireTraceRefs(runner, ns, dec, entities);
   }
-  return ontology;
+  return facts;
 }
 
 export async function getEntity(runner: Runner, ns: string, eid: string): Promise<Entity | null> {
@@ -1286,7 +1286,7 @@ export async function deleteEntity(runner: Runner, ns: string, given: string): P
  * @param endpoints (readonly string[]): the endpoint ids.
  * @return (EdgeRow[]): the edge rows.
  */
-async function edgesAt(
+export async function edgesAt(
   runner: Runner,
   ns: string,
   filter: Omit<MatchEdgesOptions, "from_in" | "to_in" | "skip" | "limit">,
@@ -1448,7 +1448,7 @@ type RelationEnds = Pick<Relation, "from_entity" | "type" | "to_entity">;
 
 export const relationOf = (e: EdgeRow): Relation =>
   decodeRelation(e.props, { from_entity: e.from_id, to_entity: e.to_id, type: e.type });
-const isPreferenceType = (rtype: string): boolean => preferenceKindOf(rtype) !== null;
+const isPreferenceType = (rtype: string): boolean => preferenceStanceOf(rtype) !== null;
 
 async function typedEdgeVersions(
   runner: Runner,
@@ -2566,13 +2566,13 @@ async function ensureProfile(runner: Runner, ns: string, subjectId: string, crea
   return pid;
 }
 
-type PreferenceEnds = Pick<Preference, "value_entity" | "profile_id" | "kind">;
+type PreferenceEnds = Pick<Preference, "value_entity" | "profile_id" | "stance">;
 
-const preferenceOf = (e: EdgeRow): Preference =>
+export const preferenceOf = (e: EdgeRow): Preference =>
   decodePreference(e.props, {
     value_entity: e.to_id,
     profile_id: e.from_id,
-    kind: preferenceKindOf(e.type) ?? DEFAULT_KIND,
+    stance: preferenceStanceOf(e.type) ?? DEFAULT_STANCE,
   });
 
 /**
@@ -2580,7 +2580,7 @@ const preferenceOf = (e: EdgeRow): Preference =>
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
- * @param ends (PreferenceEnds): the profile, value entity, and kind.
+ * @param ends (PreferenceEnds): the profile, value entity, and stance.
  * @param props (Props): the encoded version.
  * @param retire (boolean): true when an existing current version must be flipped first.
  * @return (Preference): the written version.
@@ -2598,7 +2598,7 @@ async function writePreferenceVersion(
   }
   await runner.createEdge(
     ns,
-    preferenceEdgeType(ends.kind),
+    preferenceEdgeType(ends.stance),
     L_PROFILE,
     ends.profile_id,
     L_ENTITY,
@@ -2637,7 +2637,7 @@ export async function upsertPreference(
 ): Promise<Preference> {
   validateStrength(pref.strength);
   validateOwnId("preference", pref.id);
-  const pid = pref.id || ids.preferenceId(pref.subject_entity, pref.kind, pref.key, pref.value_entity);
+  const pid = pref.id || ids.preferenceId(pref.subject_entity, pref.stance, pref.key, pref.value_entity);
   const eventTime = pref.event_time || defaultEventTime;
   await requirePreferenceRefs(runner, ns, pref);
   const profileId = await ensureProfile(runner, ns, pref.subject_entity, createdAt);
@@ -2647,12 +2647,12 @@ export async function upsertPreference(
   if (
     current !== null &&
     (current.subject_entity !== pref.subject_entity ||
-      current.kind !== pref.kind ||
+      current.stance !== pref.stance ||
       current.key !== ids.normalizeText(pref.key) ||
       current.value_entity !== pref.value_entity)
   ) {
     throw new ValidationError(
-      `preference ${pyRepr(pid)} already exists with different subject/kind/key/value; ` +
+      `preference ${pyRepr(pid)} already exists with different subject/stance/key/value; ` +
         "these identify the preference and are immutable; create a new preference to change them",
     );
   }
@@ -2679,7 +2679,7 @@ export async function upsertPreference(
       toIso(current.event_time) === toIso(eventTime);
     if (unchanged) return current;
   }
-  const ends = { value_entity: pref.value_entity, profile_id: profileId, kind: pref.kind };
+  const ends = { value_entity: pref.value_entity, profile_id: profileId, stance: pref.stance };
   return writePreferenceVersion(runner, ns, ends, props, current !== null);
 }
 
@@ -2688,7 +2688,7 @@ export interface CreatePreferenceArgs {
   key: string;
   value_entity: string;
   id?: string | null;
-  kind: Kind;
+  stance: Stance;
   about_entity?: string | null;
   strength?: number | null;
   properties?: JsonObject | null;
@@ -2704,7 +2704,7 @@ export interface CreatePreferenceArgs {
  * @return (Preference): the created preference.
  */
 export async function createPreference(runner: Runner, ns: string, given: CreatePreferenceArgs): Promise<Preference> {
-  requireChoice("preference kind", given.kind, KINDS);
+  requireChoice("preference stance", given.stance, STANCES);
   validateStrength(given.strength);
   requireStr("preference subject_entity", given.subject_entity);
   requireStr("preference key", given.key);
@@ -2719,7 +2719,7 @@ export async function createPreference(runner: Runner, ns: string, given: Create
   requireJsonMapping("properties", args.properties);
   requireDatetime("event_time", args.event_time);
   validateOwnId("preference", args.id);
-  const pid = args.id || ids.preferenceId(args.subject_entity, args.kind, key, args.value_entity);
+  const pid = args.id || ids.preferenceId(args.subject_entity, args.stance, key, args.value_entity);
   await requirePreferenceRefs(runner, ns, args);
   const props = encodePreferenceProps({
     ns,
@@ -2738,7 +2738,7 @@ export async function createPreference(runner: Runner, ns: string, given: Create
   const profileId = await ensureProfile(runner, ns, args.subject_entity, new Date());
   await runner.lockNode(ns, L_PROFILE, profileId);
   if (await preferenceExists(runner, ns, pid)) throw new ConflictError("Preference", pid);
-  const ends = { value_entity: args.value_entity, profile_id: profileId, kind: args.kind };
+  const ends = { value_entity: args.value_entity, profile_id: profileId, stance: args.stance };
   return writePreferenceVersion(runner, ns, ends, props, false);
 }
 
@@ -2830,7 +2830,7 @@ export async function listPreferences(
   args: {
     subject_entity?: string | null;
     key?: string | null;
-    kind?: Kind | null;
+    stance?: Stance | null;
     skip: number;
     limit: number;
     after?: string | null;
@@ -2838,14 +2838,14 @@ export async function listPreferences(
 ): Promise<Preference[]> {
   requireOptionalText("subject_entity filter", args.subject_entity);
   requireOptionalText("key filter", args.key);
-  if (args.kind != null) requireChoice("preference kind", args.kind, KINDS);
+  if (args.stance != null) requireChoice("preference stance", args.stance, STANCES);
   const equals: Props = {};
   if (args.subject_entity != null) equals.subject_entity = ids.canonicalId(args.subject_entity);
   if (args.key != null) equals.key = ids.normalizeText(args.key);
   const rows = await runner.matchEdges(ns, {
     from_label: L_PROFILE,
     to_label: null,
-    type: args.kind != null ? preferenceEdgeType(args.kind) : null,
+    type: args.stance != null ? preferenceEdgeType(args.stance) : null,
     current_only: true,
     equals,
     skip: args.skip,
@@ -2911,25 +2911,38 @@ async function writeTraceStructure(
 ): Promise<void> {
   const { tid } = args;
   if (args.actor_entity !== null)
-    await runner.createEdge(ns, R_MADE_DECISION, L_ENTITY, args.actor_entity, L_TRACE, tid, { ns });
-  if (args.outcome_entity !== null)
-    await runner.createEdge(ns, R_RESULTED_IN, L_TRACE, tid, L_ENTITY, args.outcome_entity, { ns });
-  for (const alt of args.alternative_entities)
-    await runner.createEdge(ns, R_CONSIDERED, L_TRACE, tid, L_ENTITY, alt, { ns });
-  for (const step of args.steps) {
-    const sid = ids.stepId(tid, step.order);
-    await runner.upsertNode(ns, L_STEP, sid, {
-      id: sid,
-      ns,
-      relation_id: step.relation_id,
-      order: step.order,
-      from_entity: step.from_entity,
-      to_entity: step.to_entity,
-    });
-    await runner.createEdge(ns, R_HAS_STEP, L_TRACE, tid, L_STEP, sid, { ns, order: step.order });
-    await runner.createEdge(ns, R_FROM, L_STEP, sid, L_ENTITY, step.from_entity, { ns });
-    await runner.createEdge(ns, R_TO, L_STEP, sid, L_ENTITY, step.to_entity, { ns });
-  }
+    await runner.createEdges(ns, L_ENTITY, L_TRACE, [[R_MADE_DECISION, args.actor_entity, tid, { ns }]]);
+  const outcome: EdgeWrite[] = args.outcome_entity === null ? [] : [[R_RESULTED_IN, tid, args.outcome_entity, { ns }]];
+  const considered = args.alternative_entities.map((alt): EdgeWrite => [R_CONSIDERED, tid, alt, { ns }]);
+  await runner.createEdges(ns, L_TRACE, L_ENTITY, [...outcome, ...considered]);
+  const keyed = args.steps.map((step) => [ids.stepId(tid, step.order), step] as const);
+  await runner.upsertNodes(
+    ns,
+    L_STEP,
+    keyed.map(
+      ([sid, step]): NodeRow => [
+        sid,
+        {
+          id: sid,
+          ns,
+          relation_id: step.relation_id,
+          order: step.order,
+          from_entity: step.from_entity,
+          to_entity: step.to_entity,
+        },
+      ],
+    ),
+  );
+  await runner.createEdges(
+    ns,
+    L_TRACE,
+    L_STEP,
+    keyed.map(([sid, step]): EdgeWrite => [R_HAS_STEP, tid, sid, { ns, order: step.order }]),
+  );
+  await runner.createEdges(ns, L_STEP, L_ENTITY, [
+    ...keyed.map(([sid, step]): EdgeWrite => [R_FROM, sid, step.from_entity, { ns }]),
+    ...keyed.map(([sid, step]): EdgeWrite => [R_TO, sid, step.to_entity, { ns }]),
+  ]);
 }
 
 async function clearTraceStructure(runner: Runner, ns: string, tid: string): Promise<void> {

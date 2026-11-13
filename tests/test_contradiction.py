@@ -32,7 +32,7 @@ GLOBEX = ids.relation_id("person:ann", "WORKS_AT", "company:globex")
 
 def graph(**kwargs):
     g = fresh_graph("contra", schema=SPEC, **kwargs)
-    run(g.insert.ontology({"entities": PEOPLE}))
+    run(g.insert.facts({"entities": PEOPLE}))
     return g
 
 
@@ -41,7 +41,7 @@ async def collect(items):
 
 
 def insert(g, *relations, **kwargs):
-    return run(g.insert.ontology({"relations": list(relations)}, **kwargs))
+    return run(g.insert.facts({"relations": list(relations)}, **kwargs))
 
 
 @pytest.mark.parametrize(
@@ -217,12 +217,12 @@ def test_settings_cli_and_mcp_carry_the_mode(capsys, monkeypatch, tmp_path):
     g = graph()
     cli(g, ["--contradiction", "off", "relation", "list"], capsys)
     path = json_file(tmp_path, "o.json", {"relations": [works_at("acme", 2020), works_at("globex", 2023)]})
-    printed = cli(g, ["insert", "ontology", path, "--contradiction", "supersede"], capsys)
+    printed = cli(g, ["insert", "facts", path, "--contradiction", "supersede"], capsys)
     assert [w["code"] for w in printed["warnings"]] == ["relation_superseded"]
     assert len(cli(g, ["relation", "list", "--include-invalidated"], capsys)["items"]) == 2
 
     with mcp_session("contra-mcp", schema=SPEC) as srv:
-        run(srv.insert_ontology({"entities": PEOPLE, "relations": [works_at("acme", 2020)]}))
+        run(srv.insert_facts({"entities": PEOPLE, "relations": [works_at("acme", 2020)]}))
         run(srv.create_relation("person:ann", "WORKS_AT", "company:globex", contradiction="supersede"))
         assert len(run(srv.list_relations())["items"]) == 1
         assert len(run(srv.list_relations(include_invalidated=True))["items"]) == 2
@@ -232,12 +232,12 @@ def test_decision_steps_may_name_a_retired_relation():
     g = graph(contradiction="supersede")
     insert(g, works_at("acme", 2020), works_at("globex", 2023))
     decision = {"title": "Joined Acme", "actor_entity": "person:ann", "steps": [ACME]}
-    [dec] = run(g.insert.ontology({"decisions": [decision]}, contradiction="off")).decisions
+    [dec] = run(g.insert.facts({"decisions": [decision]}, contradiction="off")).decisions
     assert [(s.relation_id, s.to_entity) for s in dec.steps] == [(ACME, "company:acme")]
     created = run(g.decisions.create("Left Acme", steps=[ACME, GLOBEX], actor_entity="person:ann"))
     assert [s.relation_id for s in created.steps] == [ACME, GLOBEX]
     with pytest.raises(ValidationError, match="decision step references unknown relation 'relation:ghost'"):
-        run(g.insert.ontology({"decisions": [{**decision, "steps": ["relation:ghost"]}]}))
+        run(g.insert.facts({"decisions": [{**decision, "steps": ["relation:ghost"]}]}))
     with pytest.raises(ValidationError, match="decision step references unknown relation 'relation:ghost'"):
         run(g.decisions.create("Joined Acme", steps=["relation:ghost"], actor_entity="person:ann"))
 
@@ -260,7 +260,7 @@ def test_reads_and_updates_of_a_retired_relation_name_who_retired_it(capsys):
     with pytest.raises(NotFoundError, match="'preference:ghost' does not exist"):
         run(g.preferences.versions("preference:ghost"))
     with mcp_session("contra-get", schema=SPEC, contradiction="supersede") as srv:
-        run(srv.insert_ontology({"entities": PEOPLE, "relations": [works_at("acme", 2020), works_at("globex", 2023)]}))
+        run(srv.insert_facts({"entities": PEOPLE, "relations": [works_at("acme", 2020), works_at("globex", 2023)]}))
         with pytest.raises(NotFoundError, match=re.escape(f"relation {ACME} was invalidated by {GLOBEX}")):
             run(srv.get_relation(ACME))
         assert run(srv.get_relation("relation:ghost")) is None
@@ -315,7 +315,7 @@ def test_within_batch_conflicts_survive_aliases_case_and_extraction():
             {"from_entity": ids.entity_id(t1, n1), "type": r1, "to_entity": "company:acme"},
             {"from_entity": ids.entity_id(t2, n2), "type": r2, "to_entity": "company:globex"},
         ]
-        result = run(g.insert.ontology({"entities": ents, "relations": rels}))
+        result = run(g.insert.facts({"entities": ents, "relations": rels}))
         assert [w.code for w in result.warnings] == ["contradiction"], (t1, t2)
     llm = extracting_llm(
         [("person", "Ann"), ("company", "Acme"), ("company", "Globex")],
@@ -332,7 +332,7 @@ def test_surface_variants_that_share_an_id_are_one_relation_not_a_conflict():
         {"type": "Company", "name": "Acme Corp"},
         {"type": "Company", "name": "Acme Inc"},
     ]
-    result = run(g.insert.ontology({"entities": ents, "relations": [works_at("acme"), works_at("acme")]}))
+    result = run(g.insert.facts({"entities": ents, "relations": [works_at("acme"), works_at("acme")]}))
     assert result.warnings == [] and {r.id for r in result.relations} == {ACME}
 
 
@@ -340,11 +340,11 @@ def test_a_child_type_with_the_same_name_is_a_different_entity_without_resolutio
     spec = {**SPEC, "entities": [*SPEC["entities"], {"name": "Manager", "parent": "Person"}]}
     ents = [*PEOPLE, {"type": "Manager", "name": "Ann"}]
     rels = [works_at("acme"), {**works_at("globex"), "from_entity": "manager:ann"}]
-    exact = run(fresh_graph("contra", schema=spec).insert.ontology({"entities": ents, "relations": rels}))
+    exact = run(fresh_graph("contra", schema=spec).insert.facts({"entities": ents, "relations": rels}))
     assert exact.warnings == []
     g = fresh_graph("contra", schema=spec, resolver="default")
-    run(g.insert.ontology({"entities": PEOPLE, "relations": [works_at("acme")]}))
-    merged = run(g.insert.ontology({"entities": [{"type": "Manager", "name": "Ann"}], "relations": rels[1:]}))
+    run(g.insert.facts({"entities": PEOPLE, "relations": [works_at("acme")]}))
+    merged = run(g.insert.facts({"entities": [{"type": "Manager", "name": "Ann"}], "relations": rels[1:]}))
     assert [w.code for w in merged.warnings] == ["entity_merged", "contradiction"]
 
 

@@ -14,7 +14,7 @@ Set the mode on the graph, or override it on one insert:
 
 ```python
 graph = SelfGraph(store, resolver="default")
-result = await graph.insert.ontology(ontology)
+result = await graph.insert.facts(facts)
 await graph.insert.text(text, resolver="exact")
 ```
 
@@ -37,7 +37,7 @@ before anything is written.
 An entity is a candidate when both hold:
 
 - It has no explicit `id`. An entity you give an id is never merged, so omit `id`
-  in ontologies you want resolved.
+  in facts you want resolved.
 - Its derived id is not already stored. A known id is a plain upsert.
 
 The resolver, built in or custom, is offered exactly these entities for each
@@ -235,7 +235,7 @@ records. A later merge of the same pair starts fresh.
 | Task | CLI | MCP |
 |------|-----|-----|
 | Set the mode | global `--resolver`, or `SELFGRAPH_RESOLVER` | server setting |
-| Override for one insert | `insert text --resolver`, `insert ontology --resolver` | `resolver` argument of `insert_text` and `insert_ontology` |
+| Override for one insert | `insert text --resolver`, `insert facts --resolver` | `resolver` argument of `insert_text` and `insert_facts` |
 | List merge records | `selfgraph entity merges ID` | `entity_merges` |
 | Reverse a merge | `selfgraph entity unmerge MERGE_ID` | `unmerge_entity` |
 
@@ -248,7 +248,7 @@ decisions identically, and a parity fixture checks it.
 import { DefaultResolver, SelfGraph } from "@hydradb/selfgraph";
 
 const graph = new SelfGraph(store, { resolver: "default" });
-await graph.insert.ontology(ontology, { resolver: new DefaultResolver({ fuzzy: true }) });
+await graph.insert.facts(facts, { resolver: new DefaultResolver({ fuzzy: true }) });
 const page = await graph.entities.merges("company:international-business-machines");
 await graph.entities.unmerge(page.items[0]!.id);
 ```

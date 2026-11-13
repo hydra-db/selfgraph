@@ -36,7 +36,7 @@ import { KuzuStore, SelfGraph } from "@hydradb/selfgraph";
 
 await using graph = new SelfGraph(new KuzuStore("graph.kuzu"));
 
-await graph.insert.ontology({
+await graph.insert.facts({
   entities: [
     { id: "person:jane", type: "Person", name: "Jane Doe" },
     { id: "company:acme", type: "Company", name: "Acme" },

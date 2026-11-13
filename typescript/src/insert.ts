@@ -1,22 +1,22 @@
 import type { GraphAccess } from "./access.js";
 import { judgeContradictions } from "./contradiction.js";
 import { ExtractionError, errorMessage, SelfGraphError, ValidationError } from "./errors.js";
-import { BasicExtractor } from "./extraction/basic.js";
-import { DefaultExtractor } from "./extraction/extractor.js";
+import { NERExtractor } from "./extraction/basic.js";
+import { LLMExtractor } from "./extraction/extractor.js";
 import { pyStrip } from "./internal/py.js";
 import {
   asInput,
   type DateTimeInput,
   type Evidence,
+  Extraction,
   ExtractionInstructions,
   ExtractionPrompts,
   type InsertResult,
   type InsertWarning,
   insertWarning,
   type JsonObject,
-  Ontology,
   type ParsedDocument,
-  type ParsedOntology,
+  type ParsedExtraction,
   type Preference,
   parseOrThrow,
 } from "./models.js";
@@ -65,7 +65,7 @@ export interface InsertTextOptions {
   contradiction?: ContradictionMode | null;
 }
 
-export interface InsertOntologyOptions {
+export interface InsertFactsOptions {
   source_id?: string | null;
   event_time?: DateTimeInput | null;
   schema?: Schema | ParsedSchema | null;
@@ -74,7 +74,7 @@ export interface InsertOntologyOptions {
   contradiction?: ContradictionMode | null;
 }
 
-const ONTOLOGY_KEYS = keysOf<InsertOntologyOptions>({
+const FACTS_KEYS = keysOf<InsertFactsOptions>({
   source_id: true,
   event_time: true,
   schema: true,
@@ -136,8 +136,8 @@ export class Insert {
   ): Extractor {
     const { extractor, llm, prompts, instructions, extraction } = this.setup;
     if (extractor !== null) return extractor;
-    if (extraction !== "llm" || llm === null) return new BasicExtractor();
-    return new DefaultExtractor(llm, {
+    if (extraction !== "llm" || llm === null) return new NERExtractor();
+    return new LLMExtractor(llm, {
       prompts,
       instructions,
       call_prompts: callPrompts,
@@ -148,20 +148,20 @@ export class Insert {
   }
 
   /**
-   * Validate and write an ontology, with optional source provenance, in one store transaction.
+   * Validate and write facts, with optional source provenance, in one store transaction.
    *
-   * @param ontology (ParsedOntology): the parsed ontology.
+   * @param facts (ParsedExtraction): the parsed facts.
    * @param source (Provenance): the source and provenance fields, and the warnings to report.
    * @param schema (ParsedSchema | null): the per-call schema, or null for the graph's.
    * @param schemaMode (SchemaMode | null): the per-call schema mode, or null for the graph's.
    * @param resolver (EntityResolver | ResolverMode | null): the per-call entity resolver, or null for the graph's.
    * @param contradiction (ContradictionMode | null): the per-call contradiction mode, or null for the graph's.
-   * @param extracted (boolean): the ontology came from extraction, so strict mode drops what is off schema instead of throwing.
+   * @param extracted (boolean): the facts came from extraction, so strict mode drops what is off schema instead of throwing.
    * @param extraction (string | null): the extraction tier that ran, named in the result's tiers, or null when nothing was extracted.
    * @return (InsertResult): the insert result.
    */
   private async apply(
-    ontology: ParsedOntology,
+    facts: ParsedExtraction,
     source: Provenance,
     schema: ParsedSchema | null,
     schemaMode: SchemaMode | null,
@@ -185,7 +185,7 @@ export class Insert {
       contradiction: judged ? "llm" : conflicts,
     };
     return this.graph.write(async (tx, ns) => {
-      let canonical = await ops.validateOntology(tx, ns, ontology, (o) => canonicalizeTypes(o, activeSchema));
+      let canonical = await ops.validateFacts(tx, ns, facts, (o) => canonicalizeTypes(o, activeSchema));
       let dropped: InsertWarning[] = [];
       if (extracted && mode === "strict") [canonical, dropped] = await dropOffSchema(tx, ns, canonical, activeSchema);
       const maxCount = mode === "strict" && conflicts !== "off";
@@ -195,7 +195,7 @@ export class Insert {
         activeResolver === null
           ? null
           : await planResolution(tx, ns, canonical, activeResolver, activeSchema, createdAt);
-      const resolved = resolution?.ontology ?? canonical;
+      const resolved = resolution?.facts ?? canonical;
       if (mode === "strict" && conflicts === "warn") await ops.requireMaxCount(tx, ns, caps, resolved.relations);
       let sourceVersion: string | null = null;
       let baseEvidence: Evidence[] = [];
@@ -272,19 +272,19 @@ export class Insert {
     });
   }
 
-  private async extract(extractor: Extractor, document: ParsedDocument): Promise<ParsedOntology> {
-    let raw: Ontology;
+  private async extract(extractor: Extractor, document: ParsedDocument): Promise<ParsedExtraction> {
+    let raw: Extraction;
     try {
       raw = await extractor.extract(document);
     } catch (exc) {
       if (exc instanceof SelfGraphError) throw exc;
       throw new ExtractionError(`extraction failed: ${errorMessage(exc)}`, { cause: exc });
     }
-    return parseOrThrow(Ontology, raw, "ontology from extractor");
+    return parseOrThrow(Extraction, raw, "facts from extractor");
   }
 
   /**
-   * Extract an ontology from text and merge it into the graph in one transaction.
+   * Extract facts from text and merge them into the graph in one transaction.
    *
    * @param text (string): the text to extract from.
    * @param options (InsertTextOptions): the source id, a default event time, source metadata, and per-call instructions or prompts.
@@ -307,11 +307,11 @@ export class Insert {
     const callPrompts = asInput(ExtractionPrompts, options.prompts, "prompts");
     const extractor = this.extractorFor(callInstructions, callPrompts, activeSchema, options.source_id ?? null);
     const document: ParsedDocument = { text, media_type: "text/plain", metadata: { ...(options.metadata ?? {}) } };
-    const ontology = await this.extract(extractor, document);
+    const facts = await this.extract(extractor, document);
     const warnings: InsertWarning[] = extractor.popWarnings?.() ?? [];
     const { instructions, prompts } = this.setup;
     const customized = callInstructions || callPrompts || instructions || prompts;
-    if (customized && !(extractor instanceof DefaultExtractor)) {
+    if (customized && !(extractor instanceof LLMExtractor)) {
       warnings.push(
         insertWarning(
           "prompts_ignored",
@@ -320,7 +320,7 @@ export class Insert {
       );
     }
     return this.apply(
-      ontology,
+      facts,
       {
         source_id: options.source_id ?? null,
         parsed_text: text,
@@ -334,22 +334,22 @@ export class Insert {
       options.resolver ?? null,
       options.contradiction ?? null,
       true,
-      extractor instanceof DefaultExtractor ? "llm" : (extractor.tier ?? "custom"),
+      extractor instanceof LLMExtractor ? "llm" : (extractor.tier ?? "custom"),
     );
   }
 
   /**
-   * Merge a ready ontology as idempotent upserts, validating every reference before any write.
+   * Merge ready facts as idempotent upserts, validating every reference before any write.
    *
-   * @param ontology (Ontology): the ontology object.
-   * @param options (InsertOntologyOptions): the source id to record provenance under, and event_time, the default event time for relations, preferences, and decisions that carry none of their own.
+   * @param facts (Extraction): the facts object.
+   * @param options (InsertFactsOptions): the source id to record provenance under, and event_time, the default event time for relations, preferences, and decisions that carry none of their own.
    * @return (InsertResult): what was inserted.
    */
-  async ontology(ontology: Ontology, options: InsertOntologyOptions = {}): Promise<InsertResult> {
-    checkOptions("insert.ontology", options, ONTOLOGY_KEYS);
+  async facts(facts: Extraction, options: InsertFactsOptions = {}): Promise<InsertResult> {
+    checkOptions("insert.facts", options, FACTS_KEYS);
     requireOptionalText("source_id", options.source_id);
     const eventTime = parseTime(options.event_time, "event_time");
-    const parsed = parseOrThrow(Ontology, ontology, "ontology");
+    const parsed = parseOrThrow(Extraction, facts, "facts");
     return this.apply(
       parsed,
       {

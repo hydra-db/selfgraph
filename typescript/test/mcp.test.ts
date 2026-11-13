@@ -23,8 +23,8 @@ const READS = ["MATCH (n) RETURN n.set AS x;", "RETURN 1; MATCH (n) RETURN n"];
 const TOOL_NAMES =
   `coverage create_decision create_entity create_preference create_relation delete_decision delete_entity
   delete_preference delete_relation entity_evidence entity_merges get_decision get_entity get_preference get_relation
-  get_schema insert_ontology insert_text list_decisions list_entities list_preferences list_relations
-  maintenance_consolidate maintenance_decay maintenance_prune preference_versions relation_evidence relation_versions
+  get_schema insert_facts insert_text list_decisions list_entities list_preferences list_relations
+  maintenance_decay maintenance_dedupe_relations maintenance_prune preference_versions relation_evidence relation_versions
   retrieve run_cypher unmerge_entity update_decision update_entity update_preference update_relation`.split(/\s+/);
 
 const uri = tempKuzu("selfgraph-mcp-");
@@ -104,16 +104,16 @@ async function invalid(name: string, args: Record<string, unknown>): Promise<str
 }
 
 describe("MCP tools over Kuzu", () => {
-  it("maps event_time on every write tool, dates ontology inserts, and clears decision and preference fields", async () => {
+  it("maps event_time on every write tool, dates facts inserts, and clears decision and preference fields", async () => {
     await configure();
     const keys = (name: string) => Object.keys(mcpTool(name).input).sort();
     expect(keys("insert_text")).toEqual(
       "contradiction event_time instructions metadata prompts resolver schema schema_mode source_id text".split(" "),
     );
-    const dated = "insert_ontology create_relation update_relation create_preference update_preference create_decision";
+    const dated = "insert_facts create_relation update_relation create_preference update_preference create_decision";
     for (const name of [...dated.split(" "), "update_decision"]) expect(keys(name), name).toContain("event_time");
-    const inserted = await mcpOk<{ relations: Array<{ event_time: string }> }>("insert_ontology", {
-      ontology: A_KNOWS_B,
+    const inserted = await mcpOk<{ relations: Array<{ event_time: string }> }>("insert_facts", {
+      facts: A_KNOWS_B,
       event_time: "2020-05-01",
     });
     expect(inserted.relations[0]!.event_time).toBe("2020-05-01T00:00:00Z");
@@ -158,8 +158,8 @@ describe("MCP tools over Kuzu", () => {
 
   it("pages evidence, passes relation evidence and a per-call schema to the library, and checks file settings at startup", async () => {
     await configure({ namespace: "mcp_parity" });
-    await mcpOk("insert_ontology", { ontology: A_KNOWS_B, source_id: "s1" });
-    await mcpOk("insert_ontology", { ontology: A_KNOWS_B, source_id: "s2" });
+    await mcpOk("insert_facts", { facts: A_KNOWS_B, source_id: "s1" });
+    await mcpOk("insert_facts", { facts: A_KNOWS_B, source_id: "s2" });
     expect((await mcpOk("get_entity", { id: "t:a" })).source_count).toBe(2);
     type Page = { items: Array<{ source_id: string; quote: string | null }>; next_cursor: string | null };
     const first = await mcpOk<Page>("entity_evidence", { id: "t:a", limit: 1 });
@@ -173,10 +173,8 @@ describe("MCP tools over Kuzu", () => {
     const sources = (await mcpOk<Page>("relation_evidence", { id: "relation:ab" })).items.map((e) => e.source_id);
     expect(sources.sort()).toEqual(["doc-2", "s1", "s2"]);
     const schema = { entities: [{ name: "Person" }] };
-    const ontology = { entities: [{ name: "X", type: "T" }] };
-    expect((await mcpError("insert_ontology", { ontology, schema, schema_mode: "strict" })).error).toContain(
-      "unknown type",
-    );
+    const facts = { entities: [{ name: "X", type: "T" }] };
+    expect((await mcpError("insert_facts", { facts, schema, schema_mode: "strict" })).error).toContain("unknown type");
     const text = await mcpOk<{ warnings: Array<{ code: string }> }>("insert_text", {
       text: "Ann met Bob.",
       schema,
@@ -207,7 +205,7 @@ describe("MCP tools over Kuzu", () => {
     expect(await invalid("insert_text", { text: "  " })).toBe("text cannot be empty or whitespace");
     expect(await invalid("list_entities", { limit: 0 })).toBe("limit must be >= 1, got 0");
     for (const flag of ["no", "false", "0", 0, null]) {
-      for (const name of ["maintenance_decay", "maintenance_consolidate"]) {
+      for (const name of ["maintenance_decay", "maintenance_dedupe_relations"]) {
         expect(await invalid(name, { dry_run: flag })).toContain("dry_run");
       }
       expect(await invalid("maintenance_prune", { min_relevance: 2, dry_run: flag })).toContain("dry_run");
@@ -215,7 +213,7 @@ describe("MCP tools over Kuzu", () => {
       expect(await invalid("relation_versions", { id: rel.id, newest_first: flag })).toContain("newest_first");
     }
     expect(await invalid("list_decisions", { status: "bogus" })).toContain("status");
-    expect(await invalid("list_preferences", { kind: "bogus" })).toContain("kind");
+    expect(await invalid("list_preferences", { stance: "bogus" })).toContain("stance");
     expect(await invalid("create_decision", { title: "D", steps: [rel.id], status: "bogus" })).toContain("status");
     expect(await invalid("run_cypher", { query: "RETURN $a AS a, '$b' AS b // $c" })).toBe("missing parameter $a");
     expect(await mcpOk("run_cypher", { query: "RETURN $a AS a", params: { a: 1, b: 2 } })).toMatchObject({
@@ -240,7 +238,7 @@ describe("MCP tools over Kuzu", () => {
 
   it("names who retired a relation, fails versions of an unknown one, and supersedes from now", async () => {
     await configure({ namespace: "mcp_retired", contradiction: "supersede", schema: SINGLE_EMPLOYER });
-    await mcpOk("insert_ontology", { ontology: ANN_AT_ACME });
+    await mcpOk("insert_facts", { facts: ANN_AT_ACME });
     const made = await mcpOk("create_relation", {
       from_entity: "person:ann",
       type: "WORKS_AT",
@@ -277,13 +275,13 @@ describe("MCP tools over Kuzu", () => {
       for (const name of ["get_entity", "list_relations", "relation_versions", "entity_evidence", "run_cypher"]) {
         expect(hints[name]).toMatchObject({ readOnlyHint: true });
       }
-      for (const name of ["delete_entity", "maintenance_prune", "maintenance_consolidate"]) {
+      for (const name of ["delete_entity", "maintenance_prune", "maintenance_dedupe_relations"]) {
         expect(hints[name]).toMatchObject({ destructiveHint: true, idempotentHint: true });
       }
       expect(hints.retrieve).toMatchObject({ readOnlyHint: true });
       expect(hints.coverage).toMatchObject({ readOnlyHint: true });
       expect(hints.create_entity).toMatchObject({ destructiveHint: false, idempotentHint: false });
-      expect(hints.insert_ontology).toMatchObject({ idempotentHint: true });
+      expect(hints.insert_facts).toMatchObject({ idempotentHint: true });
       for (const [tool, args, message] of [
         ["get_schema", { format: "bogus" }, "invalid arguments: format: expected 'selfgraph' or 'neo4j'"],
         ["create_entity", { name: "a" }, "invalid arguments: type: field required"],
@@ -308,10 +306,10 @@ describe("MCP tools over Kuzu", () => {
       entity_ids: ["t:a"],
     });
     expect(await mcpOk("maintenance_prune", { min_relevance: 0.5 })).not.toHaveProperty("deleted");
-    const plan = await mcpOk("maintenance_consolidate", {});
+    const plan = await mcpOk("maintenance_dedupe_relations", {});
     expect(plan).toMatchObject({ dry_run: true });
     expect(plan).not.toHaveProperty("deleted");
-    expect(await mcpOk("maintenance_consolidate", { dry_run: false })).toHaveProperty("deleted");
+    expect(await mcpOk("maintenance_dedupe_relations", { dry_run: false })).toHaveProperty("deleted");
     const decay = await mcpOk<{ entities: Record<string, number> }>("maintenance_decay", { dry_run: true });
     expect(decay.entities["t:a"]).toBeGreaterThan(0);
     await mcpError("maintenance_prune", { older_than: "not a date" });
@@ -323,9 +321,9 @@ describe("MCP tools over Kuzu", () => {
 
   it("takes a resolver on insert and unmerges by id", async () => {
     await configure({ namespace: "mcp_resolution" });
-    await mcpOk("insert_ontology", { ontology: { entities: [{ type: "Person", name: "Robert", aliases: ["Bob"] }] } });
-    const res = await mcpOk<{ merges: Array<{ id: string }>; warnings: Array<{ code: string }> }>("insert_ontology", {
-      ontology: { entities: [{ type: "Person", name: "Bob" }] },
+    await mcpOk("insert_facts", { facts: { entities: [{ type: "Person", name: "Robert", aliases: ["Bob"] }] } });
+    const res = await mcpOk<{ merges: Array<{ id: string }>; warnings: Array<{ code: string }> }>("insert_facts", {
+      facts: { entities: [{ type: "Person", name: "Bob" }] },
       resolver: "default",
     });
     expect(res.warnings.map((w) => w.code)).toEqual(["entity_merged"]);

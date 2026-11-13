@@ -1,6 +1,6 @@
 import type { z } from "zod";
 
-import type { CypherResult, InsertWarning, JsonValue, Ontology, ParsedDocument } from "./models.js";
+import type { CypherResult, Extraction, InsertWarning, JsonValue, ParsedDocument } from "./models.js";
 
 export type Props = Record<string, unknown>;
 
@@ -55,7 +55,7 @@ export interface LLMClient {
 }
 
 export interface Extractor {
-  extract(document: ParsedDocument): Promise<Ontology>;
+  extract(document: ParsedDocument): Promise<Extraction>;
   tier?: string;
   /**
    * Return and clear warnings from the last extract call.

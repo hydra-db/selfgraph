@@ -1,7 +1,7 @@
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import { FalkorDBStore, fromTables, ids, KuzuStore, SelfGraph, toJsonable } from "../../src/index.js";
 import { comparePy } from "../../src/internal/py.js";
-import { Ontology, parseOrThrow } from "../../src/models.js";
+import { Extraction, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { expandTokens, matchTerms } from "../../src/terms.js";
@@ -116,16 +116,16 @@ const GRAPH_TYPES = new Map([
   ["org:o", "org"],
 ]);
 
-const UNKNOWN_KEY_CASES: Array<["ontology" | "schema", unknown]> = [
-  ["ontology", { entites: [] }],
-  ["ontology", { entities: [{ type: "P", nmae: "x" }] }],
-  ["ontology", { entities: [{ type: "P", name: "x", b: 1, a: 2 }] }],
+const UNKNOWN_KEY_CASES: Array<["facts" | "schema", unknown]> = [
+  ["facts", { entites: [] }],
+  ["facts", { entities: [{ type: "P", nmae: "x" }] }],
+  ["facts", { entities: [{ type: "P", name: "x", b: 1, a: 2 }] }],
   [
-    "ontology",
+    "facts",
     { relations: [{ from_entity: "a", type: "X", to_entity: "b", evidence: [{ source_id: "s", qoute: "q" }] }] },
   ],
-  ["ontology", { decisions: [{ title: "t", steps: [], stauts: "active" }] }],
-  ["ontology", { preferences: [{ subject_entity: "a", key: "k", value_entity: "b", strenght: 1 }] }],
+  ["facts", { decisions: [{ title: "t", steps: [], stauts: "active" }] }],
+  ["facts", { preferences: [{ subject_entity: "a", key: "k", value_entity: "b", strenght: 1 }] }],
   ["schema", { entity_types: [] }],
   ["schema", { entities: [{ name: "A", properties: [{ name: "x", requird: true }] }] }],
   ["schema", { relations: [{ type: "X", from: { type: ["A"] } }] }],
@@ -135,13 +135,13 @@ const UNKNOWN_KEY_CASES: Array<["ontology" | "schema", unknown]> = [
 /**
  * Parse a value with an unknown key and return the error message.
  *
- * @param kind ("ontology" | "schema"): which input it is.
+ * @param kind ("facts" | "schema"): which input it is.
  * @param value (unknown): the raw input.
  * @return (string): the ValidationError message.
  */
-function unknownKeyError(kind: "ontology" | "schema", value: unknown): string {
+function unknownKeyError(kind: "facts" | "schema", value: unknown): string {
   try {
-    if (kind === "ontology") parseOrThrow(Ontology, value, kind);
+    if (kind === "facts") parseOrThrow(Extraction, value, kind);
     else parseOrThrow(Schema, value, kind);
   } catch (exc) {
     return (exc as Error).message;
@@ -164,7 +164,7 @@ export function schemaWarnings(): {
   const schema = Schema.parse(SCHEMA_SPEC);
   return {
     warnings: SCHEMA_CASES.map((c) =>
-      validateAgainstSchema(Ontology.parse(c), schema, { graphTypes: GRAPH_TYPES }).map((w) => ({
+      validateAgainstSchema(Extraction.parse(c), schema, { graphTypes: GRAPH_TYPES }).map((w) => ({
         code: w.code,
         message: w.message,
       })),
@@ -180,7 +180,7 @@ export function schemaWarnings(): {
 
 const ZOE = ids.entityId("Person", "Zoë Ångström");
 
-export const ONTOLOGY = {
+export const FACTS = {
   entities: [
     {
       type: "Person",
@@ -218,7 +218,7 @@ export const ONTOLOGY = {
     },
     {
       subject_entity: "person:jane-doe",
-      kind: "disinterest" as const,
+      stance: "disinterest" as const,
       key: "database",
       value_entity: "database:postgres",
     },
@@ -257,7 +257,7 @@ export function conformanceStore(name: string, kuzuPath: string): GraphStore {
 
 export async function write(graph: SelfGraph): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
-  out.ontology = toJsonable(await graph.insert.ontology(ONTOLOGY, { source_id: "spec" }));
+  out.facts = toJsonable(await graph.insert.facts(FACTS, { source_id: "spec" }));
   out.text = toJsonable(
     await graph.insert.text(TEXT, { source_id: "notes", metadata: { author: "conformance", n: 1, f: 0.5 } }),
   );

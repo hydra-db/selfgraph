@@ -12,7 +12,7 @@ Relations and preferences keep their version history.
 |------|--------|
 | [Install](install.md) | The package and its optional extras. |
 | [Quickstart](quickstart.md) | A first graph with no server and no LLM. |
-| [Inserting](inserting.md) | Extracting from text, and writing a ready ontology. |
+| [Inserting](inserting.md) | Extracting from text, and writing ready facts. |
 | [Tiers](tiers.md) | The `level` preset, what each level picks, and the cost cap. |
 | [Schema](schema.md) | Optional types that guide extraction and check writes. |
 | [Ontology](ontology.md) | Terms, synonyms, definitions, coverage checks, and drafts from table metadata. |

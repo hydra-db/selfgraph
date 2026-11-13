@@ -334,20 +334,20 @@ def relation_id(from_entity: str, type: str, to_entity: str) -> str:
     return f"relation:{_hash(from_entity, normalize_rel_type(type), to_entity)}"
 
 
-def preference_id(subject_entity: str, kind: str, key: str, value_entity: str) -> str:
-    """A hash of ``subject_entity``, ``kind``, ``key``, and ``value_entity``.
+def preference_id(subject_entity: str, stance: str, key: str, value_entity: str) -> str:
+    """A hash of ``subject_entity``, ``stance``, ``key``, and ``value_entity``.
 
     @param subject_entity (str): the subject entity id.
-    @param kind (str): the preference kind.
+    @param stance (str): the preference stance.
     @param key (str): the preference dimension key.
     @param value_entity (str): the value entity id.
     @return (str): the derived preference id.
     """
     _require_str("subject_entity", subject_entity)
-    _require_str("preference kind", kind)
+    _require_str("preference stance", stance)
     _require_str("preference key", key)
     _require_str("value_entity", value_entity)
-    return f"preference:{_hash(subject_entity, kind, normalize_text(key), value_entity)}"
+    return f"preference:{_hash(subject_entity, stance, normalize_text(key), value_entity)}"
 
 
 def decision_id(actor_entity: str | None, title: str) -> str:

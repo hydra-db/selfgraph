@@ -107,7 +107,7 @@ def test_delete_trace_keeps_relations():
 
 def test_decision_steps_default_to_empty():
     g = fresh_graph("nosteps")
-    run(g.insert.ontology({"decisions": [{"title": "No steps", "id": "decision:none"}]}))
+    run(g.insert.facts({"decisions": [{"title": "No steps", "id": "decision:none"}]}))
     assert run(g.decisions.get("decision:none")).steps == []
     assert run(g.decisions.create("Also none")).steps == []
 
@@ -143,5 +143,5 @@ def test_update_clears_named_fields_and_unlinks_cleared_references():
     assert run(g.decisions.get(dec.id)) is not None
     with pytest.raises(ValidationError, match="decision status"):
         run(g.decisions.list(status="zzz"))
-    with pytest.raises(ValidationError, match="preference kind"):
-        run(g.preferences.list(kind="zzz"))
+    with pytest.raises(ValidationError, match="preference stance"):
+        run(g.preferences.list(stance="zzz"))

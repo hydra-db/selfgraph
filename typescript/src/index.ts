@@ -18,18 +18,15 @@ export {
   TransientError,
   ValidationError,
 } from "./errors.js";
-export { BasicExtractor } from "./extraction/basic.js";
-export { DefaultExtractor, type DefaultExtractorOptions } from "./extraction/extractor.js";
+export { NERExtractor } from "./extraction/basic.js";
+export { LLMExtractor, type LLMExtractorOptions } from "./extraction/extractor.js";
 export { DEFAULT_PROMPTS } from "./extraction/prompts.js";
 export * as ids from "./ids.js";
 export { decisionId, entityId, normalizeRelType, preferenceId, profileId, relationId } from "./ids.js";
-export type { InsertOntologyOptions, InsertTextOptions } from "./insert.js";
+export type { InsertFactsOptions, InsertTextOptions } from "./insert.js";
 export { type Logger, type LogLevel, setLogger } from "./internal/log.js";
 export { buildLlmClient, type LLMArg } from "./llm/index.js";
 export {
-  type ConsolidateGroup,
-  type ConsolidateResult,
-  type Coverage,
   type CypherResult,
   type CypherRow,
   DateTimeInput,
@@ -37,29 +34,30 @@ export {
   type DecisionStep,
   type DecisionTrace,
   DecisionTraceInput,
+  type DedupeGroup,
+  type DedupeResult,
   type DeleteResult,
   type Entity,
   EntityInput,
   type Evidence,
   EvidenceInput,
+  Extraction,
   ExtractionInstructions,
   ExtractionPrompts,
   type InsertResult,
   type InsertWarning,
   type JsonObject,
   JsonValue,
-  Kind,
   LLMConfig,
   type MergeRecord,
   type MergeRewrite,
-  Ontology,
   type Page,
   type ParsedDecisionTraceInput,
   type ParsedDocument,
   type ParsedEntityInput,
   type ParsedEvidenceInput,
+  type ParsedExtraction,
   type ParsedLLMConfig,
-  type ParsedOntology,
   type ParsedPreferenceInput,
   type ParsedRelationInput,
   type Preference,
@@ -70,6 +68,7 @@ export {
   RelationInput,
   type RetrievalResult,
   type RetrievalSeed,
+  Stance,
   Status,
   type Subgraph,
   type TermMatch,
@@ -101,11 +100,11 @@ export {
   type ResolverMode,
 } from "./resolution.js";
 export type {
-  ConsolidateOptions,
   DecayOptions,
   DecisionCreateOptions,
   DecisionListOptions,
   DecisionUpdateFields,
+  DedupeRelationsOptions,
   EntityCreateOptions,
   EntityListOptions,
   EntityUpdateFields,

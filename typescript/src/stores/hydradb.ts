@@ -99,6 +99,21 @@ export function surrogateKey(ns: string, sid: string): bigint {
   return n >> 1n;
 }
 
+/**
+ * The string property holding a node's id for one label in one namespace, which id-ordered reads walk.
+ *
+ * The engine walks a property's index in value order and stops once the page is full, not at the end of a prefix,
+ * so a property shared by every namespace would make a namespace's last page read the nodes of every namespace
+ * sorting after it.
+ *
+ * @param ns (string): the namespace.
+ * @param label (string): the node label.
+ * @return (string): the property name.
+ */
+function sortKey(ns: string, label: string): string {
+  return `k_${label}_${surrogateKey(ns, label)}`;
+}
+
 function scalars(props: Props): Props {
   const out: Props = {};
   for (const [k, v] of Object.entries(props)) {
@@ -134,7 +149,7 @@ const docOf = (value: unknown): string => pyJsonDumps(value, { default: pyStr })
  */
 const same = (alias: string, key: string, param: string): string => `NOT ${alias}.\`${key}\` <> $${param}`;
 
-const BY_SID = `MATCH (a)-[r:${EDGE} {sid: $sid}]->(b) WHERE ${same("r", "ns", "ns")}`;
+const BY_SID = `MATCH ()-[r:${EDGE} {sid: $sid}]->() WHERE ${same("r", "ns", "ns")}`;
 
 /**
  * A node pattern carrying the equality filters in its property map, so the engine seeks on them.
@@ -308,14 +323,25 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     options: UpsertNodeOptions = {},
   ): Promise<void> {
     if (options.extra_label != null) quoteLabel(options.extra_label);
-    const cleared = new Map<string, bigint[]>();
+    const cleared = new Map<string, [string[], bigint[]]>();
+    const key = sortKey(ns, label);
     const out = rows.map(([id, props]) => {
-      const row: Props = { id: surrogateKey(ns, id), sid: id, ns, label, doc: docOf(props), ...scalars(props) };
+      const row: Props = {
+        id: surrogateKey(ns, id),
+        sid: id,
+        ns,
+        label,
+        [key]: id,
+        doc: docOf(props),
+        ...scalars(props),
+      };
       guardSizes(row);
       const keys = unset(props);
       if (keys.length) {
-        const removal = removes("n", keys);
-        cleared.set(removal, [...(cleared.get(removal) ?? []), row.id as bigint]);
+        const group = JSON.stringify(keys);
+        const entry = cleared.get(group) ?? [keys, []];
+        entry[1].push(row.id as bigint);
+        cleared.set(group, entry);
       }
       return row;
     });
@@ -324,11 +350,15 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
         rows: batch,
       });
     }
-    for (const [removal, iids] of cleared) {
+    for (const [keys, iids] of cleared.values()) {
       for (let i = 0; i < iids.length; i += DELETE_BATCH) {
-        await this._run(`MATCH (n:${label}) WHERE n.id IN $iids REMOVE ${removal}`, {
-          iids: iids.slice(i, i + DELETE_BATCH),
-        });
+        const params = { iids: iids.slice(i, i + DELETE_BATCH) };
+        const held = await this._run(
+          `MATCH (n:${label}) WHERE n.id IN $iids AND (${keys.map((k) => `n.\`${k}\` IS NOT NULL`).join(" OR ")}) RETURN n.sid AS sid`,
+          params,
+        );
+        if (held.rows.length)
+          await this._run(`MATCH (n:${label}) WHERE n.id IN $iids REMOVE ${removes("n", keys)}`, params);
       }
     }
   }
@@ -339,6 +369,18 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async matchNodes(ns: string, label: string, options: MatchNodesOptions = {}): Promise<Props[]> {
     const { equals, any_of, skip = 0, limit = DEFAULT_MATCH_LIMIT, id_gt } = options;
+    if (!sortedEntries(equals).length && !sortedEntries(any_of).length) {
+      const key = sortKey(ns, label);
+      const params: Props = { skip, limit };
+      const where = [`n.\`${key}\` STARTS WITH ''`];
+      whereAfter(`n.\`${key}\``, id_gt, where, params);
+      const res = await this._run(
+        `MATCH (n:${label}) WHERE ${where.join(" AND ")} ` +
+          `RETURN n.doc AS doc ORDER BY n.\`${key}\` SKIP $skip LIMIT $limit`,
+        params,
+      );
+      return docs(res.rows);
+    }
     const params: Props = { ns, label, skip, limit };
     const ids = any_of?.id;
     let pattern: string;
@@ -353,7 +395,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       });
     } else {
       pattern = keyed("n", label, equals, params);
-      where = [equals && Object.keys(equals).length ? same("n", "ns", "ns") : "n.ns = $ns"];
+      where = [same("n", "ns", "ns")];
     }
     sortedEntries(any_of).forEach(([key, values], i) => {
       if (key === "id") return;
@@ -383,7 +425,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   async deleteNodesBy(ns: string, label: string, equals: Props): Promise<number> {
     const params: Props = { ns, batch: DELETE_BATCH };
     const pattern = keyed("n", label, equals, params);
-    const where = Object.keys(equals).length ? same("n", "ns", "ns") : "n.ns = $ns";
+    const where = same("n", "ns", "ns");
     let deleted = 0;
     for (;;) {
       const res = await this._run(`MATCH (${pattern}) WHERE ${where} RETURN n.id AS iid LIMIT $batch`, params);
@@ -423,6 +465,10 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       const row: Props = {
         f: surrogateKey(ns, fromId),
         t: surrogateKey(ns, toId),
+        fa: fromId,
+        tb: toId,
+        fl: fromLabel,
+        tl: toLabel,
         id: surrogateKey(ns, `${fromId}|${type}|${toId}|${pyStr(sid ?? null)}|${pyStr(props.revision ?? null)}`),
         ns,
         etype: type,
@@ -444,7 +490,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async getCurrentEdge(ns: string, id: string): Promise<EdgeRow | null> {
     const res = await this._run(
-      `${BY_SID} AND r.is_current = true RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et`,
+      `${BY_SID} AND r.is_current = true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et`,
       { ns, sid: id },
     );
     const row = res.rows[0];
@@ -453,7 +499,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async listEdgeVersions(ns: string, id: string): Promise<EdgeRow[]> {
     const res = await this._run(
-      `${BY_SID} RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
+      `${BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
       { ns, sid: id },
     );
     return res.rows.map(edgeRow);
@@ -520,21 +566,30 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       where.push("b.id IN $tiids_in");
       params.tiids_in = to_in.map((i) => surrogateKey(ns, i));
     }
-    const anchored = where.length > 0 || from_id != null || to_id != null;
+    const fromAnchored = from_id != null || from_in != null;
+    const toAnchored = to_id != null || to_in != null;
+    const anchored = fromAnchored || toAnchored;
     const filters: Array<[string, unknown]> = [
       ["ns", ns],
       ...(type != null ? ([["etype", type]] as Array<[string, unknown]>) : []),
       ...sortedEntries(equals),
     ];
+    if (fromAnchored && !toAnchored) {
+      bpat = "";
+      if (to_label) filters.push(["tl", to_label]);
+    } else if (toAnchored && !fromAnchored) {
+      apat = "";
+      filters.push(["fl", from_label]);
+    }
     filters.forEach(([key, value], i) => {
       where.push(anchored ? same("r", key, `eq${i}`) : `r.\`${key}\` = $eq${i}`);
       params[`eq${i}`] = value;
     });
-    if (current_only) where.push("r.is_current = true");
+    if (current_only) where.push(anchored ? "NOT r.is_current <> true" : "r.is_current = true");
     whereAfter("r.sid", id_gt, where, params);
     const res = await this._run(
       `MATCH (${apat})-[r:${EDGE}]->(${bpat}) WHERE ${where.join(" AND ")} ` +
-        "RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.`sid` AS __ob " +
+        "RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`sid` AS __ob " +
         "ORDER BY __ob SKIP $skip LIMIT $limit",
       params,
     );
@@ -550,7 +605,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   ): Promise<Props[]> {
     const res = await this._run(
       `MATCH (p:${parentLabel} {id: $iid})-[r:${EDGE}]->(c:${childLabel}) ` +
-        `WHERE ${same("r", "ns", "ns")} AND r.etype = $et RETURN c.doc AS doc`,
+        `WHERE ${same("r", "ns", "ns")} AND ${same("r", "etype", "et")} RETURN c.doc AS doc`,
       { iid: surrogateKey(ns, parentId), ns, et: edgeType },
     );
     return docs(res.rows);
@@ -558,7 +613,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async deleteEdgesTouchingByType(ns: string, label: string, id: string, type: string): Promise<void> {
     await this._run(
-      `MATCH (t:${label} {id: $iid})-[r:${EDGE}]-(o) WHERE ${same("r", "ns", "ns")} AND r.etype = $et DELETE r`,
+      `MATCH (t:${label} {id: $iid})-[r:${EDGE}]-(o) WHERE ${same("r", "ns", "ns")} AND ${same("r", "etype", "et")} DELETE r`,
       { iid: surrogateKey(ns, id), ns, et: type },
     );
   }

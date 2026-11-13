@@ -49,7 +49,7 @@ or to use `await using` in your code, use `@types/node` 20 or newer, or add
 
 Method names are camelCase, and options go in a trailing object. Model fields and
 option keys keep their Python names (`from_entity`, `event_time`, `next_cursor`,
-`budget_tokens`). So ontology JSON, MCP payloads, and these docs carry over
+`budget_tokens`). So facts JSON, MCP payloads, and these docs carry over
 unchanged.
 
 | Python | TypeScript |

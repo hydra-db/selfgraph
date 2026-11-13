@@ -72,6 +72,20 @@ def _sk(ns: str, sid: str) -> int:
     return int.from_bytes(digest, "big") >> 1
 
 
+def _sort_key(ns: str, label: str) -> str:
+    """The string property holding a node's id for one label in one namespace, which id-ordered reads walk.
+
+    The engine walks a property's index in value order and stops once the page is full, not at the end of a
+    prefix, so a property shared by every namespace would make a namespace's last page read the nodes of every
+    namespace sorting after it.
+
+    @param ns (str): namespace.
+    @param label (str): the node label.
+    @return (str): the property name.
+    """
+    return f"k_{label}_{_sk(ns, label)}"
+
+
 def _scalars(props: dict) -> dict:
     return {k: v for k, v in props.items() if k not in ("id", "ns") and isinstance(v, _SCALARS)}
 
@@ -104,7 +118,7 @@ def _same(alias: str, key: str, param: str) -> str:
     return f"NOT {alias}.`{key}` <> ${param}"
 
 
-_BY_SID = f"MATCH (a)-[r:{_EDGE} {{sid: $sid}}]->(b) WHERE {_same('r', 'ns', 'ns')}"
+_BY_SID = f"MATCH ()-[r:{_EDGE} {{sid: $sid}}]->() WHERE {_same('r', 'ns', 'ns')}"
 
 
 def _keyed(alias: str, label: str, equals: dict | None, params: dict) -> str:
@@ -222,8 +236,17 @@ class HydraDBStore(AutoCommitStore):
             quote_label(extra_label)
         out = []
         cleared: dict[tuple[str, ...], list[int]] = {}
+        key = _sort_key(ns, label)
         for id, props in rows:
-            row = {"id": _sk(ns, id), "sid": id, "ns": ns, "label": label, "doc": _doc(props), **_scalars(props)}
+            row = {
+                "id": _sk(ns, id),
+                "sid": id,
+                "ns": ns,
+                "label": label,
+                key: id,
+                "doc": _doc(props),
+                **_scalars(props),
+            }
             _guard_sizes(row)
             out.append(row)
             if keys := _unset(props):
@@ -235,10 +258,14 @@ class HydraDBStore(AutoCommitStore):
             )
         for keys, iids in cleared.items():
             for i in range(0, len(iids), _DELETE_BATCH):
-                await self._run(
-                    f"MATCH (n:{label}) WHERE n.id IN $iids REMOVE {_removes('n', keys)}",
-                    {"iids": iids[i : i + _DELETE_BATCH]},
+                params = {"iids": iids[i : i + _DELETE_BATCH]}
+                held = await self._run(
+                    f"MATCH (n:{label}) WHERE n.id IN $iids AND ({' OR '.join(f'n.`{k}` IS NOT NULL' for k in keys)}) "
+                    "RETURN n.sid AS sid",
+                    params,
                 )
+                if held.rows:
+                    await self._run(f"MATCH (n:{label}) WHERE n.id IN $iids REMOVE {_removes('n', keys)}", params)
 
     async def remove_node_label(self, ns: str, label: str, id: str, drop_label: str) -> None:
         await self._run(
@@ -258,7 +285,18 @@ class HydraDBStore(AutoCommitStore):
         limit: int = 1000,
         id_gt: str | None = None,
     ) -> list[dict]:
-        params: dict[str, Any] = {"ns": ns, "label": label, "skip": skip, "limit": limit}
+        if order_by == "id" and not equals and not any_of:
+            key = _sort_key(ns, label)
+            params: dict[str, Any] = {"skip": skip, "limit": limit}
+            where = [f"n.`{key}` STARTS WITH ''"]
+            where_after(f"n.`{key}`", id_gt, where, params)
+            res = await self._run(
+                f"MATCH (n:{label}) WHERE {' AND '.join(where)} "
+                f"RETURN n.doc AS doc ORDER BY n.`{key}` SKIP $skip LIMIT $limit",
+                params,
+            )
+            return docs(res.rows)
+        params = {"ns": ns, "label": label, "skip": skip, "limit": limit}
         ids = (any_of or {}).get("id")
         if ids is not None:
             pattern = "n"
@@ -269,7 +307,7 @@ class HydraDBStore(AutoCommitStore):
                 params[f"eq{i}"] = value
         else:
             pattern = _keyed("n", label, equals, params)
-            where = [_same("n", "ns", "ns") if equals else "n.ns = $ns"]
+            where = [_same("n", "ns", "ns")]
         for i, (key, values) in enumerate(sorted((any_of or {}).items())):
             if key != "id":
                 where.append(f"n.`{key}` IN $in{i}")
@@ -294,7 +332,7 @@ class HydraDBStore(AutoCommitStore):
     async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
         params: dict[str, Any] = {"ns": ns, "batch": _DELETE_BATCH}
         pattern = _keyed("n", label, equals, params)
-        where = _same("n", "ns", "ns") if equals else "n.ns = $ns"
+        where = _same("n", "ns", "ns")
         deleted = 0
         while True:
             res = await self._run(f"MATCH ({pattern}) WHERE {where} RETURN n.id AS iid LIMIT $batch", params)
@@ -326,6 +364,10 @@ class HydraDBStore(AutoCommitStore):
             row: dict[str, Any] = {
                 "f": _sk(ns, from_id),
                 "t": _sk(ns, to_id),
+                "fa": from_id,
+                "tb": to_id,
+                "fl": from_label,
+                "tl": to_label,
                 "id": _sk(ns, f"{from_id}|{type}|{to_id}|{sid}|{props.get('revision')}"),
                 "ns": ns,
                 "etype": type,
@@ -345,14 +387,14 @@ class HydraDBStore(AutoCommitStore):
 
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
         res = await self._run(
-            f"{_BY_SID} AND r.is_current = true RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et",
+            f"{_BY_SID} AND r.is_current = true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
             {"ns": ns, "sid": id},
         )
         return edge_row(res.rows[0]) if res.rows else None
 
     async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
         res = await self._run(
-            f"{_BY_SID} RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
+            f"{_BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
             {"ns": ns, "sid": id},
         )
         return [edge_row(r) for r in res.rows]
@@ -418,18 +460,27 @@ class HydraDBStore(AutoCommitStore):
         if to_in is not None:
             where.append("b.id IN $tiids_in")
             params["tiids_in"] = [_sk(ns, i) for i in to_in]
-        anchored = bool(where) or from_id is not None or to_id is not None
+        from_anchored = from_id is not None or from_in is not None
+        to_anchored = to_id is not None or to_in is not None
+        anchored = from_anchored or to_anchored
         filters = {"ns": ns, **({"etype": type} if type is not None else {}), **dict(sorted((equals or {}).items()))}
+        if from_anchored and not to_anchored:
+            bpat = ""
+            if to_label:
+                filters["tl"] = to_label
+        elif to_anchored and not from_anchored:
+            apat = ""
+            filters["fl"] = from_label
         for i, (key, value) in enumerate(filters.items()):
             where.append(_same("r", key, f"eq{i}") if anchored else f"r.`{key}` = $eq{i}")
             params[f"eq{i}"] = value
         if current_only:
-            where.append("r.is_current = true")
+            where.append("NOT r.is_current <> true" if anchored else "r.is_current = true")
         where_after("r.sid", id_gt, where, params)
         ob = "sid" if order_by == "id" else order_by
         res = await self._run(
             f"MATCH ({apat})-[r:{_EDGE}]->({bpat}) WHERE {' AND '.join(where)} "
-            f"RETURN r.doc AS doc, a.sid AS fa, b.sid AS tb, r.etype AS et, r.`{ob}` AS __ob "
+            f"RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`{ob}` AS __ob "
             f"ORDER BY __ob SKIP $skip LIMIT $limit",
             params,
         )
@@ -449,13 +500,14 @@ class HydraDBStore(AutoCommitStore):
         order = "" if order_by is None else " ORDER BY __ob"
         res = await self._run(
             f"MATCH (p:{parent_label} {{id: $iid}})-[r:{_EDGE}]->(c:{child_label}) "
-            f"WHERE {_same('r', 'ns', 'ns')} AND r.etype = $et RETURN c.doc AS doc{ob}{order}",
+            f"WHERE {_same('r', 'ns', 'ns')} AND {_same('r', 'etype', 'et')} RETURN c.doc AS doc{ob}{order}",
             {"iid": _sk(ns, parent_id), "ns": ns, "et": edge_type},
         )
         return docs(res.rows)
 
     async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:
         await self._run(
-            f"MATCH (t:{label} {{id: $iid}})-[r:{_EDGE}]-(o) WHERE {_same('r', 'ns', 'ns')} AND r.etype = $et DELETE r",
+            f"MATCH (t:{label} {{id: $iid}})-[r:{_EDGE}]-(o) "
+            f"WHERE {_same('r', 'ns', 'ns')} AND {_same('r', 'etype', 'et')} DELETE r",
             {"iid": _sk(ns, id), "ns": ns, "et": type},
         )

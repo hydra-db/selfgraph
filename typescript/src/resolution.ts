@@ -21,7 +21,7 @@ import {
   type MergeRewrite,
   type ParsedDecisionTraceInput,
   type ParsedEntityInput,
-  type ParsedOntology,
+  type ParsedExtraction,
   type ParsedPreferenceInput,
   type ParsedRelationInput,
   type Preference,
@@ -503,14 +503,14 @@ function noteAdded(merge: PendingMerge, added: [string[], string[], string[]]): 
 }
 
 export interface Resolution {
-  ontology: ParsedOntology;
+  facts: ParsedExtraction;
   merges: PendingMerge[];
   warnings: InsertWarning[];
 }
 
 const ridOf = (rel: ParsedRelationInput): string => rel.id || ids.relationId(rel.from_entity, rel.type, rel.to_entity);
 const pidOf = (p: ParsedPreferenceInput): string =>
-  p.id || ids.preferenceId(p.subject_entity, p.kind, p.key, p.value_entity);
+  p.id || ids.preferenceId(p.subject_entity, p.stance, p.key, p.value_entity);
 const tidOf = (d: ParsedDecisionTraceInput): string => d.id || ids.decisionId(d.actor_entity, d.title);
 
 const isoOrNull = (d: Date | null): string | null => (d === null ? null : jsonIso(d));
@@ -536,7 +536,7 @@ const dumpRelation = (r: ParsedRelationInput): JsonObject => ({
 const dumpPreference = (p: ParsedPreferenceInput): JsonObject => ({
   id: p.id,
   subject_entity: p.subject_entity,
-  kind: p.kind,
+  stance: p.stance,
   key: p.key,
   value_entity: p.value_entity,
   about_entity: p.about_entity,
@@ -640,28 +640,28 @@ function redirect(ent: ParsedEntityInput, target: Entity): ParsedEntityInput {
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
- * @param ontology (ParsedOntology): the validated ontology.
+ * @param facts (ParsedExtraction): the validated facts.
  * @param resolver (EntityResolver): the resolver.
  * @param schema (ParsedSchema | null): the active schema, for parent-closure type compatibility.
  * @param createdAt (Date): the insert time.
- * @return (Resolution): the rewritten ontology, the merges it carries, and merge_self_loop warnings.
+ * @return (Resolution): the rewritten facts, the merges it carries, and merge_self_loop warnings.
  */
 export async function planResolution(
   runner: Runner,
   ns: string,
-  ontology: ParsedOntology,
+  facts: ParsedExtraction,
   resolver: EntityResolver,
   schema: ParsedSchema | null,
   createdAt: Date,
 ): Promise<Resolution> {
-  const keyed = ontology.entities.map((ent) => {
+  const keyed = facts.entities.map((ent) => {
     const etype = ops.cleanText(ent.type);
     const ename = ops.cleanText(ent.name);
     return { ent, eid: ent.id || ids.entityId(etype, ename), etype, ename };
   });
   const stored = new Set((await ops.nodesById(runner, ns, L_ENTITY, ops.dedupList(keyed.map((k) => k.eid)))).keys());
   const candidateTypes = new Set(keyed.filter((k) => !k.ent.id && !stored.has(k.eid)).map((k) => k.etype));
-  if (!candidateTypes.size) return { ontology, merges: [], warnings: [] };
+  if (!candidateTypes.size) return { facts, merges: [], warnings: [] };
   const wanted = new Set<string | null>();
   for (const etype of candidateTypes) for (const t of compatibleTypes(etype, schema)) wanted.add(t);
   if (candidateTypes.has(FALLBACK_TYPE)) wanted.add(null);
@@ -683,7 +683,7 @@ export async function planResolution(
   const batch = new Map<string, Entity>();
   const mapping = new Map<string, string>();
   const merges = new Map<string, PendingMerge>();
-  const entities: ParsedEntityInput[] = [...ontology.entities];
+  const entities: ParsedEntityInput[] = [...facts.entities];
   const order = keyed.map((_, i) => i);
   order.sort((a, b) => Number(keyed[a]!.etype === FALLBACK_TYPE) - Number(keyed[b]!.etype === FALLBACK_TYPE));
   for (const i of order) {
@@ -759,10 +759,10 @@ export async function planResolution(
     merges.set(eid, merge);
     entities[i] = redirect(ent, target);
   }
-  if (!mapping.size) return { ontology, merges: [], warnings: [] };
+  if (!mapping.size) return { facts, merges: [], warnings: [] };
   const warnings: InsertWarning[] = [];
-  const rewritten = await rewriteRefs(runner, ns, ontology, mapping, merges, warnings);
-  return { ontology: { ...rewritten, entities }, merges: [...merges.values()], warnings };
+  const rewritten = await rewriteRefs(runner, ns, facts, mapping, merges, warnings);
+  return { facts: { ...rewritten, entities }, merges: [...merges.values()], warnings };
 }
 
 /**
@@ -770,31 +770,31 @@ export async function planResolution(
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
- * @param ontology (ParsedOntology): the ontology.
+ * @param facts (ParsedExtraction): the facts.
  * @param mapping (Map<string, string>): candidate id to target id.
  * @param merges (Map<string, PendingMerge>): the merges by candidate id.
  * @param warnings (InsertWarning[]): receives one merge_self_loop warning per dropped relation.
- * @return (ParsedOntology): the ontology with rewritten relations, preferences, and decisions.
+ * @return (ParsedExtraction): the facts with rewritten relations, preferences, and decisions.
  */
 async function rewriteRefs(
   runner: Runner,
   ns: string,
-  ontology: ParsedOntology,
+  facts: ParsedExtraction,
   mapping: Map<string, string>,
   merges: Map<string, PendingMerge>,
   warnings: InsertWarning[],
-): Promise<ParsedOntology> {
+): Promise<ParsedExtraction> {
   const m = <T extends string | null>(eid: T): T => (eid === null ? eid : ((mapping.get(eid) ?? eid) as T));
   const note = (rewrite: MergeRewrite, refs: Set<string>): void => {
     for (const eid of [...refs].filter((r) => mapping.has(r)).sort(comparePy)) merges.get(eid)!.rewrites.push(rewrite);
   };
-  const touched = ontology.relations.map((rel) => mapping.has(rel.from_entity) || mapping.has(rel.to_entity));
-  const keptRids = new Set(ontology.relations.filter((_, i) => !touched[i]).map(ridOf));
+  const touched = facts.relations.map((rel) => mapping.has(rel.from_entity) || mapping.has(rel.to_entity));
+  const keptRids = new Set(facts.relations.filter((_, i) => !touched[i]).map(ridOf));
   const relMap = new Map<string, string>();
   const relRefs = new Map<string, Set<string>>();
   const dropped = new Set<string>();
   const relations: ParsedRelationInput[] = [];
-  for (const [i, rel] of ontology.relations.entries()) {
+  for (const [i, rel] of facts.relations.entries()) {
     if (!touched[i]) {
       relations.push(rel);
       continue;
@@ -824,7 +824,7 @@ async function rewriteRefs(
   }
 
   const preferences: ParsedPreferenceInput[] = [];
-  for (const pref of ontology.preferences) {
+  for (const pref of facts.preferences) {
     const refs = new Set([pref.subject_entity, pref.value_entity, ...(pref.about_entity ? [pref.about_entity] : [])]);
     if (![...refs].some((r) => mapping.has(r))) {
       preferences.push(pref);
@@ -853,7 +853,7 @@ async function rewriteRefs(
   }
 
   const decisions: ParsedDecisionTraceInput[] = [];
-  for (const dec of ontology.decisions) {
+  for (const dec of facts.decisions) {
     const refs = new Set(
       [dec.actor_entity, dec.outcome_entity, ...dec.alternative_entities].filter((r): r is string => r !== null),
     );
@@ -884,7 +884,7 @@ async function rewriteRefs(
     );
     decisions.push(next);
   }
-  return { ...ontology, relations, preferences, decisions };
+  return { ...facts, relations, preferences, decisions };
 }
 
 function encodeMerge(ns: string, rec: MergeRecord): Props {

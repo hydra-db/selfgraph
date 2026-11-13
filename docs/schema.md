@@ -4,11 +4,16 @@ A schema describes the entity and relation types you expect. It is optional. It
 does two things:
 
 - Its catalogs go into the LLM prompt, so `insert.text` prefers your types.
-- Every write is checked against it: `insert.text`, `insert.ontology`, and entity
+- Every write is checked against it: `insert.text`, `insert.facts`, and entity
   and relation `create` and `update`, from the library, CLI, or MCP.
 
 By default it only reports violations. It lives in the SDK and writes nothing to
 the store.
+
+The schema defines types; stored items only name them. `EntityType` and
+`RelationType` are schema definitions, while `Entity.type` and `Relation.type`
+are the plain type names on stored items, such as `"Person"` or `"WORKS_AT"`.
+Without a schema, any name is accepted.
 
 ## Defining one
 
@@ -58,7 +63,7 @@ id is derived. This applies on insert and in `entities.create` and
   normalization.
 - Entity aliases are listed in the extraction prompt. Relation aliases are not.
 
-**Endpoints.** A schema relation names its endpoints `from` and `to`. An ontology
+**Endpoints.** A schema relation names its endpoints `from` and `to`. A stored
 relation uses `from_entity` and `to_entity`. In Python the field is `from_`, so
 serialize with `schema.model_dump(by_alias=True)` (or
 `model_dump_json(by_alias=True)`) to get the `from` key. A plain `model_dump()`
@@ -83,17 +88,17 @@ first problem by its path:
 | `min_count` below 0 | `relations[0].to.min_count: must be >= 0` |
 | `min_count` above `max_count` | `relations[0].from.min_count: min_count 2 is greater than max_count 1` |
 
-Constructing `Schema(...)` or `Ontology(...)` directly raises the same
+Constructing `Schema(...)` or `Extraction(...)` directly raises the same
 `ValidationError`, never a raw pydantic error.
 
 ## Modes
 
 ```python
-result = await graph.insert.ontology(ontology, schema=schema)
+result = await graph.insert.facts(facts, schema=schema)
 for w in result.warnings:
     print(w.code, w.message)
 
-await graph.insert.ontology(ontology, schema=schema, schema_mode="strict")
+await graph.insert.facts(facts, schema=schema, schema_mode="strict")
 ```
 
 Set `schema_mode` on the graph or on one insert. A per-insert `schema` or
@@ -117,7 +122,7 @@ How checks are applied:
 - Schema checks run before existence checks. A strict `create` that breaks the
   schema reports the violation, not `ConflictError`.
 
-**Strict mode and `insert.text`.** `insert.ontology` raises on any violation.
+**Strict mode and `insert.text`.** `insert.facts` raises on any violation.
 `insert.text` instead drops each extracted item that breaks the schema, and
 anything referencing it, with a `dropped_off_schema` warning, and writes the
 rest. A cardinality violation still raises. The regex fallback types every entity
@@ -189,7 +194,7 @@ The `contradiction` option decides what happens:
 
 ```python
 graph = SelfGraph(store, schema=schema, contradiction="supersede")
-await graph.insert.ontology(ontology, contradiction="warn")    # per insert
+await graph.insert.facts(facts, contradiction="warn")    # per insert
 await graph.relations.create("person:ann", "WORKS_AT", "company:globex", contradiction="off")
 ```
 
@@ -350,6 +355,6 @@ parsed graph-level schema, or `null`.
 import { SelfGraph } from "@hydradb/selfgraph";
 
 const graph = new SelfGraph(store, { schema, schema_mode: "warn" });
-await graph.insert.ontology(ontology, { schema, schema_mode: "strict" });
+await graph.insert.facts(facts, { schema, schema_mode: "strict" });
 await graph.insert.text(text, { schema });
 ```

@@ -47,7 +47,7 @@ from selfgraph import KuzuStore, SelfGraph
 
 async def main() -> None:
     async with SelfGraph(store=KuzuStore("graph.kuzu")) as graph:
-        await graph.insert.ontology(
+        await graph.insert.facts(
             {
                 "entities": [
                     {"id": "person:jane", "type": "Person", "name": "Jane Doe"},
@@ -188,7 +188,7 @@ selfgraph --store neo4j --uri bolt://localhost:7687 retrieve "who runs Acme" --c
 ## Documentation
 
 - [Install](https://github.com/hydra-db/selfgraph/blob/main/docs/install.md) and [quickstart](https://github.com/hydra-db/selfgraph/blob/main/docs/quickstart.md)
-- [Inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md): text, ontologies, LLM setup, custom prompts
+- [Inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md): text, facts, LLM setup, custom prompts
 - [Tiers](https://github.com/hydra-db/selfgraph/blob/main/docs/tiers.md): the `level` preset and the cost cap
 - [Schema](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md): types, validation, contradictions, Neo4j interop
 - [Ontology](https://github.com/hydra-db/selfgraph/blob/main/docs/ontology.md): terms, synonyms, coverage checks, drafts from table metadata

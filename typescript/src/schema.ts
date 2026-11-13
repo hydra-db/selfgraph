@@ -12,7 +12,7 @@ import {
   type JsonObject,
   optNumber,
   optString,
-  type ParsedOntology,
+  type ParsedExtraction,
 } from "./models.js";
 import { cleanText, getEntity, type RelationCap } from "./ops.js";
 import type { GraphPrimitives } from "./protocols.js";
@@ -330,17 +330,17 @@ export function canonicalRelationType(rtype: string, schema: ParsedSchema | null
 }
 
 /**
- * Rename entity and relation types written as schema aliases to the schema names before ids are derived. References elsewhere in the ontology to an entity's derived id under any name or alias of its schema type (such as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed relation's derived id. An explicit entity id in such an alias form is rewritten the same way.
+ * Rename entity and relation types written as schema aliases to the schema names before ids are derived. References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed relation's derived id. An explicit entity id in such an alias form is rewritten the same way.
  *
- * @param ontology (ParsedOntology): the ontology.
+ * @param facts (ParsedExtraction): the facts.
  * @param schema (ParsedSchema | null): the active schema.
- * @return (ParsedOntology): the ontology with canonical types.
+ * @return (ParsedExtraction): the facts with canonical types.
  */
-export function canonicalizeTypes(ontology: ParsedOntology, schema: ParsedSchema | null): ParsedOntology {
-  if (schema === null) return ontology;
+export function canonicalizeTypes(facts: ParsedExtraction, schema: ParsedSchema | null): ParsedExtraction {
+  if (schema === null) return facts;
   const forms = new Map(schema.entities.map((t) => [t.name, [t.name, ...t.aliases]]));
   let moved = new Map<string, string>();
-  const entities = ontology.entities.map((ent) => {
+  const entities = facts.entities.map((ent) => {
     const etype = cleanText(ent.type);
     const canonical = canonicalEntityType(etype, schema);
     const next = canonical === etype ? ent : { ...ent, type: canonical };
@@ -364,7 +364,7 @@ export function canonicalizeTypes(ontology: ParsedOntology, schema: ParsedSchema
   }
   const m = <T extends string | null>(eid: T): T => (eid === null ? eid : ((moved.get(eid) ?? eid) as T));
   const steps = new Map<string, string>();
-  const relations = ontology.relations.map((rel) => {
+  const relations = facts.relations.map((rel) => {
     const rtype = canonicalRelationType(rel.type, schema);
     const next = { ...rel, type: rtype, from_entity: m(rel.from_entity), to_entity: m(rel.to_entity) };
     if (!rel.id && (rtype !== rel.type || next.from_entity !== rel.from_entity || next.to_entity !== rel.to_entity)) {
@@ -375,20 +375,20 @@ export function canonicalizeTypes(ontology: ParsedOntology, schema: ParsedSchema
     }
     return next;
   });
-  const preferences = ontology.preferences.map((p) => ({
+  const preferences = facts.preferences.map((p) => ({
     ...p,
     subject_entity: m(p.subject_entity),
     value_entity: m(p.value_entity),
     about_entity: m(p.about_entity),
   }));
-  const decisions = ontology.decisions.map((d) => ({
+  const decisions = facts.decisions.map((d) => ({
     ...d,
     actor_entity: m(d.actor_entity),
     outcome_entity: m(d.outcome_entity),
     alternative_entities: d.alternative_entities.map(m),
     steps: d.steps.map((s) => steps.get(s) ?? s),
   }));
-  return { ...ontology, entities, relations, preferences, decisions };
+  return { ...facts, entities, relations, preferences, decisions };
 }
 
 /**
@@ -482,15 +482,15 @@ function checkProperties(
 }
 
 /**
- * Check an ontology against a schema and return advisory warnings in a stable order.
+ * Check facts against a schema and return advisory warnings in a stable order.
  *
- * @param ontology (SchemaSubject): the ontology to check.
+ * @param facts (SchemaSubject): the facts to check.
  * @param schema (ParsedSchema): the schema to check against.
- * @param options (SchemaCheckOptions): the stored type of each relation endpoint outside the ontology, whether to count relations per endpoint against min_count and max_count (default true), and whether to report counts above max_count, which a contradiction check reports instead (default true).
+ * @param options (SchemaCheckOptions): the stored type of each relation endpoint outside the facts, whether to count relations per endpoint against min_count and max_count (default true), and whether to report counts above max_count, which a contradiction check reports instead (default true).
  * @return (InsertWarning[]): the warnings, entities first then relations then cardinality.
  */
 export function validateAgainstSchema(
-  ontology: SchemaSubject,
+  facts: SchemaSubject,
   schema: ParsedSchema,
   options: SchemaCheckOptions = {},
 ): InsertWarning[] {
@@ -504,7 +504,7 @@ export function validateAgainstSchema(
     const matched = entities.get(etype);
     if (matched !== undefined) typeOfId.set(eid, matched);
   }
-  for (const ent of ontology.entities) {
+  for (const ent of facts.entities) {
     const matched = entities.get(ent.type);
     const ref = entityRef(ent);
     rawTypeOfId.set(ref, ent.type);
@@ -518,7 +518,7 @@ export function validateAgainstSchema(
   }
 
   const counts = new Map<string, { rtype: string; side: string; eid: string; n: number }>();
-  for (const rel of ontology.relations) {
+  for (const rel of facts.relations) {
     const rtype = normalizeRelType(rel.type);
     const matched = relations.get(rtype);
     const ref = rel.id || `${rel.from_entity} -${rtype}-> ${rel.to_entity}`;
@@ -587,7 +587,7 @@ export function validateAgainstSchema(
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
- * @param ontology (SchemaSubject): the state about to be written.
+ * @param facts (SchemaSubject): the state about to be written.
  * @param schema (ParsedSchema | null): the active schema.
  * @param mode (SchemaMode): off skips the check, warn returns the warnings, strict throws on any.
  * @param cardinality (boolean): whether to count relations per endpoint against min_count and max_count.
@@ -598,7 +598,7 @@ export function validateAgainstSchema(
 export async function enforceSchema(
   runner: GraphPrimitives,
   ns: string,
-  ontology: SchemaSubject,
+  facts: SchemaSubject,
   schema: ParsedSchema | null,
   mode: SchemaMode,
   cardinality = true,
@@ -610,7 +610,7 @@ export async function enforceSchema(
     const graphTypes = await storedTypes(runner, ns, subject);
     return validateAgainstSchema(subject, schema, { graphTypes, cardinality, maxCount });
   };
-  let warnings = await check(ontology);
+  let warnings = await check(facts);
   if (before !== null && warnings.length) {
     const known = new Set((await check(before)).map((w) => JSON.stringify([w.code, w.message])));
     warnings = warnings.filter((w) => !known.has(JSON.stringify([w.code, w.message])));
@@ -620,17 +620,17 @@ export async function enforceSchema(
 }
 
 /**
- * Look up the stored type of every relation endpoint the ontology does not define.
+ * Look up the stored type of every relation endpoint the facts do not define.
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
- * @param ontology (SchemaSubject): the pending write.
+ * @param facts (SchemaSubject): the pending write.
  * @return (Map<string, string>): each stored endpoint's type by entity id.
  */
-async function storedTypes(runner: GraphPrimitives, ns: string, ontology: SchemaSubject): Promise<Map<string, string>> {
-  const local = new Set(ontology.entities.map(entityRef));
+async function storedTypes(runner: GraphPrimitives, ns: string, facts: SchemaSubject): Promise<Map<string, string>> {
+  const local = new Set(facts.entities.map(entityRef));
   const graphTypes = new Map<string, string>();
-  for (const rel of ontology.relations) {
+  for (const rel of facts.relations) {
     for (const eid of [rel.from_entity, rel.to_entity]) {
       if (local.has(eid) || graphTypes.has(eid)) continue;
       const stored = await getEntity(runner, ns, eid);
@@ -647,17 +647,17 @@ async function storedTypes(runner: GraphPrimitives, ns: string, ontology: Schema
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
- * @param ontology (ParsedOntology): the extracted ontology, with canonical types.
+ * @param facts (ParsedExtraction): the extracted facts, with canonical types.
  * @param schema (ParsedSchema | null): the active schema.
- * @return ([ParsedOntology, InsertWarning[]]): the kept ontology and a "dropped_off_schema" warning per drop.
+ * @return ([ParsedExtraction, InsertWarning[]]): the kept facts and a "dropped_off_schema" warning per drop.
  */
 export async function dropOffSchema(
   runner: GraphPrimitives,
   ns: string,
-  ontology: ParsedOntology,
+  facts: ParsedExtraction,
   schema: ParsedSchema | null,
-): Promise<[ParsedOntology, InsertWarning[]]> {
-  if (schema === null) return [ontology, []];
+): Promise<[ParsedExtraction, InsertWarning[]]> {
+  if (schema === null) return [facts, []];
   const warnings: InsertWarning[] = [];
   const dropped = new Set<string>();
   const keep = (kind: string, id: string, reasons: string[]): boolean => {
@@ -671,7 +671,7 @@ export async function dropOffSchema(
     [...new Set(refs)].filter((ref) => ref !== null && dropped.has(ref)).map((ref) => `${ref} was dropped`);
   const messages = (found: InsertWarning[]): string[] => found.map((w) => w.message);
 
-  const entities = ontology.entities.filter((ent) =>
+  const entities = facts.entities.filter((ent) =>
     keep(
       "entity",
       entityRef(ent),
@@ -679,8 +679,8 @@ export async function dropOffSchema(
     ),
   );
   const byId = new Map(entities.map((ent) => [entityRef(ent), ent]));
-  const graphTypes = await storedTypes(runner, ns, ontology);
-  const relations = ontology.relations.filter((rel) => {
+  const graphTypes = await storedTypes(runner, ns, facts);
+  const relations = facts.relations.filter((rel) => {
     const ends = [rel.from_entity, rel.to_entity].flatMap((e) => byId.get(e) ?? []);
     const found = validateAgainstSchema({ entities: ends, relations: [rel] }, schema, {
       graphTypes,
@@ -690,13 +690,13 @@ export async function dropOffSchema(
     const rid = rel.id || relationId(rel.from_entity, rel.type, rel.to_entity);
     return keep("relation", rid, gone.length ? gone : messages(found));
   });
-  const preferences = ontology.preferences.filter((p) =>
+  const preferences = facts.preferences.filter((p) =>
     keep("preference", p.id || p.key, lost([p.subject_entity, p.value_entity, p.about_entity])),
   );
-  const decisions = ontology.decisions.filter((d) =>
+  const decisions = facts.decisions.filter((d) =>
     keep("decision", d.id || d.title, lost([d.actor_entity, d.outcome_entity, ...d.alternative_entities, ...d.steps])),
   );
-  return [{ ...ontology, entities, relations, preferences, decisions }, warnings];
+  return [{ ...facts, entities, relations, preferences, decisions }, warnings];
 }
 
 /**

@@ -16,7 +16,7 @@ print(result.context)
 | `context` | Source passages, then relation lines (`Jane Doe -[WORKS_AT]-> Acme`), preferences, decisions, and entity lines (`Acme [Company]`). Passages appear only here. |
 
 Passages come only from `insert.text` calls made with a `source_id`. A graph
-built with `insert.ontology` returns relation and entity lines but no passages.
+built with `insert.facts` returns relation and entity lines but no passages.
 
 From the CLI, run `selfgraph retrieve QUERY` (`--context-only` prints just the
 context). The MCP tool is `retrieve`.

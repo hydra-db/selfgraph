@@ -11,7 +11,7 @@ from . import _ops, tiers
 from ._serde import aware, now
 from .contradiction import judge_contradictions
 from .errors import CLOSED_MESSAGE, LLM_HINT, StoreError, TransientError, ValidationError
-from .extraction.extractor import DefaultExtractor
+from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
 from .ids import _require_namespace
 from .insert import Insert
@@ -19,13 +19,13 @@ from .llm.base import resolve_llm
 from .models import (
     Coverage,
     CypherResult,
+    Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
     InsertResult,
     InsertWarning,
     JsonValue,
     LLMConfig,
-    Ontology,
     RetrievalResult,
     as_input,
     check_options,
@@ -377,16 +377,16 @@ class SelfGraph:
         """
         return await self._in_tx(lambda tx: op(tx, self.namespace, *args, **kwargs))
 
-    async def _schema_check(self, runner: Any, ontology: Ontology, before: Ontology | None = None) -> None:
+    async def _schema_check(self, runner: Any, facts: Extraction, before: Extraction | None = None) -> None:
         """Check a single entity or relation write against the graph schema, logging warnings in warn mode.
 
         @param runner (Any): graph runner.
-        @param ontology (Ontology): the one entity or relation about to be written.
-        @param before (Ontology | None): its stored state for an update, so only new violations count.
+        @param facts (Extraction): the one entity or relation about to be written.
+        @param before (Extraction | None): its stored state for an update, so only new violations count.
         """
         log_schema_warnings(
             await enforce_schema(
-                runner, self.namespace, ontology, self._schema, self._schema_mode, cardinality=False, before=before
+                runner, self.namespace, facts, self._schema, self._schema_mode, cardinality=False, before=before
             )
         )
 
@@ -444,10 +444,10 @@ class SelfGraph:
         if self._extractor is not None:
             return self._extractor
         if self._extraction != "llm" or self._llm is None:
-            from .extraction.basic import BasicExtractor
+            from .extraction.basic import NERExtractor
 
-            return BasicExtractor(engine=self._extraction or "spacy")
-        return DefaultExtractor(
+            return NERExtractor(engine=self._extraction or "spacy")
+        return LLMExtractor(
             self._llm,
             prompts=self._prompts,
             instructions=self._instructions,
@@ -457,9 +457,9 @@ class SelfGraph:
             source_id=source_id,
         )
 
-    async def _apply_ontology(
+    async def _apply_facts(
         self,
-        ontology: Ontology,
+        facts: Extraction,
         *,
         source_id: str | None,
         parsed_text: str | None,
@@ -494,9 +494,7 @@ class SelfGraph:
 
         async def _apply(tx: Any) -> InsertResult:
             _ops._require_datetime("event_time", default_event_time)
-            canonical = await _ops.validate_ontology(
-                tx, ns, ontology, rewrite=lambda o: canonicalize_types(o, active_schema)
-            )
+            canonical = await _ops.validate_facts(tx, ns, facts, rewrite=lambda o: canonicalize_types(o, active_schema))
             dropped: list[InsertWarning] = []
             if extracted and mode == "strict":
                 canonical, dropped = await drop_off_schema(tx, ns, canonical, active_schema)
@@ -506,7 +504,7 @@ class SelfGraph:
             resolution = None
             if active_resolver is not None:
                 resolution = await plan_resolution(tx, ns, canonical, active_resolver, active_schema, created_at)
-            resolved = resolution.ontology if resolution is not None else canonical
+            resolved = resolution.facts if resolution is not None else canonical
             if mode == "strict" and conflicts == "warn":
                 await _ops.require_max_count(tx, ns, caps, resolved.relations)
             source_version: str | None = None

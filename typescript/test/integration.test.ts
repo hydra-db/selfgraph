@@ -32,7 +32,7 @@ const NO_DELETES = {
   deleted_preference_versions: 0,
 };
 
-const ONTOLOGY = {
+const FACTS = {
   entities: [
     { type: "Person", name: "Jane Doe", aliases: ["JD"], properties: { title: "CTO" } },
     { type: "Company", name: "Acme, Inc." },
@@ -45,7 +45,7 @@ const ONTOLOGY = {
   ],
   preferences: [
     { subject_entity: "person:jane-doe", key: "database", value_entity: "database:hydradb", strength: 0.9 },
-    { subject_entity: "person:jane-doe", kind: "disinterest", key: "database", value_entity: "database:postgres" },
+    { subject_entity: "person:jane-doe", stance: "disinterest", key: "database", value_entity: "database:postgres" },
   ],
   decisions: [
     {
@@ -98,7 +98,7 @@ function suite(spec: StoreSpec) {
     });
     expect([dec.actor_entity, dec.alternative_entities]).toEqual(["t:x", ["t:y"]]);
     expect((await g.decisions.list({ actor_entity: "T:X" })).items.map((d) => d.id)).toEqual([dec.id]);
-    const res = await g.insert.ontology({
+    const res = await g.insert.facts({
       entities: [{ id: "Person:Jane Doe", type: "Person", name: "Jane Doe" }],
       relations: [{ from_entity: "PERSON:Jane Doe", type: "KNOWS", to_entity: "T:X" }],
     });
@@ -107,8 +107,8 @@ function suite(spec: StoreSpec) {
     expect((await g.entities.delete("T:X")).deleted_entities).toBe(1);
     expect(await g.entities.get("t:x")).toBeNull();
     const once = { subject_entity: "person:jane-doe", key: "database", value_entity: "database:hydradb" };
-    const result = await g.insert.ontology({
-      entities: ONTOLOGY.entities,
+    const result = await g.insert.facts({
+      entities: FACTS.entities,
       preferences: [once, { ...once, strength: 0.5 }, { ...once, strength: 0.7 }],
     });
     expect(result.preferences.map((p) => [p.id, p.strength])).toEqual([
@@ -216,7 +216,7 @@ function suite(spec: StoreSpec) {
       relations: [{ type: "WORKS_AT", aliases: ["employed by"] }],
     };
     const g = fresh({ schema });
-    const res = await g.insert.ontology({
+    const res = await g.insert.facts({
       entities: [
         { type: "human", name: "Ann" },
         { type: "COMPANY", name: "Acme" },
@@ -243,8 +243,8 @@ function suite(spec: StoreSpec) {
     expect((await g.relations.create("person:bea", "employed by", "company:acme")).type).toBe("WORKS_AT");
   });
 
-  it("inserts an ontology idempotently, merging on change", async () => {
-    const first = await graph.insert.ontology(ONTOLOGY);
+  it("inserts facts idempotently, merging on change", async () => {
+    const first = await graph.insert.facts(FACTS);
     expect(first.entities.map((e) => e.id)).toEqual([
       "person:jane-doe",
       "company:acme",
@@ -253,15 +253,15 @@ function suite(spec: StoreSpec) {
     ]);
     expect(first.relations[0]!.type).toBe("WORKS_AT");
 
-    const again = await graph.insert.ontology(ONTOLOGY);
+    const again = await graph.insert.facts(FACTS);
     expect(again.relations.map((r) => r.revision)).toEqual([1, 1]);
     expect(again.preferences.map((p) => p.revision)).toEqual([1, 1]);
     expect(again.entities[0]!.updated_at.getTime()).toBe(first.entities[0]!.updated_at.getTime());
 
-    const changed = await graph.insert.ontology({
-      ...ONTOLOGY,
-      relations: [{ ...ONTOLOGY.relations[0], properties: { team: "core" } }],
-      preferences: [{ ...ONTOLOGY.preferences[0], strength: 0.5 }],
+    const changed = await graph.insert.facts({
+      ...FACTS,
+      relations: [{ ...FACTS.relations[0], properties: { team: "core" } }],
+      preferences: [{ ...FACTS.preferences[0], strength: 0.5 }],
       decisions: [],
     });
     expect(changed.relations[0]!.revision).toBe(2);
@@ -277,24 +277,24 @@ function suite(spec: StoreSpec) {
     expect(updated.revision).toBe(3);
     expect((await graph.preferences.update(pid, { remove_properties: ["why"] })).properties).toEqual({});
     await expect(graph.preferences.update(pid, { strength: 2 })).rejects.toBeInstanceOf(ValidationError);
-    expect((await graph.preferences.list("person:jane-doe", { kind: "disinterest" })).items).toHaveLength(1);
+    expect((await graph.preferences.list("person:jane-doe", { stance: "disinterest" })).items).toHaveLength(1);
     expect((await graph.preferences.list({ key: "database" })).items).toHaveLength(2);
   });
 
   it("rejects a bad reference before writing anything", async () => {
     await expect(
-      graph.insert.ontology({
+      graph.insert.facts({
         entities: [{ type: "Person", name: "Ghost Writer" }],
         relations: [{ from_entity: "person:ghost-writer", type: "KNOWS", to_entity: "person:nobody" }],
       }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(await graph.entities.get("person:ghost-writer")).toBeNull();
-    await expect(graph.insert.ontology({ entities: [{ type: "Person", name: "  " }] })).rejects.toBeInstanceOf(
+    await expect(graph.insert.facts({ entities: [{ type: "Person", name: "  " }] })).rejects.toBeInstanceOf(
       ValidationError,
     );
-    await expect(
-      graph.insert.ontology({ entities: [{ type: "Person", name: "Bad\u0000Name" }] }),
-    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(graph.insert.facts({ entities: [{ type: "Person", name: "Bad\u0000Name" }] })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
   });
 
   it("cascades entity and relation deletes into decision traces", async () => {
@@ -521,18 +521,16 @@ function suite(spec: StoreSpec) {
       entities: [{ name: "Person", properties: [{ name: "age", type: "integer" as const, required: true }] }],
       relations: [{ type: "KNOWS", from: { types: ["Person"] }, to: { types: ["Person"] } }],
     };
-    const ontology = {
+    const facts = {
       entities: [{ id: "person:schemaguy", type: "Person", name: "Schema Guy" }],
       relations: [{ from_entity: "person:schemaguy", type: "LIKES", to_entity: "person:schemaguy" }],
     };
-    const warned = await graph.insert.ontology(ontology, { schema });
+    const warned = await graph.insert.facts(facts, { schema });
     expect(warned.warnings.map((w) => w.code)).toEqual(["missing_required_property", "unknown_relation_type"]);
     expect(await graph.entities.get("person:schemaguy")).not.toBeNull();
 
-    await expect(graph.insert.ontology(ontology, { schema, schema_mode: "strict" })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-    const quiet = await graph.insert.ontology(ontology, { schema, schema_mode: "off" });
+    await expect(graph.insert.facts(facts, { schema, schema_mode: "strict" })).rejects.toBeInstanceOf(ValidationError);
+    const quiet = await graph.insert.facts(facts, { schema, schema_mode: "off" });
     expect(quiet.warnings).toEqual([]);
   });
 
@@ -540,7 +538,7 @@ function suite(spec: StoreSpec) {
     it(`iterates ${kind} past deletes between pages`, async () => {
       const g = fresh();
       const letters = [..."abcdefg"];
-      await g.insert.ontology({
+      await g.insert.facts({
         entities: [...letters.map((c) => ({ type: "T", name: c.toUpperCase() })), { type: "Hub", name: "Hub" }],
       });
       for (const c of letters) {
@@ -756,7 +754,7 @@ describe("property values", () => {
       );
     }
     await expect(
-      g.insert.ontology({
+      g.insert.facts({
         relations: [{ from_entity: e.id, type: "R", to_entity: "company:acme", properties: { " ": 1 } }],
       }),
     ).rejects.toThrow("properties keys cannot be empty");
@@ -781,14 +779,12 @@ describe("property values", () => {
     await expect(g.entities.create("X", "Person", { id: "company:x" })).rejects.toThrow(
       "id 'company:x' does not match type 'Person' (expected prefix 'person:')",
     );
-    await expect(g.insert.ontology({ entities: [{ id: "company:zzz", type: "Person", name: "Z" }] })).rejects.toThrow(
+    await expect(g.insert.facts({ entities: [{ id: "company:zzz", type: "Person", name: "Z" }] })).rejects.toThrow(
       "id 'company:zzz' does not match type 'Person'",
     );
     expect((await g.entities.create("X", "Big Co", { id: "Big Co:x" })).id).toBe("big-co:x");
     await expect(g.entities.create("A", "Per:son")).rejects.toThrow("entity type 'Per:son' cannot contain ':'");
-    await expect(g.insert.ontology({ entities: [{ type: "Per:son", name: "A" }] })).rejects.toThrow(
-      "cannot contain ':'",
-    );
+    await expect(g.insert.facts({ entities: [{ type: "Per:son", name: "A" }] })).rejects.toThrow("cannot contain ':'");
     await expect(g.entities.create("X", "bad type!")).rejects.toThrow(/can only contain letters, digits, spaces/);
     expect((await g.entities.create("Zoë", "Café Owner_v2.1-b")).type).toBe("Café Owner_v2.1-b");
     const calls = [
@@ -810,7 +806,7 @@ describe("property values", () => {
     const s = open({ schema: { entities: [{ name: "Company", aliases: ["org"] }] } });
     expect((await s.entities.create("Acme", "org", { id: "company:acme" })).type).toBe("Company");
     expect((await s.entities.create("Beta", "Company", { id: "ORG:Beta" })).id).toBe("company:beta");
-    const result = await s.insert.ontology({
+    const result = await s.insert.facts({
       entities: [
         { id: "org:acme", type: "org", name: "Acme" },
         { id: "org:gamma", type: "Company", name: "Gamma" },
@@ -822,7 +818,7 @@ describe("property values", () => {
       "company:gamma",
       "company:acme",
     ]);
-    await expect(s.insert.ontology({ entities: [{ id: "person:acme", type: "org", name: "Acme" }] })).rejects.toThrow(
+    await expect(s.insert.facts({ entities: [{ id: "person:acme", type: "org", name: "Acme" }] })).rejects.toThrow(
       "(expected prefix 'company:')",
     );
     await expect(s.entities.create("Acme", "org", { id: "person:acme" })).rejects.toThrow(
@@ -840,7 +836,7 @@ describe("property values", () => {
 
   it("cuts context to any budget, keeps one line at a tiny one, and rejects an empty query", async () => {
     const g = open();
-    await g.insert.ontology({
+    await g.insert.facts({
       entities: [
         { type: "Person", name: "Ann" },
         { type: "Company", name: "Acme" },
@@ -873,7 +869,7 @@ describe("property values", () => {
 
   it("rejects empty updates, bad list filters, and missing endpoints, and clears named fields", async () => {
     const g = open();
-    await g.insert.ontology({
+    await g.insert.facts({
       entities: [
         { type: "Person", name: "Ann" },
         { type: "Company", name: "Acme" },
@@ -897,9 +893,9 @@ describe("property values", () => {
     await expect(g.decisions.update(dec.id, {})).rejects.toThrow(/nothing to update/);
     expect((await g.relations.update(rel.id, { remove_properties: ["x"] })).revision).toBe(1);
     await expect(g.decisions.list({ status: "zzz" as never })).rejects.toThrow(ValidationError);
-    await expect(g.preferences.list({ kind: "zzz" as never })).rejects.toThrow(ValidationError);
+    await expect(g.preferences.list({ stance: "zzz" as never })).rejects.toThrow(ValidationError);
     const link = (from_entity: string, to_entity: string) =>
-      g.insert.ontology({ relations: [{ from_entity, type: "R", to_entity }] });
+      g.insert.facts({ relations: [{ from_entity, type: "R", to_entity }] });
     await expect(link("person:ann", "t:zz")).rejects.toThrow(/^relation endpoint not found \(to='t:zz'\);/);
     await expect(link("t:y", "t:zz")).rejects.toThrow(/^relation endpoints not found \(from='t:y', to='t:zz'\);/);
     await expect(g.relations.create("t:y", "R", "person:ann")).rejects.toThrow(
@@ -934,7 +930,7 @@ describe("property values", () => {
       type: "Filler",
       name: `filler ${String(i).padStart(5, "0")} common`,
     }));
-    await g.insert.ontology({ entities: [...fillers, { type: "Tool", name: "Zebracorn common" }] });
+    await g.insert.facts({ entities: [...fillers, { type: "Tool", name: "Zebracorn common" }] });
     expect((await g.retrieve("zebracorn", { k: 3 })).seeds.map((s) => s.id)).toEqual(["tool:zebracorn-common"]);
     expect((await g.retrieve("filler 05099", { k: 1 })).seeds[0]!.id).toBe("filler:filler-05099-common");
   }, 120_000);

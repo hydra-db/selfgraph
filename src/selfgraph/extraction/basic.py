@@ -4,12 +4,12 @@ import logging
 import re
 
 from ..errors import LLM_HINT
-from ..models import EntityInput, InsertWarning, Ontology, ParsedDocument
-from .extractor import _FALLBACK_TYPE, DefaultExtractor, _RelOut, _WarningSink
+from ..models import EntityInput, Extraction, InsertWarning, ParsedDocument
+from .extractor import _FALLBACK_TYPE, LLMExtractor, _RelOut, _WarningSink
 
 _log = logging.getLogger("selfgraph")
 
-__all__ = ["BasicExtractor"]
+__all__ = ["NERExtractor"]
 
 _SPACY = None
 _SPACY_READY = False
@@ -115,7 +115,7 @@ def _regex_extract(text: str):
     return entities, relations
 
 
-class BasicExtractor(_WarningSink):
+class NERExtractor(_WarningSink):
     def __init__(self, engine: str = "spacy") -> None:
         """An LLM-free extractor: spaCy NER when asked for and installed, else a regex pass.
 
@@ -125,7 +125,7 @@ class BasicExtractor(_WarningSink):
         self._engine = engine
         self.tier = "regex"
 
-    async def extract(self, document: ParsedDocument) -> Ontology:
+    async def extract(self, document: ParsedDocument) -> Extraction:
         nlp = _nlp() if self._engine == "spacy" else None
         code = "basic_extraction"
         self.tier = "regex" if nlp is None else "spacy"
@@ -144,4 +144,4 @@ class BasicExtractor(_WarningSink):
         message = f"extracted without an LLM using {engine}; for model-based extraction, {LLM_HINT}"
         _log.warning("%s: %s", code, message)
         self._warnings = [InsertWarning(code=code, message=message)]
-        return DefaultExtractor._assemble(entities, relations, [], [])
+        return LLMExtractor._assemble(entities, relations, [], [])

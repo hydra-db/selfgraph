@@ -46,12 +46,12 @@ function suite(spec: StoreSpec): void {
 
   async function graph(contradiction: ContradictionMode = "warn", schemaMode: SchemaMode = "warn") {
     const g = open({ schema: SPEC, schema_mode: schemaMode, contradiction });
-    await g.insert.ontology({ entities: PEOPLE });
+    await g.insert.facts({ entities: PEOPLE });
     return g;
   }
 
   const insert = (g: SelfGraph, relations: object[], contradiction?: ContradictionMode) =>
-    g.insert.ontology({ relations } as never, { contradiction });
+    g.insert.facts({ relations } as never, { contradiction });
 
   it("warn keeps both and replaces the in-batch cardinality warning, off skips it, schema_mode off keeps it", async () => {
     const g = await graph();
@@ -65,7 +65,7 @@ function suite(spec: StoreSpec): void {
     ]);
     expect((await g.relations.list()).items).toHaveLength(2);
     const fresh = open({ schema: SPEC });
-    const both = await fresh.insert.ontology({ entities: PEOPLE, relations: [annAt("acme"), annAt("globex")] });
+    const both = await fresh.insert.facts({ entities: PEOPLE, relations: [annAt("acme"), annAt("globex")] });
     expect(both.warnings.map((w) => w.code)).toEqual(["contradiction"]);
     expect((await fresh.relations.list()).items).toHaveLength(2);
     const quiet = await graph("off");
@@ -151,14 +151,14 @@ function suite(spec: StoreSpec): void {
     const g = await graph("supersede");
     await insert(g, [annAt("acme", 2020), annAt("globex", 2023)]);
     const decision = { title: "Joined Acme", actor_entity: "person:ann", steps: [ACME] };
-    const [dec] = (await g.insert.ontology({ decisions: [decision] } as never, { contradiction: "off" })).decisions;
+    const [dec] = (await g.insert.facts({ decisions: [decision] } as never, { contradiction: "off" })).decisions;
     expect(dec?.steps.map((s) => [s.relation_id, s.to_entity])).toEqual([[ACME, "company:acme"]]);
     const created = await g.decisions.create("Left Acme", { steps: [ACME, GLOBEX], actor_entity: "person:ann" });
     expect(created.steps.map((s) => s.relation_id)).toEqual([ACME, GLOBEX]);
     const ghost = "decision step references unknown relation 'relation:ghost'";
-    await expect(
-      g.insert.ontology({ decisions: [{ ...decision, steps: ["relation:ghost"] }] } as never),
-    ).rejects.toThrow(ghost);
+    await expect(g.insert.facts({ decisions: [{ ...decision, steps: ["relation:ghost"] }] } as never)).rejects.toThrow(
+      ghost,
+    );
     await expect(
       g.decisions.create("Joined Acme", { steps: ["relation:ghost"], actor_entity: "person:ann" }),
     ).rejects.toThrow(ghost);
@@ -260,7 +260,7 @@ function suite(spec: StoreSpec): void {
     ];
     for (const [[t1, r1], [t2, r2]] of variants) {
       const g = open({ schema });
-      const result = await g.insert.ontology({
+      const result = await g.insert.facts({
         entities: [{ type: t1, name: "Ann" }, { type: t2, name: "Ann" }, ...companies],
         relations: [
           { from_entity: ids.entityId(t1, "Ann"), type: r1, to_entity: "company:acme" },
@@ -297,19 +297,19 @@ function suite(spec: StoreSpec): void {
       { type: "Company", name: "Acme Corp" },
       { type: "Company", name: "Acme Inc" },
     ];
-    const result = await g.insert.ontology({ entities: variants, relations: [annAt("acme"), annAt("acme")] });
+    const result = await g.insert.facts({ entities: variants, relations: [annAt("acme"), annAt("acme")] });
     expect(result.warnings).toEqual([]);
     expect(new Set(result.relations.map((r) => r.id))).toEqual(new Set([ACME]));
     const schema: Schema = { ...SPEC, entities: [...SPEC.entities!, { name: "Manager", parent: "Person" }] };
     const rels = [annAt("acme"), { ...annAt("globex"), from_entity: "manager:ann" }];
-    const exact = await open({ schema }).insert.ontology({
+    const exact = await open({ schema }).insert.facts({
       entities: [...PEOPLE, { type: "Manager", name: "Ann" }],
       relations: rels,
     });
     expect(exact.warnings).toEqual([]);
     const h = open({ schema, resolver: "default" });
-    await h.insert.ontology({ entities: PEOPLE, relations: [annAt("acme")] });
-    const merged = await h.insert.ontology({ entities: [{ type: "Manager", name: "Ann" }], relations: rels.slice(1) });
+    await h.insert.facts({ entities: PEOPLE, relations: [annAt("acme")] });
+    const merged = await h.insert.facts({ entities: [{ type: "Manager", name: "Ann" }], relations: rels.slice(1) });
     expect(merged.warnings.map((w) => w.code)).toEqual(["entity_merged", "contradiction"]);
   });
 
@@ -349,7 +349,7 @@ function suite(spec: StoreSpec): void {
     expect((await g.retrieve("Ann", { as_of: await instant() })).context).toContain("{role=cto}");
     await g.relations.create("person:ann", "WORKS_AT", "company:globex");
     const between = await instant();
-    await g.insert.ontology({ entities: [{ type: "Person", name: "Zed" }] });
+    await g.insert.facts({ entities: [{ type: "Person", name: "Zed" }] });
     const ids = async (asOf: Date | string) =>
       (await g.retrieve("Ann Zed", { as_of: asOf })).subgraph.relations.map((r) => r.id);
     expect(await ids(first)).toEqual([ACME]);
@@ -361,7 +361,7 @@ function suite(spec: StoreSpec): void {
   it("retrieve as_of reads backdated facts and passages on the valid-time axis, picking the highest revision in effect", async () => {
     const g = open();
     const base = { from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:acme" };
-    await g.insert.ontology({
+    await g.insert.facts({
       entities: PEOPLE,
       relations: [{ ...base, properties: { role: "dev" }, event_time: "2020-01-01T00:00:00Z" }],
     });
@@ -389,7 +389,7 @@ function suite(spec: StoreSpec): void {
     expect((await h.retrieve("Jane")).subgraph.decisions.map((d) => d.title)).toEqual(["Pick Rust"]);
 
     const k = open();
-    await k.insert.ontology({ entities: PEOPLE });
+    await k.insert.facts({ entities: PEOPLE });
     const titled = await k.relations.create("person:ann", "WORKS_AT", "company:acme");
     await k.relations.update(titled.id, { set_properties: { title: "Dev" }, event_time: at(2025) });
     for (const when of [await instant(), at(2099), new Date(Date.UTC(2025, 5, 1))]) {
@@ -400,7 +400,7 @@ function suite(spec: StoreSpec): void {
     expect((await k.retrieve("Ann", { as_of: at(2024) })).subgraph.relations).toEqual([]);
 
     const p = open();
-    await p.insert.ontology({ entities: PEOPLE });
+    await p.insert.facts({ entities: PEOPLE });
     await p.relations.create("person:ann", "WORKS_AT", "company:acme", { event_time: at(2020) });
     await p.insert.text("Ann works at Acme.", { source_id: "note", event_time: at(2020) });
     expect((await p.retrieve("Ann Acme", { as_of: at(2021) })).context.split("\n")).toContain("Ann works at Acme.");

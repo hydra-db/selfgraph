@@ -7,7 +7,7 @@ Rules shared by all four:
 
 | Call | Behaviour |
 |------|-----------|
-| `create` with an id that exists, explicit or derived | Raises `ConflictError` (`Relation '<id>' already exists`). Use `update`, or `insert.ontology`, which merges into it. |
+| `create` with an id that exists, explicit or derived | Raises `ConflictError` (`Relation '<id>' already exists`). Use `update`, or `insert.facts`, which merges into it. |
 | `get` on a missing id | Returns `None` (`null` in TypeScript and from MCP `get_*` tools). CLI `get` exits 1 (see [exit codes](cli.md#exit-codes)). |
 | `update`, `delete`, `versions` on a missing id | Raise `NotFoundError`. |
 | `update` that names no field | Raises `ValidationError` (`nothing to update`). So does an unknown field. |
@@ -20,7 +20,7 @@ The id helpers compute the id an insert derives:
 |--------|------------|
 | `entity_id(type, name)` | `entityId(type, name)` |
 | `relation_id(from_entity, type, to_entity)` | `relationId(fromEntity, type, toEntity)` |
-| `preference_id(subject_entity, kind, key, value_entity)` | `preferenceId(subjectEntity, kind, key, valueEntity)` |
+| `preference_id(subject_entity, stance, key, value_entity)` | `preferenceId(subjectEntity, stance, key, valueEntity)` |
 | `decision_id(actor_entity, title)` | `decisionId(actorEntity, title)` |
 | `profile_id(subject_entity)` | `profileId(subjectEntity)` |
 | `normalize_rel_type(type)`, the stored UPPER_SNAKE relation type | `normalizeRelType(type)` |
@@ -173,7 +173,7 @@ It has an optional `strength` from 0 to 1. Preferences are versioned like
 relations.
 
 ```python
-await graph.preferences.create("person:jane", "database", "company:acme", kind="preference", strength=0.9)
+await graph.preferences.create("person:jane", "database", "company:acme", stance="preference", strength=0.9)
 await graph.preferences.list("person:jane")   # one subject; no argument lists every subject
 await graph.preferences.update("pref-id", strength=0.5)
 await graph.preferences.update("pref-id", clear=["strength", "about_entity"])
@@ -210,7 +210,7 @@ await graph.decisions.create(
   retired. They are kept in order and not checked to form a path.
 - `status` defaults to `"completed"`.
 - The derived id hashes the actor and title. A second `create` with both equal
-  raises `ConflictError`, while `insert.ontology` updates the stored decision.
+  raises `ConflictError`, while `insert.facts` updates the stored decision.
   Use distinct titles or an explicit `id` for distinct decisions.
 
 ## Listing and iterating
@@ -239,4 +239,4 @@ does a relation, preference, or decision list cursor whose id has another kind's
 prefix.
 
 List filters are validated like writes: `decisions.list(status="zzz")` and
-`preferences.list(kind="zzz")` raise `ValidationError`.
+`preferences.list(stance="zzz")` raise `ValidationError`.

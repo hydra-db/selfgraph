@@ -1,6 +1,6 @@
 {
   "name": "@hydradb/selfgraph",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Build a knowledge graph from unstructured text. Typed methods over any graph backend, with backend-native Cypher as an escape hatch.",
   "license": "Apache-2.0",
   "author": "HydraDB",

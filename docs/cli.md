@@ -6,7 +6,7 @@ JSON. The CLI wraps the same API as the library.
 
 ```bash
 selfgraph --store kuzu --uri graph.kuzu init
-selfgraph --store kuzu --uri graph.kuzu insert ontology graph.json
+selfgraph --store kuzu --uri graph.kuzu insert facts graph.json
 selfgraph --store kuzu --uri graph.kuzu retrieve "who works at Acme" --context-only
 selfgraph --store kuzu --uri graph.kuzu entity list --type Company
 selfgraph --version
@@ -73,12 +73,12 @@ settings from the environment are ignored silently.
 | `retrieve` | Retrieves context for a query. See [`retrieve`](#retrieve). |
 | `coverage` | Reports which words of a question the schema and graph can ground. See [coverage](ontology.md#coverage). |
 | `insert text` | Extracts from text, or `-` for stdin, with the configured LLM, else spaCy or the regex fallback ([inserting](inserting.md#from-text)). `--metadata` takes a JSON object or `KEY=VALUE` pairs, repeatable and merged in order. |
-| `insert ontology` | Inserts an ontology from a JSON file, or `-` for stdin. |
+| `insert facts` | Inserts facts from a JSON file, or `-` for stdin. |
 | `entity` | `create`, `get`, `list`, `evidence`, `merges`, `unmerge`, `update`, `delete`. |
 | `relation` | `create`, `get`, `list`, `versions`, `evidence`, `update`, `delete`. |
 | `preference` | `create`, `get`, `list`, `versions`, `update`, `delete`. |
 | `decision` | `create`, `get`, `list`, `update`, `delete`. `create` without `--step` records no steps. |
-| `maintenance` | `decay`, `prune`, `consolidate`. Each prints the plan or scores, and writes only with `--apply`. A plan has no `deleted` counts. A prune `note` appears only in the JSON. See [Maintenance](maintenance.md). |
+| `maintenance` | `decay`, `prune`, `dedupe-relations`. Each prints the plan or scores, and writes only with `--apply`. A plan has no `deleted` counts. A prune `note` appears only in the JSON. See [Maintenance](maintenance.md). |
 
 An unknown command fails with exit code 2.
 
@@ -125,7 +125,7 @@ text. A pair without `=` fails naming the flag (`--prop expects KEY=VALUE`).
 
 **Time flags** (`--event-time`, `--as-of`, `--now`, `--older-than`) take ISO 8601
 text. No offset, or a bare date, means UTC. Times in output are UTC with a `Z`
-suffix. `insert ontology --event-time` is the default for items without their
+suffix. `insert facts --event-time` is the default for items without their
 own.
 
 **Updates.**
@@ -143,7 +143,7 @@ own.
   clearable fields are listed in [Clearing fields](resources.md#clearing-fields).
 
 **Preferences.** `preference list` without a subject lists every subject and
-filters by `--key` and `--kind`. `preference create --about` sets the entity a
+filters by `--key` and `--stance`. `preference create --about` sets the entity a
 preference is about. Its `VALUE` must be an existing entity id.
 
 **Versions.** `relation versions` and `preference versions` list newest first.
@@ -162,7 +162,7 @@ call.
 [contradiction](schema.md#contradictions) retired.
 
 **Bad input.** A bad input file or setting fails with one `path: message` line per
-problem, such as `invalid ontology: entities[0].name: field required`. See
+problem, such as `invalid facts: entities[0].name: field required`. See
 [errors](errors.md#messages).
 
 ## Exit codes
@@ -171,7 +171,7 @@ problem, such as `invalid ontology: entities[0].name: field required`. See
 |------|---------|
 | `0` | Success. |
 | `1` | A runtime failure: a missing id (`get`, `update`, `delete`, `NotFoundError`), a conflict (`ConflictError`), a backend or connection error (`StoreError`, `TransientError`), or an LLM error (`ExtractionError`). A `get` for a missing id prints the error on stderr and nothing on stdout. The library and MCP return `null` instead. |
-| `2` | Invalid input or usage (`ValidationError`, `PromptTemplateError`): a bad flag or setting, a missing or unreadable file (`insert ontology nofile.json`, `--instructions nofile.json`), invalid JSON or `--schema`, `--instructions`, or `--prompts` content, or a malformed prompt template. |
+| `2` | Invalid input or usage (`ValidationError`, `PromptTemplateError`): a bad flag or setting, a missing or unreadable file (`insert facts nofile.json`, `--instructions nofile.json`), invalid JSON or `--schema`, `--instructions`, or `--prompts` content, or a malformed prompt template. |
 | `130` | Interrupted with Ctrl-C. |
 | `141` | The reader of stdout closed early, as with `head`. |
 
@@ -217,7 +217,7 @@ methods (`runCypher`) and options in a trailing object
 | `actor_entity=`, `outcome_entity=`, `alternative_entities=[...]` | `--actor`, `--outcome`, `--alternative` (repeatable) | same names |
 | `event_time=` | `--event-time` | `event_time` |
 | `run_cypher(query, params)` | `query CYPHER --param KEY=VALUE` | `run_cypher` `query`, `params` (read-only) |
-| `maintenance.decay`, `prune`, `consolidate(dry_run=True)` | `maintenance decay`, `prune`, `consolidate`, `--apply` to write | `maintenance_*` with `dry_run: false` to write |
+| `maintenance.decay`, `prune`, `dedupe_relations(dry_run=True)` | `maintenance decay`, `prune`, `dedupe-relations`, `--apply` to write | `maintenance_*` with `dry_run: false` to write |
 
 Watch the property argument: `entities.update` and `preferences.update` take
 `properties=` (CLI `--prop`), while `relations.update` takes `set_properties=`

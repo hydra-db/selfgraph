@@ -11,5 +11,7 @@ dist/
 venv/
 *.db
 *.sqlite3
+*.kuzu*
+.selfgraph/
 .DS_Store
 eval/

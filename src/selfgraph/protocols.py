@@ -2,7 +2,7 @@ from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol, TypeVar, runtime_checkable
 
-from .models import CypherResult, JsonValue, Ontology, ParsedDocument
+from .models import CypherResult, Extraction, JsonValue, ParsedDocument
 
 __all__ = ["LLMClient", "Extractor", "Embedder", "GraphStore"]
 
@@ -29,7 +29,7 @@ class LLMClient(Protocol):
 
 @runtime_checkable
 class Extractor(Protocol):
-    async def extract(self, document: ParsedDocument) -> Ontology: ...
+    async def extract(self, document: ParsedDocument) -> Extraction: ...
 
 
 @runtime_checkable

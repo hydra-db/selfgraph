@@ -33,11 +33,11 @@ from .models import (
     DecisionTraceInput,
     Entity,
     EntityInput,
+    Extraction,
     InsertWarning,
     LLMConfig,
     MergeRecord,
     MergeRewrite,
-    Ontology,
     PreferenceInput,
     RelationInput,
     UnmergeResult,
@@ -478,7 +478,7 @@ class _Merge:
 
 @dataclass
 class Resolution:
-    ontology: Ontology
+    facts: Extraction
     merges: list[_Merge] = field(default_factory=list)
     warnings: list[InsertWarning] = field(default_factory=list)
 
@@ -535,7 +535,7 @@ def _dump(model: BaseModel, **kwargs: Any) -> dict[str, Any]:
 
 
 async def plan_resolution(
-    runner: Any, ns: str, ontology: Ontology, resolver: EntityResolver, schema: Schema | None, created_at: datetime
+    runner: Any, ns: str, facts: Extraction, resolver: EntityResolver, schema: Schema | None, created_at: datetime
 ) -> Resolution:
     """Resolve each new entity without an explicit id against compatible stored and batch entities, and rewrite refs.
 
@@ -546,20 +546,20 @@ async def plan_resolution(
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param ontology (Ontology): the validated ontology.
+    @param facts (Extraction): the validated facts.
     @param resolver (EntityResolver): the resolver.
     @param schema (Schema | None): the active schema, for parent-closure type compatibility.
     @param created_at (datetime): the insert time.
-    @return (Resolution): the rewritten ontology, the merges it carries, and merge_self_loop warnings.
+    @return (Resolution): the rewritten facts, the merges it carries, and merge_self_loop warnings.
     """
     keyed = []
-    for ent in ontology.entities:
+    for ent in facts.entities:
         etype, ename = _ops._clean_text(ent.type), _ops._clean_text(ent.name)
         keyed.append((ent, ent.id or _ids.entity_id(etype, ename), etype, ename))
     stored = set(await _ops._nodes_by_id(runner, ns, L_ENTITY, _ops._dedup_list(eid for _, eid, _, _ in keyed)))
     candidate_types = {etype for ent, eid, etype, _ in keyed if ent.id is None and eid not in stored}
     if not candidate_types:
-        return Resolution(ontology)
+        return Resolution(facts)
     wanted: set[str | None] = set()
     for etype in candidate_types:
         wanted |= compatible_types(etype, schema)
@@ -579,7 +579,7 @@ async def plan_resolution(
     batch: dict[str, Entity] = {}
     mapping: dict[str, str] = {}
     merges: dict[str, _Merge] = {}
-    entities: list[EntityInput] = list(ontology.entities)
+    entities: list[EntityInput] = list(facts.entities)
     for i in sorted(range(len(keyed)), key=lambda i: keyed[i][2] == _FALLBACK_TYPE):
         ent, eid, etype, ename = keyed[i]
         if eid in mapping:
@@ -627,9 +627,9 @@ async def plan_resolution(
         merges[eid].note(_absorb_into(target, ent, ename))
         entities[i] = _redirect(ent, target)
     if not mapping:
-        return Resolution(ontology)
+        return Resolution(facts)
     warnings: list[InsertWarning] = []
-    rewritten = await _rewrite_refs(runner, ns, ontology, mapping, merges, warnings)
+    rewritten = await _rewrite_refs(runner, ns, facts, mapping, merges, warnings)
     return Resolution(rewritten.model_copy(update={"entities": entities}), list(merges.values()), warnings)
 
 
@@ -654,11 +654,11 @@ def _redirect(ent: EntityInput, target: Entity) -> EntityInput:
 async def _rewrite_refs(
     runner: Any,
     ns: str,
-    ontology: Ontology,
+    facts: Extraction,
     mapping: dict[str, str],
     merges: dict[str, _Merge],
     warnings: list[InsertWarning],
-) -> Ontology:
+) -> Extraction:
     """Point every reference to a merged candidate at its target and record each rewrite on the merges it involves.
 
     A relation between two different entities that the merge would join into a self-loop is dropped, with a
@@ -666,11 +666,11 @@ async def _rewrite_refs(
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param ontology (Ontology): the ontology.
+    @param facts (Extraction): the facts.
     @param mapping (dict[str, str]): candidate id to target id.
     @param merges (dict[str, _Merge]): the merges by candidate id.
     @param warnings (list[InsertWarning]): receives one merge_self_loop warning per dropped relation.
-    @return (Ontology): the ontology with rewritten relations, preferences, and decisions.
+    @return (Extraction): the facts with rewritten relations, preferences, and decisions.
     """
 
     def m(eid: str | None) -> str | None:
@@ -683,13 +683,13 @@ async def _rewrite_refs(
     def rid_of(rel: RelationInput) -> str:
         return rel.id or _ids.relation_id(rel.from_entity, rel.type, rel.to_entity)
 
-    touched = [rel.from_entity in mapping or rel.to_entity in mapping for rel in ontology.relations]
-    kept_rids = {rid_of(rel) for rel, hit in zip(ontology.relations, touched, strict=True) if not hit}
+    touched = [rel.from_entity in mapping or rel.to_entity in mapping for rel in facts.relations]
+    kept_rids = {rid_of(rel) for rel, hit in zip(facts.relations, touched, strict=True) if not hit}
     rel_map: dict[str, str] = {}
     rel_refs: dict[str, set[str]] = {}
     dropped: set[str] = set()
     relations = []
-    for rel, hit in zip(ontology.relations, touched, strict=True):
+    for rel, hit in zip(facts.relations, touched, strict=True):
         if not hit:
             relations.append(rel)
             continue
@@ -718,7 +718,7 @@ async def _rewrite_refs(
         relations.append(new)
 
     preferences = []
-    for pref in ontology.preferences:
+    for pref in facts.preferences:
         refs = {pref.subject_entity, pref.value_entity, *([pref.about_entity] if pref.about_entity else [])}
         if not refs & mapping.keys():
             preferences.append(pref)
@@ -730,7 +730,7 @@ async def _rewrite_refs(
                 "about_entity": m(pref.about_entity),
             }
         )
-        new_id = new.id or _ids.preference_id(new.subject_entity, new.kind, new.key, new.value_entity)
+        new_id = new.id or _ids.preference_id(new.subject_entity, new.stance, new.key, new.value_entity)
         existed = await _ops.preference_exists(runner, ns, new_id)
         note(
             MergeRewrite(kind="preference", id=new_id, original=_dump(pref), rewritten=_dump(new), existed=existed),
@@ -739,7 +739,7 @@ async def _rewrite_refs(
         preferences.append(new)
 
     decisions = []
-    for dec in ontology.decisions:
+    for dec in facts.decisions:
         refs = {r for r in (dec.actor_entity, dec.outcome_entity, *dec.alternative_entities) if r is not None}
         for step in dec.steps:
             refs |= rel_refs.get(step, set())
@@ -758,7 +758,7 @@ async def _rewrite_refs(
         existed = await runner.node_exists(ns, L_TRACE, new_id)
         note(MergeRewrite(kind="decision", id=new_id, original=_dump(dec), rewritten=_dump(new), existed=existed), refs)
         decisions.append(new)
-    return ontology.model_copy(update={"relations": relations, "preferences": preferences, "decisions": decisions})
+    return facts.model_copy(update={"relations": relations, "preferences": preferences, "decisions": decisions})
 
 
 def _encode_merge(ns: str, rec: MergeRecord) -> dict[str, Any]:
@@ -1051,13 +1051,13 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         back = PreferenceInput(
             id=original.id,
             subject_entity=await end(original.subject_entity, rewritten.subject_entity),
-            kind=original.kind,
+            stance=original.stance,
             key=original.key,
             value_entity=await end(original.value_entity, rewritten.value_entity),
             about_entity=await end(original.about_entity, rewritten.about_entity),
             **values,
         )
-        pid = back.id or _ids.preference_id(back.subject_entity, back.kind, back.key, back.value_entity)
+        pid = back.id or _ids.preference_id(back.subject_entity, back.stance, back.key, back.value_entity)
         existed = await _ops.preference_exists(runner, ns, pid)
         pref = await _ops.upsert_preference(runner, ns, back, default_event_time=None, created_at=at)
         preferences.append(pref)

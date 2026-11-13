@@ -193,7 +193,7 @@ def test_prune_by_relevance_skips_unscored_items_and_filters_by_type():
     assert (by_rel.entity_ids, by_rel.relation_ids) == ([], [gadget.id])
 
 
-def test_consolidate_merges_duplicates_into_the_lowest_id(caplog):
+def test_dedupe_relations_merges_duplicates_into_the_lowest_id(caplog):
     g = fresh_graph("mt")
     t_entities(g, "a", "b")
     one, two = EvidenceInput(source_id="s1", quote="one"), EvidenceInput(source_id="s2", quote="two")
@@ -209,7 +209,7 @@ def test_consolidate_merges_duplicates_into_the_lowest_id(caplog):
     run(g.relations.create("t:b", "KNOWS", "t:a", id="relation:x3"))
     dec = run(g.decisions.create("D", steps=["relation:x2", "relation:x3"], id="decision:d"))
 
-    plan = run(g.maintenance.consolidate())
+    plan = run(g.maintenance.dedupe_relations())
     assert plan.dry_run
     [group] = plan.groups
     assert (group.survivor, group.duplicates, group.type) == ("relation:x1", ["relation:x2", "relation:x4"], "KNOWS")
@@ -219,8 +219,8 @@ def test_consolidate_merges_duplicates_into_the_lowest_id(caplog):
     assert run(g.relations.get("relation:x2")) is not None
 
     with caplog.at_level(logging.INFO, logger="selfgraph"):
-        done = run(g.maintenance.consolidate(dry_run=False))
-    assert "consolidated 1 relation groups" in caplog.text
+        done = run(g.maintenance.dedupe_relations(dry_run=False))
+    assert "deduplicated 1 relation groups" in caplog.text
     assert [r.levelname for r in caplog.records] == ["INFO"]
     assert done.groups[0].conflicts == group.conflicts
     assert done.deleted.deleted_relation_versions == 3 and done.deleted.deleted_decisions == 0
@@ -231,20 +231,20 @@ def test_consolidate_merges_duplicates_into_the_lowest_id(caplog):
     evidence = run(g.relations.evidence("relation:x1"))
     assert sorted((e.source_id, e.quote) for e in evidence.items) == [("s1", "one"), ("s2", "two")]
     assert [s.relation_id for s in run(g.decisions.get(dec.id)).steps] == ["relation:x1", "relation:x3"]
-    again = run(g.maintenance.consolidate())
+    again = run(g.maintenance.dedupe_relations())
     assert (again.groups, again.note) == ([], None)
 
 
 def test_maintenance_skips_relations_a_contradiction_invalidated():
     g = employment_graph("mt", contradiction="supersede")
     acme, globex = (
-        run(g.insert.ontology({"relations": [works_at(c, year)]})).relations[0].id
+        run(g.insert.facts({"relations": [works_at(c, year)]})).relations[0].id
         for c, year in (("acme", 2020), ("globex", 2021))
     )
     decay = run(g.maintenance.decay(now=_later(0), dry_run=False))
     assert list(decay.relations) == [globex]
     assert decay.updated_relations == 1
-    assert run(g.maintenance.consolidate()).groups == []
+    assert run(g.maintenance.dedupe_relations()).groups == []
     plan = run(g.maintenance.prune(older_than=_later(0.0005), relation_types=["WORKS_AT"]))
     assert plan.relation_ids == [globex]
     run(g.maintenance.prune(older_than=_later(0.0005), relation_types=["WORKS_AT"], dry_run=False))
@@ -263,14 +263,14 @@ def test_sync_cli_and_mcp_expose_maintenance(capsys):
     g = new_graph(namespace=ns)
     out = cli(g, ["maintenance", "prune", "--older-than", _later(0.0005).isoformat()], capsys)
     assert out["dry_run"] is True and out["entity_ids"] == ["t:a"]
-    assert cli(g, ["maintenance", "consolidate"], capsys)["groups"] == []
+    assert cli(g, ["maintenance", "dedupe-relations"], capsys)["groups"] == []
     assert cli(g, ["maintenance", "decay"], capsys)["dry_run"] is True
     assert cli(g, ["maintenance", "decay", "--half-life-days", "7", "--apply"], capsys)["updated_entities"] == 1
 
     with mcp_session("mtx") as srv:
         run(srv.create_entity("A", "T", id="t:a"))
         assert run(srv.maintenance_prune(older_than=_later(0.0005).isoformat()))["entity_ids"] == ["t:a"]
-        assert run(srv.maintenance_consolidate())["dry_run"] is True
+        assert run(srv.maintenance_dedupe_relations())["dry_run"] is True
         assert run(srv.maintenance_decay(dry_run=True))["entities"]["t:a"] > 0
         with pytest.raises(ValidationError):
             run(srv.maintenance_prune(older_than="not a date"))
@@ -292,7 +292,7 @@ def test_prune_notes_when_nothing_is_scored(capsys):
     assert run(g.maintenance.prune(min_relevance=0.5)).note is None
 
 
-def test_consolidate_repoints_every_step_and_never_deletes_a_decision():
+def test_dedupe_relations_repoints_every_step_and_never_deletes_a_decision():
     g = fresh_graph("mt")
     t_entities(g, "a", "b", "c")
     for rid in ("relation:x1", "relation:x2", "relation:x3"):
@@ -308,7 +308,7 @@ def test_consolidate_repoints_every_step_and_never_deletes_a_decision():
     }
     for tid, ids in steps.items():
         run(g.decisions.create(tid, steps=ids, id=tid))
-    done = run(g.maintenance.consolidate(dry_run=False))
+    done = run(g.maintenance.dedupe_relations(dry_run=False))
     assert done.deleted.deleted_decisions == 0
     assert done.deleted.deleted_relation_versions == 5
     got = {tid: [s.relation_id for s in run(g.decisions.get(tid)).steps] for tid in steps}
@@ -319,13 +319,13 @@ def test_consolidate_repoints_every_step_and_never_deletes_a_decision():
     }
 
 
-def test_consolidate_keeps_a_step_on_a_retired_relation():
+def test_dedupe_relations_keeps_a_step_on_a_retired_relation():
     g = employment_graph("mt", contradiction="supersede")
     old = run(g.relations.create("person:ann", "WORKS_AT", "company:acme"))
     run(g.relations.create("person:ann", "WORKS_AT", "company:globex", id="relation:g1"))
     run(g.relations.create("person:ann", "WORKS_AT", "company:globex", id="relation:g2", contradiction="off"))
     run(g.decisions.create("Move", steps=[old.id, "relation:g2"], id="decision:move"))
-    done = run(g.maintenance.consolidate(dry_run=False))
+    done = run(g.maintenance.dedupe_relations(dry_run=False))
     assert [(p.survivor, p.duplicates) for p in done.groups] == [("relation:g1", ["relation:g2"])]
     assert done.deleted.deleted_decisions == 0
     assert [s.relation_id for s in run(g.decisions.get("decision:move")).steps] == [old.id, "relation:g1"]

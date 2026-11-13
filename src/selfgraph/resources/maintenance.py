@@ -9,7 +9,7 @@ from .._serde import aware, json_iso, to_iso
 from .._serde import now as _now
 from ..errors import DECAY_HINT, ValidationError
 from ..ids import normalize_rel_type
-from ..models import ConsolidateGroup, ConsolidateResult, DecayResult, DeleteResult, PruneResult, Relation
+from ..models import DecayResult, DedupeGroup, DedupeResult, DeleteResult, PruneResult, Relation
 from ._common import Resource
 
 __all__ = ["Maintenance"]
@@ -193,7 +193,7 @@ class Maintenance(Resource):
         )
         return result
 
-    async def consolidate(self, *, dry_run: bool = True) -> ConsolidateResult:
+    async def dedupe_relations(self, *, dry_run: bool = True) -> DedupeResult:
         """Collapse parallel current relations with the same endpoints and type but different ids into one.
 
         The survivor of each group is the lowest id, whichever is newer, and only its version history is
@@ -205,7 +205,7 @@ class Maintenance(Resource):
         to it, and the duplicates are then deleted. Relations a contradiction invalidated are never grouped.
 
         @param dry_run (bool): list the groups without merging them; True by default.
-        @return (ConsolidateResult): each group's survivor, duplicates, conflicting keys, and versions lost per
+        @return (DedupeResult): each group's survivor, duplicates, conflicting keys, and versions lost per
             duplicate, the survivor rule, and delete counts (no deleted block on a dry run).
         """
         _require_flag("dry_run", dry_run)
@@ -221,7 +221,7 @@ class Maintenance(Resource):
             survivor, *duplicates = sorted(rels, key=lambda r: r.id)
             _, conflicts = _m.fold_properties(survivor, duplicates)
             plan.append(
-                ConsolidateGroup(
+                DedupeGroup(
                     from_entity=f,
                     type=t,
                     to_entity=to,
@@ -234,7 +234,7 @@ class Maintenance(Resource):
                     },
                 )
             )
-        result = ConsolidateResult(dry_run=dry_run, groups=plan, note=_SURVIVOR_RULE if plan else None)
+        result = DedupeResult(dry_run=dry_run, groups=plan, note=_SURVIVOR_RULE if plan else None)
         if dry_run:
             return result
         counts = dict(_ops._NO_DELETES)
@@ -242,7 +242,7 @@ class Maintenance(Resource):
             _m.add_counts(counts, await self._c._write(_m.merge_relations, group.survivor, group.duplicates))
         result.deleted = DeleteResult(**counts)
         _log.info(
-            "consolidated %d relation groups in namespace %r, removing %d duplicates",
+            "deduplicated %d relation groups in namespace %r, removing %d duplicates",
             len(plan),
             ns,
             sum(len(g.duplicates) for g in plan),

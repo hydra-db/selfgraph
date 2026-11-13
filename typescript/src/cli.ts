@@ -16,13 +16,13 @@ import { setLogger } from "./internal/log.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
 import { runStdio } from "./mcp.js";
 import {
-  DEFAULT_KIND,
+  DEFAULT_STANCE,
   DEFAULT_STATUS,
   type EvidenceInput,
+  type Extraction,
   type InsertResult,
   type JsonObject,
-  Kind,
-  type Ontology,
+  Stance,
   Status,
 } from "./models.js";
 import { fromNeo4jOntology, toNeo4jOntology } from "./neo4jSchema.js";
@@ -467,7 +467,7 @@ function preferenceCommands(program: Command<[], GlobalOptions>): void {
     .command("create <subject> <key> <value>")
     .description("create a preference of a subject for a value entity (an existing entity id, e.g. tool:hydradb)")
     .option("--id <id>")
-    .addOption(new Option("--kind <kind>").choices(Kind.options).default(DEFAULT_KIND))
+    .addOption(new Option("--stance <stance>").choices(Stance.options).default(DEFAULT_STANCE))
     .option("--about <id>", "entity id the preference is about")
     .option("--strength <x>", "strength", floatArg("--strength"))
     .option("--prop <KEY=VALUE>", `property (repeatable)${JSON_VALUE}`, collect, [])
@@ -476,7 +476,7 @@ function preferenceCommands(program: Command<[], GlobalOptions>): void {
       emit(cmd, (g) =>
         g.preferences.create(subject, key, value, {
           id: o.id,
-          kind: o.kind,
+          stance: o.stance,
           about_entity: o.about,
           strength: o.strength,
           properties: kvOrNull(o.prop),
@@ -493,10 +493,10 @@ function preferenceCommands(program: Command<[], GlobalOptions>): void {
       .command("list [subject]")
       .description("list current preferences, for one subject or all (omit subject)")
       .option("--key <key>")
-      .addOption(new Option("--kind <kind>").choices(Kind.options)),
+      .addOption(new Option("--stance <stance>").choices(Stance.options)),
   ).action((subject, o, cmd) =>
     emit(cmd, (g) =>
-      g.preferences.list(subject ?? null, { key: o.key, kind: o.kind, cursor: o.cursor, limit: o.limit }),
+      g.preferences.list(subject ?? null, { key: o.key, stance: o.stance, cursor: o.cursor, limit: o.limit }),
     ),
   );
   pref
@@ -605,9 +605,7 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
 }
 
 function maintenanceCommands(program: Command<[], GlobalOptions>): void {
-  const mt = program
-    .command("maintenance")
-    .description("decay (score relevance), prune, or consolidate duplicate relations");
+  const mt = program.command("maintenance").description("decay (score relevance), prune, or deduplicate relations");
   mt.command("decay")
     .description("score every entity and relation by recency and frequency; prints them unless --apply")
     .option("--half-life-days <days>", "days after which recency halves", floatArg("--half-life-days"), 30)
@@ -636,10 +634,10 @@ function maintenanceCommands(program: Command<[], GlobalOptions>): void {
         ),
       ),
     );
-  mt.command("consolidate")
+  mt.command("dedupe-relations")
     .description("merge duplicate parallel relations; prints the plan unless --apply")
     .option("--apply", "merge the groups the plan lists", false)
-    .action((o, cmd) => emit(cmd, (g) => g.maintenance.consolidate({ dry_run: !o.apply })));
+    .action((o, cmd) => emit(cmd, (g) => g.maintenance.dedupeRelations({ dry_run: !o.apply })));
 }
 
 /**
@@ -788,10 +786,10 @@ export function buildParser(): Command<[], GlobalOptions> {
     .description("report which words of a question the schema and graph can ground")
     .action((words, _o, cmd) => emit(cmd, (g) => g.coverage(words.join(" "))));
 
-  const insert = program.command("insert").description("insert text or an ontology");
+  const insert = program.command("insert").description("insert text or facts");
   insert
     .command("text <text>")
-    .description("extract an ontology from text (LLM if configured, else regex); text '-' reads stdin")
+    .description("extract facts from text (LLM if configured, else regex); text '-' reads stdin")
     .option("--source-id <id>")
     .option("--event-time <iso>", `when the text's facts became true (${ISO})`, timeArg("event_time"))
     .option(
@@ -816,9 +814,9 @@ export function buildParser(): Command<[], GlobalOptions> {
       ),
     );
   insert
-    .command("ontology")
-    .description("insert a ready ontology (JSON file or '-' for stdin)")
-    .argument("<path>", "the ontology JSON file, or '-' to read it from stdin")
+    .command("facts")
+    .description("insert ready facts (JSON file or '-' for stdin)")
+    .argument("<path>", "the facts JSON file, or '-' to read it from stdin")
     .option("--source-id <id>")
     .option(
       "--event-time <iso>",
@@ -830,7 +828,7 @@ export function buildParser(): Command<[], GlobalOptions> {
     .action((path, o, cmd) =>
       emit(cmd, (g) =>
         g.insert
-          .ontology(readJson(path) as Ontology, {
+          .facts(readJson(path) as Extraction, {
             source_id: o.sourceId,
             event_time: o.eventTime,
             resolver: (o.resolver as ResolverMode | undefined) ?? null,

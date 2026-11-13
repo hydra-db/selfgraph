@@ -5,7 +5,7 @@ from datetime import datetime
 
 from .. import _ops
 from ..errors import NotFoundError
-from ..models import DeleteResult, JsonValue, Kind, Page, Preference, check_options
+from ..models import DeleteResult, JsonValue, Page, Preference, Stance, check_options
 from ._common import DEFAULT_PAGE_LIMIT, Resource, paginate
 
 __all__ = ["Preferences"]
@@ -19,7 +19,7 @@ class Preferences(Resource):
         value_entity: str,
         *,
         id: str | None = None,
-        kind: Kind = "preference",
+        stance: Stance = "preference",
         about_entity: str | None = None,
         strength: float | None = None,
         properties: Mapping[str, JsonValue] | None = None,
@@ -31,7 +31,7 @@ class Preferences(Resource):
             key=key,
             value_entity=value_entity,
             id=id,
-            kind=kind,
+            stance=stance,
             about_entity=about_entity,
             strength=strength,
             properties=properties,
@@ -47,7 +47,7 @@ class Preferences(Resource):
         subject_entity: str | None = None,
         *,
         key: str | None = None,
-        kind: Kind | None = None,
+        stance: Stance | None = None,
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> Page[Preference]:
@@ -55,7 +55,7 @@ class Preferences(Resource):
             _ops.list_preferences,
             subject_entity=subject_entity,
             key=key,
-            kind=kind,
+            stance=stance,
             cursor=cursor,
             limit=limit,
             by_id="preference",
@@ -66,18 +66,18 @@ class Preferences(Resource):
         subject_entity: str | None = None,
         *,
         key: str | None = None,
-        kind: Kind | None = None,
+        stance: Stance | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> AsyncIterator[Preference]:
         """Yield preferences across pages, following the list cursor.
 
         @param subject_entity (str | None): the subject entity id, or None for every subject.
         @param key (str | None): filter by dimension key.
-        @param kind (Kind | None): filter by preference or disinterest.
+        @param stance (Stance | None): filter by preference or disinterest.
         @param limit (int): the page size per fetch, not a cap; iteration yields every match.
         @return (AsyncIterator[Preference]): every matching preference.
         """
-        return paginate(self.list, subject_entity=subject_entity, key=key, kind=kind, limit=limit)
+        return paginate(self.list, subject_entity=subject_entity, key=key, stance=stance, limit=limit)
 
     async def versions(self, id: str, *, newest_first: bool = True) -> list[Preference]:
         """List every version of a preference, retired ones included.
