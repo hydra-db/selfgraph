@@ -27,10 +27,13 @@ to standard openCypher over Bolt (`Neo4jStore` is the same store under the Neo4j
 json_extract filtering, `HydraDBStore` to HydraDB's dialect with integer surrogate keys and
 auto-commit. Never put business logic in a store, and never make `_ops` backend-aware.
 
-Where things live: `client.py` is the `SelfGraph` entry point. `insert.py` is the
+Where things live: `client.py` is the `SelfGraph` entry point. `tiers.py` holds the
+capability ladders, the `level` presets, and the `max_tier` ceilings. `insert.py` is the
 insert namespace, `schema.py` is the optional TBox that guides extraction and
 validates inserts (`_neo4j_schema.py` converts it to and from the Neo4j graph
-schema), `resolution.py` merges duplicate entities on insert, `resources/` holds the
+schema, `_tables.py` drafts one from table metadata), `terms.py` matches question words
+to schema terms, `resolution.py` merges duplicate entities on insert, `contradiction.py`
+is the LLM judge behind `contradiction="llm"`, `resources/` holds the
 typed CRUD and `graph.maintenance` (with `_maintenance.py`), `extraction/` runs LLM
 extraction, `retrieval.py` does keyword-seeded BFS/DFS/PageRank retrieval, `llm/` wraps the
 LLM through litellm, `stores/` holds the backends (`_cypher.py` is the Cypher
@@ -46,12 +49,25 @@ behind `cli.py` and `mcp/server.py`.
 - Models are pydantic. IDs are deterministic and every insert is an idempotent upsert; preserve both properties.
 - Keep the public surface listed in each module's `__all__` and exposed through the typed resource classes.
 
+## Tiers
+
+Every capability is a ladder of tiers from light to powerful (`tiers.py`, `docs/tiers.md`).
+When you add a tier:
+
+- The `balanced` default stays free and deterministic. A tier that calls an LLM or an
+  embedder is opt-in and sits above the `balanced` ceiling, so `max_tier` can cap it.
+- A higher tier runs the lower ones first and takes only what they left undecided.
+- Every tier writes the same ids and encoding. A tier never needs a migration.
+- Results report the tier that ran in `tiers`.
+
 ## Scope
 
 SelfGraph builds and reads graphs through typed lookups, traversal, and raw
-Cypher. Embeddings, vector or semantic search, GraphRAG, English-to-Cypher, file
-parsing, and structured input are out of scope for the SDK. Do not add them or
-their dependencies to the core.
+Cypher. A vector store, GraphRAG, English-to-Cypher, file parsing, and row-level
+structured input are out of scope for the core. Do not add them or their
+dependencies to the core. Embeddings are allowed only as a seeding tier over a
+caller-supplied `Embedder`: the SDK ships no embedding model and stores no vectors.
+Schema drafts read table metadata the caller passes, never rows or a database.
 
 ## Commits
 
@@ -70,5 +86,5 @@ differ. Never publish by hand.
 
 - Do not add a runtime dependency to the core beyond `pydantic` and the `neo4j` driver.
 - Do not put logic in a `GraphStore`; keep backend dialects inside the store, not in `_ops`.
-- Do not reintroduce file or structured-data ingestion, or an embedding or vector search layer.
+- Do not reintroduce file or row-level structured-data ingestion, a vector store, or a bundled embedding model.
 - Do not add em dashes, module or class docstrings, or narration comments.

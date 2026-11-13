@@ -181,6 +181,7 @@ The `contradiction` option decides what happens:
 |------|--------|
 | `warn` (default) | Both relations stay current. A `contradiction` warning names the conflicting ids. |
 | `supersede` | The newer facts win. After the write, every current relation at that endpoint, including the ones just written, is ranked. All but the newest `max_count` are retired, each with one warning. |
+| `llm` | `supersede`, plus an LLM judges relations no `max_count` covers. Needs `llm=`. See [LLM-judged contradictions](#llm-judged-contradictions). |
 | `off` | No `max_count` check at all, within one insert or against the graph, and no warning. |
 
 `schema_mode="off"` does not stop these checks. `contradiction="off"` does (see
@@ -191,6 +192,40 @@ graph = SelfGraph(store, schema=schema, contradiction="supersede")
 await graph.insert.ontology(ontology, contradiction="warn")    # per insert
 await graph.relations.create("person:ann", "WORKS_AT", "company:globex", contradiction="off")
 ```
+
+### LLM-judged contradictions
+
+`contradiction="llm"` needs no schema. After a write, each new relation is
+compared with its rivals, and the LLM is asked which rivals can no longer be
+true. Those are retired exactly as `supersede` retires a relation, with a
+`relation_superseded` warning and `invalidated_by` set to the new relation.
+
+```python
+graph = SelfGraph(store, llm=llm, contradiction="llm")
+await graph.relations.create("person:ann", "WORKS_AT", "company:acme", event_time="2020-01-01")
+await graph.relations.create("person:ann", "WORKS_AT", "company:globex", event_time="2022-01-01")
+# WORKS_AT Acme is retired if the LLM judges the two cannot both hold
+```
+
+A rival of a new relation is a current relation that:
+
+- has the same source entity, and either the same type with another destination
+  (`WORKS_AT Acme` against `WORKS_AT Globex`) or the same destination with
+  another type (`LIKES Acme` against `DISLIKES Acme`);
+- took effect no later than the new relation; and
+- was not written by the same insert.
+
+What bounds the cost:
+
+- One LLM call per new relation that has a rival. A relation with none costs
+  nothing.
+- A relation type with a `max_count` is settled by that rule and never sent.
+- Only relations this write created or changed are judged, so re-inserting the
+  same facts asks nothing.
+- At most 20 rivals are listed per call, lowest id first.
+
+The LLM can decide differently on a rerun. Use `max_count` where the rule is
+known, and keep `llm` for what a schema cannot state.
 
 ### Ranking and retirement
 

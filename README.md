@@ -22,6 +22,7 @@
 - **Any graph database.** Neo4j, Memgraph, FalkorDB, HydraDB, or embedded Kuzu, behind one API.
 - **History built in.** Every change is versioned, newer facts can retire older ones, and you can read the graph as of any past time.
 - **No vector store.** Retrieval walks the graph from keyword matches and returns the source passages.
+- **Light by default, powerful on request.** One `level` option moves every capability from free and deterministic to LLM-backed.
 - **SDK, CLI, and MCP server** over the same graph, in Python and TypeScript.
 
 ## Install
@@ -79,6 +80,27 @@ async with SelfGraph(
 
 `SyncSelfGraph` has the same API without `await`. Without an LLM, `insert.text` falls back to spaCy or a simple regex pass; see [inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md).
 
+## Levels
+
+Every capability is a ladder of tiers. `level` sets them all, and the default uses no LLM beyond extraction.
+
+| Capability | `light` | `balanced` (default) | `max` |
+|------------|---------|----------------------|-------|
+| Extraction | regex | spaCy, else regex | LLM |
+| Entity resolution | derived ids | name and alias match | LLM-confirmed |
+| Contradictions | warn on schema limits | warn on schema limits | LLM-judged, no schema needed |
+| Retrieval seeds | BM25 | BM25 plus schema synonyms | plus embeddings, with your embedder |
+| Traversal | BFS | BFS | PageRank |
+
+```python
+graph = SelfGraph(store=store, llm=llm, level="max")
+await graph.relations.create("person:ann", "WORKS_AT", "company:acme")
+await graph.relations.create("person:ann", "WORKS_AT", "company:globex")  # the LLM retires WORKS_AT Acme
+print((await graph.coverage("Globex ad spend")).uncovered)                # ["ad", "spend"]
+```
+
+Set one capability with its own option (`resolver=`, `contradiction=`, `seeds=`), and cap cost with `max_tier`. See [tiers](https://github.com/hydra-db/selfgraph/blob/main/docs/tiers.md).
+
 ## Backends
 
 ```python
@@ -123,12 +145,13 @@ selfgraph --store neo4j --uri bolt://localhost:7687 retrieve "who runs Acme" --c
 
 - [Install](https://github.com/hydra-db/selfgraph/blob/main/docs/install.md) and [quickstart](https://github.com/hydra-db/selfgraph/blob/main/docs/quickstart.md)
 - [Inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md): text, ontologies, LLM setup, custom prompts
+- [Tiers](https://github.com/hydra-db/selfgraph/blob/main/docs/tiers.md): the `level` preset and the cost cap
 - [Schema](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md): types, validation, contradictions, Neo4j interop
+- [Ontology](https://github.com/hydra-db/selfgraph/blob/main/docs/ontology.md): terms, synonyms, coverage checks, drafts from table metadata
 - [Entity resolution](https://github.com/hydra-db/selfgraph/blob/main/docs/resolution.md): merging duplicates
 - [Resources](https://github.com/hydra-db/selfgraph/blob/main/docs/resources.md): entities, relations, preferences, decisions, ids
 - [Retrieval](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md) and [maintenance](https://github.com/hydra-db/selfgraph/blob/main/docs/maintenance.md)
 - [Backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md), [CLI](https://github.com/hydra-db/selfgraph/blob/main/docs/cli.md), [MCP](https://github.com/hydra-db/selfgraph/blob/main/docs/mcp.md), [errors](https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md), [TypeScript](https://github.com/hydra-db/selfgraph/blob/main/docs/typescript.md)
-- [Roadmap](https://github.com/hydra-db/selfgraph/blob/main/docs/roadmap/README.md): planned tiers, ontology, and query modules
 
 ## Contributing
 

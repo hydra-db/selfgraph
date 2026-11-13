@@ -26,17 +26,46 @@ context). The MCP tool is `retrieve`.
 ```python
 await graph.retrieve(
     query,
-    strategy="bfs",      # "bfs" or "dfs" from the seeds, or "ppr" for PageRank ranking
+    strategy=None,       # "bfs" or "dfs" from the seeds, or "ppr" for PageRank ranking; default by level
     depth=3,             # hops from each seed
     k=20,                # seed entities
     max_nodes=200,       # entities to collect
     budget_tokens=3000,  # size cap on the context
     as_of=None,          # read the graph at this time
+    seeds=None,          # "bm25", "synonyms", or "embeddings"; default by level
 )
 ```
 
 These raise `ValidationError`: an empty `query` (`query cannot be empty`), a
 negative `depth`, or a `k`, `max_nodes`, or `budget_tokens` below 1.
+
+## Seeding tiers
+
+| Tier | Seeds from |
+|------|------------|
+| `bm25` | Lexical scoring only, as described under [how it works](#how-it-works). |
+| `synonyms` (default) | `bm25`, after adding the name of each schema entity type the query names by alias or synonym. A query for `employers` then seeds `Company` entities. A definition's name adds its entity type. |
+| `embeddings` | `synonyms`, fused with a ranking by your embedder. Needs `embedder=`. |
+
+`result.tiers["seeds"]` names the tier that ran. With no schema, `synonyms` has
+nothing to add and reports `bm25`.
+
+**Embeddings.** Pass any object with an async `embed(texts)` that returns one
+vector per text. SelfGraph ships no embedder and stores no vectors.
+
+```python
+class MyEmbedder:
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        ...
+
+graph = SelfGraph(store=store, embedder=MyEmbedder(), seeds="embeddings")
+```
+
+- Each entity's text is embedded once per process and reused until the text
+  changes. The cache lives in memory on the graph object.
+- Every entity is scored by cosine similarity to the query, and the top `k`
+  join the BM25 seeds by reciprocal rank fusion.
+- The first query embeds the whole namespace, so cost grows with the graph.
 
 ## As of a point in time
 
