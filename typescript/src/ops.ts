@@ -10,6 +10,7 @@ import {
   L_ENTITY,
   L_EVIDENCE,
   L_MERGE,
+  L_MERGE_ENTRY,
   L_PROFILE,
   L_STEP,
   L_TRACE,
@@ -1410,7 +1411,11 @@ export async function deleteEntities(runner: Runner, ns: string, given: readonly
   await deleteNodesWhere(runner, ns, L_EVIDENCE, "target_id", rids);
   for (const batch of batches(eids)) await runner.deleteNodes(ns, L_ENTITY, batch);
   await deleteNodesWhere(runner, ns, L_EVIDENCE, "target_id", eids);
-  for (const side of ["survivor_id", "absorbed_id"]) await deleteNodesWhere(runner, ns, L_MERGE, side, eids);
+  for (const side of ["survivor_id", "absorbed_id"]) {
+    const merges = (await nodesWhere(runner, ns, L_MERGE, side, eids)).map(idOf);
+    await deleteNodesWhere(runner, ns, L_MERGE_ENTRY, "merge_id", merges);
+    for (const batch of batches(merges)) await runner.deleteNodes(ns, L_MERGE, batch);
+  }
   counts.deleted_entities = eids.length;
   return counts;
 }

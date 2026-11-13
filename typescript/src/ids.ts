@@ -315,6 +315,18 @@ export function entityMergeId(survivorId: string, absorbedId: string): string {
 }
 
 /**
+ * The id of one source or rewrite row of a merge record: the merge id, the kind, and its position.
+ *
+ * @param mergeId (string): the merge record id.
+ * @param kind (string): "source" or "rewrite".
+ * @param seq (number): the row's position among the record's rows of that kind.
+ * @return (string): the entry node id.
+ */
+export function mergeEntryId(mergeId: string, kind: string, seq: number): string {
+  return `${mergeId}:${kind}:${seq}`;
+}
+
+/**
  * The id of a decision step node: the trace id, then ":step:" and the step's order.
  *
  * @param traceId (string): the decision trace id.

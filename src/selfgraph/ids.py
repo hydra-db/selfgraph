@@ -457,6 +457,17 @@ RESERVED_ID_PREFIXES = frozenset(
 )
 
 
+def merge_entry_id(merge_id: str, kind: str, seq: int) -> str:
+    """The id of one source or rewrite row of a merge record: the merge id, the kind, and its position.
+
+    @param merge_id (str): the merge record id.
+    @param kind (str): "source" or "rewrite".
+    @param seq (int): the row's position among the record's rows of that kind.
+    @return (str): the entry node id.
+    """
+    return f"{merge_id}:{kind}:{seq}"
+
+
 def step_id(trace_id: str, order: int) -> str:
     """The id of a decision step node: the trace id, then ":step:" and the step's order.
 

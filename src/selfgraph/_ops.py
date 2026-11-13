@@ -11,6 +11,7 @@ from ._serde import (
     L_ENTITY,
     L_EVIDENCE,
     L_MERGE,
+    L_MERGE_ENTRY,
     L_PROFILE,
     L_STEP,
     L_TRACE,
@@ -1382,7 +1383,10 @@ async def delete_entities(runner: Any, ns: str, eids: list[str]) -> dict[str, in
         await runner.delete_nodes(ns, L_ENTITY, batch)
     await _delete_nodes_where(runner, ns, L_EVIDENCE, "target_id", eids)
     for side in ("survivor_id", "absorbed_id"):
-        await _delete_nodes_where(runner, ns, L_MERGE, side, eids)
+        merges = [n["id"] for n in await _nodes_where(runner, ns, L_MERGE, side, eids)]
+        await _delete_nodes_where(runner, ns, L_MERGE_ENTRY, "merge_id", merges)
+        for batch in _batches(merges):
+            await runner.delete_nodes(ns, L_MERGE, batch)
     counts["deleted_entities"] = len(eids)
     return counts
 

@@ -91,7 +91,7 @@ script), digits, spaces, `_`, `-`, and `.`. These are reserved in any case and
 raise `ValidationError`:
 
 - entity types `Entity`, `Profile`, `DecisionTrace`, `DecisionStep`, `Source`,
-  `SourceVersion`, `Chunk`, `Evidence`, and `EntityMerge`;
+  `SourceVersion`, `Chunk`, `Evidence`, `EntityMerge`, and `EntityMergeEntry`;
 - entity id prefixes `relation:`, `preference:`, `decision:`, `profile:`,
   `source:`, `sv:`, `evidence:`, and `entitymerge:`.
 
