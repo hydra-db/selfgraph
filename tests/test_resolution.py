@@ -121,7 +121,7 @@ def test_resolver_arguments_are_validated():
 
 
 def test_exact_mode_explicit_ids_and_per_call_resolver():
-    g = fresh_graph("res")
+    g = fresh_graph("res", resolver="exact")
     _seed(g, IBM_SEED, ROBERT)
     res = run(
         g.insert.ontology({"entities": [{"type": "Company", "name": "Big Blue", "external_ids": {"ticker": "IBM"}}]})

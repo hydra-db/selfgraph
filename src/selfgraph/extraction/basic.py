@@ -116,15 +116,25 @@ def _regex_extract(text: str):
 
 
 class BasicExtractor(_WarningSink):
-    def __init__(self) -> None:
+    def __init__(self, engine: str = "spacy") -> None:
+        """An LLM-free extractor: spaCy NER when asked for and installed, else a regex pass.
+
+        @param engine (str): "spacy" to use spaCy when it and a model are installed, or "regex" to never load it.
+        """
         self._warnings: list[InsertWarning] = []
+        self._engine = engine
+        self.tier = "regex"
 
     async def extract(self, document: ParsedDocument) -> Ontology:
-        nlp = _nlp()
+        nlp = _nlp() if self._engine == "spacy" else None
         code = "basic_extraction"
+        self.tier = "regex" if nlp is None else "spacy"
         if nlp is not None:
             entities, relations = _spacy_extract(nlp, document.text)
             code, engine = "ner_extraction", "spaCy NER"
+        elif self._engine != "spacy":
+            entities, relations = _regex_extract(document.text)
+            engine = "heuristic regex"
         else:
             entities, relations = _regex_extract(document.text)
             if _SPACY_HAS_LIB:

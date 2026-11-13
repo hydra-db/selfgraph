@@ -4,7 +4,7 @@ from typing import Protocol, TypeVar, runtime_checkable
 
 from .models import CypherResult, JsonValue, Ontology, ParsedDocument
 
-__all__ = ["LLMClient", "Extractor", "GraphStore"]
+__all__ = ["LLMClient", "Extractor", "Embedder", "GraphStore"]
 
 T = TypeVar("T")
 
@@ -30,6 +30,17 @@ class LLMClient(Protocol):
 @runtime_checkable
 class Extractor(Protocol):
     async def extract(self, document: ParsedDocument) -> Ontology: ...
+
+
+@runtime_checkable
+class Embedder(Protocol):
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Return one vector per text, in order, all of one length.
+
+        @param texts (list[str]): the texts to embed.
+        @return (list[list[float]]): the vectors.
+        """
+        ...
 
 
 @runtime_checkable

@@ -49,6 +49,8 @@ __all__ = [
     "RetrievalSeed",
     "Subgraph",
     "RetrievalResult",
+    "TermMatch",
+    "Coverage",
     "Kind",
     "Status",
     "MergeRewrite",
@@ -459,6 +461,7 @@ class InsertResult(BaseModel):
     decisions: list[DecisionTrace] = Field(default_factory=list)
     warnings: list[InsertWarning] = Field(default_factory=list)
     merges: list[MergeRecord] = Field(default_factory=list)
+    tiers: dict[str, str] = Field(default_factory=dict)
 
 
 class UnmergeResult(BaseModel):
@@ -764,3 +767,20 @@ class RetrievalResult(BaseModel):
     seeds: list[RetrievalSeed] = Field(default_factory=list)
     subgraph: Subgraph = Field(default_factory=Subgraph)
     context: str = ""
+    tiers: dict[str, str] = Field(default_factory=dict)
+
+
+class TermMatch(BaseModel):
+    term: str
+    kind: Literal["entity", "relation", "definition"]
+    matched: str
+    tokens: list[str] = Field(default_factory=list)
+    certified: bool = False
+
+
+class Coverage(BaseModel):
+    question: str
+    terms: list[TermMatch] = Field(default_factory=list)
+    covered: list[str] = Field(default_factory=list)
+    uncovered: list[str] = Field(default_factory=list)
+    ratio: float = 0.0

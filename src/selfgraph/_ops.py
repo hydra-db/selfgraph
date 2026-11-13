@@ -1881,6 +1881,69 @@ async def _contradiction_check(
     return Contradictions(caps, contradiction, [_relation_of(e) for e in existing.values()], history), existing
 
 
+async def rival_relations(
+    runner: Any,
+    ns: str,
+    written: Iterable[Relation],
+    caps: Mapping[str, RelationCap] | None,
+    limit: int,
+) -> dict[str, list[dict]]:
+    """Find the older current relations each written relation may make untrue, for a judge to rule on.
+
+    A rival shares the written relation's source entity and either its type with another destination, or its
+    destination with another type. It took effect no later than the written relation and is not part of the same
+    write. A written relation whose type carries a max_count has none, since the cardinality rule already settled
+    it.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param written (Iterable[Relation]): the relations a write just stored.
+    @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits by relation type.
+    @param limit (int): the most rivals to list per relation, lowest id first.
+    @return (dict[str, list[dict]]): each written relation id with a rival, mapped to the rivals' edge rows.
+    """
+    fresh = [r for r in written if r.is_current and r.type not in (caps or {})]
+    batch = {r.id for r in written}
+    current: dict[str, list[dict]] = {}
+    for source in _dedup_list(r.from_entity for r in fresh):
+        found: dict[str, dict] = {}
+        fetch = partial(runner.match_edges, ns, from_label=L_ENTITY, to_label=L_ENTITY, from_id=source)
+        for edge in await _paged(fetch, page=_BATCH):
+            _keep_newest(found, edge)
+        current[source] = [e for _, e in sorted(found.items()) if e["props"]["is_current"]]
+    out: dict[str, list[dict]] = {}
+    for rel in fresh:
+        rivals = [
+            e
+            for e in current[rel.from_entity]
+            if e["props"]["id"] not in batch
+            and ((e["type"] == rel.type) != (e["to_id"] == rel.to_entity))
+            and effective_time(_relation_of(e)) <= effective_time(rel)
+        ]
+        if rivals:
+            out[rel.id] = rivals[:limit]
+    return out
+
+
+async def retire_relations(runner: Any, ns: str, pairs: Iterable[tuple[dict, Relation]]) -> list[Relation]:
+    """Retire current relations that newer relations displaced, each once, by the first relation named for it.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param pairs (Iterable[tuple[dict, Relation]]): each current edge row with the relation that displaced it.
+    @return (list[Relation]): the retired versions.
+    """
+    gone: dict[str, dict] = {}
+    for edge, by in pairs:
+        gone.setdefault(edge["props"]["id"], _retired(edge, by.id, effective_time(by)))
+    for edge in gone.values():
+        await _precheck_write(runner, edge["props"])
+    rows = [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in gone.values()]
+    if rows:
+        await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
+    return [_relation_of(e) for e in gone.values()]
+
+
 async def upsert_relations(
     runner: Any,
     ns: str,

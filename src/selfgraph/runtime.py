@@ -35,6 +35,7 @@ from .protocols import GraphStore
 from .resolution import require_resolver
 from .schema import Schema, as_schema, require_contradiction_mode, require_schema_for_mode, require_schema_mode
 from .stores._cypher import parse_auth
+from .tiers import require_level
 
 __all__ = [
     "SETTING_KEYS",
@@ -89,6 +90,8 @@ class GraphSettings:
     schema_mode: str | None = None
     resolver: str | None = None
     contradiction: str | None = None
+    level: str | None = None
+    max_tier: str | None = None
 
 
 SETTING_KEYS = tuple(f.name for f in fields(GraphSettings))
@@ -453,8 +456,12 @@ def check_settings(settings: GraphSettings) -> GraphSettings:
         if kind == "falkordb":
             _falkor_address(settings.uri)
     require_schema_mode(settings.schema_mode or "warn")
-    require_contradiction_mode(settings.contradiction or "warn")
-    require_resolver(settings.resolver or "exact")
+    require_level("level", settings.level or "balanced")
+    require_level("max_tier", settings.max_tier or "max")
+    if settings.contradiction is not None:
+        require_contradiction_mode(settings.contradiction)
+    if settings.resolver is not None:
+        require_resolver(settings.resolver)
     _llm_timeout(settings.llm_timeout)
     _llm_concurrency(settings.llm_concurrency)
     llm = _build_llm(settings)
@@ -486,8 +493,10 @@ def build_graph(settings: GraphSettings) -> SelfGraph:
         namespace=namespace,
         schema=settings.schema,
         schema_mode=settings.schema_mode or "warn",
-        resolver=settings.resolver or "exact",
-        contradiction=settings.contradiction or "warn",
+        resolver=settings.resolver,
+        contradiction=settings.contradiction,
+        level=settings.level or "balanced",
+        max_tier=settings.max_tier or "max",
     )
 
 

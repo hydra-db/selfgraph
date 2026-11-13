@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, ClassVar, Literal, get_args
 
 from pydantic import Field, model_validator
@@ -12,6 +12,8 @@ from .models import InputModel, InsertWarning, Ontology, TopInputModel, as_input
 __all__ = [
     "PropertyType",
     "PropertySpec",
+    "TermMapping",
+    "Definition",
     "EntityType",
     "RelationEndpoint",
     "RelationType",
@@ -32,7 +34,7 @@ __all__ = [
 
 PropertyType = Literal["string", "integer", "float", "boolean", "datetime", "json"]
 SchemaMode = Literal["off", "warn", "strict"]
-ContradictionMode = Literal["off", "warn", "supersede"]
+ContradictionMode = Literal["off", "warn", "supersede", "llm"]
 
 _log = logging.getLogger("selfgraph")
 
@@ -46,14 +48,36 @@ class PropertySpec(InputModel):
     description: str | None = None
 
 
+class TermMapping(InputModel):
+    input_label: ClassVar[str] = "mapping"
+
+    source: str | None = None
+    table: str | None = None
+    column: str | None = None
+
+
+class Definition(InputModel):
+    input_label: ClassVar[str] = "definition"
+
+    name: str
+    expression: str
+    description: str | None = None
+    synonyms: list[str] = Field(default_factory=list)
+    certified: bool = False
+
+
 class EntityType(InputModel):
     input_label: ClassVar[str] = "entity type"
 
     name: str
     description: str | None = None
     aliases: list[str] = Field(default_factory=list)
+    synonyms: list[str] = Field(default_factory=list)
     properties: list[PropertySpec] = Field(default_factory=list)
     parent: str | None = None
+    mappings: list[TermMapping] = Field(default_factory=list)
+    definitions: list[Definition] = Field(default_factory=list)
+    certified: bool = False
 
 
 class RelationEndpoint(InputModel):
@@ -70,6 +94,8 @@ class RelationType(InputModel):
     type: str
     description: str | None = None
     aliases: list[str] = Field(default_factory=list)
+    synonyms: list[str] = Field(default_factory=list)
+    certified: bool = False
     from_: RelationEndpoint = Field(default_factory=RelationEndpoint, alias="from")
     to: RelationEndpoint = Field(default_factory=RelationEndpoint)
     properties: list[PropertySpec] = Field(default_factory=list)
@@ -137,6 +163,24 @@ class Schema(TopInputModel):
                         f"{at}.min_count: min_count {end.min_count} is greater than max_count {end.max_count}"
                     )
         return self
+
+    @classmethod
+    def from_tables(cls, tables: Sequence[Mapping[str, Any]], *, name: str | None = None) -> "Schema":
+        """Draft a schema from relational table metadata: no rows are read and nothing is certified.
+
+        Each table becomes an entity type named in singular PascalCase, with the table name as a synonym and a
+        mapping to the table. A column becomes a property mapped to the nearest SelfGraph type, required when it
+        is not nullable. A column that references another table becomes a relation type HAS_<COLUMN> from this
+        table's type to the referenced one, with a max_count of 1 on the from side.
+
+        @param tables (Sequence[Mapping[str, Any]]): each table's name, optional description, and columns; a
+            column holds a name and optional type, nullable, description, and references (a table name).
+        @param name (str | None): the schema name.
+        @return (Schema): the draft schema.
+        """
+        from ._tables import from_tables
+
+        return as_input(cls, from_tables(tables, name), "schema")
 
     @classmethod
     def from_neo4j_ontology(cls, data: Mapping[str, Any]) -> "Schema":
@@ -207,7 +251,7 @@ def require_schema_for_mode(mode: object, schema: object) -> None:
 
 
 def require_contradiction_mode(mode: object) -> None:
-    """Reject a contradiction mode other than off, warn, or supersede.
+    """Reject a contradiction mode other than off, warn, supersede, or llm.
 
     @param mode (object): the contradiction mode.
     """
