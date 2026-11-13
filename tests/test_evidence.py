@@ -1,9 +1,9 @@
 import pytest
 from helpers import HYDRADB, create_entities, fresh_graph, make_store, run, unique_ns
 
-from selfgraph import EvidenceInput, NotFoundError, Ontology, SyncSelfGraph, ValidationError, relation_id
+from selfgraph import EvidenceInput, Extraction, NotFoundError, SyncSelfGraph, ValidationError, relation_id
 
-ONTOLOGY = {
+FACTS = {
     "entities": [{"type": "Person", "name": "Ada"}, {"type": "Company", "name": "Acme"}],
     "relations": [{"from_entity": "person:ada", "type": "WORKS_AT", "to_entity": "company:acme"}],
 }
@@ -27,8 +27,8 @@ def _records(g):
 def test_sources_counted_once_and_evidence_paginated():
     g = fresh_graph("ev")
     for i in range(5):
-        res = run(g.insert.ontology(ONTOLOGY, source_id=f"doc-{i}"))
-    again = run(g.insert.ontology(ONTOLOGY, source_id="doc-0"))
+        res = run(g.insert.facts(FACTS, source_id=f"doc-{i}"))
+    again = run(g.insert.facts(FACTS, source_id="doc-0"))
     assert [e.source_count for e in res.entities] == [5, 5]
     assert [e.source_count for e in again.entities] == [5, 5]
     assert again.relations[0].source_count == 5
@@ -42,7 +42,7 @@ def test_sources_counted_once_and_evidence_paginated():
 def test_repeated_entity_in_one_insert_counts_its_source_once():
     g = fresh_graph("ev")
     res = run(
-        g.insert.ontology(
+        g.insert.facts(
             {"entities": [{"type": "Person", "name": "Ada"}, {"type": "Person", "name": "Ada", "aliases": ["A"]}]},
             source_id="s",
         )
@@ -54,7 +54,7 @@ def test_repeated_entity_in_one_insert_counts_its_source_once():
 
 def test_relation_update_adds_evidence_and_never_clears_it():
     g = fresh_graph("ev")
-    run(g.insert.ontology(ONTOLOGY, source_id="s1"))
+    run(g.insert.facts(FACTS, source_id="s1"))
     same = run(g.relations.update(REL, evidence=[EvidenceInput(source_id="s2", quote="works there")]))
     assert (same.revision, same.source_count) == (1, 2)
     moved = run(g.relations.update(REL, set_properties={"role": "CTO"}))
@@ -90,11 +90,11 @@ def test_created_relation_records_its_evidence():
 
 def test_deletes_cascade_to_evidence():
     g = fresh_graph("ev")
-    run(g.insert.ontology(ONTOLOGY, source_id="s1"))
-    run(g.insert.ontology({"entities": [{"type": "Person", "name": "Bob"}]}, source_id="s1"))
+    run(g.insert.facts(FACTS, source_id="s1"))
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Bob"}]}, source_id="s1"))
     run(g.relations.delete(REL))
     assert len(_records(g)) == 3
-    run(g.insert.ontology(ONTOLOGY, source_id="s2"))
+    run(g.insert.facts(FACTS, source_id="s2"))
     run(g.entities.delete("person:ada"))
     remaining = {(r["target_id"], r["source_id"]) for r in _records(g)}
     assert remaining == {("company:acme", "s1"), ("company:acme", "s2"), ("person:bob", "s1")}
@@ -102,22 +102,22 @@ def test_deletes_cascade_to_evidence():
 
 def test_evidence_for_another_source_keeps_its_own_version():
     g = fresh_graph("ev")
-    ont = Ontology.model_validate(
+    facts = Extraction.model_validate(
         {
             "entities": [{"type": "Person", "name": "A"}, {"type": "Person", "name": "B"}],
             "relations": [{"from_entity": "person:a", "type": "KNOWS", "to_entity": "person:b"}],
         }
     )
-    ont.relations[0].evidence = [
+    facts.relations[0].evidence = [
         EvidenceInput(source_id="doc1", quote="other"),
         EvidenceInput(source_id="src1", quote="own"),
     ]
-    res = run(g.insert.ontology(ont, source_id="src1"))
+    res = run(g.insert.facts(facts, source_id="src1"))
     rid = res.relations[0].id
     by_quote = {e.quote: e for e in run(g.relations.evidence(rid)).items}
     assert by_quote["other"].source_version == "doc1:manual"
     assert by_quote["own"].source_version == res.source_version
-    plain = run(g.insert.ontology(ont))
+    plain = run(g.insert.facts(facts))
     assert plain.relations[0].source_count == 2
     items = run(g.relations.evidence(rid)).items
     assert [e.source_version for e in items if e.source_id == "doc1"] == ["doc1:manual"]
@@ -135,7 +135,7 @@ def test_evidence_of_unknown_object_raises():
 
 def test_sync_client_lists_evidence():
     with SyncSelfGraph(store=make_store(), namespace=unique_ns("ev")) as g:
-        g.insert.ontology(ONTOLOGY, source_id="s1")
+        g.insert.facts(FACTS, source_id="s1")
         page = g.entities.evidence("person:ada")
         assert [e.source_id for e in page.items] == ["s1"]
         assert page.next_cursor is None
@@ -145,7 +145,7 @@ def test_sync_client_lists_evidence():
 def test_entity_from_300_sources_still_writes_on_hydradb():
     g = fresh_graph("ev")
     for i in range(300):
-        res = run(g.insert.ontology({"entities": [{"type": "Person", "name": "Ada"}]}, source_id=f"src-{i}"))
+        res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Ada"}]}, source_id=f"src-{i}"))
     assert res.entities[0].source_count == 300
     assert run(g.entities.get("person:ada")).source_count == 300
     page = run(g.entities.evidence("person:ada", limit=1000))
@@ -154,7 +154,7 @@ def test_entity_from_300_sources_still_writes_on_hydradb():
 
 def test_relation_evidence_accepts_dicts_and_rejects_bad_offsets():
     g = fresh_graph("evdict")
-    run(g.insert.ontology(ONTOLOGY))
+    run(g.insert.facts(FACTS))
     rel = run(g.relations.update(REL, evidence=[{"source_id": "m", "start_offset": 0, "end_offset": 3}]))
     assert [(e.source_id, e.start_offset, e.end_offset) for e in run(g.relations.evidence(rel.id)).items] == [
         ("m", 0, 3)
@@ -176,11 +176,11 @@ def test_relation_evidence_accepts_dicts_and_rejects_bad_offsets():
 
 def test_relation_evidence_for_the_inserted_source_replaces_the_bare_record():
     g = fresh_graph("ev")
-    rel = dict(ONTOLOGY["relations"][0], evidence=[{"source_id": "doc", "quote": "Ada works at Acme"}])
-    res = run(g.insert.ontology({**ONTOLOGY, "relations": [rel]}, source_id="doc"))
+    rel = dict(FACTS["relations"][0], evidence=[{"source_id": "doc", "quote": "Ada works at Acme"}])
+    res = run(g.insert.facts({**FACTS, "relations": [rel]}, source_id="doc"))
     [ev] = run(g.relations.evidence(REL)).items
     assert (ev.source_id, ev.source_version, ev.quote) == ("doc", res.source_version, "Ada works at Acme")
     assert len(run(g.entities.evidence("person:ada")).items) == 1
     other = dict(rel, evidence=[{"source_id": "elsewhere", "quote": "q"}])
-    run(g.insert.ontology({**ONTOLOGY, "relations": [other]}, source_id="doc2"))
+    run(g.insert.facts({**FACTS, "relations": [other]}, source_id="doc2"))
     assert sorted(e.source_id for e in run(g.relations.evidence(REL)).items) == ["doc", "doc2", "elsewhere"]

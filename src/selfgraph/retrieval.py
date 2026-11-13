@@ -600,7 +600,7 @@ async def _collect_preferences(
         return []
     preferences = valid
     if preferences is None:
-        fetch = partial(_ops.list_preferences, graph.store, ns, subject_entity=None, key=None, kind=None)
+        fetch = partial(_ops.list_preferences, graph.store, ns, subject_entity=None, key=None, stance=None)
         preferences = await _paged(fetch)
     return sorted((p for p in preferences if p.subject_entity in order), key=lambda p: order[p.subject_entity])
 
@@ -664,7 +664,7 @@ def _assemble(
             break
 
     for p in sorted(preferences, key=lambda p: dist.get(p.subject_entity, far)):
-        verb = preference_edge_type(p.kind).lower()
+        verb = preference_edge_type(p.stance).lower()
         subject = names.get(p.subject_entity, p.subject_entity)
         value = names.get(p.value_entity, p.value_entity)
         line = f"{subject} {verb} {value} ({p.key})"

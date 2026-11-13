@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from selfgraph import EvidenceInput, Ontology, Schema, SelfGraph, ValidationError, ids
+from selfgraph import EvidenceInput, Extraction, Schema, SelfGraph, ValidationError, ids
 from selfgraph.runtime import to_jsonable
 from selfgraph.schema import validate_against_schema
 
@@ -68,19 +68,19 @@ SCHEMA_CASES = [
 GRAPH_TYPES = {"company:stored": "Company", "org:o": "org"}
 
 UNKNOWN_KEY_CASES = [
-    ["ontology", {"entites": []}],
-    ["ontology", {"entities": [{"type": "P", "nmae": "x"}]}],
-    ["ontology", {"entities": [{"type": "P", "name": "x", "b": 1, "a": 2}]}],
+    ["facts", {"entites": []}],
+    ["facts", {"entities": [{"type": "P", "nmae": "x"}]}],
+    ["facts", {"entities": [{"type": "P", "name": "x", "b": 1, "a": 2}]}],
     [
-        "ontology",
+        "facts",
         {
             "relations": [
                 {"from_entity": "a", "type": "X", "to_entity": "b", "evidence": [{"source_id": "s", "qoute": "q"}]}
             ]
         },
     ],
-    ["ontology", {"decisions": [{"title": "t", "steps": [], "stauts": "active"}]}],
-    ["ontology", {"preferences": [{"subject_entity": "a", "key": "k", "value_entity": "b", "strenght": 1}]}],
+    ["facts", {"decisions": [{"title": "t", "steps": [], "stauts": "active"}]}],
+    ["facts", {"preferences": [{"subject_entity": "a", "key": "k", "value_entity": "b", "strenght": 1}]}],
     ["schema", {"entity_types": []}],
     ["schema", {"entities": [{"name": "A", "properties": [{"name": "x", "requird": True}]}]}],
     ["schema", {"relations": [{"type": "X", "from": {"type": ["A"]}}]}],
@@ -91,12 +91,12 @@ UNKNOWN_KEY_CASES = [
 def unknown_key_error(kind, value):
     """Parse a value with an unknown key and return the error message.
 
-    @param kind (str): "ontology" or "schema".
+    @param kind (str): "facts" or "schema".
     @param value (dict): the raw input.
     @return (str): the ValidationError message.
     """
     try:
-        (Ontology if kind == "ontology" else Schema).model_validate(value)
+        (Extraction if kind == "facts" else Schema).model_validate(value)
     except ValidationError as exc:
         return str(exc)
     return "no error"
@@ -108,14 +108,14 @@ def schema_warnings():
     @return (dict): one list of {code, message} per case, and one message per unknown-key case.
     """
     schema = Schema.model_validate(SCHEMA_SPEC)
-    cases = [Ontology.model_validate(case) for case in SCHEMA_CASES]
+    cases = [Extraction.model_validate(case) for case in SCHEMA_CASES]
     return {
         "warnings": [
             [
                 {"code": w.code, "message": w.message}
-                for w in validate_against_schema(ont, schema, graph_types=GRAPH_TYPES)
+                for w in validate_against_schema(facts, schema, graph_types=GRAPH_TYPES)
             ]
-            for ont in cases
+            for facts in cases
         ],
         "unknown_keys": [unknown_key_error(kind, value) for kind, value in UNKNOWN_KEY_CASES],
     }
@@ -141,7 +141,7 @@ STORES = {
 
 ZOE = ids.entity_id("Person", "Zoë Ångström")
 
-ONTOLOGY = {
+FACTS = {
     "entities": [
         {
             "type": "Person",
@@ -179,7 +179,7 @@ ONTOLOGY = {
         },
         {
             "subject_entity": "person:jane-doe",
-            "kind": "disinterest",
+            "stance": "disinterest",
             "key": "database",
             "value_entity": "database:postgres",
         },
@@ -202,7 +202,7 @@ TEXT = "Grace Hopper joined Remington Rand. Grace Hopper wrote COBOL. Zoë Ångs
 
 async def write(graph):
     out = {}
-    out["ontology"] = to_jsonable(await graph.insert.ontology(ONTOLOGY, source_id="spec"))
+    out["facts"] = to_jsonable(await graph.insert.facts(FACTS, source_id="spec"))
     out["text"] = to_jsonable(
         await graph.insert.text(TEXT, source_id="notes", metadata={"author": "conformance", "n": 1, "f": 0.5})
     )

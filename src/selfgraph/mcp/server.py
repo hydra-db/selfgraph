@@ -14,7 +14,7 @@ from pydantic_core import core_schema
 
 from ..client import SelfGraph
 from ..errors import SelfGraphError, ValidationError, surface_hint
-from ..models import Kind, Status, check_options, validation_message
+from ..models import Stance, Status, check_options, validation_message
 from ..resources._common import DEFAULT_PAGE_LIMIT
 from ..runtime import (
     _BLANK,
@@ -186,7 +186,7 @@ async def insert_text(
     instructions: dict | None = None,
     prompts: dict | None = None,
 ) -> dict[str, Any]:
-    """Extract an ontology from text and merge it into the graph. Uses the configured LLM, or with none
+    """Extract facts from text and merge them into the graph. Uses the configured LLM, or with none
     configured falls back to a built-in LLM-free extractor (coarser). event_time (ISO 8601) is the default
     valid time for what is extracted; metadata is stored on the source.
 
@@ -216,8 +216,8 @@ async def insert_text(
     )
 
 
-async def insert_ontology(
-    ontology: dict,
+async def insert_facts(
+    facts: dict,
     source_id: str | None = None,
     event_time: str | None = None,
     resolver: str | None = None,
@@ -225,15 +225,15 @@ async def insert_ontology(
     schema: dict | None = None,
     schema_mode: SchemaMode | None = None,
 ) -> dict[str, Any]:
-    """Merge a ready ontology (entities/relations/preferences/decisions) in one call.
+    """Merge ready facts (entities/relations/preferences/decisions) in one call.
 
     Every write is an idempotent upsert keyed by deterministic id, so re-sending the
-    same ontology never duplicates data. Entity ids are 'type:name' (e.g. 'person:jane');
+    same facts never duplicates data. Entity ids are 'type:name' (e.g. 'person:jane');
     omit an id to have it derived. Prefer this over the create_* tools for bulk writes
     and for anything you may retry. References are validated before any write; the batch
     is atomic on transactional backends (Neo4j, Memgraph), while auto-commit backends
     (HydraDB, Kuzu, FalkorDB) apply writes incrementally, so a mid-batch failure can
-    leave earlier writes in place. Re-running the same ontology reconciles it. event_time (ISO 8601) is the
+    leave earlier writes in place. Re-sending the same facts reconciles the graph. event_time (ISO 8601) is the
     default valid time for relations, preferences, and decisions that carry none of their own. resolver (exact, default,
     fuzzy, or llm) overrides the server's entity resolution for this call; each merge is in the result's merges.
     contradiction (off, warn, supersede) overrides how a relation that breaks a schema max_count is handled:
@@ -244,8 +244,8 @@ async def insert_ontology(
     g = await _graph_handle()
     return to_jsonable(
         surfaced(
-            await g.insert.ontology(
-                ontology,
+            await g.insert.facts(
+                facts,
                 source_id=source_id,
                 event_time=at,
                 resolver=resolver,
@@ -267,7 +267,7 @@ async def create_entity(
 ) -> dict[str, Any]:
     """Create an entity (node). Ids are deterministic 'type:name' (e.g. 'person:jane');
     omit id to derive one from type and name. This is a strict create and conflicts if
-    the id already exists; use insert_ontology to upsert idempotently instead."""
+    the id already exists; use insert_facts to upsert idempotently instead."""
     g = await _graph_handle()
     return to_jsonable(
         await g.entities.create(name, type, id=id, aliases=aliases, external_ids=external_ids, properties=properties)
@@ -450,14 +450,14 @@ async def create_preference(
     subject_entity: str,
     key: str,
     value_entity: str,
-    kind: Kind = "preference",
+    stance: Stance = "preference",
     id: str | None = None,
     about_entity: str | None = None,
     strength: float | None = None,
     properties: dict | None = None,
     event_time: str | None = None,
 ) -> dict[str, Any]:
-    """Record that an entity prefers or avoids a value (kind: preference|disinterest).
+    """Record that an entity prefers or avoids a value (stance: preference|disinterest).
     Omit id to derive one; a manual id must start with 'preference:'. event_time (ISO 8601)
     is when the preference became true."""
     g = await _graph_handle()
@@ -467,7 +467,7 @@ async def create_preference(
             key,
             value_entity,
             id=id,
-            kind=kind,
+            stance=stance,
             about_entity=about_entity,
             strength=strength,
             properties=properties,
@@ -479,13 +479,13 @@ async def create_preference(
 async def list_preferences(
     subject_entity: str | None = None,
     key: str | None = None,
-    kind: Kind | None = None,
+    stance: Stance | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
     cursor: str | None = None,
 ) -> dict[str, Any]:
     """List current preferences, optionally scoped to one subject entity. Paged via next_cursor."""
     g = await _graph_handle()
-    return to_jsonable(await g.preferences.list(subject_entity, key=key, kind=kind, limit=limit, cursor=cursor))
+    return to_jsonable(await g.preferences.list(subject_entity, key=key, stance=stance, limit=limit, cursor=cursor))
 
 
 async def preference_versions(id: str, newest_first: StrictBool = True) -> list[dict[str, Any]]:
@@ -697,18 +697,18 @@ async def maintenance_prune(
     return to_jsonable(surfaced(result))
 
 
-async def maintenance_consolidate(dry_run: StrictBool = True) -> dict[str, Any]:
+async def maintenance_dedupe_relations(dry_run: StrictBool = True) -> dict[str, Any]:
     """Merge parallel current relations with the same endpoints and type but different ids into the lowest
     id: properties merge (survivor wins), evidence and decision steps move over, duplicates are deleted.
     Dry run by default: returns the groups; pass dry_run false to merge."""
     g = await _graph_handle()
-    return to_jsonable(await g.maintenance.consolidate(dry_run=dry_run))
+    return to_jsonable(await g.maintenance.dedupe_relations(dry_run=dry_run))
 
 
 TOOLS = [
     get_schema,
     insert_text,
-    insert_ontology,
+    insert_facts,
     create_entity,
     get_entity,
     list_entities,
@@ -739,15 +739,15 @@ TOOLS = [
     retrieve,
     maintenance_decay,
     maintenance_prune,
-    maintenance_consolidate,
+    maintenance_dedupe_relations,
 ]
 
 
 _READ_ONLY = frozenset(
     {"get_schema", "retrieve", "run_cypher", "entity_evidence", "entity_merges", "relation_evidence"}
 )
-_DESTRUCTIVE = frozenset({"maintenance_prune", "maintenance_consolidate"})
-_IDEMPOTENT = frozenset({"insert_ontology", "maintenance_prune", "maintenance_consolidate"})
+_DESTRUCTIVE = frozenset({"maintenance_prune", "maintenance_dedupe_relations"})
+_IDEMPOTENT = frozenset({"insert_facts", "maintenance_prune", "maintenance_dedupe_relations"})
 
 
 def _annotations(name: str) -> dict[str, bool]:

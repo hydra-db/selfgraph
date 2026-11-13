@@ -11,7 +11,7 @@ from helpers import (
 )
 
 import selfgraph.mcp.server as srv
-from selfgraph import EntityInput, Ontology, Schema, ValidationError, ids
+from selfgraph import EntityInput, Extraction, Schema, ValidationError, ids
 from selfgraph.models import as_input, suggest_key
 from selfgraph.runtime import build_graph, settings_from_env
 from selfgraph.schema import as_schema, render_schema_catalog, validate_against_schema
@@ -54,12 +54,12 @@ SPEC = {
 }
 
 
-def warnings(spec, ont):
-    return validate_against_schema(Ontology.model_validate(ont), Schema.model_validate(spec))
+def warnings(spec, facts):
+    return validate_against_schema(Extraction.model_validate(facts), Schema.model_validate(spec))
 
 
-def codes(spec, ont):
-    return [w.code for w in warnings(spec, ont)]
+def codes(spec, facts):
+    return [w.code for w in warnings(spec, facts)]
 
 
 def test_parse_fills_defaults_and_as_schema_passes_through():
@@ -90,7 +90,7 @@ ANY_ENDS = {"entities": [{"name": "Person"}, {"name": "Company"}], "relations": 
 
 
 @pytest.mark.parametrize(
-    ("spec", "ontology", "expected"),
+    ("spec", "facts", "expected"),
     [
         (
             SPEC,
@@ -133,8 +133,8 @@ ANY_ENDS = {"entities": [{"name": "Person"}, {"name": "Company"}], "relations": 
         "bad-property-types",
     ],
 )
-def test_validation_codes(spec, ontology, expected):
-    assert codes(spec, ontology) == expected
+def test_validation_codes(spec, facts, expected):
+    assert codes(spec, facts) == expected
 
 
 def test_render_catalog():
@@ -155,27 +155,27 @@ def test_insert_schema_modes_per_graph_and_per_call():
         "entities": [{"name": "Person", "properties": [{"name": "age", "type": "integer", "required": True}]}],
         "relations": [{"type": "KNOWS", "from": {"types": ["Person"]}, "to": {"types": ["Person"]}}],
     }
-    ontology = {
+    facts = {
         "entities": [{"id": "person:schemaguy", "type": "Person", "name": "Schema Guy"}],
         "relations": [{"from_entity": "person:schemaguy", "type": "LIKES", "to_entity": "person:schemaguy"}],
     }
     warned_codes = ["missing_required_property", "unknown_relation_type"]
-    assert [w.code for w in run(g.insert.ontology(ontology, schema=schema)).warnings] == warned_codes
+    assert [w.code for w in run(g.insert.facts(facts, schema=schema)).warnings] == warned_codes
     assert run(g.entities.get("person:schemaguy")) is not None
 
     with pytest.raises(ValidationError):
-        run(g.insert.ontology(ontology, schema=schema, schema_mode="strict"))
+        run(g.insert.facts(facts, schema=schema, schema_mode="strict"))
 
-    quiet = run(g.insert.ontology(ontology, schema=schema, schema_mode="off"))
+    quiet = run(g.insert.facts(facts, schema=schema, schema_mode="off"))
     assert quiet.warnings == []
 
     graph_level = new_graph(schema=schema)
     assert graph_level.schema == Schema.model_validate(schema)
-    assert [w.code for w in run(graph_level.insert.ontology(ontology)).warnings] == warned_codes
-    assert run(graph_level.insert.ontology(ontology, schema_mode="off")).warnings == []
+    assert [w.code for w in run(graph_level.insert.facts(facts)).warnings] == warned_codes
+    assert run(graph_level.insert.facts(facts, schema_mode="off")).warnings == []
     strict = new_graph(schema=schema, schema_mode="strict")
     with pytest.raises(ValidationError):
-        run(strict.insert.ontology(ontology))
+        run(strict.insert.facts(facts))
 
 
 def test_schema_catalog_injected_into_extraction_prompt():
@@ -194,7 +194,7 @@ def test_invalid_schema_and_mode_raise_validation_error():
         new_graph(schema_mode="loud")
     g = new_graph()
     with pytest.raises(ValidationError, match="schema_mode"):
-        run(g.insert.ontology({"entities": []}, schema=SPEC, schema_mode="loud"))
+        run(g.insert.facts({"entities": []}, schema=SPEC, schema_mode="loud"))
 
 
 @pytest.mark.parametrize(
@@ -230,8 +230,8 @@ def test_inconsistent_schemas_are_rejected_with_a_path(spec, message):
 
 def test_models_built_directly_raise_the_sdk_validation_error():
     with pytest.raises(ValidationError) as err:
-        Ontology(entities=[{"type": "Person"}])
-    assert str(err.value) == "invalid ontology: entities[0].name: field required"
+        Extraction(entities=[{"type": "Person"}])
+    assert str(err.value) == "invalid facts: entities[0].name: field required"
     assert Schema(entities=[{"name": "Person"}, {"name": "Manager", "parent": "Person"}]).entities[1].parent == "Person"
 
 
@@ -241,7 +241,7 @@ def test_settings_load_schema_from_file_or_object(tmp_path, monkeypatch):
     g = build_graph(settings_from_env(**vars(store_settings())))
     assert g.schema == Schema.model_validate(SPEC)
     with pytest.raises(ValidationError):
-        run(g.insert.ontology({"entities": [{"type": "Robot", "name": "R2"}]}))
+        run(g.insert.facts({"entities": [{"type": "Robot", "name": "R2"}]}))
     assert build_graph(store_settings(schema=SPEC)).schema == Schema.model_validate(SPEC)
     with pytest.raises(ValidationError, match="cannot read"):
         build_graph(store_settings(schema=str(tmp_path / "missing.json")))
@@ -278,7 +278,7 @@ AGED_P = PERSON_P
 
 
 @pytest.mark.parametrize(
-    ("spec", "ontology", "expected"),
+    ("spec", "facts", "expected"),
     [
         (
             MIN_SPEC,
@@ -316,8 +316,8 @@ AGED_P = PERSON_P
     ],
     ids=["below-min", "inherited-required", "alias-cardinality", "undeclared-endpoint", "given-or-canonical-ids"],
 )
-def test_validation_messages(spec, ontology, expected):
-    assert [w.message for w in warnings(spec, ontology)] == expected
+def test_validation_messages(spec, facts, expected):
+    assert [w.message for w in warnings(spec, facts)] == expected
 
 
 def test_datetime_properties_must_be_iso_8601():
@@ -351,7 +351,7 @@ def test_strict_rejects_writes_before_touching_the_graph():
     assert run(g.entities.get(jane.id)).properties == {"age": 30}
 
     run(g.entities.create("Acme", "Company"))
-    run(g.insert.ontology({"entities": [{"id": "tool:t", "type": "Tool", "name": "T"}]}, schema_mode="off"))
+    run(g.insert.facts({"entities": [{"id": "tool:t", "type": "Tool", "name": "T"}]}, schema_mode="off"))
     with pytest.raises(ValidationError, match="from entity company:acme is not one of \\['Person'\\]"):
         run(g.relations.create("company:acme", "WORKS_AT", "person:jane"))
     with pytest.raises(ValidationError, match="to entity tool:t is not one of \\['Company'\\]"):
@@ -371,7 +371,7 @@ def test_warn_mode_writes_and_logs_each_violation_and_off_mode_is_silent(caplog)
     g = schema_graph("warn")
     run(g.entities.create("Acme", "Company"))
     result = run(
-        g.insert.ontology(
+        g.insert.facts(
             {
                 "entities": [{"type": "Company", "name": "Beta"}],
                 "relations": [{"from_entity": "company:acme", "type": "WORKS_AT", "to_entity": "company:beta"}],
@@ -423,7 +423,7 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
     g = new_graph()
     for call in (
         lambda: new_graph(schema_mode="strict"),
-        lambda: run(g.insert.ontology({"entities": []}, schema_mode="strict")),
+        lambda: run(g.insert.facts({"entities": []}, schema_mode="strict")),
         lambda: run(g.insert.text("Jane met Bob.", schema_mode="strict")),
         lambda: srv.run_stdio(store_settings(schema_mode="strict")),
     ):
@@ -437,16 +437,16 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
     ("build", "message"),
     [
         (
-            lambda: Ontology.model_validate({"entites": []}),
-            "unknown key 'entites' in ontology; did you mean 'entities'?",
+            lambda: Extraction.model_validate({"entites": []}),
+            "unknown key 'entites' in facts; did you mean 'entities'?",
         ),
         (
-            lambda: Ontology.model_validate({"entities": [{"type": "Person", "nmae": "Jane"}]}),
-            "unknown key 'nmae' in ontology.entities[0]; did you mean 'name'? "
+            lambda: Extraction.model_validate({"entities": [{"type": "Person", "nmae": "Jane"}]}),
+            "unknown key 'nmae' in facts.entities[0]; did you mean 'name'? "
             "(valid keys: id, type, name, aliases, external_ids, properties)",
         ),
         (
-            lambda: Ontology.model_validate(
+            lambda: Extraction.model_validate(
                 {
                     "relations": [
                         {
@@ -458,7 +458,7 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
                     ]
                 }
             ),
-            "unknown key 'qoute' in ontology.relations[0].evidence[0]; did you mean 'quote'?",
+            "unknown key 'qoute' in facts.relations[0].evidence[0]; did you mean 'quote'?",
         ),
         (lambda: as_schema({"entity_types": []}), "unknown key 'entity_types' in schema; did you mean 'entities'?"),
         (lambda: as_schema({"edges": []}), "unknown key 'edges' in schema; did you mean 'relations'?"),
@@ -480,8 +480,8 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
             "unknown key 'relatoins' in instructions; did you mean 'relations'?",
         ),
         (
-            lambda: as_input(Ontology, {"entities": [{"type": "P", "name": 3}, {"type": "P"}]}, "ontology"),
-            "invalid ontology:\n  entities[0].name: expected string\n  entities[1].name: field required",
+            lambda: as_input(Extraction, {"entities": [{"type": "P", "name": 3}, {"type": "P"}]}, "facts"),
+            "invalid facts:\n  entities[0].name: expected string\n  entities[1].name: field required",
         ),
     ],
 )
@@ -509,7 +509,7 @@ def test_schema_aliases_and_case_canonicalize_types_before_ids_are_derived():
     }
     g = fresh_graph("canon", schema=spec)
     res = run(
-        g.insert.ontology(
+        g.insert.facts(
             {
                 "entities": [{"type": "Human", "name": "Ann"}, {"type": "COMPANY", "name": "Acme"}],
                 "relations": [{"from_entity": "human:ann", "type": "employed by", "to_entity": "company:acme"}],
@@ -534,7 +534,7 @@ def test_schema_aliases_and_case_canonicalize_types_before_ids_are_derived():
 
     g = fresh_graph("sch", schema=SPEC)
     res = run(
-        g.insert.ontology(
+        g.insert.facts(
             {
                 "entities": [{"type": "org", "name": "Acme"}, {"type": "Company", "name": "Globex"}],
                 "relations": [

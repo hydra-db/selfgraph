@@ -17,7 +17,7 @@ def instant():
 
 def graph():
     g = fresh_graph("asof")
-    run(g.insert.ontology({"entities": [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}]}))
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}]}))
     return g
 
 
@@ -77,7 +77,7 @@ def test_event_time_decides_when_a_relation_takes_effect():
 
 def test_backdated_facts_show_on_the_valid_time_axis():
     g = graph()
-    run(g.insert.ontology({"relations": [works_at("acme", 2020, properties={"role": "dev"})]}))
+    run(g.insert.facts({"relations": [works_at("acme", 2020, properties={"role": "dev"})]}))
     [stored] = run(g.relations.list()).items
     run(g.relations.update(stored.id, set_properties={"role": "cto"}, event_time=utc(2022)))
 
@@ -147,7 +147,7 @@ def test_as_of_parsing_on_every_surface(capsys):
         assert cli(g, ["retrieve", "Ann", "--as-of", as_of], capsys)["subgraph"]["entities"] == []
 
     with mcp_session("asof-mcp") as srv:
-        run(srv.insert_ontology({"entities": [{"type": "Person", "name": "Ann"}]}))
+        run(srv.insert_facts({"entities": [{"type": "Person", "name": "Ann"}]}))
         assert run(srv.retrieve("Ann"))["subgraph"]["entities"] != []
         for as_of in (past, "2000-01-01T00:00:00", "2000-01-01T00:00:00Z"):
             assert run(srv.retrieve("Ann", as_of=as_of))["subgraph"]["entities"] == []

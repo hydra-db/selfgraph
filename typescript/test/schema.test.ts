@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { buildGraph } from "../src/client.js";
 import { FalkorDBStore, KuzuStore, type LLMClient, SelfGraph, ValidationError } from "../src/index.js";
 import { runStdio } from "../src/mcp.js";
-import { EntityInput, Ontology, parseOrThrow } from "../src/models.js";
+import { EntityInput, Extraction, parseOrThrow } from "../src/models.js";
 import { DEFAULT_SETTINGS } from "../src/runtime.js";
 import { asSchema, renderSchemaCatalog, Schema, validateAgainstSchema } from "../src/schema.js";
 import { suggestKey } from "../src/validate.js";
@@ -68,7 +68,7 @@ const WRITE_SPEC = {
 const PERSON = { id: "person:p", type: "Person", name: "P", properties: { age: 1 } };
 const COMPANY = { id: "company:c", type: "Company", name: "C" };
 
-const check = (schema: unknown, ont: unknown) => validateAgainstSchema(Ontology.parse(ont), Schema.parse(schema));
+const check = (schema: unknown, facts: unknown) => validateAgainstSchema(Extraction.parse(facts), Schema.parse(schema));
 
 describe("Schema.parse and asSchema", () => {
   it("fills defaults, keeps endpoints and aliases, and passes a parsed schema or null through", () => {
@@ -128,7 +128,7 @@ describe("Schema.parse and asSchema", () => {
 describe("validateAgainstSchema", () => {
   it.each([
     [
-      "a clean ontology resolved through aliases and parent types",
+      "clean facts resolved through aliases and parent types",
       SPEC,
       {
         entities: [
@@ -213,8 +213,8 @@ describe("validateAgainstSchema", () => {
       },
       ["cardinality_violation"],
     ],
-  ])("gives the codes for %s", (_, schema, ont, expected) => {
-    expect(check(schema, ont).map((w) => w.code)).toEqual(expected);
+  ])("gives the codes for %s", (_, schema, facts, expected) => {
+    expect(check(schema, facts).map((w) => w.code)).toEqual(expected);
   });
 
   it("uses canonical ids and words messages for inheritance, aliases, and min counts", () => {
@@ -288,17 +288,15 @@ describe("schema through the client", () => {
   const schema = {
     entities: [{ name: "Person", properties: [{ name: "age", type: "integer" as const, required: true }] }],
   };
-  const ontology = { entities: [{ id: "person:p", type: "Person", name: "P" }] };
+  const facts = { entities: [{ id: "person:p", type: "Person", name: "P" }] };
   const open = freshGraphs(KUZU_SPEC, "schema");
 
   it("exposes a graph-level schema, rejects violations in strict mode, and lets a per-insert mode override it", async () => {
     const graph = open({ schema });
     expect(graph.schema?.entities[0]?.name).toBe("Person");
-    expect((await graph.insert.ontology(ontology)).warnings.map((w) => w.code)).toEqual(["missing_required_property"]);
-    expect((await graph.insert.ontology(ontology, { schema_mode: "off" })).warnings).toEqual([]);
-    await expect(open({ schema, schema_mode: "strict" }).insert.ontology(ontology)).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    expect((await graph.insert.facts(facts)).warnings.map((w) => w.code)).toEqual(["missing_required_property"]);
+    expect((await graph.insert.facts(facts, { schema_mode: "off" })).warnings).toEqual([]);
+    await expect(open({ schema, schema_mode: "strict" }).insert.facts(facts)).rejects.toBeInstanceOf(ValidationError);
   });
 
   it("injects the schema catalog into the extraction prompt", async () => {
@@ -318,12 +316,12 @@ describe("schema through the client", () => {
   it("rejects a bad schema mode and strict mode without a schema everywhere", async () => {
     const memory = (options: object) => () => new SelfGraph(new KuzuStore(":memory:"), options);
     expect(memory({ schema_mode: "loud" })).toThrow(/schema_mode/);
-    await expect(
-      open().insert.ontology({ entities: [] }, { schema: SPEC, schema_mode: "loud" as never }),
-    ).rejects.toThrow(/schema_mode/);
+    await expect(open().insert.facts({ entities: [] }, { schema: SPEC, schema_mode: "loud" as never })).rejects.toThrow(
+      /schema_mode/,
+    );
     const message = /^schema_mode 'strict' needs a schema$/;
     expect(memory({ schema_mode: "strict" })).toThrow(message);
-    await expect(open().insert.ontology({ entities: [] }, { schema_mode: "strict" })).rejects.toThrow(message);
+    await expect(open().insert.facts({ entities: [] }, { schema_mode: "strict" })).rejects.toThrow(message);
     await expect(open().insert.text("Jane met Bob.", { schema_mode: "strict" })).rejects.toThrow(message);
     await expect(runStdio({ ...DEFAULT_SETTINGS, store: "kuzu", schema_mode: "strict" })).rejects.toThrow(message);
   });
@@ -335,7 +333,7 @@ describe("schema through the client", () => {
     const fromFile = buildGraph({ ...settings, schema: file });
     try {
       expect(fromFile.schema).toEqual(Schema.parse(SPEC));
-      await expect(fromFile.insert.ontology({ entities: [{ type: "Robot", name: "R2" }] })).rejects.toBeInstanceOf(
+      await expect(fromFile.insert.facts({ entities: [{ type: "Robot", name: "R2" }] })).rejects.toBeInstanceOf(
         ValidationError,
       );
     } finally {
@@ -349,7 +347,7 @@ describe("schema through the client", () => {
   it("checks the endpoint types of stored entities, including undeclared types, on insert and create", async () => {
     const graph = open({ schema: WRITE_SPEC });
     await graph.entities.create("Acme", "Company");
-    const result = await graph.insert.ontology({
+    const result = await graph.insert.facts({
       entities: [{ type: "Company", name: "Beta" }],
       relations: [{ from_entity: "company:acme", type: "WORKS_AT", to_entity: "company:beta" }],
     });
@@ -362,7 +360,7 @@ describe("schema through the client", () => {
       "relation person:p -WORKS_AT-> tool:t to entity tool:t is not one of ['Company']",
     );
     const strict = open({ schema: WRITE_SPEC, schema_mode: "strict" });
-    await strict.insert.ontology({ entities }, { schema_mode: "off" });
+    await strict.insert.facts({ entities }, { schema_mode: "off" });
     await expect(strict.relations.create("person:p", "WORKS_AT", "tool:t")).rejects.toThrow(
       "to entity tool:t is not one of ['Company']",
     );
@@ -450,7 +448,7 @@ describe("schema through the client", () => {
     ]);
   });
 
-  it("drops off-schema extractions on a strict text insert but rejects them on an ontology insert", async () => {
+  it("drops off-schema extractions on a strict text insert but rejects them on facts insert", async () => {
     const extracted = {
       entities: [
         { type: "Person", name: "Soham", aliases: null },
@@ -472,7 +470,7 @@ describe("schema through the client", () => {
     const dropped = res.warnings.filter((w) => w.code === "dropped_off_schema").map((w) => w.message);
     expect(dropped[0]).toBe("dropped extracted entity thing:team: entity thing:team has unknown type 'Thing'");
     expect(dropped.some((m) => m.includes("relation") && m.includes("thing:team was dropped"))).toBe(true);
-    await expect(graph.insert.ontology({ entities: [{ type: "Team", name: "Core" }] })).rejects.toThrow(
+    await expect(graph.insert.facts({ entities: [{ type: "Team", name: "Core" }] })).rejects.toThrow(
       "unknown type 'Team'",
     );
   });
@@ -485,23 +483,23 @@ describe("unknown keys and options", () => {
     const g = open();
     const cases: Array<[() => unknown, string]> = [
       [
-        () => parseOrThrow(Ontology, { entites: [] }, "ontology"),
-        "unknown key 'entites' in ontology; did you mean 'entities'?",
+        () => parseOrThrow(Extraction, { entites: [] }, "facts"),
+        "unknown key 'entites' in facts; did you mean 'entities'?",
       ],
       [
-        () => parseOrThrow(Ontology, { entities: [{ type: "Person", nmae: "Jane" }] }, "ontology"),
-        "unknown key 'nmae' in ontology.entities[0]; did you mean 'name'?",
+        () => parseOrThrow(Extraction, { entities: [{ type: "Person", nmae: "Jane" }] }, "facts"),
+        "unknown key 'nmae' in facts.entities[0]; did you mean 'name'?",
       ],
       [
         () =>
           parseOrThrow(
-            Ontology,
+            Extraction,
             {
               relations: [{ from_entity: "a", type: "X", to_entity: "b", evidence: [{ source_id: "s", qoute: "q" }] }],
             },
-            "ontology",
+            "facts",
           ),
-        "unknown key 'qoute' in ontology.relations[0].evidence[0]; did you mean 'quote'?",
+        "unknown key 'qoute' in facts.relations[0].evidence[0]; did you mean 'quote'?",
       ],
       [() => asSchema({ entity_types: [] } as never), "unknown key 'entity_types' in schema; did you mean 'entities'?"],
       [() => asSchema({ edges: [] } as never), "unknown key 'edges' in schema; did you mean 'relations'?"],
@@ -538,8 +536,8 @@ describe("unknown keys and options", () => {
         "unknown option 'stratgy' for retrieve; did you mean 'strategy'?",
       ],
       [
-        () => g.insert.ontology({}, { sourse_id: "s" } as never),
-        "unknown option 'sourse_id' for insert.ontology; did you mean 'source_id'?",
+        () => g.insert.facts({}, { sourse_id: "s" } as never),
+        "unknown option 'sourse_id' for insert.facts; did you mean 'source_id'?",
       ],
       [() => g.entities.create("A", "T", { evidence: [] } as never), "unknown option 'evidence' for entities.create"],
       [() => g.entities.list({ limt: 5 } as never), "unknown option 'limt' for entities.list; did you mean 'limit'?"],
@@ -561,11 +559,11 @@ describe("unknown keys and options", () => {
       expect(error, message).toBeInstanceOf(ValidationError);
       expect((error as Error).message.split(" (valid keys: ")[0]).toContain(message);
     }
-    expect(() => parseOrThrow(Ontology, { entities: [{ type: "Person", nmae: "Jane" }] }, "ontology")).toThrow(
+    expect(() => parseOrThrow(Extraction, { entities: [{ type: "Person", nmae: "Jane" }] }, "facts")).toThrow(
       "(valid keys: id, type, name, aliases, external_ids, properties)",
     );
-    expect(() => parseOrThrow(Ontology, { entities: [{ type: "P", name: 3 }, { type: "P" }] }, "ontology")).toThrow(
-      "invalid ontology:\n  entities[0].name: expected string\n  entities[1].name: field required",
+    expect(() => parseOrThrow(Extraction, { entities: [{ type: "P", name: 3 }, { type: "P" }] }, "facts")).toThrow(
+      "invalid facts:\n  entities[0].name: expected string\n  entities[1].name: field required",
     );
     expect((await g.decisions.create("D", { steps: [] })).steps).toEqual([]);
     expect((await g.decisions.create("No steps")).steps).toEqual([]);

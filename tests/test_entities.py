@@ -85,7 +85,7 @@ def test_explicit_ids_are_canonical_on_every_input_path():
     assert (dec.actor_entity, dec.alternative_entities) == ("t:x", ["t:y"])
     assert [d.id for d in run(g.decisions.list(actor_entity="T:X")).items] == [dec.id]
     res = run(
-        g.insert.ontology(
+        g.insert.facts(
             {
                 "entities": [{"id": "Person:Jane Doe", "type": "Person", "name": "Jane Doe"}],
                 "relations": [{"from_entity": "PERSON:Jane Doe", "type": "KNOWS", "to_entity": "T:X"}],
@@ -133,7 +133,7 @@ def test_property_values_and_keys_are_checked_and_null_clears_a_key():
             run(g.entities.create("A", "T", properties=bad))
     with pytest.raises(ValidationError, match="properties keys cannot be empty"):
         bad_rel = {"from_entity": e.id, "type": "R", "to_entity": e.id, "properties": {" ": 1}}
-        run(g.insert.ontology({"relations": [bad_rel]}))
+        run(g.insert.facts({"relations": [bad_rel]}))
     with pytest.raises(ValidationError, match="set_properties keys cannot be empty"):
         run(g.relations.update(rel.id, set_properties={"": 1}))
     with pytest.raises(ValidationError, match="metadata keys cannot be empty"):
@@ -146,7 +146,7 @@ def test_entity_types_and_ids_are_validated():
     with pytest.raises(ValidationError, match="entity type 'Per:son' cannot contain ':'"):
         run(g.entities.create("A", "Per:son"))
     with pytest.raises(ValidationError, match="cannot contain ':'"):
-        run(g.insert.ontology({"entities": [{"type": "Per:son", "name": "A"}]}))
+        run(g.insert.facts({"entities": [{"type": "Per:son", "name": "A"}]}))
     with pytest.raises(ValidationError, match="can only contain letters, digits, spaces"):
         run(g.entities.create("X", "bad type!"))
     with pytest.raises(ValidationError):
@@ -189,13 +189,13 @@ def test_an_explicit_id_must_carry_the_entity_type():
     with pytest.raises(ValidationError, match=re.escape(message)):
         run(g.entities.create("X", "Person", id="company:x"))
     with pytest.raises(ValidationError, match=re.escape("id 'company:zzz' does not match type 'Person'")):
-        run(g.insert.ontology({"entities": [{"id": "company:zzz", "type": "Person", "name": "Z"}]}))
+        run(g.insert.facts({"entities": [{"id": "company:zzz", "type": "Person", "name": "Z"}]}))
     assert run(g.entities.create("X", "Big Co", id="Big Co:x")).id == "big-co:x"
     s = fresh_graph("ent", schema={"entities": [{"name": "Company", "aliases": ["org"]}]})
     assert run(s.entities.create("Acme", "org", id="company:acme")).type == "Company"
     assert run(s.entities.create("Beta", "Company", id="ORG:Beta")).id == "company:beta"
     result = run(
-        s.insert.ontology(
+        s.insert.facts(
             {
                 "entities": [
                     {"id": "org:acme", "type": "org", "name": "Acme"},
@@ -208,7 +208,7 @@ def test_an_explicit_id_must_carry_the_entity_type():
     assert sorted(e.id for e in result.entities) == ["company:acme", "company:gamma"]
     assert result.relations[0].from_entity == "company:gamma" and result.relations[0].to_entity == "company:acme"
     with pytest.raises(ValidationError, match=re.escape("(expected prefix 'company:')")):
-        run(s.insert.ontology({"entities": [{"id": "person:acme", "type": "org", "name": "Acme"}]}))
+        run(s.insert.facts({"entities": [{"id": "person:acme", "type": "org", "name": "Acme"}]}))
     with pytest.raises(ValidationError, match=re.escape("(expected prefix 'company:')")):
         run(s.entities.create("Acme", "org", id="person:acme"))
 

@@ -101,7 +101,7 @@ describe("built CLI against Kuzu", () => {
       [["retrieve", "x", "--depth", "abc"], "--depth expects an integer, got 'abc'"],
       [["retrieve", "x", "--depth", "-1", "--k", "0", "--budget-tokens", "0"], "depth must be >= 0, got -1"],
       [["retrieve", "x", "--k", "0"], "k must be >= 1, got 0"],
-      [["insert", "ontology", join(dir, "nofile.json")], "cannot read"],
+      [["insert", "facts", join(dir, "nofile.json")], "cannot read"],
       [["insert", "text", ""], "text cannot be empty or whitespace"],
       [["insert", "text", "  "], "text cannot be empty or whitespace"],
       [["insert", "text", "Ann.", "--metadata", "nope"], "--metadata expects KEY=VALUE, got 'nope'"],
@@ -125,11 +125,11 @@ describe("built CLI against Kuzu", () => {
       expect([res.code, res.err], args.join(" ")).toEqual([2, expect.stringContaining(message)]);
       expect(res.err).not.toMatch(/isoformat|SelfGraph options/);
     }
-    const bad = cli([...kuzu, "insert", "ontology", "-"], {
+    const bad = cli([...kuzu, "insert", "facts", "-"], {
       input: JSON.stringify({ entities: [{ type: "P" }, { name: 3, type: "P" }] }),
     });
     expect(bad.err).toBe(
-      "error: invalid ontology:\n  entities[0].name: field required\n  entities[1].name: expected string\n",
+      "error: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n",
     );
   });
 
@@ -148,7 +148,7 @@ describe("built CLI against Kuzu", () => {
     }
   });
 
-  it("reads insert text '-' from stdin and dates text and ontology inserts with an event time", () => {
+  it("reads insert text '-' from stdin and dates text and facts inserts with an event time", () => {
     const res = cli([...kuzu, "insert", "text", "-", "--event-time", "2024-01-02T03:04:05+00:00"], {
       input: "Acme Corp hired Jane Doe.",
     });
@@ -157,13 +157,10 @@ describe("built CLI against Kuzu", () => {
     expect(out.entities.map((e) => e.name)).toEqual(expect.arrayContaining(["Acme Corp", "Jane Doe"]));
     expect(out.relations.length).toBeGreaterThan(0);
     for (const r of out.relations) expect(r.event_time).toBe("2024-01-02T03:04:05Z");
-    const ontology = cli(
-      [...kuzu, "--namespace", "cli_dated", "insert", "ontology", "-", "--event-time", "2020-05-01"],
-      {
-        input: JSON.stringify(A_KNOWS_B),
-      },
-    ).out as { relations: Array<{ event_time: string }> };
-    expect(ontology.relations[0]!.event_time).toBe("2020-05-01T00:00:00Z");
+    const facts = cli([...kuzu, "--namespace", "cli_dated", "insert", "facts", "-", "--event-time", "2020-05-01"], {
+      input: JSON.stringify(A_KNOWS_B),
+    }).out as { relations: Array<{ event_time: string }> };
+    expect(facts.relations[0]!.event_time).toBe("2020-05-01T00:00:00Z");
     const basic = cli([...kuzu, "--namespace", "cli_dated", "insert", "text", "Acme acquired Globex."], {
       env: { SELFGRAPH_LLM_PROVIDER: "", SELFGRAPH_LLM_MODEL: "" },
     });
@@ -212,9 +209,9 @@ describe("built CLI against Kuzu", () => {
   it("merges with --resolver and reverses with entity unmerge", () => {
     const ns = ["--namespace", "cli_resolution"];
     const robert = JSON.stringify({ entities: [{ type: "Person", name: "Robert", aliases: ["Bob"] }] });
-    expect(cli([...kuzu, ...ns, "insert", "ontology", "-"], { input: robert }).code).toBe(0);
+    expect(cli([...kuzu, ...ns, "insert", "facts", "-"], { input: robert }).code).toBe(0);
     const bob = JSON.stringify({ entities: [{ type: "Person", name: "Bob" }] });
-    const res = cli([...kuzu, ...ns, "insert", "ontology", "-", "--resolver", "default"], { input: bob });
+    const res = cli([...kuzu, ...ns, "insert", "facts", "-", "--resolver", "default"], { input: bob });
     const mergeId = (res.out as { merges: Array<{ id: string }> }).merges[0]!.id;
     const listed = cli([...kuzu, ...ns, "entity", "merges", "person:robert"]).out as { items: Array<{ id: string }> };
     expect(listed.items.map((m) => m.id)).toEqual([mergeId]);
@@ -225,7 +222,7 @@ describe("built CLI against Kuzu", () => {
   it("plans maintenance unless --apply, and decays relevance", () => {
     const ns = ["--namespace", "cli_maintenance"];
     const run = (...args: string[]) => cli([...kuzu, ...ns, "maintenance", ...args]);
-    for (const action of [["decay"], ["prune", "--min-relevance", "0.1"], ["consolidate"]]) {
+    for (const action of [["decay"], ["prune", "--min-relevance", "0.1"], ["dedupe-relations"]]) {
       expect(run(...action).code).toBe(0);
     }
     seed(ns, "A");
@@ -233,9 +230,9 @@ describe("built CLI against Kuzu", () => {
     const plan = run("prune", "--older-than", soon);
     expect(plan.out).toMatchObject({ dry_run: true, entity_ids: ["t:a"] });
     expect(plan.out).not.toHaveProperty("deleted");
-    const consolidate = run("consolidate");
-    expect(consolidate.out).toMatchObject({ dry_run: true, groups: [] });
-    expect(consolidate.out).not.toHaveProperty("deleted");
+    const dedupe = run("dedupe-relations");
+    expect(dedupe.out).toMatchObject({ dry_run: true, groups: [] });
+    expect(dedupe.out).not.toHaveProperty("deleted");
     const unscored = run("prune", "--min-relevance", "0.5");
     expect(unscored.err).toBe("");
     expect((unscored.out as { note: string }).note).toMatch(/run maintenance decay --apply first$/);
@@ -249,7 +246,7 @@ describe("built CLI against Kuzu", () => {
     const ns = [...kuzu, "--namespace", "cli_parity"];
     for (const source of ["s1", "s2"]) {
       expect(
-        cli([...ns, "insert", "ontology", "-", "--source-id", source], { input: JSON.stringify(A_KNOWS_B) }).code,
+        cli([...ns, "insert", "facts", "-", "--source-id", source], { input: JSON.stringify(A_KNOWS_B) }).code,
       ).toBe(0);
     }
     type EvidencePage = { items: Array<{ source_id: string; quote: string | null }>; next_cursor: string | null };
@@ -308,7 +305,7 @@ describe("built CLI against Kuzu", () => {
     expect(cli([...kuzu, "schema", "import", "-"], { input: schema }).err).toContain(
       "looks like a SelfGraph schema, not a Neo4j one",
     );
-    const warned = cli([...kuzu, "--namespace", "cli_warn", "--schema", schema, "insert", "ontology", "-"], {
+    const warned = cli([...kuzu, "--namespace", "cli_warn", "--schema", schema, "insert", "facts", "-"], {
       input: JSON.stringify({ entities: [{ name: "B", type: "Company" }] }),
     });
     expect(warned.err).toContain("selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n");
@@ -319,9 +316,9 @@ describe("built CLI against Kuzu", () => {
     const schema = join(dir, "employer.json");
     writeFileSync(schema, JSON.stringify(SINGLE_EMPLOYER));
     const g = ["--store", "kuzu", "--uri", join(dir, "retired.kuzu"), "--schema", schema];
-    const ontology = join(dir, "ann.json");
-    writeFileSync(ontology, JSON.stringify(ANN_AT_ACME));
-    expect(cli([...g, "insert", "ontology", ontology]).code).toBe(0);
+    const facts = join(dir, "ann.json");
+    writeFileSync(facts, JSON.stringify(ANN_AT_ACME));
+    expect(cli([...g, "insert", "facts", facts]).code).toBe(0);
     const made = cli([
       ...g,
       "relation",
@@ -369,7 +366,7 @@ describe("built CLI against Kuzu", () => {
       sub(group)
         .commands.find((c) => c.name() === action)!
         .options.find((o) => o.long === flag)!.description;
-    expect(sub("maintenance").description()).toBe("decay (score relevance), prune, or consolidate duplicate relations");
+    expect(sub("maintenance").description()).toBe("decay (score relevance), prune, or deduplicate relations");
     expect(option("entity", "list", "--name")).toBe("exact, case-sensitive match on the current name");
     expect(option("entity", "update", "--type")).toBe(
       "change the type's case or spacing only (the type is part of the id)",
@@ -388,7 +385,7 @@ describe("built CLI against Kuzu", () => {
       type: "T",
       name: `Entity number ${i} with a long name`,
     }));
-    expect(cli([...kuzu, ...ns, "insert", "ontology", "-"], { input: JSON.stringify({ entities }) }).code).toBe(0);
+    expect(cli([...kuzu, ...ns, "insert", "facts", "-"], { input: JSON.stringify({ entities }) }).code).toBe(0);
     const args = [CLI, ...kuzu, ...ns, "entity", "list", "--limit", "1000"].map((a) => `'${a}'`).join(" ");
     const env = { ...process.env, ...ENV };
     const full = spawnSync("sh", ["-c", `'${process.execPath}' ${args} | wc -c`], { encoding: "utf8", env });

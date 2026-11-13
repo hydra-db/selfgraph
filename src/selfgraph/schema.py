@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 from . import _ops
 from .errors import ValidationError
 from .ids import _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
-from .models import InputModel, InsertWarning, Ontology, TopInputModel, as_input
+from .models import Extraction, InputModel, InsertWarning, TopInputModel, as_input
 
 __all__ = [
     "PropertyType",
@@ -318,23 +318,23 @@ def canonical_relation_type(rtype: str, schema: Schema | None) -> str:
     return rtype if matched is None or normalize_rel_type(matched.type) == given else normalize_rel_type(matched.type)
 
 
-def canonicalize_types(ontology: Ontology, schema: Schema | None) -> Ontology:
+def canonicalize_types(facts: Extraction, schema: Schema | None) -> Extraction:
     """Rename entity and relation types written as schema aliases to the schema names before ids are derived.
 
-    References elsewhere in the ontology to an entity's derived id under any name or alias of its schema type (such
+    References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such
     as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed
     relation's derived id. An explicit entity id in such an alias form is rewritten the same way.
 
-    @param ontology (Ontology): the ontology.
+    @param facts (Extraction): the facts.
     @param schema (Schema | None): the active schema.
-    @return (Ontology): the ontology with canonical types.
+    @return (Extraction): the facts with canonical types.
     """
     if schema is None:
-        return ontology
+        return facts
     forms = {t.name: [t.name, *t.aliases] for t in schema.entities}
     moved: dict[str, str] = {}
     entities = []
-    for ent in ontology.entities:
+    for ent in facts.entities:
         etype = _ops._clean_text(ent.type)
         canonical = canonical_entity_type(etype, schema)
         update: dict[str, Any] = {} if canonical == etype else {"type": canonical}
@@ -360,7 +360,7 @@ def canonicalize_types(ontology: Ontology, schema: Schema | None) -> Ontology:
 
     steps: dict[str, str] = {}
     relations = []
-    for rel in ontology.relations:
+    for rel in facts.relations:
         rtype = canonical_relation_type(rel.type, schema)
         new = rel.model_copy(update={"type": rtype, "from_entity": m(rel.from_entity), "to_entity": m(rel.to_entity)})
         if rel.id is None and (
@@ -378,7 +378,7 @@ def canonicalize_types(ontology: Ontology, schema: Schema | None) -> Ontology:
                 "about_entity": m(p.about_entity),
             }
         )
-        for p in ontology.preferences
+        for p in facts.preferences
     ]
     decisions = [
         d.model_copy(
@@ -389,9 +389,9 @@ def canonicalize_types(ontology: Ontology, schema: Schema | None) -> Ontology:
                 "steps": [steps.get(s, s) for s in d.steps],
             }
         )
-        for d in ontology.decisions
+        for d in facts.decisions
     ]
-    return ontology.model_copy(
+    return facts.model_copy(
         update={"entities": entities, "relations": relations, "preferences": preferences, "decisions": decisions}
     )
 
@@ -492,18 +492,18 @@ def _check_properties(
 
 
 def validate_against_schema(
-    ontology: Ontology,
+    facts: Extraction,
     schema: Schema,
     *,
     graph_types: Mapping[str, str] | None = None,
     cardinality: bool = True,
     max_count: bool = True,
 ) -> list[InsertWarning]:
-    """Check an ontology against a schema and return advisory warnings in a stable order.
+    """Check facts against a schema and return advisory warnings in a stable order.
 
-    @param ontology (Ontology): the ontology to check.
+    @param facts (Extraction): the facts to check.
     @param schema (Schema): the schema to check against.
-    @param graph_types (Mapping[str, str] | None): the stored type of each relation endpoint outside the ontology.
+    @param graph_types (Mapping[str, str] | None): the stored type of each relation endpoint outside the facts.
     @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
     @param max_count (bool): whether to report counts above max_count, which a contradiction check reports instead.
     @return (list[InsertWarning]): the warnings, entities first then relations then cardinality.
@@ -517,7 +517,7 @@ def validate_against_schema(
     for eid, etype in raw_type_of_id.items():
         if etype in entities:
             type_of_id[eid] = entities[etype]
-    for ent in ontology.entities:
+    for ent in facts.entities:
         matched = entities.get(ent.type)
         ref = eid = ent.id or entity_id(ent.type, ent.name)
         raw_type_of_id[eid] = ent.type
@@ -531,7 +531,7 @@ def validate_against_schema(
             warnings.extend(_check_properties("entity", ref, ent.properties, _property_specs(matched, entities)))
 
     counts: dict[tuple[str, str, str], int] = {}
-    for rel in ontology.relations:
+    for rel in facts.relations:
         rtype = normalize_rel_type(rel.type)
         matched = relations.get(rtype)
         ref = rel.id or f"{rel.from_entity} -{rtype}-> {rel.to_entity}"
@@ -584,13 +584,13 @@ def validate_against_schema(
 async def enforce_schema(
     runner: Any,
     ns: str,
-    ontology: Ontology,
+    facts: Extraction,
     schema: Schema | None,
     mode: SchemaMode,
     *,
     cardinality: bool = True,
     max_count: bool = True,
-    before: Ontology | None = None,
+    before: Extraction | None = None,
 ) -> list[InsertWarning]:
     """Check a pending write against the schema, looking up stored endpoint types, and apply the schema mode.
 
@@ -599,18 +599,18 @@ async def enforce_schema(
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param ontology (Ontology): the state about to be written.
+    @param facts (Extraction): the state about to be written.
     @param schema (Schema | None): the active schema.
     @param mode (SchemaMode): off skips the check, warn returns the warnings, strict raises on any.
     @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
     @param max_count (bool): whether to report counts above max_count, which a contradiction check reports instead.
-    @param before (Ontology | None): the stored state an update replaces, or None for a new write.
+    @param before (Extraction | None): the stored state an update replaces, or None for a new write.
     @return (list[InsertWarning]): the warnings, empty when off or clean.
     """
     if schema is None or mode == "off":
         return []
 
-    async def check(subject: Ontology) -> list[InsertWarning]:
+    async def check(subject: Extraction) -> list[InsertWarning]:
         return validate_against_schema(
             subject,
             schema,
@@ -619,7 +619,7 @@ async def enforce_schema(
             max_count=max_count,
         )
 
-    warnings = await check(ontology)
+    warnings = await check(facts)
     if before is not None and warnings:
         known = {(w.code, w.message) for w in await check(before)}
         warnings = [w for w in warnings if (w.code, w.message) not in known]
@@ -628,17 +628,17 @@ async def enforce_schema(
     return warnings
 
 
-async def _stored_types(runner: Any, ns: str, ontology: Ontology) -> dict[str, str]:
-    """Look up the stored type of every relation endpoint the ontology does not define.
+async def _stored_types(runner: Any, ns: str, facts: Extraction) -> dict[str, str]:
+    """Look up the stored type of every relation endpoint the facts do not define.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param ontology (Ontology): the pending write.
+    @param facts (Extraction): the pending write.
     @return (dict[str, str]): each stored endpoint's type by entity id.
     """
-    local = {ent.id or entity_id(ent.type, ent.name) for ent in ontology.entities}
+    local = {ent.id or entity_id(ent.type, ent.name) for ent in facts.entities}
     graph_types: dict[str, str] = {}
-    for rel in ontology.relations:
+    for rel in facts.relations:
         for eid in (rel.from_entity, rel.to_entity):
             if eid not in local and eid not in graph_types:
                 stored = await _ops.get_entity(runner, ns, eid)
@@ -648,20 +648,20 @@ async def _stored_types(runner: Any, ns: str, ontology: Ontology) -> dict[str, s
 
 
 async def drop_off_schema(
-    runner: Any, ns: str, ontology: Ontology, schema: Schema | None
-) -> tuple[Ontology, list[InsertWarning]]:
+    runner: Any, ns: str, facts: Extraction, schema: Schema | None
+) -> tuple[Extraction, list[InsertWarning]]:
     """Drop the extracted entities and relations a schema rejects, and whatever references a dropped one.
 
     Strict mode applies this to extracted data, so one off-schema guess by the extractor does not fail the insert.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param ontology (Ontology): the extracted ontology, with canonical types.
+    @param facts (Extraction): the extracted facts, with canonical types.
     @param schema (Schema | None): the active schema.
-    @return (tuple[Ontology, list[InsertWarning]]): the kept ontology and a "dropped_off_schema" warning per drop.
+    @return (tuple[Extraction, list[InsertWarning]]): the kept facts and a "dropped_off_schema" warning per drop.
     """
     if schema is None:
-        return ontology, []
+        return facts, []
     warnings: list[InsertWarning] = []
     dropped: set[str] = set()
 
@@ -677,32 +677,32 @@ async def drop_off_schema(
 
     entities = [
         ent
-        for ent in ontology.entities
+        for ent in facts.entities
         if keep(
             "entity",
             ent.id or entity_id(ent.type, ent.name),
-            [w.message for w in validate_against_schema(Ontology(entities=[ent]), schema, cardinality=False)],
+            [w.message for w in validate_against_schema(Extraction(entities=[ent]), schema, cardinality=False)],
         )
     ]
     by_id = {ent.id or entity_id(ent.type, ent.name): ent for ent in entities}
-    graph_types = await _stored_types(runner, ns, ontology)
+    graph_types = await _stored_types(runner, ns, facts)
     relations = []
-    for rel in ontology.relations:
+    for rel in facts.relations:
         ends = [by_id[e] for e in (rel.from_entity, rel.to_entity) if e in by_id]
         found = validate_against_schema(
-            Ontology(entities=ends, relations=[rel]), schema, graph_types=graph_types, cardinality=False
+            Extraction(entities=ends, relations=[rel]), schema, graph_types=graph_types, cardinality=False
         )
         rid = rel.id or relation_id(rel.from_entity, rel.type, rel.to_entity)
         if keep("relation", rid, lost([rel.from_entity, rel.to_entity]) or [w.message for w in found]):
             relations.append(rel)
     preferences = [
         p
-        for p in ontology.preferences
+        for p in facts.preferences
         if keep("preference", p.id or p.key, lost([p.subject_entity, p.value_entity, p.about_entity]))
     ]
     decisions = [
         d
-        for d in ontology.decisions
+        for d in facts.decisions
         if keep(
             "decision",
             d.id or d.title,
@@ -710,7 +710,7 @@ async def drop_off_schema(
         )
     ]
     update = {"entities": entities, "relations": relations, "preferences": preferences, "decisions": decisions}
-    return ontology.model_copy(update=update), warnings
+    return facts.model_copy(update=update), warnings
 
 
 def log_schema_warnings(warnings: list[InsertWarning]) -> None:

@@ -4,14 +4,7 @@ import { log } from "../internal/log.js";
 import { comparePy } from "../internal/py.js";
 import { jsonIso, toIso } from "../internal/time.js";
 import * as m from "../maintenance.js";
-import type {
-  ConsolidateGroup,
-  ConsolidateResult,
-  DateTimeInput,
-  DecayResult,
-  PruneResult,
-  Relation,
-} from "../models.js";
+import type { DateTimeInput, DecayResult, DedupeGroup, DedupeResult, PruneResult, Relation } from "../models.js";
 import * as ops from "../ops.js";
 import { checkOptions, keysOf, parseTime, requireList, typeName } from "../validate.js";
 import { Resource } from "./common.js";
@@ -30,7 +23,7 @@ export interface PruneOptions {
   dry_run?: boolean;
 }
 
-export interface ConsolidateOptions {
+export interface DedupeRelationsOptions {
   dry_run?: boolean;
 }
 
@@ -42,7 +35,7 @@ const PRUNE_KEYS = keysOf<PruneOptions>({
   relation_types: true,
   dry_run: true,
 });
-const CONSOLIDATE_KEYS = keysOf<ConsolidateOptions>({ dry_run: true });
+const DEDUPE_RELATIONS_KEYS = keysOf<DedupeRelationsOptions>({ dry_run: true });
 const SKEW_MS = 60_000;
 const UNSCORED = `no items have a relevance score yet; ${DECAY_HINT}`;
 const SURVIVOR_RULE =
@@ -210,11 +203,11 @@ export class Maintenance extends Resource {
    *
    * The survivor of each group is the lowest id, whichever is newer, and only its version history is kept: every version of each duplicate is deleted, and the plan lists how many per duplicate in versions_lost (the result's note states the rule). Properties are unioned: the survivor wins a conflict, then each duplicate in id order, and every key a duplicate loses is reported in the group's conflicts. The survivor takes the earliest event_time of the group, the duplicates' evidence moves onto it (recounting its distinct sources), decisions that used a duplicate as a step are repointed to it, and the duplicates are then deleted. Relations a contradiction invalidated are never grouped.
    *
-   * @param options (ConsolidateOptions): dry_run, true by default, lists the groups without merging them.
-   * @return (ConsolidateResult): each group's survivor, duplicates, conflicting keys, and versions lost per duplicate, the survivor rule, and delete counts (no deleted block on a dry run).
+   * @param options (DedupeRelationsOptions): dry_run, true by default, lists the groups without merging them.
+   * @return (DedupeResult): each group's survivor, duplicates, conflicting keys, and versions lost per duplicate, the survivor rule, and delete counts (no deleted block on a dry run).
    */
-  async consolidate(options: ConsolidateOptions = {}): Promise<ConsolidateResult> {
-    checkOptions("maintenance.consolidate", options, CONSOLIDATE_KEYS);
+  async dedupeRelations(options: DedupeRelationsOptions = {}): Promise<DedupeResult> {
+    checkOptions("maintenance.dedupeRelations", options, DEDUPE_RELATIONS_KEYS);
     const dryRun = options.dry_run ?? true;
     requireFlag("dry_run", dryRun);
     const [relations, ns] = await this.graph.read(async (store, ns) => [await m.scanRelations(store, ns), ns] as const);
@@ -223,7 +216,7 @@ export class Maintenance extends Resource {
       const key = JSON.stringify([rel.from_entity, rel.type, rel.to_entity]);
       groups.set(key, [...(groups.get(key) ?? []), rel]);
     }
-    const plan: ConsolidateGroup[] = [...groups.values()]
+    const plan: DedupeGroup[] = [...groups.values()]
       .filter((rels) => rels.length > 1)
       .map((rels) => {
         const [survivor, ...duplicates] = rels.sort((a, b) => comparePy(a.id, b.id)) as [Relation, ...Relation[]];
@@ -257,7 +250,7 @@ export class Maintenance extends Resource {
       );
     }
     const removed = plan.reduce((n, g) => n + g.duplicates.length, 0);
-    log(`consolidated ${plan.length} relation groups in namespace '${ns}', removing ${removed} duplicates`, "info");
+    log(`deduplicated ${plan.length} relation groups in namespace '${ns}', removing ${removed} duplicates`, "info");
     return { dry_run: dryRun, groups: plan, deleted, note };
   }
 }

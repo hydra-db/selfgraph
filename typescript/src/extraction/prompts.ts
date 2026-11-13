@@ -32,7 +32,7 @@ const RELATION_USER =
 
 const PREFERENCE_SYSTEM =
   "You extract preferences and disinterests from text. A preference records that a " +
-  "subject prefers (kind='preference') or avoids (kind='disinterest') a value entity, " +
+  "subject prefers (stance='preference') or avoids (stance='disinterest') a value entity, " +
   "for some key (the dimension, e.g. 'database'). Only extract preferences that are " +
   "explicitly supported by the text.";
 const PREFERENCE_USER =

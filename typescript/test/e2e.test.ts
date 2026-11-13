@@ -39,11 +39,11 @@ describe.skipIf(!neo4jUp)("built CLI against Neo4j", () => {
     expect(created.out).toMatchObject({ id: "person:jane-doe", properties: { age: 41, team: "core" } });
     expect((created.out as { created_at: string }).created_at).toMatch(/Z$/);
 
-    const ontology = JSON.stringify({
+    const facts = JSON.stringify({
       entities: [{ type: "Company", name: "Acme" }],
       relations: [{ from_entity: "person:jane-doe", type: "works at", to_entity: "company:acme" }],
     });
-    const inserted = cli([...GLOBAL, "insert", "ontology", "-", "--source-id", "stdin"], { input: ontology });
+    const inserted = cli([...GLOBAL, "insert", "facts", "-", "--source-id", "stdin"], { input: facts });
     expect(inserted.code).toBe(0);
     expect((inserted.out as { relations: Array<{ type: string }> }).relations[0]!.type).toBe("WORKS_AT");
 

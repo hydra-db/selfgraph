@@ -6,12 +6,12 @@ import { Lazy } from "./internal/lazy.js";
 import { loadOptional } from "./internal/optional.js";
 import { PY_WORD_CLASS, PY_WS_CLASS, pyRepr } from "./internal/py.js";
 import {
-  DEFAULT_KIND,
+  DEFAULT_STANCE,
   DEFAULT_STATUS,
   type EvidenceInput,
   type ExtractionInstructions,
   type ExtractionPrompts,
-  Kind,
+  Stance,
   Status,
   validationMessage,
 } from "./models.js";
@@ -151,7 +151,7 @@ export const TOOLS: Tool[] = [
   tool({
     name: "insert_text",
     description:
-      "Extract an ontology from text and merge it into the graph. Uses the configured LLM, or with none " +
+      "Extract facts from text and merge them into the graph. Uses the configured LLM, or with none " +
       "configured falls back to a built-in LLM-free extractor (coarser). event_time (ISO 8601) is the default " +
       "valid time for what is extracted; metadata is stored on the source. Idempotent: ids are derived " +
       "deterministically from content, so re-inserting the same text converges on the same graph instead of " +
@@ -188,22 +188,22 @@ export const TOOLS: Tool[] = [
       ),
   }),
   tool({
-    name: "insert_ontology",
+    name: "insert_facts",
     description:
-      "Merge a ready ontology (entities/relations/preferences/decisions) in one call. Every write is an " +
-      "idempotent upsert keyed by deterministic id, so re-sending the same ontology never duplicates data. " +
+      "Merge ready facts (entities/relations/preferences/decisions) in one call. Every write is an " +
+      "idempotent upsert keyed by deterministic id, so re-sending the same facts never duplicates data. " +
       "Entity ids are 'type:name' (e.g. 'person:jane'); omit an id to have it derived. Prefer this over the " +
       "create_* tools for bulk writes and for anything you may retry. References are validated before any " +
       "write; the batch is atomic on transactional backends (Neo4j, Memgraph), while auto-commit backends " +
       "(HydraDB, Kuzu, FalkorDB) apply writes incrementally, so a mid-batch failure can leave earlier writes " +
-      "in place. Re-running the same ontology reconciles it. event_time (ISO 8601) is the default valid time for " +
+      "in place. Re-sending the same facts reconciles the graph. event_time (ISO 8601) is the default valid time for " +
       "relations, preferences, and decisions that carry none of their own. resolver (exact, default, fuzzy, or llm) overrides the " +
       "server's entity resolution for this call; each merge is in the result's merges. contradiction (off, " +
       "warn, supersede) overrides how a relation that breaks a schema max_count is handled: warn keeps both " +
       "and reports it, supersede retires the older relation." +
       SCHEMA_ARGS,
     input: {
-      ontology: z.record(z.string(), z.any()),
+      facts: z.record(z.string(), z.any()),
       source_id: optStr,
       event_time: optStr,
       resolver,
@@ -213,7 +213,7 @@ export const TOOLS: Tool[] = [
     },
     run: async (g, a) =>
       surfaced(
-        await g.insert.ontology(a.ontology, {
+        await g.insert.facts(a.facts, {
           source_id: a.source_id,
           event_time: time(a.event_time, "event_time"),
           resolver: a.resolver,
@@ -227,7 +227,7 @@ export const TOOLS: Tool[] = [
     name: "create_entity",
     description:
       "Create an entity (node). Ids are deterministic 'type:name' (e.g. 'person:jane'); omit id to derive one " +
-      "from type and name. This is a strict create and conflicts if the id already exists; use insert_ontology " +
+      "from type and name. This is a strict create and conflicts if the id already exists; use insert_facts " +
       "to upsert idempotently instead.",
     input: { name: str, type: str, id: optStr, aliases: optList, external_ids: optObj, properties: optObj },
     run: (g, a) =>
@@ -402,13 +402,13 @@ export const TOOLS: Tool[] = [
   tool({
     name: "create_preference",
     description:
-      "Record that an entity prefers or avoids a value (kind: preference|disinterest). Omit id to derive one; " +
+      "Record that an entity prefers or avoids a value (stance: preference|disinterest). Omit id to derive one; " +
       "a manual id must start with 'preference:'. event_time (ISO 8601) is when the preference became true.",
     input: {
       subject_entity: str,
       key: str,
       value_entity: str,
-      kind: Kind.default(DEFAULT_KIND),
+      stance: Stance.default(DEFAULT_STANCE),
       id: optStr,
       about_entity: optStr,
       strength: z.number().nullish(),
@@ -418,7 +418,7 @@ export const TOOLS: Tool[] = [
     run: (g, a) =>
       g.preferences.create(a.subject_entity, a.key, a.value_entity, {
         id: a.id,
-        kind: a.kind,
+        stance: a.stance,
         about_entity: a.about_entity,
         strength: a.strength,
         properties: a.properties,
@@ -428,11 +428,11 @@ export const TOOLS: Tool[] = [
   tool({
     name: "list_preferences",
     description: "List current preferences, optionally scoped to one subject entity. Paged via next_cursor.",
-    input: { subject_entity: optStr, key: optStr, kind: Kind.nullish(), limit, cursor },
+    input: { subject_entity: optStr, key: optStr, stance: Stance.nullish(), limit, cursor },
     run: (g, a) =>
       g.preferences.list(a.subject_entity ?? null, {
         key: a.key,
-        kind: a.kind,
+        stance: a.stance,
         limit: a.limit,
         cursor: a.cursor,
       }),
@@ -637,13 +637,13 @@ export const TOOLS: Tool[] = [
       ),
   }),
   tool({
-    name: "maintenance_consolidate",
+    name: "maintenance_dedupe_relations",
     description:
       "Merge parallel current relations with the same endpoints and type but different ids into the lowest " +
       "id: properties merge (survivor wins), evidence and decision steps move over, duplicates are deleted. " +
       "Dry run by default: returns the groups; pass dry_run false to merge.",
     input: { dry_run: z.boolean().default(true) },
-    run: (g, a) => g.maintenance.consolidate({ dry_run: a.dry_run }),
+    run: (g, a) => g.maintenance.dedupeRelations({ dry_run: a.dry_run }),
   }),
 ];
 
@@ -707,8 +707,8 @@ export async function callTool(
 type ToolAnnotations = { readOnlyHint: true } | { destructiveHint: boolean; idempotentHint: boolean };
 
 const READ_ONLY = ["get_schema", "retrieve", "run_cypher", "entity_evidence", "entity_merges", "relation_evidence"];
-const DESTRUCTIVE = ["maintenance_prune", "maintenance_consolidate"];
-const IDEMPOTENT = ["insert_ontology", "maintenance_prune", "maintenance_consolidate"];
+const DESTRUCTIVE = ["maintenance_prune", "maintenance_dedupe_relations"];
+const IDEMPOTENT = ["insert_facts", "maintenance_prune", "maintenance_dedupe_relations"];
 
 /**
  * The MCP behavior hints for a tool: read-only, destructive, and idempotent.

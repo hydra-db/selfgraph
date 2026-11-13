@@ -6,15 +6,15 @@ from typing import TYPE_CHECKING, Any
 
 from ._ops import _require_json_mapping, _require_optional_text, parse_time
 from .errors import ExtractionError, SelfGraphError, ValidationError
-from .extraction.extractor import DefaultExtractor
+from .extraction.extractor import LLMExtractor
 from .ids import _unstorable
 from .models import (
+    Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
     InsertResult,
     InsertWarning,
     JsonValue,
-    Ontology,
     ParsedDocument,
     as_input,
 )
@@ -31,7 +31,7 @@ class Insert:
     def __init__(self, client: SelfGraph) -> None:
         self._c = client
 
-    async def _extract(self, extractor, document: ParsedDocument) -> Ontology:
+    async def _extract(self, extractor, document: ParsedDocument) -> Extraction:
         try:
             return await extractor.extract(document)
         except SelfGraphError:
@@ -73,19 +73,19 @@ class Insert:
         prompts = as_input(ExtractionPrompts, prompts, "prompts")
         extractor = self._c._build_extractor(instructions, prompts, schema=active_schema, source_id=source_id)
         document = ParsedDocument(text=text, media_type="text/plain", metadata=dict(metadata or {}))
-        ontology = await self._extract(extractor, document)
+        facts = await self._extract(extractor, document)
         drain = getattr(extractor, "pop_warnings", None)
         warnings = drain() if callable(drain) else []
         customized = instructions or prompts or self._c._instructions or self._c._prompts
-        if customized and not isinstance(extractor, DefaultExtractor):
+        if customized and not isinstance(extractor, LLMExtractor):
             warnings.append(
                 InsertWarning(
                     code="prompts_ignored",
                     message="instructions and prompts apply only to LLM extraction, and no LLM is configured",
                 )
             )
-        return await self._c._apply_ontology(
-            ontology,
+        return await self._c._apply_facts(
+            facts,
             source_id=source_id,
             parsed_text=text,
             media_type="text/plain",
@@ -99,9 +99,9 @@ class Insert:
             extracted=True,
         )
 
-    async def ontology(
+    async def facts(
         self,
-        ontology: Ontology | Mapping[str, Any],
+        facts: Extraction | Mapping[str, Any],
         *,
         source_id: str | None = None,
         event_time: datetime | str | None = None,
@@ -110,14 +110,14 @@ class Insert:
         resolver: EntityResolver | ResolverMode | None = None,
         contradiction: ContradictionMode | None = None,
     ) -> InsertResult:
-        """Merge a ready ontology into the graph as idempotent upserts.
+        """Merge ready facts into the graph as idempotent upserts.
 
         References are validated before any write. The batch is atomic on transactional
         backends (Neo4j, Memgraph); auto-commit backends (HydraDB, Kuzu, FalkorDB) apply
         writes incrementally, so a mid-batch failure can leave earlier writes in place.
-        Re-running the same ontology reconciles a partial write rather than duplicating it.
+        Re-running the same facts reconciles a partial write rather than duplicating it.
 
-        @param ontology (Ontology | Mapping[str, Any]): the ontology to merge.
+        @param facts (Extraction | Mapping[str, Any]): the facts to merge.
         @param source_id (str | None): optional source id to attach as provenance.
         @param event_time (datetime | str | None): the default event time (a datetime or ISO 8601 text) for
             relations, preferences, and decisions that carry none of their own.
@@ -127,8 +127,8 @@ class Insert:
         @return (InsertResult): the inserted entities, relations, preferences, decisions, and merges.
         """
         _require_optional_text("source_id", source_id)
-        return await self._c._apply_ontology(
-            as_input(Ontology, ontology, "ontology"),
+        return await self._c._apply_facts(
+            as_input(Extraction, facts, "facts"),
             source_id=source_id,
             parsed_text=None,
             media_type=None,

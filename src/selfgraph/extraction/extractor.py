@@ -15,7 +15,7 @@ from .._ops import (
     _validate_entity_identity,
     _validate_strength,
 )
-from .._serde import EDGE_TYPES, preference_kind_of
+from .._serde import EDGE_TYPES, preference_stance_of
 from ..errors import ExtractionError, ValidationError
 from ..llm.base import summarize_error
 from ..models import (
@@ -23,15 +23,15 @@ from ..models import (
     DecisionTraceInput,
     EntityInput,
     EvidenceInput,
+    Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
     InsertWarning,
     JsonValue,
-    Kind,
-    Ontology,
     ParsedDocument,
     PreferenceInput,
     RelationInput,
+    Stance,
     Status,
     issue_line,
 )
@@ -40,7 +40,7 @@ from ..schema import Schema, render_schema_catalog
 from .chunking import chunk_text
 from .prompts import check_prompts, effective_instruction, effective_prompt, render
 
-__all__ = ["DefaultExtractor"]
+__all__ = ["LLMExtractor"]
 
 
 class _EntitiesOut(BaseModel):
@@ -62,7 +62,7 @@ class _RelationsOut(BaseModel):
 
 class _PrefOut(BaseModel):
     subject_name: str
-    kind: Kind = "preference"
+    stance: Stance = "preference"
     key: str
     value_name: str
     about_name: str | None = None
@@ -175,7 +175,7 @@ class _WarningSink:
         return out
 
 
-class DefaultExtractor(_WarningSink):
+class LLMExtractor(_WarningSink):
     def __init__(
         self,
         llm: LLMClient,
@@ -209,11 +209,11 @@ class DefaultExtractor(_WarningSink):
             instruction = f"{instruction}\n\n{catalog}" if instruction else catalog
         return render(template, text=text, instructions=instruction, name=object_type)
 
-    async def extract(self, document: ParsedDocument) -> Ontology:
+    async def extract(self, document: ParsedDocument) -> Extraction:
         self._warnings = []
         chunks = chunk_text(document.text)
         if not chunks:
-            return Ontology()
+            return Extraction()
 
         raw_entities: list[EntityInput] = []
         raw_relations: list[_RelOut] = []
@@ -281,20 +281,20 @@ class DefaultExtractor(_WarningSink):
                 sink.extend(outcome)
 
         failed = len(self._warnings)
-        ontology = self._assemble(raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings)
-        if failed and not (ontology.entities or ontology.relations or ontology.preferences or ontology.decisions):
+        facts = self._assemble(raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings)
+        if failed and not (facts.entities or facts.relations or facts.preferences or facts.decisions):
             raise ExtractionError(
                 f"extraction failed for the whole input ({failed} of {len(tasks)} LLM calls failed); "
                 f"first: {self._warnings[0].message}"
             )
         _log.debug(
             "LLM extraction: %d entities, %d relations from %d chunks (%d warnings)",
-            len(ontology.entities),
-            len(ontology.relations),
+            len(facts.entities),
+            len(facts.relations),
             len(chunks),
             len(self._warnings),
         )
-        return ontology
+        return facts
 
     @staticmethod
     def _assemble(
@@ -303,15 +303,15 @@ class DefaultExtractor(_WarningSink):
         raw_preferences: list[_PrefOut],
         raw_decisions: list[_DecOut],
         warnings: list[InsertWarning] | None = None,
-    ) -> Ontology:
-        """Resolve extracted names to ids and assemble a deduplicated ontology, dropping invalid items.
+    ) -> Extraction:
+        """Resolve extracted names to ids and assemble deduplicated facts, dropping invalid items.
 
         @param raw_entities (list[EntityInput]): the extracted entities.
         @param raw_relations (list[_RelOut]): the extracted relations, by name.
         @param raw_preferences (list[_PrefOut]): the extracted preferences, by name.
         @param raw_decisions (list[_DecOut]): the extracted decisions, by name.
         @param warnings (list[InsertWarning] | None): receives one warning per dropped invalid item.
-        @return (Ontology): the assembled ontology.
+        @return (Extraction): the assembled facts.
         """
         sink = warnings if warnings is not None else []
         registry: dict[str, EntityInput] = {}
@@ -370,12 +370,12 @@ class DefaultExtractor(_WarningSink):
             to_id = resolve(rel.to_name)
             if from_id and to_id:
                 try:
-                    kind = preference_kind_of(_ids.normalize_rel_type(rel.type))
+                    stance = preference_stance_of(_ids.normalize_rel_type(rel.type))
                     value = registry.get(_norm(rel.to_name))
-                    if kind is not None and value is not None and value.type != _FALLBACK_TYPE:
+                    if stance is not None and value is not None and value.type != _FALLBACK_TYPE:
                         key = value.type.lower()
                         promoted.append(
-                            _PrefOut(subject_name=rel.from_name, kind=kind, key=key, value_name=rel.to_name)
+                            _PrefOut(subject_name=rel.from_name, stance=stance, key=key, value_name=rel.to_name)
                         )
                         continue
                     add_relation(from_id, rel.type, to_id, rel.properties, rel.event_time, rel._evidence)
@@ -389,19 +389,19 @@ class DefaultExtractor(_WarningSink):
             value_id = resolve(pref.value_name)
             if not (subject_id and value_id):
                 continue
-            if index >= len(raw_preferences) and (subject_id, pref.kind, value_id) in stated:
+            if index >= len(raw_preferences) and (subject_id, pref.stance, value_id) in stated:
                 continue
-            stated.add((subject_id, pref.kind, value_id))
+            stated.add((subject_id, pref.stance, value_id))
             try:
                 _validate_strength(pref.strength)
-                pid = _ids.preference_id(subject_id, pref.kind, pref.key, value_id)
+                pid = _ids.preference_id(subject_id, pref.stance, pref.key, value_id)
             except ValidationError as exc:
                 _dropped(sink, "preference", exc)
                 continue
             if pid not in preferences:
                 preferences[pid] = PreferenceInput(
                     subject_entity=subject_id,
-                    kind=pref.kind,
+                    stance=pref.stance,
                     key=pref.key,
                     value_entity=value_id,
                     about_entity=resolve(pref.about_name),
@@ -439,7 +439,7 @@ class DefaultExtractor(_WarningSink):
                     status=dec.status,
                 )
 
-        return Ontology(
+        return Extraction(
             entities=list(registry.values()),
             relations=list(relations.values()),
             preferences=list(preferences.values()),

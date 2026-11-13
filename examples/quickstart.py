@@ -5,7 +5,7 @@ from selfgraph import KuzuStore, SelfGraph
 
 async def main() -> None:
     async with SelfGraph(store=KuzuStore("quickstart.kuzu")) as graph:
-        await graph.insert.ontology(
+        await graph.insert.facts(
             {
                 "entities": [
                     {"id": "person:jane", "type": "Person", "name": "Jane Doe"},

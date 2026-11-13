@@ -4,22 +4,22 @@ import { ExtractionError, ValidationError } from "../errors.js";
 import * as ids from "../ids.js";
 import { log } from "../internal/log.js";
 import { pySplit, pyStrip, utf8 } from "../internal/py.js";
-import { EDGE_TYPES, preferenceKindOf } from "../labels.js";
+import { EDGE_TYPES, preferenceStanceOf } from "../labels.js";
 import { summarizeError } from "../llm/index.js";
 import {
   DateTimeInput,
   DEFAULT_STATUS,
+  Extraction,
   ExtractionInstructions,
   ExtractionPrompts,
   type InsertWarning,
   insertWarning,
   issueLine,
-  Kind,
   LLM_DEFAULTS,
-  Ontology,
   type ParsedDocument,
-  type ParsedOntology,
+  type ParsedExtraction,
   parseOrThrow,
+  Stance,
   Status,
 } from "../models.js";
 import { rejectReservedRelType, validateEntityIdentity, validateStrength } from "../ops.js";
@@ -47,7 +47,7 @@ const PreferencesOut = z.object({
   preferences: z.array(
     z.object({
       subject_name: z.string(),
-      kind: Kind,
+      stance: Stance,
       key: z.string(),
       value_name: z.string(),
       about_name: z.string().nullable(),
@@ -90,7 +90,7 @@ type ChunkEvidence = { source_id: string; chunk_id: string };
 
 export interface RawPreference {
   subject_name: string;
-  kind: Kind;
+  stance: Stance;
   key: string;
   value_name: string;
   about_name?: string | null;
@@ -170,22 +170,22 @@ function lenientTime(value: string | Date | null | undefined): Date | null {
 }
 
 /**
- * Resolve raw extracted names to deterministic ids and assemble a deduplicated ontology.
+ * Resolve raw extracted names to deterministic ids and assemble deduplicated facts.
  *
  * @param rawEntities (RawEntity[]): the extracted entities.
  * @param rawRelations (RawRelation[]): the extracted relations, by name.
  * @param rawPreferences (RawPreference[]): the extracted preferences, by name.
  * @param rawDecisions (RawDecision[]): the extracted decisions, by name.
  * @param warnings (InsertWarning[]): receives one warning per dropped invalid item.
- * @return (ParsedOntology): the assembled ontology.
+ * @return (ParsedExtraction): the assembled facts.
  */
-export function assembleOntology(
+export function assembleExtraction(
   rawEntities: RawEntity[],
   rawRelations: RawRelation[],
   rawPreferences: RawPreference[],
   rawDecisions: RawDecision[],
   warnings: InsertWarning[] = [],
-): ParsedOntology {
+): ParsedExtraction {
   const registry = new Map<string, RawEntity>();
   const rejected = new Set<string>();
   const admit = (ent: RawEntity): boolean =>
@@ -250,12 +250,12 @@ export function assembleOntology(
         warnings,
         "relation",
         () => {
-          const kind = preferenceKindOf(ids.normalizeRelType(rel.type));
+          const stance = preferenceStanceOf(ids.normalizeRelType(rel.type));
           const value = registry.get(norm(rel.to_name));
-          if (kind !== null && value !== undefined && value.type !== FALLBACK_TYPE) {
+          if (stance !== null && value !== undefined && value.type !== FALLBACK_TYPE) {
             promoted.push({
               subject_name: rel.from_name,
-              kind,
+              stance,
               key: value.type.toLowerCase(),
               value_name: rel.to_name,
             });
@@ -274,18 +274,18 @@ export function assembleOntology(
     const subjectId = resolve(pref.subject_name);
     const valueId = resolve(pref.value_name);
     if (!(subjectId && valueId)) continue;
-    const triple = JSON.stringify([subjectId, pref.kind, valueId]);
+    const triple = JSON.stringify([subjectId, pref.stance, valueId]);
     if (index >= rawPreferences.length && stated.has(triple)) continue;
     stated.add(triple);
     let pid = "";
     const valid = admitted(warnings, "preference", () => {
       validateStrength(pref.strength);
-      pid = ids.preferenceId(subjectId, pref.kind, pref.key, valueId);
+      pid = ids.preferenceId(subjectId, pref.stance, pref.key, valueId);
     });
     if (valid && !preferences.has(pid)) {
       preferences.set(pid, {
         subject_entity: subjectId,
-        kind: pref.kind,
+        stance: pref.stance,
         key: pref.key,
         value_entity: valueId,
         about_entity: resolve(pref.about_name),
@@ -330,7 +330,7 @@ export function assembleOntology(
     }
   }
 
-  return Ontology.parse({
+  return Extraction.parse({
     entities: [...registry.values()].map((e) => ({ type: e.type, name: e.name, aliases: e.aliases ?? [] })),
     relations: [...relations.values()],
     preferences: [...preferences.values()],
@@ -338,7 +338,7 @@ export function assembleOntology(
   });
 }
 
-export interface DefaultExtractorOptions {
+export interface LLMExtractorOptions {
   prompts?: ExtractionPrompts | null;
   instructions?: ExtractionInstructions | null;
   call_prompts?: ExtractionPrompts | null;
@@ -347,7 +347,7 @@ export interface DefaultExtractorOptions {
   source_id?: string | null;
 }
 
-const OPTION_KEYS = keysOf<DefaultExtractorOptions>({
+const OPTION_KEYS = keysOf<LLMExtractorOptions>({
   prompts: true,
   instructions: true,
   call_prompts: true,
@@ -366,23 +366,23 @@ export class WarningSink {
   }
 }
 
-export class DefaultExtractor extends WarningSink implements Extractor {
+export class LLMExtractor extends WarningSink implements Extractor {
   private readonly catalogs: Partial<Record<ObjectType, string>>;
-  private readonly options: DefaultExtractorOptions;
+  private readonly options: LLMExtractorOptions;
   private readonly sourceId: string | null;
 
   /**
    * Extract entities, relations, preferences, and decisions from text with an LLM, chunk by chunk.
    *
    * @param llm (LLMClient): the LLM client.
-   * @param options (DefaultExtractorOptions): client-level and per-call prompts, instructions, and schema guidance.
+   * @param options (LLMExtractorOptions): client-level and per-call prompts, instructions, and schema guidance.
    */
   constructor(
     private readonly llm: LLMClient,
-    options: DefaultExtractorOptions = {},
+    options: LLMExtractorOptions = {},
   ) {
     super();
-    checkOptions("DefaultExtractor", options, OPTION_KEYS);
+    checkOptions("LLMExtractor", options, OPTION_KEYS);
     this.options = {
       prompts: parseOrThrow(ExtractionPrompts.nullish(), options.prompts, "prompts"),
       instructions: parseOrThrow(ExtractionInstructions.nullish(), options.instructions, "instructions"),
@@ -404,10 +404,10 @@ export class DefaultExtractor extends WarningSink implements Extractor {
     return render(template, text, instruction, objectType);
   }
 
-  async extract(document: ParsedDocument): Promise<ParsedOntology> {
+  async extract(document: ParsedDocument): Promise<ParsedExtraction> {
     this.warnings = [];
     const chunks = (await loadTokenizer()).chunkText(document.text);
-    if (!chunks.length) return Ontology.parse({});
+    if (!chunks.length) return Extraction.parse({});
 
     const rawEntities: RawEntity[] = [];
     const rawRelations: RawRelation[] = [];
@@ -492,14 +492,14 @@ export class DefaultExtractor extends WarningSink implements Extractor {
     });
 
     const failed = this.warnings.length;
-    const ontology = assembleOntology(rawEntities, rawRelations, rawPreferences, rawDecisions, this.warnings);
-    const { entities, relations, preferences, decisions } = ontology;
+    const facts = assembleExtraction(rawEntities, rawRelations, rawPreferences, rawDecisions, this.warnings);
+    const { entities, relations, preferences, decisions } = facts;
     if (failed && !(entities.length || relations.length || preferences.length || decisions.length)) {
       throw new ExtractionError(
         `extraction failed for the whole input (${failed} of ${calls.length} LLM calls failed); ` +
           `first: ${this.warnings[0]!.message}`,
       );
     }
-    return ontology;
+    return facts;
   }
 }

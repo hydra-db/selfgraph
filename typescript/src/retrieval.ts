@@ -663,7 +663,7 @@ function assemble(
   }
 
   for (const p of [...preferences].sort((a, b) => distOf(a.subject_entity) - distOf(b.subject_entity))) {
-    const verb = preferenceEdgeType(p.kind).toLowerCase();
+    const verb = preferenceEdgeType(p.stance).toLowerCase();
     let line = `${nameOf(p.subject_entity)} ${verb} ${nameOf(p.value_entity)} (${p.key})`;
     if (p.strength !== null) line += ` [strength ${pyFloatRepr(p.strength)}]`;
     if (!add(line, budgetTokens)) break;

@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { type Evidence, ids, NotFoundError, type Page, type SelfGraph } from "../src/index.js";
 import { forEachStore, freshGraphs, type StoreSpec } from "./helpers.js";
 
-const ONTOLOGY = {
+const FACTS = {
   entities: [
     { type: "Person", name: "Ada" },
     { type: "Company", name: "Acme" },
@@ -75,14 +75,14 @@ function suite(spec: StoreSpec) {
 
   it("records one evidence per source version, and other sources on their own manual version", async () => {
     const g = open();
-    const rel = { ...ONTOLOGY.relations[0]!, evidence: [{ source_id: "doc", quote: "Ada works at Acme" }] };
-    const res = await g.insert.ontology({ ...ONTOLOGY, relations: [rel] }, { source_id: "doc" });
+    const rel = { ...FACTS.relations[0]!, evidence: [{ source_id: "doc", quote: "Ada works at Acme" }] };
+    const res = await g.insert.facts({ ...FACTS, relations: [rel] }, { source_id: "doc" });
     const [ev, ...rest] = (await g.relations.evidence(REL)).items;
     expect(rest).toEqual([]);
     expect([ev!.source_id, ev!.source_version, ev!.quote]).toEqual(["doc", res.source_version, "Ada works at Acme"]);
     expect((await g.entities.evidence("person:ada")).items).toHaveLength(1);
     const other = { ...rel, evidence: [{ source_id: "elsewhere", quote: "q" }] };
-    await g.insert.ontology({ ...ONTOLOGY, relations: [other] }, { source_id: "doc2" });
+    await g.insert.facts({ ...FACTS, relations: [other] }, { source_id: "doc2" });
     const sources = (await g.relations.evidence(REL)).items.map((e) => e.source_id).sort();
     expect(sources).toEqual(["doc", "doc2", "elsewhere"]);
     const twoSources = {
@@ -102,12 +102,12 @@ function suite(spec: StoreSpec) {
         },
       ],
     };
-    const own = await g.insert.ontology(twoSources, { source_id: "src1" });
+    const own = await g.insert.facts(twoSources, { source_id: "src1" });
     const rid = own.relations[0]!.id;
     const byQuote = new Map((await g.relations.evidence(rid)).items.map((e) => [e.quote, e]));
     expect(byQuote.get("other")!.source_version).toBe("doc1:manual");
     expect(byQuote.get("own")!.source_version).toBe(own.source_version);
-    const plain = await g.insert.ontology(twoSources);
+    const plain = await g.insert.facts(twoSources);
     expect(plain.relations[0]!.source_count).toBe(2);
     const items = (await g.relations.evidence(rid)).items;
     expect(items.filter((e) => e.source_id === "doc1").map((e) => e.source_version)).toEqual(["doc1:manual"]);
@@ -115,9 +115,9 @@ function suite(spec: StoreSpec) {
 
   it("counts each source once and pages through evidence", async () => {
     const g = open();
-    let res = await g.insert.ontology(ONTOLOGY, { source_id: "doc-0" });
-    for (let i = 1; i < 5; i++) res = await g.insert.ontology(ONTOLOGY, { source_id: `doc-${i}` });
-    const again = await g.insert.ontology(ONTOLOGY, { source_id: "doc-0" });
+    let res = await g.insert.facts(FACTS, { source_id: "doc-0" });
+    for (let i = 1; i < 5; i++) res = await g.insert.facts(FACTS, { source_id: `doc-${i}` });
+    const again = await g.insert.facts(FACTS, { source_id: "doc-0" });
     expect(res.entities.map((e) => e.source_count)).toEqual([5, 5]);
     expect(again.entities.map((e) => e.source_count)).toEqual([5, 5]);
     expect(again.relations[0]!.source_count).toBe(5);
@@ -130,7 +130,7 @@ function suite(spec: StoreSpec) {
 
   it("counts a source once for an entity repeated in one insert", async () => {
     const g = open();
-    const res = await g.insert.ontology(
+    const res = await g.insert.facts(
       {
         entities: [
           { type: "Person", name: "Ada" },
@@ -146,7 +146,7 @@ function suite(spec: StoreSpec) {
 
   it("adds relation evidence on update and never clears it", async () => {
     const g = open();
-    await g.insert.ontology(ONTOLOGY, { source_id: "s1" });
+    await g.insert.facts(FACTS, { source_id: "s1" });
     const same = await g.relations.update(REL, { evidence: [{ source_id: "s2", quote: "works there" }] });
     expect([same.revision, same.source_count]).toEqual([1, 2]);
     const moved = await g.relations.update(REL, { set_properties: { role: "CTO" } });
@@ -164,9 +164,9 @@ function suite(spec: StoreSpec) {
     "still writes an entity mentioned by 300 sources on HydraDB",
     async () => {
       const g = open();
-      let res = await g.insert.ontology({ entities: [{ type: "Person", name: "Ada" }] }, { source_id: "src-0" });
+      let res = await g.insert.facts({ entities: [{ type: "Person", name: "Ada" }] }, { source_id: "src-0" });
       for (let i = 1; i < 300; i++) {
-        res = await g.insert.ontology({ entities: [{ type: "Person", name: "Ada" }] }, { source_id: `src-${i}` });
+        res = await g.insert.facts({ entities: [{ type: "Person", name: "Ada" }] }, { source_id: `src-${i}` });
       }
       expect(res.entities[0]!.source_count).toBe(300);
       expect((await g.entities.get("person:ada"))!.source_count).toBe(300);

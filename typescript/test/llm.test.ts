@@ -5,7 +5,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { assembleOntology, DefaultExtractor } from "../src/extraction/extractor.js";
+import { assembleExtraction, LLMExtractor } from "../src/extraction/extractor.js";
 import { render } from "../src/extraction/prompts.js";
 import {
   buildLlmClient,
@@ -43,7 +43,7 @@ const REPLIES: Record<Kind, unknown> = {
     preferences: [
       {
         subject_name: "Soham",
-        kind: "preference",
+        stance: "preference",
         key: "database",
         value_name: "HydraDB",
         about_name: null,
@@ -174,7 +174,7 @@ describe("LLM extraction through the AI SDK", () => {
           ...(REPLIES.preferences as { preferences: unknown[] }).preferences,
           {
             subject_name: "Soham",
-            kind: "preference",
+            stance: "preference",
             key: "editor",
             value_name: "HydraDB",
             about_name: null,
@@ -222,9 +222,9 @@ describe("LLM extraction through the AI SDK", () => {
     const message = "prompt 'relations' uses unknown variable {bogus}; allowed variables: {text}, {instructions}";
     expect(() => open({ prompts: bogus })).toThrow(new PromptTemplateError(message));
     const llm = {} as LLMClient;
-    expect(() => new DefaultExtractor(llm, { call_prompts: bogus })).toThrow(message);
+    expect(() => new LLMExtractor(llm, { call_prompts: bogus })).toThrow(message);
     const ok = { entities: { system: "s", user: '{instructions} {text} {"json": 1}', version: "v1" } };
-    expect(() => new DefaultExtractor(llm, { prompts: ok })).not.toThrow();
+    expect(() => new LLMExtractor(llm, { prompts: ok })).not.toThrow();
   });
 
   it("rejects an unknown provider, config key, or llm shape when built, and checks a client's output", async () => {
@@ -273,8 +273,8 @@ describe("LLM extraction through the AI SDK", () => {
           return output.parse({ [kind!]: kind === "entities" ? [{ type: "Word", name, aliases: null }] : [] });
         },
       } as unknown as LLMClient;
-      const ontology = await new DefaultExtractor(llm).extract({ text, media_type: "text/plain", metadata: {} });
-      orders.push(ontology.entities.map((e) => e.name));
+      const facts = await new LLMExtractor(llm).extract({ text, media_type: "text/plain", metadata: {} });
+      orders.push(facts.entities.map((e) => e.name));
       expect(seen).toBe(peak);
     }
     expect(orders[0]).toEqual(Array.from({ length: 6 }, (_, i) => `Chunk${i}`));
@@ -368,23 +368,23 @@ describe("LLM extraction through the AI SDK", () => {
         return output.parse(reply);
       },
     };
-    const extractor = new DefaultExtractor(llm);
-    const ontology = await extractor.extract({
+    const extractor = new LLMExtractor(llm);
+    const facts = await extractor.extract({
       text: "Soham prefers Postgres.",
       media_type: "text/plain",
       metadata: {},
     });
-    expect(ontology.preferences.map((p) => [p.kind, p.key, p.value_entity])).toEqual([
+    expect(facts.preferences.map((p) => [p.stance, p.key, p.value_entity])).toEqual([
       ["preference", "database", "database:postgres"],
     ]);
-    expect(ontology.relations).toEqual([]);
+    expect(facts.relations).toEqual([]);
     const dropped = extractor.popWarnings();
     expect(dropped.map((w) => w.code)).toEqual(["dropped_reserved_relation"]);
     expect(dropped[0]!.message).toContain("'AVOIDS' is reserved");
     const step = { from_name: "Team", type: "CONSIDERED", to_name: "Neo4j" };
     const decision = { title: "Pick a DB", actor_name: "Team", outcome_name: "HydraDB", steps: [step, step] };
     const warnings: InsertWarning[] = [];
-    const assembled = assembleOntology([], [], [], [decision], warnings);
+    const assembled = assembleExtraction([], [], [], [decision], warnings);
     expect(warnings.map((w) => w.code)).toEqual(["dropped_reserved_relation", "dropped_reserved_relation"]);
     expect([assembled.relations, assembled.decisions[0]!.steps]).toEqual([[], []]);
   });

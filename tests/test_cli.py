@@ -6,7 +6,7 @@ import sys
 
 import pytest
 from helpers import (
-    AB_ONTOLOGY,
+    AB_FACTS,
     RAW_CYPHER,
     cli,
     extracting_llm,
@@ -27,12 +27,12 @@ from selfgraph.errors import ValidationError
 from selfgraph.runtime import parse_time
 
 
-def test_insert_ontology_then_read(capsys, tmp_path):
+def test_insert_facts_then_read(capsys, tmp_path):
     g = new_graph()
     path = json_file(
-        tmp_path, "ont.json", {"entities": [{"name": "HydraDB", "type": "Company", "id": "company:hydradb"}]}
+        tmp_path, "facts.json", {"entities": [{"name": "HydraDB", "type": "Company", "id": "company:hydradb"}]}
     )
-    assert cli(g, ["insert", "ontology", path], capsys)["entities"][0]["id"] == "company:hydradb"
+    assert cli(g, ["insert", "facts", path], capsys)["entities"][0]["id"] == "company:hydradb"
     assert cli(g, ["entity", "get", "company:hydradb"], capsys)["name"] == "HydraDB"
     assert [e["id"] for e in cli(g, ["entity", "list", "--type", "Company"], capsys)["items"]] == ["company:hydradb"]
 
@@ -155,7 +155,7 @@ def test_init_prints_the_inferred_store(capsys, monkeypatch, tmp_path):
 
 def test_closed_stdout_pipe_exits_141(capsys, tmp_path):
     entities = [{"type": "T", "name": f"Entity number {i} with a long name"} for i in range(600)]
-    assert kuzu_main(tmp_path, "insert", "ontology", json_file(tmp_path, "many.json", {"entities": entities})) == 0
+    assert kuzu_main(tmp_path, "insert", "facts", json_file(tmp_path, "many.json", {"entities": entities})) == 0
     command = [sys.executable, "-m", "selfgraph.cli", "--store", "kuzu", "--uri", str(tmp_path / "cli.kuzu")]
     script = " ".join(f"'{a}'" for a in [*command, "entity", "list", "--limit", "1000"])
     closed = subprocess.run(
@@ -271,16 +271,16 @@ def test_store_settings_warnings_params_and_inline_schema(capsys, tmp_path, monk
     assert json.loads(capsys.readouterr().out)["entities"][0]["name"] == "Person"
 
 
-def test_bad_ontology_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsys, tmp_path):
+def test_bad_facts_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsys, tmp_path):
     bad = json_file(tmp_path, "bad.json", {"entities": [{"type": "P"}, {"name": 3, "type": "P"}]})
-    assert kuzu_main(tmp_path, "insert", "ontology", bad) == 2
-    expected = "error: invalid ontology:\n  entities[0].name: field required\n  entities[1].name: expected string\n"
+    assert kuzu_main(tmp_path, "insert", "facts", bad) == 2
+    expected = "error: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n"
     assert capsys.readouterr().err == expected
     schema = json_file(tmp_path, "schema.json", {"entities": [{"name": "Person"}]})
     assert kuzu_main(tmp_path, "schema", "import", schema) == 2
     assert "looks like a SelfGraph schema, not a Neo4j one" in capsys.readouterr().err
-    ont = json_file(tmp_path, "ont.json", {"entities": [{"name": "B", "type": "Company"}]})
-    assert kuzu_main(tmp_path, "--schema", schema, "insert", "ontology", ont) == 0
+    facts = json_file(tmp_path, "facts.json", {"entities": [{"name": "B", "type": "Company"}]})
+    assert kuzu_main(tmp_path, "--schema", schema, "insert", "facts", facts) == 0
     captured = capsys.readouterr()
     assert "selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n" in captured.err
     assert json.loads(captured.out)["warnings"][0]["code"] == "unknown_entity_type"
@@ -292,11 +292,11 @@ def test_relation_update_aliases_and_dry_run_plans_omit_deleted(capsys):
     cli(g, ["relation", "create", "t:a", "KNOWS", "t:b", "--id", "relation:r1", "--prop", "x=1"], capsys)
     out = cli(g, ["relation", "update", "relation:r1", "--prop", "w=2", "--remove-prop", "x"], capsys)
     assert out["properties"] == {"w": 2}
-    assert "deleted" not in cli(g, ["maintenance", "consolidate"], capsys)
-    assert cli(g, ["maintenance", "consolidate"], capsys)["dry_run"] is True
+    assert "deleted" not in cli(g, ["maintenance", "dedupe-relations"], capsys)
+    assert cli(g, ["maintenance", "dedupe-relations"], capsys)["dry_run"] is True
     plan = cli(g, ["maintenance", "prune", "--min-relevance", "0.5"], capsys)
     assert "deleted" not in plan and plan["dry_run"] is True
-    assert "deleted" in cli(g, ["maintenance", "consolidate", "--apply"], capsys)
+    assert "deleted" in cli(g, ["maintenance", "dedupe-relations", "--apply"], capsys)
 
 
 def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
@@ -339,7 +339,7 @@ def test_version_and_help_text(capsys):
         assert set(helps) == set(sub.choices)
         assert all(helps.values()), helps
     helps = {a.dest: a.help for a in top._choices_actions}
-    assert helps["maintenance"] == "decay (score relevance), prune, or consolidate duplicate relations"
+    assert helps["maintenance"] == "decay (score relevance), prune, or deduplicate relations"
 
     def flag_help(group, action, flag):
         return _subcommands(top.choices[group]).choices[action]._option_string_actions[flag].help
@@ -354,14 +354,14 @@ def test_version_and_help_text(capsys):
 
 
 def test_exit_codes_and_context_only(capsys, tmp_path):
-    assert kuzu_main(tmp_path, "insert", "ontology", str(tmp_path / "nofile.json")) == 2
+    assert kuzu_main(tmp_path, "insert", "facts", str(tmp_path / "nofile.json")) == 2
     capsys.readouterr()
     assert kuzu_main(tmp_path, "retrieve", "x", "--depth", "-1", "--k", "0", "--budget-tokens", "0") == 2
     assert capsys.readouterr().err == "error: depth must be >= 0, got -1\n"
     assert kuzu_main(tmp_path, "retrieve", "x", "--k", "0") == 2
     assert capsys.readouterr().err == "error: k must be >= 1, got 0\n"
-    ont = json_file(tmp_path, "ab.json", AB_ONTOLOGY)
-    assert kuzu_main(tmp_path, "insert", "ontology", ont) == 0
+    facts = json_file(tmp_path, "ab.json", AB_FACTS)
+    assert kuzu_main(tmp_path, "insert", "facts", facts) == 0
     capsys.readouterr()
     assert kuzu_main(tmp_path, "retrieve", "A", "--context-only") == 0
     out = capsys.readouterr().out
@@ -380,9 +380,9 @@ def test_multi_chunk_llm_insert_prints_progress_on_stderr(capsys, tmp_path, monk
 
 def test_evidence_commands_and_parity_flags(capsys, tmp_path):
     g = fresh_graph("cli-parity")
-    path = json_file(tmp_path, "ab.json", AB_ONTOLOGY)
+    path = json_file(tmp_path, "ab.json", AB_FACTS)
     for source in ("s1", "s2"):
-        out = cli(g, ["insert", "ontology", path, "--source-id", source, "--event-time", "2020-05-01"], capsys)
+        out = cli(g, ["insert", "facts", path, "--source-id", source, "--event-time", "2020-05-01"], capsys)
         assert out["relations"][0]["event_time"] == "2020-05-01T00:00:00Z"
     page = cli(g, ["entity", "evidence", "t:a", "--limit", "1"], capsys)
     rest = cli(g, ["entity", "evidence", "t:a", "--cursor", page["next_cursor"]], capsys)
@@ -399,5 +399,5 @@ def test_evidence_commands_and_parity_flags(capsys, tmp_path):
     assert _metadata(["a=1", '{"b": "x"}', "c=text"]) == {"a": 1, "b": "x", "c": "text"}
     with pytest.raises(ValidationError, match="--metadata expects KEY=VALUE, got 'nope'"):
         _metadata(["nope"])
-    args = build_parser().parse_args(["preference", "list", "--key", "db", "--kind", "disinterest"])
-    assert (args.key, args.kind) == ("db", "disinterest")
+    args = build_parser().parse_args(["preference", "list", "--key", "db", "--stance", "disinterest"])
+    assert (args.key, args.stance) == ("db", "disinterest")

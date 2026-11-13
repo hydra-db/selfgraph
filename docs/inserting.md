@@ -3,7 +3,7 @@
 There are two ways to write to the graph:
 
 - `insert.text` extracts entities and relations from text.
-- `insert.ontology` writes a graph you already have.
+- `insert.facts` writes a graph you already have.
 
 Both return an `InsertResult` with the written entities and relations and any
 warnings. Every insert is an upsert keyed on deterministic ids, so inserting the
@@ -111,7 +111,7 @@ disinterest) keyed by that entity's type.
   and the missing field.
 
 To replace LLM, spaCy, and regex extraction entirely, pass `extractor=`. It is
-any object with an async `extract(document)` that returns an `Ontology`. It is
+any object with an async `extract(document)` that returns an `Extraction`. It is
 called once per `insert.text` with a `ParsedDocument`:
 
 | Field | Value |
@@ -166,13 +166,13 @@ pass. `result.warnings` says which ran (`ner_extraction` or `basic_extraction`).
 Both can link the wrong pair. Use an LLM when the graph matters. `instructions`
 and `prompts` are ignored here, with a `prompts_ignored` warning.
 
-## From an ontology
+## From facts
 
-`insert.ontology` writes an `Ontology`, or a dict with the same shape. Nothing is
+`insert.facts` writes an `Extraction`, or a dict with the same shape. Nothing is
 extracted.
 
 ```python
-await graph.insert.ontology({
+await graph.insert.facts({
     "entities": [
         {"id": "person:jane", "type": "Person", "name": "Jane Doe"},
         {"id": "company:acme", "type": "Company", "name": "Acme"},
@@ -220,10 +220,10 @@ or `chunk_text` raises `ValidationError`. Without `overlap_tokens` the overlap i
 
 ## Unknown keys
 
-An ontology and its items, a schema, `instructions`, and `prompts` reject any key
+Facts and their items, a schema, `instructions`, and `prompts` reject any key
 they do not define. The `ValidationError` names the key, where it is, and the
 closest valid key (see [Errors](errors.md#messages)):
 
 ```text
-unknown key 'nmae' in ontology.entities[0]; did you mean 'name'?
+unknown key 'nmae' in facts.entities[0]; did you mean 'name'?
 ```

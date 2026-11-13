@@ -54,25 +54,25 @@ EDGE_TYPES = frozenset(
 )
 _PREFERENCE_EDGES = {"preference": R_PREFERS, "disinterest": R_AVOIDS}
 PREFERENCE_EDGE_TYPES = tuple(_PREFERENCE_EDGES.values())
-_KIND_OF_EDGE = {etype: kind for kind, etype in _PREFERENCE_EDGES.items()}
+_STANCE_OF_EDGE = {etype: stance for stance, etype in _PREFERENCE_EDGES.items()}
 
 
-def preference_edge_type(kind: str) -> str:
-    """The edge type that stores a preference of the given kind.
+def preference_edge_type(stance: str) -> str:
+    """The edge type that stores a preference of the given stance.
 
-    @param kind (str): the preference kind.
+    @param stance (str): the preference stance.
     @return (str): R_PREFERS or R_AVOIDS.
     """
-    return _PREFERENCE_EDGES[kind]
+    return _PREFERENCE_EDGES[stance]
 
 
-def preference_kind_of(etype: str) -> str | None:
-    """The preference kind an edge type stores, or None when the edge is not a preference.
+def preference_stance_of(etype: str) -> str | None:
+    """The preference stance an edge type stores, or None when the edge is not a preference.
 
     @param etype (str): the edge type.
-    @return (str | None): the kind.
+    @return (str | None): the stance.
     """
-    return _KIND_OF_EDGE.get(etype)
+    return _STANCE_OF_EDGE.get(etype)
 
 
 def child_edge_id(edge_type: str, child_id: str) -> str:
@@ -286,13 +286,13 @@ def encode_preference_props(
     }
 
 
-def decode_preference(props: dict[str, Any], *, value_entity: str, profile_id: str, kind: str) -> Preference:
+def decode_preference(props: dict[str, Any], *, value_entity: str, profile_id: str, stance: str) -> Preference:
     return Preference(
         id=props["id"],
         revision=int(props["revision"]),
         profile_id=profile_id,
         subject_entity=props["subject_entity"],
-        kind=kind,
+        stance=stance,
         key=props["key"],
         value_entity=value_entity,
         about_entity=props.get("about_entity"),

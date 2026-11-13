@@ -12,7 +12,7 @@ def test_create_preference_makes_profile():
     g = new_graph()
     seed(g)
     pref = run(g.preferences.create("person:soham", "database", "company:hydradb", strength=0.9))
-    assert pref.kind == "preference"
+    assert pref.stance == "preference"
     assert pref.key == "database"
     assert pref.value_entity == "company:hydradb"
     assert pref.subject_entity == "person:soham"
@@ -27,8 +27,8 @@ def test_create_preference_makes_profile():
 def test_disinterest_uses_avoids_edge():
     g = new_graph()
     seed(g)
-    pref = run(g.preferences.create("person:soham", "database", "company:neo4j", kind="disinterest"))
-    assert pref.kind == "disinterest"
+    pref = run(g.preferences.create("person:soham", "database", "company:neo4j", stance="disinterest"))
+    assert pref.stance == "disinterest"
     if RAW_CYPHER:
         rows = run(g.run_cypher("MATCH (p:Profile)-[r:AVOIDS]->(v) RETURN v.id AS id"))
         assert rows.rows[0]["id"] == "company:neo4j"
@@ -48,13 +48,13 @@ def test_list_and_filters():
     g = new_graph()
     seed(g)
     run(g.preferences.create("person:soham", "database", "company:hydradb"))
-    run(g.preferences.create("person:soham", "ide", "company:neo4j", kind="disinterest"))
+    run(g.preferences.create("person:soham", "ide", "company:neo4j", stance="disinterest"))
     allp = run(g.preferences.list("person:soham"))
     assert len(allp.items) == 2
     db = run(g.preferences.list("person:soham", key="database"))
     assert len(db.items) == 1 and db.items[0].key == "database"
-    dis = run(g.preferences.list("person:soham", kind="disinterest"))
-    assert len(dis.items) == 1 and dis.items[0].kind == "disinterest"
+    dis = run(g.preferences.list("person:soham", stance="disinterest"))
+    assert len(dis.items) == 1 and dis.items[0].stance == "disinterest"
 
 
 def test_missing_refs_and_errors():
@@ -95,7 +95,7 @@ def test_insert_result_lists_each_preference_once():
     g = new_graph()
     seed(g)
     pref = {"subject_entity": "person:soham", "key": "database", "value_entity": "company:hydradb"}
-    result = run(g.insert.ontology({"preferences": [pref, {**pref, "strength": 0.5}, {**pref, "strength": 0.7}]}))
+    result = run(g.insert.facts({"preferences": [pref, {**pref, "strength": 0.5}, {**pref, "strength": 0.7}]}))
     assert [(p.id, p.strength) for p in result.preferences] == [(result.preferences[0].id, 0.7)]
 
 

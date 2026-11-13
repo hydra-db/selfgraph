@@ -1,20 +1,20 @@
 import { NotFoundError } from "../errors.js";
 import {
   type DateTimeInput,
-  DEFAULT_KIND,
+  DEFAULT_STANCE,
   type DeleteResult,
   type JsonObject,
-  type Kind,
   type Page,
   type Preference,
+  type Stance,
 } from "../models.js";
 import * as ops from "../ops.js";
 import { checkOptions, keysOf, parseTime } from "../validate.js";
-import { paginate, parseKind, Resource, VERSIONS_KEYS } from "./common.js";
+import { paginate, parseStance, Resource, VERSIONS_KEYS } from "./common.js";
 
 export interface PreferenceCreateOptions {
   id?: string | null;
-  kind?: Kind;
+  stance?: Stance;
   about_entity?: string | null;
   strength?: number | null;
   properties?: JsonObject | null;
@@ -23,7 +23,7 @@ export interface PreferenceCreateOptions {
 
 export interface PreferenceListOptions {
   key?: string | null;
-  kind?: Kind | null;
+  stance?: Stance | null;
   cursor?: string | null;
   limit?: number;
 }
@@ -38,13 +38,13 @@ export interface PreferenceUpdateOptions {
 
 const CREATE_KEYS = keysOf<PreferenceCreateOptions>({
   id: true,
-  kind: true,
+  stance: true,
   about_entity: true,
   strength: true,
   properties: true,
   event_time: true,
 });
-const LIST_KEYS = keysOf<PreferenceListOptions>({ key: true, kind: true, cursor: true, limit: true });
+const LIST_KEYS = keysOf<PreferenceListOptions>({ key: true, stance: true, cursor: true, limit: true });
 const UPDATE_KEYS = keysOf<PreferenceUpdateOptions>({
   strength: true,
   properties: true,
@@ -68,7 +68,7 @@ export class Preferences extends Resource {
    * @param subjectEntity (string): the subject entity id.
    * @param key (string): the preference dimension, e.g. "database".
    * @param valueEntity (string): the value entity id.
-   * @param options (PreferenceCreateOptions): the id, kind, about entity, strength, properties, and valid time.
+   * @param options (PreferenceCreateOptions): the id, stance, about entity, strength, properties, and valid time.
    * @return (Preference): the created preference.
    */
   async create(
@@ -78,7 +78,7 @@ export class Preferences extends Resource {
     options: PreferenceCreateOptions = {},
   ): Promise<Preference> {
     checkOptions("preferences.create", options, CREATE_KEYS);
-    const kind = parseKind(options.kind ?? DEFAULT_KIND);
+    const stance = parseStance(options.stance ?? DEFAULT_STANCE);
     const eventTime = parseTime(options.event_time, "event_time");
     return this.graph.write((tx, ns) =>
       ops.createPreference(tx, ns, {
@@ -86,7 +86,7 @@ export class Preferences extends Resource {
         key,
         value_entity: valueEntity,
         id: options.id,
-        kind,
+        stance,
         about_entity: options.about_entity,
         strength: options.strength,
         properties: options.properties ?? null,
@@ -104,7 +104,7 @@ export class Preferences extends Resource {
    * List current preferences, for one subject or, without one, for every subject.
    *
    * @param subjectOrOptions (string | null | PreferenceListOptions): the subject entity id, or the options to list every subject.
-   * @param options (PreferenceListOptions): filters by key and kind, a cursor, and the page size.
+   * @param options (PreferenceListOptions): filters by key and stance, a cursor, and the page size.
    * @return (Page<Preference>): a page of preferences.
    */
   async list(
@@ -117,7 +117,7 @@ export class Preferences extends Resource {
       ops.listPreferences(store, ns, {
         subject_entity: subject,
         key: opts.key,
-        kind: opts.kind == null ? null : parseKind(opts.kind),
+        stance: opts.stance == null ? null : parseStance(opts.stance),
         ...window,
       }),
     );

@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, get_args
 
 from .errors import NotFoundError, PromptTemplateError, SelfGraphError, ValidationError, surface_hint
-from .models import Kind, Status
+from .models import Stance, Status
 from .resolution import ResolverMode
 from .resources._common import DEFAULT_PAGE_LIMIT
 from .retrieval import STRATEGIES
@@ -422,7 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--context-only", action="store_true", help="print only the context text, not the JSON result")
     rt.set_defaults(func=_retrieve)
 
-    mt = sub.add_parser("maintenance", help="decay (score relevance), prune, or consolidate duplicate relations")
+    mt = sub.add_parser("maintenance", help="decay (score relevance), prune, or deduplicate relations")
     mta = mt.add_subparsers(dest="action", required=True)
     md = mta.add_parser(
         "decay", help="score every entity and relation by recency and frequency; prints them unless --apply"
@@ -440,12 +440,12 @@ def build_parser() -> argparse.ArgumentParser:
     mp.add_argument("--relation-type", action="append", help="only consider relations of this type (repeatable)")
     mp.add_argument("--apply", action="store_true", help="remove what the plan lists")
     mp.set_defaults(func=_prune)
-    mc = mta.add_parser("consolidate", help="merge duplicate parallel relations; prints the plan unless --apply")
+    mc = mta.add_parser("dedupe-relations", help="merge duplicate parallel relations; prints the plan unless --apply")
     mc.add_argument("--apply", action="store_true", help="merge the groups the plan lists")
-    mc.set_defaults(func=lambda g, a: g.maintenance.consolidate(dry_run=not a.apply))
+    mc.set_defaults(func=lambda g, a: g.maintenance.dedupe_relations(dry_run=not a.apply))
 
-    ins = sub.add_parser("insert", help="insert text or an ontology").add_subparsers(dest="what", required=True)
-    it = ins.add_parser("text", help="extract an ontology from text (LLM if configured, else NER or regex)")
+    ins = sub.add_parser("insert", help="insert text or facts").add_subparsers(dest="what", required=True)
+    it = ins.add_parser("text", help="extract facts from text (LLM if configured, else NER or regex)")
     it.add_argument("text", help="the text, or '-' for stdin")
     it.add_argument("--source-id")
     it.add_argument("--event-time", type=_time("event_time"), help=f"when the text's facts became true ({_ISO})")
@@ -471,8 +471,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     it.set_defaults(func=insert_text)
 
-    io = ins.add_parser("ontology", help="insert a ready ontology (JSON file or '-' for stdin)")
-    io.add_argument("path", help="the ontology JSON file, or '-' to read it from stdin")
+    io = ins.add_parser("facts", help="insert ready facts (JSON file or '-' for stdin)")
+    io.add_argument("path", help="the facts JSON file, or '-' to read it from stdin")
     io.add_argument("--source-id")
     io.add_argument(
         "--event-time",
@@ -481,9 +481,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_call_overrides(io)
 
-    async def insert_ontology(g, a):
+    async def insert_facts(g, a):
         return _inserted(
-            await g.insert.ontology(
+            await g.insert.facts(
                 read_json(a.path),
                 source_id=a.source_id,
                 event_time=a.event_time,
@@ -492,7 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
             )
         )
 
-    io.set_defaults(func=insert_ontology)
+    io.set_defaults(func=insert_facts)
 
     ent = sub.add_parser(
         "entity", help="create/get/list/evidence/merges/unmerge/update/delete entities"
@@ -630,7 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("key")
     pc.add_argument("value", help="value entity id (an existing entity, e.g. tool:hydradb)")
     pc.add_argument("--id")
-    pc.add_argument("--kind", choices=get_args(Kind), default="preference")
+    pc.add_argument("--stance", choices=get_args(Stance), default="preference")
     pc.add_argument("--about", help="entity id the preference is about")
     pc.add_argument("--strength", type=float)
     pc.add_argument("--prop", action="append", metavar="KEY=VALUE", help=f"property (repeatable){_JSON_VALUE}")
@@ -641,7 +641,7 @@ def build_parser() -> argparse.ArgumentParser:
             a.key,
             a.value,
             id=a.id,
-            kind=a.kind,
+            stance=a.stance,
             about_entity=a.about,
             strength=a.strength,
             properties=_kv(a.prop, "--prop"),
@@ -652,10 +652,10 @@ def build_parser() -> argparse.ArgumentParser:
     pl = pref.add_parser("list", help="list current preferences, for one subject or all")
     pl.add_argument("subject", nargs="?", help="subject entity id (omit to list every subject)")
     pl.add_argument("--key")
-    pl.add_argument("--kind", choices=get_args(Kind))
+    pl.add_argument("--stance", choices=get_args(Stance))
     _add_list_paging(pl)
     pl.set_defaults(
-        func=lambda g, a: g.preferences.list(a.subject, key=a.key, kind=a.kind, cursor=a.cursor, limit=a.limit)
+        func=lambda g, a: g.preferences.list(a.subject, key=a.key, stance=a.stance, cursor=a.cursor, limit=a.limit)
     )
     pu = pref.add_parser("update", help="make a new version with a changed strength or properties")
     pu.add_argument("id")

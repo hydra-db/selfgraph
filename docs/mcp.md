@@ -68,7 +68,7 @@ default 50) and `[cursor]`.
 |------|-----------|
 | `get_schema` | `[format]` (`selfgraph` or `neo4j`) |
 | `insert_text` | `text`, `[source_id]`, `[event_time]`, `[metadata]`, `[resolver]`, `[contradiction]`, `[schema]`, `[schema_mode]`, `[instructions]`, `[prompts]` |
-| `insert_ontology` | `ontology` (an object with `entities`, `relations`, `preferences`, `decisions`), `[source_id]`, `[event_time]`, `[resolver]`, `[contradiction]`, `[schema]`, `[schema_mode]` |
+| `insert_facts` | `facts` (an object with `entities`, `relations`, `preferences`, `decisions`), `[source_id]`, `[event_time]`, `[resolver]`, `[contradiction]`, `[schema]`, `[schema_mode]` |
 | `create_entity` | `name`, `type`, `[id]`, `[aliases]`, `[external_ids]`, `[properties]` |
 | `update_entity` | `id`, `[name]`, `[type]`, `[aliases]`, `[external_ids]`, `[properties]`, `[remove_aliases]`, `[remove_properties]` |
 | `list_entities` | `[type]`, `[name]` |
@@ -79,9 +79,9 @@ default 50) and `[cursor]`.
 | `list_relations` | `[from_entity]`, `[type]`, `[to_entity]`, `[include_invalidated]` |
 | `get_relation`, `delete_relation`, `relation_evidence` | `id` |
 | `relation_versions`, `preference_versions` | `id`, `[newest_first]` (default true) |
-| `create_preference` | `subject_entity`, `key`, `value_entity`, `[kind]`, `[id]`, `[about_entity]`, `[strength]`, `[properties]`, `[event_time]` |
+| `create_preference` | `subject_entity`, `key`, `value_entity`, `[stance]`, `[id]`, `[about_entity]`, `[strength]`, `[properties]`, `[event_time]` |
 | `update_preference` | `id`, `[strength]`, `[properties]`, `[remove_properties]`, `[event_time]`, `[clear]` |
-| `list_preferences` | `[subject_entity]`, `[key]`, `[kind]` |
+| `list_preferences` | `[subject_entity]`, `[key]`, `[stance]` |
 | `get_preference`, `delete_preference` | `id` |
 | `create_decision` | `title`, `[steps]` (default `[]`), `[id]`, `[actor_entity]`, `[summary]`, `[rationale]`, `[outcome_entity]`, `[alternative_entities]`, `[status]`, `[event_time]` |
 | `update_decision` | `id`, `[title]`, `[steps]`, `[actor_entity]`, `[summary]`, `[rationale]`, `[outcome_entity]`, `[alternative_entities]`, `[status]`, `[event_time]`, `[clear]` |
@@ -91,15 +91,15 @@ default 50) and `[cursor]`.
 | `run_cypher` | `query`, `[params]` |
 | `maintenance_decay` | `[half_life_days]`, `[now]`, `[dry_run]` |
 | `maintenance_prune` | `[min_relevance]`, `[older_than]`, `[types]`, `[relation_types]`, `[dry_run]` |
-| `maintenance_consolidate` | `[dry_run]` |
+| `maintenance_dedupe_relations` | `[dry_run]` |
 
 ### Annotations
 
 | Annotation | Tools |
 |------------|-------|
 | `readOnlyHint` | `get_*`, `list_*`, `*_versions`, `entity_evidence`, `relation_evidence`, `entity_merges`, `retrieve`, `run_cypher` |
-| `destructiveHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, and `maintenance_consolidate`. |
-| `idempotentHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, `maintenance_consolidate`, and `insert_ontology`. |
+| `destructiveHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, and `maintenance_dedupe_relations`. |
+| `idempotentHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, `maintenance_dedupe_relations`, and `insert_facts`. |
 
 ### Argument rules
 
@@ -109,7 +109,7 @@ default 50) and `[cursor]`.
   read as the [CLI time flags](cli.md#arguments) are.
 - Boolean arguments (`dry_run`, `include_invalidated`, `newest_first`) accept only
   JSON `true` or `false`.
-- `status` accepts only `active`, `completed`, or `reversed`. `kind` accepts only
+- `status` accepts only `active`, `completed`, or `reversed`. `stance` accepts only
   `preference` or `disinterest`.
 - A relation, preference, or decision id needs its `relation:`, `preference:`,
   or `decision:` prefix.

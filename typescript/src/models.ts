@@ -4,7 +4,7 @@ import { ValidationError } from "./errors.js";
 import { normalizeRelType } from "./ids.js";
 import { comparePy, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso } from "./internal/time.js";
-import { KINDS } from "./labels.js";
+import { STANCES } from "./labels.js";
 import { hasSurrogate, keyHint, requireCleanJson, requireNoControl, requireUnit } from "./validate.js";
 
 export type JsonValue =
@@ -27,13 +27,13 @@ export type JsonObject = { [key: string]: JsonValue };
 
 export const JsonValue: z.ZodType<JsonValue> = z.json() as z.ZodType<JsonValue>;
 
-export const Kind = z.enum(KINDS);
-export type Kind = z.infer<typeof Kind>;
+export const Stance = z.enum(STANCES);
+export type Stance = z.infer<typeof Stance>;
 
 export const Status = z.enum(["active", "completed", "reversed"]);
 export type Status = z.infer<typeof Status>;
 
-export const DEFAULT_KIND: Kind = "preference";
+export const DEFAULT_STANCE: Stance = "preference";
 export const DEFAULT_STATUS: Status = "completed";
 
 export const LLM_DEFAULTS = { temperature: 0, max_retries: 3, timeout: 120, concurrency: 4 } as const;
@@ -139,7 +139,7 @@ export interface Preference {
   revision: number;
   profile_id: string;
   subject_entity: string;
-  kind: Kind;
+  stance: Stance;
   key: string;
   value_entity: string;
   about_entity: string | null;
@@ -269,7 +269,7 @@ export interface PruneResult {
   note: string | null;
 }
 
-export interface ConsolidateGroup {
+export interface DedupeGroup {
   from_entity: string;
   type: string;
   to_entity: string;
@@ -279,9 +279,9 @@ export interface ConsolidateGroup {
   versions_lost: Record<string, number>;
 }
 
-export interface ConsolidateResult {
+export interface DedupeResult {
   dry_run: boolean;
-  groups: ConsolidateGroup[];
+  groups: DedupeGroup[];
   /** The delete counts; absent on a dry run. */
   deleted?: DeleteResult;
   note: string | null;
@@ -341,7 +341,7 @@ export type ParsedRelationInput = z.output<typeof RelationInput>;
 export const PreferenceInput = z.strictObject({
   id: optString,
   subject_entity: z.string(),
-  kind: Kind.default(DEFAULT_KIND),
+  stance: Stance.default(DEFAULT_STANCE),
   key: noControl("preference key"),
   value_entity: z.string(),
   about_entity: optString,
@@ -367,14 +367,14 @@ export const DecisionTraceInput = z.strictObject({
 export type DecisionTraceInput = DeepReadonly<z.input<typeof DecisionTraceInput>>;
 export type ParsedDecisionTraceInput = z.output<typeof DecisionTraceInput>;
 
-export const Ontology = z.strictObject({
+export const Extraction = z.strictObject({
   entities: z.array(EntityInput).default([]),
   relations: z.array(RelationInput).default([]),
   preferences: z.array(PreferenceInput).default([]),
   decisions: z.array(DecisionTraceInput).default([]),
 });
-export type Ontology = DeepReadonly<z.input<typeof Ontology>>;
-export type ParsedOntology = z.output<typeof Ontology>;
+export type Extraction = DeepReadonly<z.input<typeof Extraction>>;
+export type ParsedExtraction = z.output<typeof Extraction>;
 
 const DIRECT_PROVIDERS = [
   "anthropic",
@@ -634,7 +634,7 @@ export function issueLine(issue: z.core.$ZodIssue, value: unknown): string {
 /**
  * Format a zod error as one "path: message" line per issue, with entities[0].name paths. One issue stays inline after the heading; several go on indented lines.
  *
- * @param head (string): what failed, such as "invalid ontology".
+ * @param head (string): what failed, such as "invalid facts".
  * @param error (z.ZodError): the error.
  * @param value (unknown): the input that was parsed.
  * @return (string): the message.

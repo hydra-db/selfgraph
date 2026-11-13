@@ -22,10 +22,6 @@ _KEY = ["id", "ns"]
 
 _log = logging.getLogger("selfgraph")
 
-# Memgraph ignores the server-side notifications_min_severity=OFF filter and emits a
-# warning per CREATE CONSTRAINT, which the driver logs to stderr. Honor OFF client-side.
-logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
-
 
 _SYNTAX_MARKERS = ("syntaxerror", "parsing error")
 _HYDRADB_HINT = "; if this is a HydraDB server use store 'hydradb'"
@@ -94,6 +90,18 @@ class CypherStore(CypherPrimitives):
         database: str | None = None,
         **driver_kwargs: Any,
     ) -> None:
+        """Open a Bolt driver with server notifications off.
+
+        Memgraph ignores the server-side notifications_min_severity=OFF filter and sends a warning per
+        CREATE CONSTRAINT, which the driver logs to stderr, so the driver's notification logger is also
+        raised to ERROR.
+
+        @param uri (str): the Bolt URI.
+        @param auth (str | tuple[str, str] | None): the auth, as bolt_auth takes it.
+        @param database (str | None): the database name, or None for the server default.
+        @param driver_kwargs (Any): extra keyword arguments for the neo4j driver.
+        """
+        logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
         kwargs = dict(driver_kwargs)
         kwargs.setdefault("notifications_min_severity", "OFF")
         try:
