@@ -30,6 +30,7 @@ _LABELS = (
     "Chunk",
     "Evidence",
     "EntityMerge",
+    "EntityMergeEntry",
 )
 _HYDRADB_DELETE_BATCH = 1024
 

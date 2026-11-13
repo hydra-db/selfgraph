@@ -33,6 +33,8 @@ function regexExtract(text: string): { entities: RawEntity[]; relations: RawRela
 }
 
 export class NERExtractor extends WarningSink implements Extractor {
+  readonly tier = "regex";
+
   async extract(document: ParsedDocument): Promise<ParsedExtraction> {
     const { entities, relations } = regexExtract(document.text);
     const message = `extracted without an LLM using heuristic regex; for model-based extraction, ${LLM_HINT}`;

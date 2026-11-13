@@ -126,7 +126,8 @@ backends.
 - `result.counters` is always empty on Kuzu.
 
 Every SelfGraph node carries a kind label: `Entity`, `Profile`, `DecisionTrace`,
-`DecisionStep`, `Source`, `SourceVersion`, `Chunk`, `Evidence`, or `EntityMerge`.
+`DecisionStep`, `Source`, `SourceVersion`, `Chunk`, `Evidence`, `EntityMerge`, or
+`EntityMergeEntry` (one source or rewrite of a merge record, so a record stays small when a merge repeats).
 The entity type is the `type` property. Only Neo4j, Memgraph, and FalkorDB also
 add it as a second label.
 

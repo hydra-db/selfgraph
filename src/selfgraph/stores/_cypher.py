@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
 
+from neo4j.graph import Node, Path, Relationship
+
 from ..errors import STORE_CLOSED_MESSAGE, StoreError, TransientError, ValidationError, error_reason
 from ..ids import quote_label, quote_reltype
 from ..models import CypherResult, JsonValue
@@ -181,8 +183,8 @@ def _to_json(value: Any) -> Any:
     @param value (Any): the value to convert.
     @return (Any): the plain-JSON equivalent.
     """
-    from neo4j.graph import Node, Path, Relationship
-
+    if value is None or type(value) in (str, int, float, bool):
+        return value
     if isinstance(value, Node | Relationship):
         return graph_properties(value.items(), _to_json)
     if isinstance(value, Path):

@@ -36,8 +36,10 @@ or `--contradiction` on an insert or `relation create`) wins after it.
 | `--schema` | A [schema](schema.md) JSON file applied to every insert, or inline JSON when the value starts with `{`. |
 | `--instructions`, `--prompts` | Extraction instructions and prompt templates, as a JSON file or inline JSON ([custom prompts](inserting.md#custom-prompts)). |
 | `--schema-mode` | `warn` (default), `strict`, or `off`. |
-| `--resolver` | [Entity resolution](resolution.md) on insert: `exact` (default), `default`, `fuzzy`, or `llm`. |
-| `--contradiction` | `warn` (default), `supersede`, or `off`. See [contradictions](schema.md#contradictions). |
+| `--level` | `light`, `balanced` (default), or `max`. Sets every capability's default [tier](tiers.md). |
+| `--max-tier` | A cost cap no capability climbs past: `light`, `balanced`, or `max` (default). |
+| `--resolver` | [Entity resolution](resolution.md) on insert: `exact`, `default`, `fuzzy`, or `llm`. Default: by level. |
+| `--contradiction` | `warn`, `supersede`, `llm`, or `off`. Default: by level. See [contradictions](schema.md#contradictions). |
 
 ### Validation
 
@@ -69,6 +71,7 @@ settings from the environment are ignored silently.
 | `schema` | Prints the active schema, or `null` with a hint on stderr. `schema import FILE` and `schema export` convert from and to a [Neo4j graph schema](schema.md#neo4j-graph-schema-interop). Importing a file that is already a SelfGraph schema fails with a hint to pass it as `--schema`. |
 | `query` | Runs one raw Cypher statement in the backend's own dialect. See [`query`](#query). |
 | `retrieve` | Retrieves context for a query. See [`retrieve`](#retrieve). |
+| `coverage` | Reports which words of a question the schema and graph can ground. See [coverage](ontology.md#coverage). |
 | `insert text` | Extracts from text, or `-` for stdin, with the configured LLM, else spaCy or the regex fallback ([inserting](inserting.md#from-text)). `--metadata` takes a JSON object or `KEY=VALUE` pairs, repeatable and merged in order. |
 | `insert facts` | Inserts facts from a JSON file, or `-` for stdin. |
 | `entity` | `create`, `get`, `list`, `evidence`, `merges`, `unmerge`, `update`, `delete`. |
@@ -91,7 +94,8 @@ Unquoted words join into one query, so `retrieve who works at Acme` works. See
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--strategy` | `bfs` | `bfs`, `dfs`, or `ppr`. |
+| `--strategy` | by level | `bfs`, `dfs`, or `ppr`. |
+| `--seeds` | by level | `bm25` or `synonyms`. See [seeding tiers](retrieval.md#seeding-tiers). |
 | `--depth` | 3 | Hops from each seed. |
 | `--k` | 20 | Seed entities. |
 | `--max-nodes` | 200 | Entity cap. |

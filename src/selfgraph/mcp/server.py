@@ -192,7 +192,7 @@ async def insert_text(
 
     Idempotent: ids are derived deterministically from content, so re-inserting the
     same text converges on the same graph instead of duplicating it. Safe to retry. resolver (exact, default,
-    fuzzy, or llm) overrides the server's entity resolution for this call. contradiction (off, warn, supersede)
+    fuzzy, or llm) overrides the server's entity resolution for this call. contradiction (off, warn, supersede, llm)
     overrides how a relation that breaks a schema max_count is handled. schema (a SelfGraph schema object) and
     schema_mode (off, warn, strict) override the server's for this call. instructions and prompts override the
     extraction instructions and prompt templates for this call.
@@ -236,7 +236,7 @@ async def insert_facts(
     leave earlier writes in place. Re-sending the same facts reconciles the graph. event_time (ISO 8601) is the
     default valid time for relations, preferences, and decisions that carry none of their own. resolver (exact, default,
     fuzzy, or llm) overrides the server's entity resolution for this call; each merge is in the result's merges.
-    contradiction (off, warn, supersede) overrides how a relation that breaks a schema max_count is handled:
+    contradiction (off, warn, supersede, llm) overrides how a relation that breaks a schema max_count is handled:
     warn keeps both and reports it, supersede retires the older relation. schema (a SelfGraph schema object) and
     schema_mode (off, warn, strict) override the server's for this call.
     """
@@ -355,7 +355,7 @@ async def create_relation(
     to_entity are existing entity ids ('type:name'); create the entities first. The type
     normalizes to UPPER_SNAKE, so 'works at' and 'WORKS_AT' are the same relation.
     event_time (ISO 8601) is when the fact became true. Creating a relation a contradiction
-    invalidated reasserts it. contradiction (off, warn, supersede) overrides how a schema
+    invalidated reasserts it. contradiction (off, warn, supersede, llm) overrides how a schema
     max_count conflict is handled. evidence lists records {source_id, chunk_id?, quote?, start_offset?,
     end_offset?, confidence?} supporting it."""
     g = await _graph_handle()
@@ -639,15 +639,17 @@ async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
 
 async def retrieve(
     query: str,
-    strategy: str = "bfs",
+    strategy: str | None = None,
     depth: NonNegativeInt = 3,
     k: PositiveInt = 20,
     max_nodes: PositiveInt = 200,
     budget_tokens: PositiveInt = 3000,
     as_of: str | None = None,
+    seeds: str | None = None,
 ) -> dict[str, Any]:
     """Retrieve graph context for a query by keyword seeds and bounded BFS, DFS, or PageRank ("ppr") ranking.
-    as_of (ISO 8601; no offset means UTC) reads the graph as it stood at that time."""
+    as_of (ISO 8601; no offset means UTC) reads the graph as it stood at that time. strategy and seeds (bm25,
+    synonyms, embeddings) default to the server's level."""
     g = await _graph_handle()
     return to_jsonable(
         await g.retrieve(
@@ -658,8 +660,16 @@ async def retrieve(
             max_nodes=max_nodes,
             budget_tokens=budget_tokens,
             as_of=parse_time(as_of, "as_of"),
+            seeds=seeds,
         )
     )
+
+
+async def coverage(question: str) -> dict[str, Any]:
+    """Report which words of a question the schema terms and stored entities can ground, with no LLM call.
+    uncovered lists the words nothing grounds; check it before answering to see what the graph cannot speak to."""
+    g = await _graph_handle()
+    return to_jsonable(await g.coverage(question))
 
 
 async def maintenance_decay(
@@ -737,6 +747,7 @@ TOOLS = [
     list_decisions,
     run_cypher,
     retrieve,
+    coverage,
     maintenance_decay,
     maintenance_prune,
     maintenance_dedupe_relations,
@@ -744,7 +755,7 @@ TOOLS = [
 
 
 _READ_ONLY = frozenset(
-    {"get_schema", "retrieve", "run_cypher", "entity_evidence", "entity_merges", "relation_evidence"}
+    {"get_schema", "retrieve", "coverage", "run_cypher", "entity_evidence", "entity_merges", "relation_evidence"}
 )
 _DESTRUCTIVE = frozenset({"maintenance_prune", "maintenance_dedupe_relations"})
 _IDEMPOTENT = frozenset({"insert_facts", "maintenance_prune", "maintenance_dedupe_relations"})

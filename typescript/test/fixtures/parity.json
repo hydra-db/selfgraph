@@ -7906,6 +7906,7 @@
       "aliases": [
        "Human"
       ],
+      "synonyms": [],
       "properties": [
        {
         "name": "name",
@@ -7932,14 +7933,21 @@
         "description": null
        }
       ],
-      "parent": null
+      "parent": null,
+      "mappings": [],
+      "definitions": [],
+      "certified": false
      },
      {
       "name": "Company",
       "description": null,
       "aliases": [],
+      "synonyms": [],
       "properties": [],
-      "parent": null
+      "parent": null,
+      "mappings": [],
+      "definitions": [],
+      "certified": false
      }
     ],
     "relations": [
@@ -7947,6 +7955,8 @@
       "type": "WORKS_FOR",
       "description": null,
       "aliases": [],
+      "synonyms": [],
+      "certified": false,
       "from": {
        "types": [
         "Person"
@@ -7975,6 +7985,8 @@
       "type": "OWNS",
       "description": null,
       "aliases": [],
+      "synonyms": [],
+      "certified": false,
       "from": {
        "types": [
         "Company"
@@ -8115,6 +8127,8 @@
       "type": "R",
       "description": null,
       "aliases": [],
+      "synonyms": [],
+      "certified": false,
       "from": {
        "types": [
         "A",

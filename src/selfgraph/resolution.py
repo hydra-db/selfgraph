@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from functools import partial
+from functools import lru_cache, partial
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
 
 from pydantic import BaseModel
@@ -16,6 +16,7 @@ from ._serde import (
     L_ENTITY,
     L_EVIDENCE,
     L_MERGE,
+    L_MERGE_ENTRY,
     L_TRACE,
     _dumps,
     _loads,
@@ -219,6 +220,26 @@ def distinct_names(a: str, b: str, threshold: float = _DEFAULT_THRESHOLD) -> boo
     )
 
 
+@lru_cache(maxsize=1 << 16)
+def _folded_forms(name: str, aliases: tuple[str, ...]) -> frozenset[str]:
+    """The folded name and aliases of an entity, cached since resolution compares each one against many.
+
+    @param name (str): the name.
+    @param aliases (tuple[str, ...]): the aliases.
+    @return (frozenset[str]): the stripped, folded forms.
+    """
+    return frozenset(_fold(f.strip()) for f in (name, *aliases))
+
+
+def _forms(ent: EntityInput | Entity) -> frozenset[str]:
+    """The folded name and aliases of a candidate or an existing entity.
+
+    @param ent (EntityInput | Entity): the entity.
+    @return (frozenset[str]): the stripped, folded forms.
+    """
+    return _folded_forms(ent.name, tuple(ent.aliases))
+
+
 def _surface_match(candidate: EntityInput, ent: Entity) -> bool:
     """Report whether any of the candidate's name and aliases matches the entity's name or one of its aliases.
 
@@ -226,8 +247,7 @@ def _surface_match(candidate: EntityInput, ent: Entity) -> bool:
     @param ent (Entity): the existing entity.
     @return (bool): True on a folded match.
     """
-    forms = {_fold(f.strip()) for f in (ent.name, *ent.aliases)}
-    return any(_fold(f.strip()) in forms for f in (candidate.name, *candidate.aliases))
+    return not _forms(candidate).isdisjoint(_forms(ent))
 
 
 def _no_match() -> ResolutionDecision:
@@ -263,20 +283,39 @@ class DefaultResolver:
         @param ent (Entity): the existing entity.
         @return (tuple[float, str] | None): the confidence and reason, or None when no signal fires.
         """
+        return self._scorer(candidate)(ent)
+
+    def _scorer(self, candidate: EntityInput) -> Callable[[Entity], tuple[float, str] | None]:
+        """Score existing entities against one candidate, deriving the candidate's type, id, and forms once.
+
+        @param candidate (EntityInput): the candidate entity.
+        @return (Callable[[Entity], tuple[float, str] | None]): score for one existing entity.
+        """
         ctype = _ops._clean_text(candidate.type)
-        if ctype == _FALLBACK_TYPE and ent.type != ctype:
-            return (_ALIAS_CONFIDENCE, "alias") if _surface_match(candidate, ent) else None
-        if (candidate.id or _ids.entity_id(ctype, _ops._clean_text(candidate.name))) == ent.id:
-            return 1.0, "id"
-        if any(candidate.external_ids.get(key) == value for key, value in ent.external_ids.items()):
-            return 1.0, "external_id"
-        if _surface_match(candidate, ent):
-            return _ALIAS_CONFIDENCE, "alias"
-        if self.fuzzy and ctype == ent.type and not distinct_names(candidate.name, ent.name, self.threshold):
-            similarity = name_similarity(candidate.name, ent.name)
-            if similarity >= self.threshold:
-                return similarity, "similarity"
-        return None
+        forms = _forms(candidate)
+        derived: list[str] = []
+
+        def cid() -> str:
+            if not derived:
+                derived.append(candidate.id or _ids.entity_id(ctype, _ops._clean_text(candidate.name)))
+            return derived[0]
+
+        def score(ent: Entity) -> tuple[float, str] | None:
+            if ctype == _FALLBACK_TYPE and ent.type != ctype:
+                return (_ALIAS_CONFIDENCE, "alias") if not forms.isdisjoint(_forms(ent)) else None
+            if cid() == ent.id:
+                return 1.0, "id"
+            if any(candidate.external_ids.get(key) == value for key, value in ent.external_ids.items()):
+                return 1.0, "external_id"
+            if not forms.isdisjoint(_forms(ent)):
+                return _ALIAS_CONFIDENCE, "alias"
+            if self.fuzzy and ctype == ent.type and not distinct_names(candidate.name, ent.name, self.threshold):
+                similarity = name_similarity(candidate.name, ent.name)
+                if similarity >= self.threshold:
+                    return similarity, "similarity"
+            return None
+
+        return score
 
     def decide(self, candidate: EntityInput, existing: Sequence[Entity]) -> ResolutionDecision:
         """Pick the merge target: highest confidence, ties to the lexicographically smallest id.
@@ -288,7 +327,8 @@ class DefaultResolver:
         @param existing (Sequence[Entity]): the type-compatible entities it may merge into.
         @return (ResolutionDecision): the decision, with target_id None when nothing matches.
         """
-        scored = ((self.score(candidate, ent), ent.id) for ent in existing)
+        score = self._scorer(candidate)
+        scored = ((score(ent), ent.id) for ent in existing)
         found = ((s[0], eid, s[1]) for s, eid in scored if s is not None)
         best = min(found, key=lambda b: (-b[0], b[1]), default=None)
         if best is None:
@@ -565,15 +605,22 @@ async def plan_resolution(
         wanted |= compatible_types(etype, schema)
     if _FALLBACK_TYPE in candidate_types:
         wanted.add(None)
-    fallbacks = [ent for ent, eid, etype, _ in keyed if etype == _FALLBACK_TYPE and ent.id is None]
+    fallback_forms = frozenset().union(
+        *(_forms(ent) for ent, _, etype, _ in keyed if etype == _FALLBACK_TYPE and ent.id is None)
+    )
     named = {eid for _, eid, _, _ in keyed}
+
+    def keep(props: dict[str, Any]) -> bool:
+        if props["type"] in wanted or props["id"] in named:
+            return True
+        return not fallback_forms.isdisjoint(_folded_forms(props["name"], tuple(props.get("aliases") or ())))
+
     pool: dict[str, Entity] = {}
-    for etype in sorted(wanted, key=str):
+    for etype in [None] if None in wanted else sorted(wanted, key=str):
         fetch = partial(runner.match_nodes, ns, L_ENTITY, equals={} if etype is None else {"type": etype}, skip=0)
         async for rows in _ops._keyset(lambda after, limit, fetch=fetch: fetch(limit=limit, id_gt=after)):
-            for ent in map(decode_entity, rows):
-                if etype is not None or ent.id in named or any(_surface_match(c, ent) for c in fallbacks):
-                    pool[ent.id] = ent
+            for ent in map(decode_entity, filter(keep, rows)):
+                pool[ent.id] = ent
 
     within = bool(getattr(resolver, "within_batch", True))
     batch: dict[str, Entity] = {}
@@ -762,6 +809,15 @@ async def _rewrite_refs(
 
 
 def _encode_merge(ns: str, rec: MergeRecord) -> dict[str, Any]:
+    """The merge record node, without its sources and rewrites, which live in EntityMergeEntry rows.
+
+    A record repeats every time an insert merges the same pair again, so its sources and rewrites grow without bound;
+    kept inline they would outgrow a store's per-document limit (32000 bytes on HydraDB).
+
+    @param ns (str): namespace.
+    @param rec (MergeRecord): the record.
+    @return (dict[str, Any]): the node properties.
+    """
     return {
         "id": rec.id,
         "ns": ns,
@@ -770,18 +826,62 @@ def _encode_merge(ns: str, rec: MergeRecord) -> dict[str, Any]:
         "reason": rec.reason,
         "confidence": rec.confidence,
         "source_id": rec.source_id,
-        "source_ids_json": _dumps(rec.source_ids),
         "absorbed_json": _dumps(rec.absorbed),
         "added_aliases_json": _dumps(rec.added_aliases),
         "added_external_ids_json": _dumps(rec.added_external_ids),
         "added_properties_json": _dumps(rec.added_properties),
-        "rewrites_json": _dumps([_dump(r) for r in rec.rewrites]),
+        "source_entries": len(rec.source_ids),
+        "rewrite_entries": len(rec.rewrites),
         "created_at": to_iso(rec.created_at),
         "reverted_at": to_iso(rec.reverted_at),
     }
 
 
-def _decode_merge(props: dict[str, Any]) -> MergeRecord:
+def _entry_rows(ns: str, rec: MergeRecord) -> dict[str, dict[str, Any]]:
+    """One row per source and per rewrite of a merge record, keyed by a position that never moves.
+
+    @param ns (str): namespace.
+    @param rec (MergeRecord): the record.
+    @return (dict[str, dict[str, Any]]): the entry node properties by entry id.
+    """
+    rows = {}
+    for kind, values in (("source", rec.source_ids), ("rewrite", [_dump(r) for r in rec.rewrites])):
+        for seq, value in enumerate(values):
+            eid = _ids.merge_entry_id(rec.id, kind, seq)
+            rows[eid] = {"id": eid, "ns": ns, "merge_id": rec.id, "kind": kind, "seq": seq, "value_json": _dumps(value)}
+    return rows
+
+
+async def _load_entries(runner: Any, ns: str, records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Read the source and rewrite rows of some stored merge records, by id from the counts each record keeps.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param records (list[dict[str, Any]]): the stored merge record nodes.
+    @return (dict[str, list[dict[str, Any]]]): each record's entry rows, in no particular order.
+    """
+    found: dict[str, list[dict[str, Any]]] = {props["id"]: [] for props in records}
+    wanted = [
+        _ids.merge_entry_id(props["id"], kind, seq)
+        for props in records
+        for kind in ("source", "rewrite")
+        for seq in range(int(props.get(f"{kind}_entries") or 0))
+    ]
+    for row in (await _ops._nodes_by_id(runner, ns, L_MERGE_ENTRY, wanted)).values():
+        found[row["merge_id"]].append(row)
+    return found
+
+
+def _decode_merge(props: dict[str, Any], entries: Sequence[dict[str, Any]] = ()) -> MergeRecord:
+    """Rebuild a merge record from its node and entry rows.
+
+    @param props (dict[str, Any]): the record node.
+    @param entries (Sequence[dict[str, Any]]): its EntityMergeEntry rows.
+    @return (MergeRecord): the record.
+    """
+    listed: dict[str, list[Any]] = {"source": [], "rewrite": []}
+    for row in sorted(entries, key=lambda r: int(r["seq"])):
+        listed[row["kind"]].append(_loads(row["value_json"], None))
     return MergeRecord(
         id=props["id"],
         survivor_id=props["survivor_id"],
@@ -790,14 +890,38 @@ def _decode_merge(props: dict[str, Any]) -> MergeRecord:
         reason=props.get("reason") or "",
         confidence=float(props.get("confidence") or 0.0),
         source_id=props.get("source_id"),
-        source_ids=_loads(props.get("source_ids_json"), [props["source_id"]] if props.get("source_id") else []),
+        source_ids=listed["source"],
         added_aliases=_loads(props.get("added_aliases_json"), []),
         added_external_ids=_loads(props.get("added_external_ids_json"), []),
         added_properties=_loads(props.get("added_properties_json"), []),
-        rewrites=_loads(props.get("rewrites_json"), []),
+        rewrites=listed["rewrite"],
         created_at=from_iso(props["created_at"]),
         reverted_at=from_iso(props.get("reverted_at")),
     )
+
+
+async def _write_merges(
+    runner: Any, ns: str, records: list[MergeRecord], stored: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Write merge records, rewriting only the entry rows that are new or changed, so a repeat costs its own rows.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param records (list[MergeRecord]): the records to store.
+    @param stored (dict[str, list[dict[str, Any]]]): each already stored record's entry rows, by id.
+    @return (None): nothing.
+    """
+    nodes, entries = [], []
+    for rec in records:
+        rows = stored.get(rec.id, [])
+        nodes.append((rec.id, _encode_merge(ns, rec)))
+        have = {row["id"]: row.get("value_json") for row in rows}
+        entries += [(eid, row) for eid, row in _entry_rows(ns, rec).items() if have.get(eid) != row["value_json"]]
+    for _, props in [*nodes, *entries]:
+        await _ops._precheck_write(runner, props)
+    if entries:
+        await runner.upsert_nodes(ns, L_MERGE_ENTRY, entries)
+    await runner.upsert_nodes(ns, L_MERGE, nodes)
 
 
 async def save_merges(
@@ -816,6 +940,7 @@ async def save_merges(
         return []
     keyed = [(_ids.entity_merge_id(m.survivor_id, m.absorbed_id), m) for m in resolution.merges]
     stored = await _ops._nodes_by_id(runner, ns, L_MERGE, [mid for mid, _ in keyed])
+    entries = await _load_entries(runner, ns, list(stored.values()))
     records = []
     for mid, merge in keyed:
         absorbed = _dump(merge.candidate)
@@ -835,7 +960,7 @@ async def save_merges(
             rewrites=merge.rewrites,
             created_at=created_at,
         )
-        prev = _decode_merge(stored[mid]) if mid in stored else None
+        prev = _decode_merge(stored[mid], entries[mid]) if mid in stored else None
         if prev is not None and prev.reverted_at is None:
             seen = {(r.kind, r.id) for r in prev.rewrites}
             rec = prev.model_copy(
@@ -848,10 +973,7 @@ async def save_merges(
                 }
             )
         records.append(rec)
-    rows = [(rec.id, _encode_merge(ns, rec)) for rec in records]
-    for _, props in rows:
-        await _ops._precheck_write(runner, props)
-    await runner.upsert_nodes(ns, L_MERGE, rows)
+    await _write_merges(runner, ns, records, entries)
     return records
 
 
@@ -891,7 +1013,8 @@ async def list_merges(runner: Any, ns: str, entity_id: str, *, skip: int, limit:
     )
     if not rows and skip == 0 and not await runner.node_exists(ns, L_ENTITY, entity_id):
         raise NotFoundError("Entity", entity_id)
-    return [_decode_merge(r) for r in rows]
+    entries = await _load_entries(runner, ns, rows)
+    return [_decode_merge(r, entries[r["id"]]) for r in rows]
 
 
 def _moved_to(rw: MergeRewrite, new_id: str, rewritten: dict[str, Any], existed: bool) -> MergeRewrite:
@@ -942,15 +1065,15 @@ async def _forward_siblings(
     @return (None): nothing.
     """
     rows = await _ops._paged(partial(runner.match_nodes, ns, L_MERGE, equals={}, order_by="id"))
-    for props in rows:
-        sib = _decode_merge(props)
-        if sib.id == merge_id or sib.reverted_at is not None:
-            continue
+    live = [props for props in rows if props["id"] != merge_id and props.get("reverted_at") is None]
+    entries = await _load_entries(runner, ns, live)
+    for props in live:
+        sib = _decode_merge(props, entries[props["id"]])
         rewrites = [_forward(rw, moved, restored) for rw in sib.rewrites]
         if rewrites != sib.rewrites:
             await runner.lock_node(ns, L_MERGE, sib.id)
             updated = sib.model_copy(update={"rewrites": rewrites})
-            await runner.upsert_node(ns, L_MERGE, sib.id, _encode_merge(ns, updated))
+            await _write_merges(runner, ns, [updated], entries)
 
 
 async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
@@ -976,7 +1099,8 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     props = await runner.get_node(ns, L_MERGE, merge_id)
     if props is None:
         raise NotFoundError("EntityMerge", merge_id)
-    rec = _decode_merge(props)
+    entries = (await _load_entries(runner, ns, [props]))[merge_id]
+    rec = _decode_merge(props, entries)
     if rec.reverted_at is not None:
         raise ValidationError(f"merge {merge_id!r} was already reverted at {json_iso(rec.reverted_at)}")
     at = now()
@@ -1123,7 +1247,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             remove_external_ids=rec.added_external_ids,
         )
     reverted = rec.model_copy(update={"reverted_at": at})
-    await runner.upsert_node(ns, L_MERGE, reverted.id, _encode_merge(ns, reverted))
+    await _write_merges(runner, ns, [reverted], {rec.id: entries})
     return UnmergeResult(
         merge=reverted,
         entity=entity,

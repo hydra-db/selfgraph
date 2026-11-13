@@ -33,6 +33,7 @@ import {
   version,
 } from "./runtime.js";
 import { CONTRADICTION_MODES, SCHEMA_MODES, type Schema } from "./schema.js";
+import type { SeedTier } from "./tiers.js";
 import { checkOptions, parseTime } from "./validate.js";
 
 const WB_START = `(?<![${PY_WORD_CLASS}])`;
@@ -156,7 +157,7 @@ export const TOOLS: Tool[] = [
       "valid time for what is extracted; metadata is stored on the source. Idempotent: ids are derived " +
       "deterministically from content, so re-inserting the same text converges on the same graph instead of " +
       "duplicating it. Safe to retry. resolver (exact, default, fuzzy, or llm) overrides the server's entity " +
-      "resolution for this call. contradiction (off, warn, supersede) overrides how a relation that breaks " +
+      "resolution for this call. contradiction (off, warn, supersede, llm) overrides how a relation that breaks " +
       "a schema max_count is handled." +
       SCHEMA_ARGS +
       " instructions and prompts override the extraction instructions and prompt templates for this call.",
@@ -199,7 +200,7 @@ export const TOOLS: Tool[] = [
       "in place. Re-sending the same facts reconciles the graph. event_time (ISO 8601) is the default valid time for " +
       "relations, preferences, and decisions that carry none of their own. resolver (exact, default, fuzzy, or llm) overrides the " +
       "server's entity resolution for this call; each merge is in the result's merges. contradiction (off, " +
-      "warn, supersede) overrides how a relation that breaks a schema max_count is handled: warn keeps both " +
+      "warn, supersede, llm) overrides how a relation that breaks a schema max_count is handled: warn keeps both " +
       "and reports it, supersede retires the older relation." +
       SCHEMA_ARGS,
     input: {
@@ -309,7 +310,7 @@ export const TOOLS: Tool[] = [
       "Create a directed, versioned relationship between two entities. from_entity and to_entity are existing " +
       "entity ids ('type:name'); create the entities first. The type normalizes to UPPER_SNAKE, so 'works at' " +
       "and 'WORKS_AT' are the same relation. event_time (ISO 8601) is when the fact became true. Creating a " +
-      "relation a contradiction invalidated reasserts it. contradiction (off, warn, supersede) overrides how a " +
+      "relation a contradiction invalidated reasserts it. contradiction (off, warn, supersede, llm) overrides how a " +
       "schema max_count conflict is handled." +
       EVIDENCE_ARG,
     input: {
@@ -580,25 +581,36 @@ export const TOOLS: Tool[] = [
     name: "retrieve",
     description:
       'Retrieve graph context for a query by keyword seeds and bounded BFS, DFS, or PageRank ("ppr") ranking. ' +
-      "as_of (ISO 8601; no offset means UTC) reads the graph as it stood at that time.",
+      "as_of (ISO 8601; no offset means UTC) reads the graph as it stood at that time. strategy and seeds (bm25, " +
+      "synonyms, embeddings) default to the server's level.",
     input: {
       query: str,
-      strategy: z.string().default(RETRIEVE_DEFAULTS.strategy),
+      strategy: optStr,
       depth: z.number().int().min(0).default(RETRIEVE_DEFAULTS.depth),
       k: z.number().int().min(1).default(RETRIEVE_DEFAULTS.k),
       max_nodes: z.number().int().min(1).default(RETRIEVE_DEFAULTS.max_nodes),
       budget_tokens: z.number().int().min(1).default(RETRIEVE_DEFAULTS.budget_tokens),
       as_of: optStr,
+      seeds: optStr,
     },
     run: (g, a) =>
       g.retrieve(a.query, {
-        strategy: a.strategy as Strategy,
+        strategy: a.strategy as Strategy | null | undefined,
         depth: a.depth,
         k: a.k,
         max_nodes: a.max_nodes,
         budget_tokens: a.budget_tokens,
         as_of: time(a.as_of, "as_of"),
+        seeds: a.seeds as SeedTier | null | undefined,
       }),
+  }),
+  tool({
+    name: "coverage",
+    description:
+      "Report which words of a question the schema terms and stored entities can ground, with no LLM call. " +
+      "uncovered lists the words nothing grounds; check it before answering to see what the graph cannot speak to.",
+    input: { question: str },
+    run: (g, a) => g.coverage(a.question),
   }),
   tool({
     name: "maintenance_decay",
@@ -706,7 +718,15 @@ export async function callTool(
 
 type ToolAnnotations = { readOnlyHint: true } | { destructiveHint: boolean; idempotentHint: boolean };
 
-const READ_ONLY = ["get_schema", "retrieve", "run_cypher", "entity_evidence", "entity_merges", "relation_evidence"];
+const READ_ONLY = [
+  "get_schema",
+  "retrieve",
+  "coverage",
+  "run_cypher",
+  "entity_evidence",
+  "entity_merges",
+  "relation_evidence",
+];
 const DESTRUCTIVE = ["maintenance_prune", "maintenance_dedupe_relations"];
 const IDEMPOTENT = ["insert_facts", "maintenance_prune", "maintenance_dedupe_relations"];
 

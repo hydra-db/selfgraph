@@ -7,15 +7,17 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from typing import Any
 
-from . import _ops
+from . import _ops, tiers
 from ._serde import aware, now
-from .errors import CLOSED_MESSAGE, StoreError, TransientError, ValidationError
+from .contradiction import judge_contradictions
+from .errors import CLOSED_MESSAGE, LLM_HINT, StoreError, TransientError, ValidationError
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
 from .ids import _require_namespace
 from .insert import Insert
 from .llm.base import resolve_llm
 from .models import (
+    Coverage,
     CypherResult,
     Extraction,
     ExtractionInstructions,
@@ -28,10 +30,19 @@ from .models import (
     as_input,
     check_options,
 )
-from .protocols import Extractor, GraphStore, LLMClient
+from .protocols import Embedder, Extractor, GraphStore, LLMClient
 from .provenance import record_source
-from .resolution import EntityResolver, ResolverMode, as_resolver, merge_warnings, plan_resolution, save_merges
+from .resolution import (
+    EntityResolver,
+    ResolverMode,
+    as_resolver,
+    merge_warnings,
+    plan_resolution,
+    require_resolver,
+    save_merges,
+)
 from .resources import Decisions, Entities, Maintenance, Preferences, Relations
+from .retrieval import coverage as _coverage
 from .retrieval import retrieve as _retrieve
 from .schema import (
     ContradictionMode,
@@ -69,16 +80,45 @@ class SelfGraph:
         namespace: str = "default",
         schema: Schema | Mapping[str, Any] | None = None,
         schema_mode: SchemaMode = "warn",
-        resolver: EntityResolver | ResolverMode = "exact",
-        contradiction: ContradictionMode = "warn",
+        resolver: EntityResolver | ResolverMode | None = None,
+        contradiction: ContradictionMode | None = None,
+        level: tiers.Level = "balanced",
+        max_tier: tiers.Level = "max",
+        extraction: tiers.ExtractionTier | None = None,
+        seeds: tiers.SeedTier | None = None,
+        embedder: Embedder | None = None,
     ) -> None:
         _require_namespace(namespace)
         require_schema_mode(schema_mode)
-        require_contradiction_mode(contradiction)
+        tiers.require_level("level", level)
+        tiers.require_level("max_tier", max_tier)
         self.store = store
         self.namespace = namespace
         self._llm = resolve_llm(llm)
-        self._resolver = as_resolver(resolver, self._llm)
+        if level == "max" and max_tier == "max" and self._llm is None:
+            raise ValidationError(f"level 'max' needs an LLM: {LLM_HINT}")
+        if embedder is not None and not callable(getattr(embedder, "embed", None)):
+            raise ValidationError(f"embedder must have an embed method, got {type(embedder).__name__}")
+        self._level: tiers.Level = level
+        self._max_tier: tiers.Level = max_tier
+        self._embedder = embedder
+        self._embeddings: dict[tuple[str, str], tuple[str, list[float]]] = {}
+        preset = tiers.PRESETS[level]
+        if extraction is not None:
+            tiers.require_tier("extraction", extraction)
+        elif extractor is None:
+            extraction = "llm" if self._llm is not None else preset["extraction"]
+        self._extraction = None if extraction is None else tiers.clamp("extraction", extraction, max_tier)
+        if self._extraction == "llm" and self._llm is None:
+            raise ValidationError(f"extraction 'llm' needs an LLM: {LLM_HINT}")
+        if seeds is None:
+            seeds = preset["seeds"] if embedder is not None or preset["seeds"] != "embeddings" else "synonyms"
+        self._seeds = self._seed_tier(seeds)
+        self._strategy = preset["traversal"]
+        self._resolver_tier, self._resolver = self._resolver_for(preset["resolution"] if resolver is None else resolver)
+        self._contradiction: ContradictionMode = self._contradiction_tier(
+            preset["contradiction"] if contradiction is None else contradiction
+        )
         self._instructions = as_input(ExtractionInstructions, instructions, "instructions")
         self._prompts = as_input(ExtractionPrompts, prompts, "prompts")
         check_prompts(self._prompts)
@@ -86,7 +126,6 @@ class SelfGraph:
         self._schema = as_schema(schema)
         require_schema_for_mode(schema_mode, self._schema)
         self._schema_mode: SchemaMode = schema_mode
-        self._contradiction: ContradictionMode = contradiction
         self._ready = False
         self._closed = False
 
@@ -104,6 +143,58 @@ class SelfGraph:
         @return (Schema | None): the schema, or None when none is set.
         """
         return self._schema
+
+    @property
+    def tiers(self) -> dict[str, str]:
+        """The level and the tier each capability runs at by default, after the max_tier cap.
+
+        @return (dict[str, str]): the level, the cap, and each capability's default tier.
+        """
+        return {
+            "level": self._level,
+            "max_tier": self._max_tier,
+            "extraction": self._extraction or "custom",
+            "resolution": self._resolver_tier,
+            "contradiction": self._contradiction,
+            "seeds": self._seeds,
+            "traversal": self._strategy,
+        }
+
+    def _seed_tier(self, seeds: object) -> str:
+        """Validate a seeding tier and lower it to the cost cap.
+
+        @param seeds (object): "bm25", "synonyms", or "embeddings".
+        @return (str): the tier to seed with; raises ValidationError for embeddings without an embedder.
+        """
+        tiers.require_tier("seeds", seeds)
+        tier = tiers.clamp("seeds", str(seeds), self._max_tier)
+        if tier == "embeddings" and self._embedder is None:
+            raise ValidationError("seeds 'embeddings' needs an embedder: pass embedder= to SelfGraph")
+        return tier
+
+    def _resolver_for(self, resolver: EntityResolver | ResolverMode) -> tuple[str, EntityResolver | None]:
+        """Build a resolver from a mode or an object, lowering a mode to the cost cap.
+
+        @param resolver (EntityResolver | ResolverMode): the mode name or a resolver object.
+        @return (tuple[str, EntityResolver | None]): the tier name, "custom" for an object, and the resolver.
+        """
+        if isinstance(resolver, str):
+            require_resolver(resolver)
+            tier = tiers.clamp("resolution", resolver, self._max_tier)
+            return tier, as_resolver(tier, self._llm)
+        return "custom", as_resolver(resolver, self._llm)
+
+    def _contradiction_tier(self, mode: object) -> ContradictionMode:
+        """Validate a contradiction mode and lower it to the cost cap.
+
+        @param mode (object): "off", "warn", "supersede", or "llm".
+        @return (ContradictionMode): the mode to apply; raises ValidationError for llm without an LLM.
+        """
+        require_contradiction_mode(mode)
+        tier = tiers.clamp("contradiction", str(mode), self._max_tier)
+        if tier == "llm" and self._llm is None:
+            raise ValidationError(f"contradiction 'llm' needs an LLM: {LLM_HINT}")
+        return tier  # type: ignore[return-value]
 
     @classmethod
     def from_env(cls, **overrides: Any) -> SelfGraph:
@@ -196,29 +287,36 @@ class SelfGraph:
         self,
         query: str,
         *,
-        strategy: str = "bfs",
+        strategy: str | None = None,
         depth: int = 3,
         k: int = 20,
         max_nodes: int = 200,
         budget_tokens: int = 3000,
         as_of: datetime | str | None = None,
+        seeds: tiers.SeedTier | None = None,
     ) -> RetrievalResult:
         """Retrieve graph context for a query via keyword seeds and bounded traversal.
 
         @param query (str): the natural-language query to seed from.
-        @param strategy (str): "bfs" or "dfs" traversal order, or "ppr" for personalized PageRank ranking.
+        @param strategy (str | None): "bfs" or "dfs" traversal order, "ppr" for personalized PageRank ranking, or
+            None for the level's default.
         @param depth (int): the maximum number of hops from a seed.
         @param k (int): the maximum number of seed entities.
         @param max_nodes (int): the maximum number of entities to collect.
         @param budget_tokens (int): the assembled-context token budget.
         @param as_of (datetime | str | None): a point in time to read the graph at on the valid-time axis (relations and
             preferences valid then, with their entities; naive means UTC), or None for now.
+        @param seeds (SeedTier | None): how to seed: "bm25", "synonyms" to also expand schema synonyms, "embeddings"
+            to fuse embedder similarity with BM25, or None for the graph's tier.
         @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
         """
         if not isinstance(query, str):
             raise ValidationError(f"query must be a string, got {type(query).__name__}")
         if not query.strip():
             raise ValidationError("query cannot be empty")
+        if strategy is None:
+            strategy = self._strategy
+        seed_tier = self._seeds if seeds is None else self._seed_tier(seeds)
         if not isinstance(strategy, str):
             raise ValidationError(f"strategy must be a string, got {type(strategy).__name__}")
         for name, value in (("depth", depth), ("k", k), ("max_nodes", max_nodes), ("budget_tokens", budget_tokens)):
@@ -236,7 +334,25 @@ class SelfGraph:
             max_nodes=max_nodes,
             budget_tokens=budget_tokens,
             as_of=as_of,
+            seeds=seed_tier,
         )
+
+    async def coverage(self, question: str) -> Coverage:
+        """Report which words of a question the graph can ground, without an LLM.
+
+        A content word is covered when a schema term names it (an entity type, relation type, or definition, by
+        name, alias, or synonym) or when a stored entity's text holds it. Uncovered words mark what the graph
+        cannot answer about.
+
+        @param question (str): the natural-language question.
+        @return (Coverage): the matched terms, the covered and uncovered words, and the covered share.
+        """
+        if not isinstance(question, str):
+            raise ValidationError(f"question must be a string, got {type(question).__name__}")
+        if not question.strip():
+            raise ValidationError("question cannot be empty")
+        await self._ensure_ready()
+        return await _coverage(self, question)
 
     async def _in_tx(self, fn: Callable[[Any], Awaitable[Any]]) -> Any:
         await self._ensure_ready()
@@ -283,8 +399,7 @@ class SelfGraph:
         @param schema (Schema | None): the schema the write is checked against.
         @return (tuple[ContradictionMode, dict[str, Any]]): the mode and the limits by relation type.
         """
-        mode = self._contradiction if contradiction is None else contradiction
-        require_contradiction_mode(mode)
+        mode = self._contradiction if contradiction is None else self._contradiction_tier(contradiction)
         return mode, contradiction_caps(schema)
 
     async def _create_relation(self, contradiction: ContradictionMode | None, **fields: Any) -> Any:
@@ -298,6 +413,9 @@ class SelfGraph:
         @return (Relation): the created relation.
         """
         mode, caps = self._contradiction_for(contradiction, self._schema)
+        judged = mode == "llm"
+        if judged:
+            mode = "supersede"
         if self._schema_mode == "strict" and mode == "warn":
             mode = "strict"
         found: list[InsertWarning] = []
@@ -305,9 +423,12 @@ class SelfGraph:
         async def create(tx: Any) -> Any:
             found.clear()
             check = self._schema_check
-            return await _ops.create_relation(
+            rel = await _ops.create_relation(
                 tx, self.namespace, **fields, schema_check=check, contradiction=mode, caps=caps, warnings=found
             )
+            if judged and self._llm is not None:
+                found.extend(await judge_contradictions(tx, self.namespace, self._llm, [rel], caps))
+            return rel
 
         rel = await self._in_tx(create)
         log_schema_warnings(found)
@@ -322,10 +443,10 @@ class SelfGraph:
     ) -> Extractor:
         if self._extractor is not None:
             return self._extractor
-        if self._llm is None:
+        if self._extraction != "llm" or self._llm is None:
             from .extraction.basic import NERExtractor
 
-            return NERExtractor()
+            return NERExtractor(engine=self._extraction or "spacy")
         return LLMExtractor(
             self._llm,
             prompts=self._prompts,
@@ -351,6 +472,7 @@ class SelfGraph:
         resolver: EntityResolver | ResolverMode | None = None,
         contradiction: ContradictionMode | None = None,
         extracted: bool = False,
+        extraction: str | None = None,
     ) -> InsertResult:
         created_at = now()
         ns = self.namespace
@@ -359,8 +481,16 @@ class SelfGraph:
         mode = schema_mode if schema_mode is not None else self._schema_mode
         require_schema_mode(mode)
         require_schema_for_mode(mode, active_schema)
-        active_resolver = self._resolver if resolver is None else as_resolver(resolver, self._llm)
+        resolver_tier, active_resolver = (
+            (self._resolver_tier, self._resolver) if resolver is None else self._resolver_for(resolver)
+        )
         conflicts, caps = self._contradiction_for(contradiction, active_schema)
+        judged = conflicts == "llm"
+        if judged:
+            conflicts = "supersede"
+        used = {"resolution": resolver_tier, "contradiction": "llm" if judged else conflicts}
+        if extraction is not None:
+            used = {"extraction": extraction, **used}
 
         async def _apply(tx: Any) -> InsertResult:
             _ops._require_datetime("event_time", default_event_time)
@@ -413,6 +543,9 @@ class SelfGraph:
                 caps=caps,
                 warnings=found,
             )
+            if judged and self._llm is not None:
+                fresh = [r for r in relations if r.created_at == created_at]
+                found.extend(await judge_contradictions(tx, ns, self._llm, fresh, caps))
 
             preferences = [
                 await _ops.upsert_preference(tx, ns, pref, default_event_time=default_event_time, created_at=created_at)
@@ -470,6 +603,7 @@ class SelfGraph:
                     )
                 ],
                 merges=merges,
+                tiers=used,
             )
 
         return await self._in_tx(_apply)

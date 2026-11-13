@@ -18,7 +18,7 @@ from .models import (
     ParsedDocument,
     as_input,
 )
-from .resolution import EntityResolver, ResolverMode, as_resolver
+from .resolution import EntityResolver, ResolverMode
 from .schema import ContradictionMode, Schema, SchemaMode, as_schema, require_schema_for_mode
 
 if TYPE_CHECKING:
@@ -54,7 +54,7 @@ class Insert:
         contradiction: ContradictionMode | None = None,
     ) -> InsertResult:
         if resolver is not None:
-            as_resolver(resolver, self._c._llm)
+            self._c._resolver_for(resolver)
         if not isinstance(text, str):
             raise ValidationError(f"text must be a string, got {type(text).__name__}")
         if _unstorable(text):
@@ -97,6 +97,7 @@ class Insert:
             resolver=resolver,
             contradiction=contradiction,
             extracted=True,
+            extraction="llm" if isinstance(extractor, LLMExtractor) else getattr(extractor, "tier", "custom"),
         )
 
     async def facts(

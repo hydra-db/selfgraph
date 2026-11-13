@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from helpers import WORKS_AT_SPEC, FakeLLM, cli, fresh_graph, json_file, mcp_session, run, utc, works_at
 
@@ -127,7 +129,7 @@ def test_resolver_arguments_are_validated():
 
 
 def test_exact_mode_explicit_ids_and_per_call_resolver():
-    g = fresh_graph("res")
+    g = fresh_graph("res", resolver="exact")
     _seed(g, IBM_SEED, ROBERT)
     res = run(
         g.insert.facts({"entities": [{"type": "Company", "name": "Big Blue", "external_ids": {"ticker": "IBM"}}]})
@@ -390,6 +392,24 @@ def test_reinserting_the_same_merge_is_idempotent_and_counts_every_source():
     assert run(g.entities.get(ROBERT_ID)).aliases == ["Bob"]
 
 
+def test_a_merge_repeated_by_many_inserts_keeps_its_record_small_and_unmerges_every_relation():
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT)
+    sizes = []
+    for i in range(80):
+        place = {"type": "Place", "name": f"Place {i}"}
+        rel = {"from_entity": BOB_ID, "type": "VISITED", "to_entity": entity_id("Place", f"Place {i}")}
+        run(g.insert.facts({"entities": [BOB, place], "relations": [rel]}, source_id=f"s{i}"))
+        [node] = run(g.store.match_nodes(g.namespace, "EntityMerge"))
+        sizes.append(len(json.dumps(node, default=str)))
+    assert max(sizes) < 2000 and max(sizes) - min(sizes) < 10
+    [rec] = run(g.entities.merges(ROBERT_ID)).items
+    assert rec.source_ids == [f"s{i}" for i in range(80)] and len(rec.rewrites) == 80
+    restored = run(g.entities.unmerge(rec.id))
+    assert restored.entity.id == BOB_ID and len(restored.relations) == 80
+    assert {r.from_entity for r in run(g.relations.list(type="VISITED", limit=200)).items} == {BOB_ID}
+
+
 def test_deleting_either_side_drops_merge_records_so_a_later_merge_starts_fresh():
     g = fresh_graph("res", resolver="default")
     _seed(g, ROBERT)
@@ -401,6 +421,7 @@ def test_deleting_either_side_drops_merge_records_so_a_later_merge_starts_fresh(
     assert again.id == first.id and again.source_ids == ["s2"] and again.created_at > first.created_at
     run(g.entities.delete(ROBERT_ID))
     assert run(g.store.match_nodes(g.namespace, "EntityMerge")) == []
+    assert run(g.store.match_nodes(g.namespace, "EntityMergeEntry")) == []
     with pytest.raises(NotFoundError):
         run(g.entities.merges(ROBERT_ID))
 

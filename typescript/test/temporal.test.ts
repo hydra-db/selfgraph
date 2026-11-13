@@ -217,7 +217,7 @@ function suite(spec: StoreSpec): void {
     expect((await batch.relations.list()).items).toEqual([]);
     await expect(insert(batch, [annAt("acme")], "yes" as never)).rejects.toThrow(/contradiction must be one of/);
     expect(() => new SelfGraph(spec.make(), { contradiction: "newest" as never })).toThrow(
-      "contradiction must be one of off, warn, supersede, got 'newest'",
+      "contradiction must be one of off, warn, supersede, llm, got 'newest'",
     );
     const strict = await graph("warn", "strict");
     await strict.relations.create("person:ann", "WORKS_AT", "company:acme");

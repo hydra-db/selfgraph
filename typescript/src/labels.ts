@@ -11,6 +11,7 @@ export const L_SOURCE_VERSION = "SourceVersion";
 export const L_CHUNK = "Chunk";
 export const L_EVIDENCE = "Evidence";
 export const L_MERGE = "EntityMerge";
+export const L_MERGE_ENTRY = "EntityMergeEntry";
 
 export const R_HAS_PROFILE = "HAS_PROFILE";
 export const R_PREFERS = "PREFERS";
@@ -34,6 +35,7 @@ export const LABELS: readonly string[] = [
   L_CHUNK,
   L_EVIDENCE,
   L_MERGE,
+  L_MERGE_ENTRY,
 ];
 
 export const EDGE_TYPES: ReadonlySet<string> = new Set([

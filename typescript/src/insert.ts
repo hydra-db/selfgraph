@@ -1,4 +1,5 @@
 import type { GraphAccess } from "./access.js";
+import { judgeContradictions } from "./contradiction.js";
 import { ExtractionError, errorMessage, SelfGraphError, ValidationError } from "./errors.js";
 import { NERExtractor } from "./extraction/basic.js";
 import { LLMExtractor } from "./extraction/extractor.js";
@@ -23,11 +24,11 @@ import * as ops from "./ops.js";
 import type { Extractor, LLMClient } from "./protocols.js";
 import { recordSource } from "./provenance.js";
 import {
-  asResolver,
   type EntityResolver,
   mergeWarnings,
   planResolution,
   type ResolverMode,
+  resolverFor,
   saveMerges,
 } from "./resolution.js";
 import {
@@ -99,6 +100,8 @@ export interface ExtractionSetup {
   prompts: ExtractionPrompts | null;
   extractor: Extractor | null;
   resolver: EntityResolver | null;
+  resolver_tier: string;
+  extraction: string | null;
 }
 
 interface Provenance {
@@ -117,7 +120,7 @@ export class Insert {
   ) {}
 
   /**
-   * Choose the extractor for one insert: custom, then LLM, then the LLM-free fallback.
+   * Choose the extractor for one insert: custom, then LLM when the extraction tier is llm, then the LLM-free fallback.
    *
    * @param callInstructions (ExtractionInstructions | null): per-call extraction instructions.
    * @param callPrompts (ExtractionPrompts | null): per-call prompt overrides.
@@ -131,9 +134,9 @@ export class Insert {
     schema: ParsedSchema | null,
     sourceId: string | null,
   ): Extractor {
-    const { extractor, llm, prompts, instructions } = this.setup;
+    const { extractor, llm, prompts, instructions, extraction } = this.setup;
     if (extractor !== null) return extractor;
-    if (llm === null) return new NERExtractor();
+    if (extraction !== "llm" || llm === null) return new NERExtractor();
     return new LLMExtractor(llm, {
       prompts,
       instructions,
@@ -154,6 +157,7 @@ export class Insert {
    * @param resolver (EntityResolver | ResolverMode | null): the per-call entity resolver, or null for the graph's.
    * @param contradiction (ContradictionMode | null): the per-call contradiction mode, or null for the graph's.
    * @param extracted (boolean): the facts came from extraction, so strict mode drops what is off schema instead of throwing.
+   * @param extraction (string | null): the extraction tier that ran, named in the result's tiers, or null when nothing was extracted.
    * @return (InsertResult): the insert result.
    */
   private async apply(
@@ -164,14 +168,22 @@ export class Insert {
     resolver: EntityResolver | ResolverMode | null,
     contradiction: ContradictionMode | null,
     extracted = false,
+    extraction: string | null = null,
   ): Promise<InsertResult> {
     const createdAt = new Date();
     const activeSchema = schema ?? this.graph.schema;
     const mode = schemaMode ?? this.graph.schemaMode;
     requireSchemaMode(mode);
     requireSchemaForMode(mode, activeSchema);
-    const { contradiction: conflicts, caps } = this.graph.contradictionFor(contradiction, activeSchema);
-    const activeResolver = resolver === null ? this.setup.resolver : asResolver(resolver, this.setup.llm);
+    const { llm, max_tier: maxTier } = this.graph.tiers;
+    const [resolverTier, activeResolver] =
+      resolver === null ? [this.setup.resolver_tier, this.setup.resolver] : resolverFor(resolver, llm, maxTier);
+    const { contradiction: conflicts, caps, judged } = this.graph.contradictionFor(contradiction, activeSchema);
+    const used: Record<string, string> = {
+      ...(extraction !== null && { extraction }),
+      resolution: resolverTier,
+      contradiction: judged ? "llm" : conflicts,
+    };
     return this.graph.write(async (tx, ns) => {
       let canonical = await ops.validateFacts(tx, ns, facts, (o) => canonicalizeTypes(o, activeSchema));
       let dropped: InsertWarning[] = [];
@@ -208,6 +220,10 @@ export class Insert {
         createdAt,
         { contradiction: conflicts, caps, warnings: found },
       );
+      if (judged && llm !== null) {
+        const fresh = relations.filter((r) => r.created_at.getTime() === createdAt.getTime());
+        found.push(...(await judgeContradictions(tx, ns, llm, fresh, caps)));
+      }
 
       const preferences: Preference[] = [];
       for (const pref of resolved.preferences) {
@@ -251,6 +267,7 @@ export class Insert {
           ...found,
         ].map((w) => (w.source_id == null ? { ...w, source_id: source.source_id } : w)),
         merges,
+        tiers: used,
       };
     });
   }
@@ -281,7 +298,7 @@ export class Insert {
     }
     requireOptionalText("source_id", options.source_id);
     requireJsonMapping("metadata", options.metadata);
-    if (options.resolver != null) asResolver(options.resolver, this.setup.llm);
+    if (options.resolver != null) resolverFor(options.resolver, this.graph.tiers.llm, this.graph.tiers.max_tier);
     const eventTime = parseTime(options.event_time, "event_time");
     if (!pyStrip(text)) throw new ValidationError("text cannot be empty or whitespace");
     const activeSchema = asSchema(options.schema);
@@ -317,6 +334,7 @@ export class Insert {
       options.resolver ?? null,
       options.contradiction ?? null,
       true,
+      extractor instanceof LLMExtractor ? "llm" : (extractor.tier ?? "custom"),
     );
   }
 

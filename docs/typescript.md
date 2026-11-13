@@ -64,6 +64,8 @@ unchanged.
 | `async with SelfGraph(...) as graph` | `await using graph = new SelfGraph(...)` |
 | `entity_id(type, name)` | `entityId(type, name)` (also `relationId`, `preferenceId`, `decisionId`, `profileId`, `normalizeRelType`; other helpers under `ids`) |
 | `Schema.from_neo4j_ontology(data)`, `schema.to_neo4j_ontology()` | `fromNeo4jOntology(data)`, `toNeo4jOntology(schema)` |
+| `Schema.from_tables(tables, name="sales")` | `fromTables(tables, { name: "sales" })` |
+| `SelfGraph(store, level="light", max_tier="balanced", embedder=e)`, `graph.tiers` | `new SelfGraph(store, { level: "light", max_tier: "balanced", embedder: e })`, `graph.tiers` |
 
 `await using` needs TypeScript 5.2+ or Node 24+. In plain JavaScript on Node 20
 to 22, call `await graph.close()` in a `finally` block.
@@ -97,6 +99,8 @@ Python:
 **Extraction.**
 
 - There is no spaCy path. Without an LLM, `insert.text` uses the regex fallback.
+  `extraction: "spacy"` is accepted and runs as `"regex"`, and `graph.tiers.extraction`
+  reads `"regex"` wherever Python reads `"spacy"` (the balanced level, for one).
 - Token counting uses js-tiktoken once `loadTokenizer()` has loaded it. It
   returns `{ countTokens, chunkText }`. `setTokenizer(encoder)` uses your encoder,
   or `null` for the character estimate.
@@ -126,7 +130,7 @@ Python:
 
 `npx @hydradb/selfgraph` (installed: `selfgraph`) takes the same flags, commands,
 and `SELFGRAPH_*` variables as the Python [CLI](cli.md), and prints the same
-JSON. `npx @hydradb/selfgraph mcp` serves the same 34 [MCP](mcp.md) tools.
+JSON. `npx @hydradb/selfgraph mcp` serves the same 35 [MCP](mcp.md) tools.
 
 ## Known issues
 

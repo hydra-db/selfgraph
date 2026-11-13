@@ -71,6 +71,7 @@ export {
   Stance,
   Status,
   type Subgraph,
+  type TermMatch,
   type UnmergeResult,
 } from "./models.js";
 export { fromNeo4jOntology, toNeo4jOntology } from "./neo4jSchema.js";
@@ -78,6 +79,7 @@ export { dumps, toJsonable } from "./output.js";
 export type {
   EdgeRow,
   EdgeWrite,
+  Embedder,
   Extractor,
   GraphPrimitives,
   GraphStore,
@@ -118,6 +120,7 @@ export type { RetrieveOptions, Strategy } from "./retrieval.js";
 export { DEFAULT_SETTINGS, type GraphSettings, STORES, settingsFromEnv, version } from "./runtime.js";
 export {
   type ContradictionMode,
+  Definition,
   EntityType,
   type ParsedSchema,
   PropertySpec,
@@ -126,9 +129,12 @@ export {
   RelationType,
   Schema,
   type SchemaMode,
+  TermMapping,
 } from "./schema.js";
 export { CypherStore, type CypherStoreOptions, Neo4jStore } from "./stores/cypher.js";
 export { CypherPrimitives } from "./stores/cypherPrimitives.js";
 export { type FalkorDBSocketOptions, FalkorDBStore, type FalkorDBStoreOptions } from "./stores/falkordb.js";
 export { HydraDBStore, type HydraDBStoreOptions } from "./stores/hydradb.js";
 export { KuzuStore, type KuzuStoreOptions } from "./stores/kuzu.js";
+export { type FromTablesOptions, fromTables } from "./tables.js";
+export type { ExtractionTier, Level, SeedTier } from "./tiers.js";

@@ -134,6 +134,17 @@ class SyncSelfGraph:
     def retrieve(self, *args: Any, **kwargs: Any):
         return self._run(self._async.retrieve(*args, **kwargs))
 
+    def coverage(self, *args: Any, **kwargs: Any):
+        return self._run(self._async.coverage(*args, **kwargs))
+
+    @property
+    def tiers(self) -> dict[str, str]:
+        """The level and the tier each capability runs at by default.
+
+        @return (dict[str, str]): the level, the cap, and each capability's default tier.
+        """
+        return self._async.tiers
+
     def __enter__(self) -> SyncSelfGraph:
         """Initialize the store and return the graph for use in a with block.
 

@@ -1,21 +1,22 @@
-import { GraphAccess } from "./access.js";
-import { ValidationError } from "./errors.js";
+import { contradictionTier, GraphAccess, seedTier } from "./access.js";
+import { LLM_HINT, ValidationError } from "./errors.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { Insert } from "./insert.js";
 import { pyStrip } from "./internal/py.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
 import {
   asInput,
+  type Coverage,
   type CypherResult,
   ExtractionInstructions,
   ExtractionPrompts,
   type JsonValue,
   type RetrievalResult,
 } from "./models.js";
-import type { Extractor, GraphStore } from "./protocols.js";
-import { asResolver, type EntityResolver, type ResolverMode } from "./resolution.js";
+import type { Embedder, Extractor, GraphStore } from "./protocols.js";
+import { type EntityResolver, type ResolverMode, resolverFor } from "./resolution.js";
 import { Decisions, Entities, Maintenance, Preferences, Relations } from "./resources/index.js";
-import { type RetrieveOptions, retrieve } from "./retrieval.js";
+import { coverage, type RetrieveOptions, retrieve } from "./retrieval.js";
 import {
   buildLlm,
   buildStore,
@@ -29,12 +30,12 @@ import {
   asSchema,
   type ContradictionMode,
   type ParsedSchema,
-  requireContradictionMode,
   requireSchemaForMode,
   requireSchemaMode,
   type Schema,
   type SchemaMode,
 } from "./schema.js";
+import { clamp, type ExtractionTier, type Level, PRESETS, requireLevel, requireTier, type SeedTier } from "./tiers.js";
 import { checkOptions, keysOf, requireJsonMapping, requireNamespace, typeName } from "./validate.js";
 
 export interface SelfGraphOptions {
@@ -45,8 +46,13 @@ export interface SelfGraphOptions {
   namespace?: string;
   schema?: Schema | ParsedSchema | null;
   schema_mode?: SchemaMode;
-  resolver?: EntityResolver | ResolverMode;
-  contradiction?: ContradictionMode;
+  resolver?: EntityResolver | ResolverMode | null;
+  contradiction?: ContradictionMode | null;
+  level?: Level;
+  max_tier?: Level;
+  extraction?: ExtractionTier | null;
+  seeds?: SeedTier | null;
+  embedder?: Embedder | null;
 }
 
 const OPTION_KEYS = keysOf<SelfGraphOptions>({
@@ -59,6 +65,11 @@ const OPTION_KEYS = keysOf<SelfGraphOptions>({
   schema_mode: true,
   resolver: true,
   contradiction: true,
+  level: true,
+  max_tier: true,
+  extraction: true,
+  seeds: true,
+  embedder: true,
 });
 
 const asyncDispose: typeof Symbol.asyncDispose =
@@ -76,12 +87,15 @@ export class SelfGraph {
   readonly insert: Insert;
   readonly schema: ParsedSchema | null;
   private readonly graph: GraphAccess;
+  private readonly level: Level;
+  private readonly extraction: string | null;
+  private readonly resolution: string;
 
   /**
    * A knowledge graph over any GraphStore, initialized lazily on first use.
    *
    * @param store (GraphStore): the graph store.
-   * @param options (SelfGraphOptions): the LLM, extraction instructions and prompts, a custom extractor, the namespace, an optional schema, the schema mode, the entity resolver, and the contradiction mode.
+   * @param options (SelfGraphOptions): the LLM, extraction instructions and prompts, a custom extractor, the namespace, an optional schema, the schema mode, the level that sets every capability's default tier, the max_tier cost cap, per-capability overrides (resolver, contradiction, extraction, seeds), and an embedder for embedding seeds.
    */
   constructor(store: GraphStore, options: SelfGraphOptions = {}) {
     checkOptions("SelfGraph", options, OPTION_KEYS);
@@ -89,28 +103,77 @@ export class SelfGraph {
     requireNamespace(namespace);
     const schemaMode = options.schema_mode ?? "warn";
     requireSchemaMode(schemaMode);
-    const contradiction = options.contradiction ?? "warn";
-    requireContradictionMode(contradiction);
+    const level = options.level ?? "balanced";
+    const maxTier = options.max_tier ?? "max";
+    requireLevel("level", level);
+    requireLevel("max_tier", maxTier);
+    const llm = resolveLlm(options.llm);
+    if (level === "max" && maxTier === "max" && llm === null)
+      throw new ValidationError(`level 'max' needs an LLM: ${LLM_HINT}`);
+    const embedder = options.embedder ?? null;
+    if (embedder !== null && typeof (embedder as { embed?: unknown }).embed !== "function") {
+      throw new ValidationError(`embedder must have an embed method, got ${typeName(embedder)}`);
+    }
+    const preset = PRESETS[level];
+    const extractor = options.extractor ?? null;
+    let extraction: string | null = options.extraction ?? null;
+    if (extraction !== null) requireTier("extraction", extraction);
+    else if (extractor === null) extraction = llm !== null ? "llm" : preset.extraction;
+    if (extraction !== null) extraction = clamp("extraction", extraction, maxTier);
+    if (extraction === "llm" && llm === null) throw new ValidationError(`extraction 'llm' needs an LLM: ${LLM_HINT}`);
+    this.extraction = extraction === "spacy" ? "regex" : extraction;
+    const seeds = options.seeds ?? (embedder !== null || preset.seeds !== "embeddings" ? preset.seeds : "synonyms");
+    const seeding = seedTier(seeds, embedder, maxTier);
+    const [resolution, resolver] = resolverFor(options.resolver ?? (preset.resolution as ResolverMode), llm, maxTier);
+    const contradiction = contradictionTier(options.contradiction ?? preset.contradiction, llm, maxTier);
+    const instructions = asInput(ExtractionInstructions, options.instructions, "instructions");
+    const prompts = asInput(ExtractionPrompts, options.prompts, "prompts");
+    checkPrompts(prompts);
+    this.level = level;
+    this.resolution = resolution;
     this.store = store;
     this.namespace = namespace;
     this.schema = asSchema(options.schema);
     requireSchemaForMode(schemaMode, this.schema);
-    this.graph = new GraphAccess(store, namespace, this.schema, schemaMode, contradiction);
+    this.graph = new GraphAccess(store, namespace, this.schema, schemaMode, contradiction, {
+      llm,
+      max_tier: maxTier,
+      seeds: seeding,
+      strategy: preset.traversal,
+      embedder,
+      embeddings: new Map(),
+    });
     this.entities = new Entities(this.graph);
     this.relations = new Relations(this.graph);
     this.preferences = new Preferences(this.graph);
     this.decisions = new Decisions(this.graph);
     this.maintenance = new Maintenance(this.graph);
-    const llm = resolveLlm(options.llm);
-    const prompts = asInput(ExtractionPrompts, options.prompts, "prompts");
-    checkPrompts(prompts);
     this.insert = new Insert(this.graph, {
       llm,
-      resolver: asResolver(options.resolver ?? "exact", llm),
-      instructions: asInput(ExtractionInstructions, options.instructions, "instructions"),
+      resolver,
+      resolver_tier: resolution,
+      extraction: this.extraction,
+      instructions,
       prompts,
-      extractor: options.extractor ?? null,
+      extractor,
     });
+  }
+
+  /**
+   * The level and the tier each capability runs at by default, after the max_tier cap.
+   *
+   * @return (Record<string, string>): the level, the cap, and each capability's default tier.
+   */
+  get tiers(): Record<string, string> {
+    return {
+      level: this.level,
+      max_tier: this.graph.tiers.max_tier,
+      extraction: this.extraction ?? "custom",
+      resolution: this.resolution,
+      contradiction: this.graph.contradiction,
+      seeds: this.graph.tiers.seeds,
+      traversal: this.graph.tiers.strategy,
+    };
   }
 
   /**
@@ -170,11 +233,23 @@ export class SelfGraph {
    * Retrieve graph context for a query via keyword seeds and bounded traversal.
    *
    * @param query (string): the natural-language query to seed from.
-   * @param options (RetrieveOptions): strategy ("bfs", "dfs", or "ppr"), depth, k, max_nodes, budget_tokens, and as_of (read on the valid-time axis: relations and preferences valid then, with their entities).
+   * @param options (RetrieveOptions): strategy ("bfs", "dfs", or "ppr"; the level's by default), seeds ("bm25", "synonyms" to also expand schema synonyms, or "embeddings" to fuse embedder similarity with BM25; the graph's tier by default), depth, k, max_nodes, budget_tokens, and as_of (read on the valid-time axis: relations and preferences valid then, with their entities).
    * @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
    */
   async retrieve(query: string, options: RetrieveOptions = {}): Promise<RetrievalResult> {
     return retrieve(this.graph, query, options);
+  }
+
+  /**
+   * Report which words of a question the graph can ground, without an LLM.
+   *
+   * A content word is covered when a schema term names it (an entity type, relation type, or definition, by name, alias, or synonym) or when a stored entity's text holds it. Uncovered words mark what the graph cannot answer about.
+   *
+   * @param question (string): the natural-language question.
+   * @return (Coverage): the matched terms, the covered and uncovered words, and the covered share.
+   */
+  async coverage(question: string): Promise<Coverage> {
+    return coverage(this.graph, question);
   }
 }
 
@@ -194,7 +269,9 @@ export function buildGraph(value: GraphSettings): SelfGraph {
     namespace,
     schema: settings.schema as ParsedSchema | null,
     schema_mode: (settings.schema_mode || "warn") as SchemaMode,
-    resolver: (settings.resolver || "exact") as ResolverMode,
-    contradiction: (settings.contradiction || "warn") as ContradictionMode,
+    resolver: (settings.resolver || null) as ResolverMode | null,
+    contradiction: (settings.contradiction || null) as ContradictionMode | null,
+    level: (settings.level || "balanced") as Level,
+    max_tier: (settings.max_tier || "max") as Level,
   });
 }

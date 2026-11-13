@@ -1,8 +1,58 @@
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
-import { FalkorDBStore, ids, KuzuStore, type SelfGraph, toJsonable } from "../../src/index.js";
+import { FalkorDBStore, fromTables, ids, KuzuStore, SelfGraph, toJsonable } from "../../src/index.js";
+import { comparePy } from "../../src/internal/py.js";
 import { Extraction, parseOrThrow } from "../../src/models.js";
+import { tokens } from "../../src/retrieval.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
+import { expandTokens, matchTerms } from "../../src/terms.js";
 import { STORE_SPECS } from "../helpers.js";
+
+const TERMS_SPEC = {
+  entities: [
+    {
+      name: "Company",
+      synonyms: ["employer", "firm"],
+      certified: true,
+      definitions: [{ name: "headcount", expression: "count(Person)", synonyms: ["staff size"] }],
+    },
+    { name: "Person", aliases: ["user"], synonyms: ["staff member"] },
+    { name: "InvoiceLine", mappings: [{ table: "sales.invoice_lines", column: "id" }] },
+  ],
+  relations: [{ type: "WORKS_AT", synonyms: ["employed by"], certified: true }],
+};
+const TERM_QUESTIONS = [
+  "What is the staff size of the firm Acme by ad spend?",
+  "users employed by employers",
+  "which employers hired staff members named Hopper",
+  "total for invoice lines and Works At",
+  "Zoë ÅNGSTRÖM",
+];
+const TABLES = [
+  {
+    name: "sales.invoice_lines",
+    description: "one line of an invoice",
+    columns: [
+      { name: "invoice_id", type: "bigint", references: "sales.invoices" },
+      { name: "soldByCustomerId", references: "Customers" },
+      { name: "extended_price", type: "numeric(18,2)", nullable: false, description: "net" },
+      { name: "note", type: "varchar", nullable: true },
+      { name: "is_void", type: "BOOLEAN" },
+      { name: "payload", type: "jsonb" },
+      { name: "qty", type: "smallint" },
+      { name: "untyped" },
+    ],
+  },
+  {
+    name: "sales.invoices",
+    columns: [
+      { name: "invoice_date", type: "date" },
+      { name: "id", type: "uuid" },
+    ],
+  },
+  { name: "Customers", columns: [{ name: "parent_id", references: "Customers" }] },
+  { name: "order_statuses" },
+  { name: "Companies", columns: [{ name: "customer_id", references: "Customers" }] },
+];
 
 const SCHEMA_SPEC = {
   name: "conformance",
@@ -102,12 +152,15 @@ function unknownKeyError(kind: "facts" | "schema", value: unknown): string {
 /**
  * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
  *
- * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[] }): one list per case, and one message per unknown-key case.
+ * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; terms: unknown[] }): one list per case, one message per unknown-key case, the schema drafted from tables, and the matched terms and expanded tokens per question.
  */
 export function schemaWarnings(): {
   warnings: Array<Array<{ code: string; message: string }>>;
   unknown_keys: string[];
+  tables: unknown;
+  terms: unknown[];
 } {
+  const terms = Schema.parse(TERMS_SPEC);
   const schema = Schema.parse(SCHEMA_SPEC);
   return {
     warnings: SCHEMA_CASES.map((c) =>
@@ -117,6 +170,11 @@ export function schemaWarnings(): {
       })),
     ),
     unknown_keys: UNKNOWN_KEY_CASES.map(([kind, value]) => unknownKeyError(kind, value)),
+    tables: toJsonable(fromTables(TABLES, { name: "sales" })),
+    terms: TERM_QUESTIONS.map((q) => ({
+      matches: toJsonable(matchTerms(tokens(q), terms, tokens)),
+      expanded: [...expandTokens(tokens(q), terms, tokens)].sort(comparePy),
+    })),
   };
 }
 
@@ -297,7 +355,18 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     const r = await graph.retrieve("Grace Hopper COBOL Jane acme", { strategy: walk, k: 1, depth: 4, max_nodes: 3 });
     tight[walk] = { entities: r.subgraph.entities.map((e) => e.id), relations: r.subgraph.relations.map((x) => x.id) };
   }
+  const termed = new SelfGraph(store, { namespace: ns, schema: TERMS_SPEC, extraction: "regex" });
+  const coverage = [];
+  for (const q of TERM_QUESTIONS) coverage.push(await termed.coverage(q));
+  const seeded: Record<string, unknown> = {};
+  for (const tier of ["bm25", "synonyms"] as const) {
+    const r = await termed.retrieve("which employers hired staff members named Hopper", { seeds: tier, depth: 0 });
+    seeded[tier] = { seeds: r.seeds, tiers: r.tiers };
+  }
   return toJsonable({
+    coverage,
+    retrieval_seeded: seeded,
+    tiers: termed.tiers,
     entities,
     relations,
     preferences,

@@ -27,14 +27,15 @@ from ._serde import (
 from .errors import ValidationError
 from .extraction.chunking import count_tokens
 from .ids import normalize_text, profile_id
-from .models import Entity, Preference, Relation, RetrievalResult, RetrievalSeed, Subgraph
+from .models import Coverage, Entity, Preference, Relation, RetrievalResult, RetrievalSeed, Subgraph
+from .terms import expand_tokens, match_terms, stem
 
 _log = logging.getLogger("selfgraph")
 
 if TYPE_CHECKING:
     from .client import SelfGraph
 
-__all__ = ["retrieve"]
+__all__ = ["coverage", "retrieve"]
 
 _STOPWORDS = frozenset(
     {
@@ -96,6 +97,9 @@ _POOL_FACTOR = 4
 _PPR_DAMPING = 0.5
 _PPR_MAX_ITERATIONS = 50
 _PPR_TOLERANCE = 1e-6
+_EMBED_BATCH = 64
+_EMBED_CACHE = 50_000
+_RRF_K = 60
 
 
 def _fold(text: str) -> str:
@@ -274,19 +278,10 @@ async def _scan_seeds(
     @param valid (list[Preference] | None): the preference versions valid at as_of.
     @return (list[tuple[Entity, float]]): seed entities with their scores, best first.
     """
-    fetch = partial(_ops.list_entities, graph.store, ns, type=None, name=None, skip=0)
-
-    async def pages():
-        async for page in _ops._keyset(lambda after, limit: fetch(limit=limit, after=after), page=_SEED_PAGE):
-            if as_of is not None:
-                visible = await _visible_at(graph, ns, page, as_of, valid or [])
-                page = [e for e in page if e.id in visible]
-            yield page
-
     stats = None
     pages_read = 0
     first: list[Entity] = []
-    async for page in pages():
+    async for page in _entity_pages(graph, ns, as_of, valid):
         stats = _corpus_stats(query_tokens, (list(_tokens(_entity_text(e))) for e in page), stats)
         pages_read += 1
         first = page if pages_read == 1 else []
@@ -295,13 +290,94 @@ async def _scan_seeds(
         if pages_read == 1:
             yield first
         else:
-            async for page in pages():
+            async for page in _entity_pages(graph, ns, as_of, valid):
                 yield page
 
     best: list[tuple[Entity, float]] = []
     async for page in scored():
         best = heapq.nsmallest(k, [*best, *_seed_scores(page, query_tokens, exact, stats)], key=_seed_rank)
     return best
+
+
+async def _entity_pages(graph: SelfGraph, ns: str, as_of: datetime | None, valid: list[Preference] | None):
+    """Stream every entity in id-ordered pages, keeping only those visible at as_of when it is set.
+
+    @param graph (SelfGraph): the open graph.
+    @param ns (str): the namespace to read.
+    @param as_of (datetime | None): keep only the entities visible at this time, or None for all.
+    @param valid (list[Preference] | None): the preference versions valid at as_of.
+    @return (AsyncIterator[list[Entity]]): the pages.
+    """
+    fetch = partial(_ops.list_entities, graph.store, ns, type=None, name=None, skip=0)
+    async for page in _ops._keyset(lambda after, limit: fetch(limit=limit, after=after), page=_SEED_PAGE):
+        if as_of is not None:
+            visible = await _visible_at(graph, ns, page, as_of, valid or [])
+            page = [e for e in page if e.id in visible]
+        yield page
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """The cosine similarity of two vectors, 0 when either has no length.
+
+    @param a (list[float]): one vector.
+    @param b (list[float]): the other vector.
+    @return (float): the similarity.
+    """
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return sum(x * y for x, y in zip(a, b, strict=False)) / norm if norm else 0.0
+
+
+async def _embedding_seeds(
+    graph: SelfGraph, ns: str, query: str, k: int, as_of: datetime | None, valid: list[Preference] | None
+) -> list[tuple[Entity, float]]:
+    """Rank every entity by the embedder's similarity between its text and the query, best first.
+
+    An entity's vector is kept in memory on the graph and reused while its text is unchanged, so each entity is
+    embedded once per process.
+
+    @param graph (SelfGraph): the open graph, with an embedder.
+    @param ns (str): the namespace to read.
+    @param query (str): the query text.
+    @param k (int): the maximum number of seeds to keep.
+    @param as_of (datetime | None): score only the entities visible at this time, or None for all.
+    @param valid (list[Preference] | None): the preference versions valid at as_of.
+    @return (list[tuple[Entity, float]]): the entities with a positive similarity, with it.
+    """
+    embedder, cache = graph._embedder, graph._embeddings
+    (target,) = await embedder.embed([query])
+    best: list[tuple[Entity, float]] = []
+    async for page in _entity_pages(graph, ns, as_of, valid):
+        texts = {e.id: _entity_text(e) for e in page}
+        found = {e.id: cache[(ns, e.id)][1] for e in page if cache.get((ns, e.id), ("", []))[0] == texts[e.id]}
+        stale = [e.id for e in page if e.id not in found]
+        for start in range(0, len(stale), _EMBED_BATCH):
+            chunk = stale[start : start + _EMBED_BATCH]
+            vectors = await embedder.embed([texts[eid] for eid in chunk])
+            if len(vectors) != len(chunk):
+                raise ValidationError(f"embedder returned {len(vectors)} vectors for {len(chunk)} texts")
+            found.update((eid, list(vector)) for eid, vector in zip(chunk, vectors, strict=True))
+        if len(cache) + len(stale) > _EMBED_CACHE:
+            cache.clear()
+        cache.update(((ns, eid), (texts[eid], found[eid])) for eid in stale)
+        scored = [(e, _cosine(target, found[e.id])) for e in page]
+        best = heapq.nsmallest(k, [*best, *((e, s) for e, s in scored if s > 0)], key=_seed_rank)
+    return best
+
+
+def _fuse(rankings: list[list[tuple[Entity, float]]], k: int) -> list[tuple[Entity, float]]:
+    """Merge seed rankings by reciprocal rank fusion, so an entity high in either list ranks high.
+
+    @param rankings (list[list[tuple[Entity, float]]]): the rankings, each best first.
+    @param k (int): the maximum number of seeds to keep.
+    @return (list[tuple[Entity, float]]): the fused seeds with their fused scores, best first.
+    """
+    entities: dict[str, Entity] = {}
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, (entity, _) in enumerate(ranking):
+            entities[entity.id] = entity
+            scores[entity.id] = scores.get(entity.id, 0.0) + 1.0 / (_RRF_K + rank + 1)
+    return heapq.nsmallest(k, ((entities[eid], score) for eid, score in scores.items()), key=_seed_rank)
 
 
 async def _traverse(
@@ -750,8 +826,13 @@ async def retrieve(
     max_nodes: int = 200,
     budget_tokens: int = 3000,
     as_of: datetime | None = None,
+    seeds: str = "bm25",
 ) -> RetrievalResult:
     """Retrieve graph context for a query via keyword seeds and bounded traversal.
+
+    Seeding climbs a ladder: "bm25" scores entities lexically; "synonyms" first adds the name of each schema
+    entity type the query names by alias or synonym; "embeddings" also ranks entities by the graph embedder and
+    fuses the two rankings.
 
     With as_of, the graph is read on the valid-time axis: each relation and preference at its version valid then
     (see version_as_of), and an entity when it was stored by then or is an endpoint, subject, value, or about
@@ -766,6 +847,7 @@ async def retrieve(
     @param max_nodes (int): the maximum number of entities to collect.
     @param budget_tokens (int): the assembled-context token budget.
     @param as_of (datetime | None): the point in time to read the graph at (naive means UTC), or None for now.
+    @param seeds (str): the seeding tier: "bm25", "synonyms", or "embeddings".
     @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
     """
     strategy = strategy.lower()
@@ -782,8 +864,17 @@ async def retrieve(
 
     ns = graph.namespace
     query_tokens, exact = _tokens(query), _short_tokens(query)
+    seed_tokens = query_tokens
+    seed_tier = "bm25"
+    if seeds != "bm25" and graph.schema is not None:
+        seed_tokens = expand_tokens(query_tokens, graph.schema, _tokens)
+        seed_tier = "synonyms"
     valid = None if as_of is None else await _ops.preferences_as_of(graph.store, ns, as_of)
-    seeds_scored = await _scan_seeds(graph, ns, query_tokens, k, exact, as_of, valid) if query_tokens or exact else []
+    seeds_scored = await _scan_seeds(graph, ns, seed_tokens, k, exact, as_of, valid) if seed_tokens or exact else []
+    if seeds == "embeddings" and graph._embedder is not None:
+        semantic = await _embedding_seeds(graph, ns, query, k, as_of, valid)
+        seeds_scored = _fuse([seeds_scored, semantic], k)
+        seed_tier = "embeddings"
     seed_ids = [e.id for e, _ in seeds_scored]
     known = {e.id: e for e, _ in seeds_scored}
 
@@ -837,4 +928,36 @@ async def retrieve(
         seeds=[RetrievalSeed(id=e.id, score=s) for e, s in seeds_scored],
         subgraph=Subgraph(entities=entities, relations=relations, preferences=preferences, decisions=decisions),
         context=context,
+        tiers={"seeds": seed_tier, "traversal": strategy},
+    )
+
+
+async def coverage(graph: SelfGraph, question: str) -> Coverage:
+    """Report which content words of a question a schema term or a stored entity grounds.
+
+    Words compare ignoring case and a plain plural ending. The scan over entities stops once every word is
+    covered.
+
+    @param graph (SelfGraph): the open graph to read.
+    @param question (str): the natural-language question.
+    @return (Coverage): the matched terms, the covered and uncovered words in sorted order, and the covered share.
+    """
+    tokens = _tokens(question)
+    terms = match_terms(tokens, graph.schema, _tokens)
+    covered = {t for term in terms for t in term.tokens}
+    stems: dict[str, set[str]] = {}
+    for token in tokens - covered:
+        stems.setdefault(stem(token), set()).add(token)
+    async for page in _entity_pages(graph, graph.namespace, None, None):
+        if not stems:
+            break
+        for entity in page:
+            for word in {stem(t) for t in _tokens(_entity_text(entity))} & stems.keys():
+                covered |= stems.pop(word)
+    return Coverage(
+        question=question,
+        terms=terms,
+        covered=sorted(covered),
+        uncovered=sorted(tokens - covered),
+        ratio=len(covered) / len(tokens) if tokens else 0.0,
     )

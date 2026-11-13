@@ -6,7 +6,7 @@ import * as ids from "./ids.js";
 import { dumps, loads } from "./internal/json.js";
 import { comparePy, cpLen, deepEqual, pyFloatRepr, pyRepr, pyStrip } from "./internal/py.js";
 import { fromIso, jsonIso, toIso } from "./internal/time.js";
-import { L_ENTITY, L_EVIDENCE, L_MERGE, L_TRACE } from "./labels.js";
+import { L_ENTITY, L_EVIDENCE, L_MERGE, L_MERGE_ENTRY, L_TRACE } from "./labels.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
 import {
   type DecisionTrace,
@@ -36,6 +36,7 @@ import type { GraphPrimitives, LLMClient, Props } from "./protocols.js";
 import { fold, tokens } from "./retrieval.js";
 import { entityIndex, lineage, type ParsedSchema, requireMode } from "./schema.js";
 import { decodeEntity, decodeEvidence } from "./serde.js";
+import { clamp, type Level } from "./tiers.js";
 import { checkOptions, requireInt, requireStr, typeName } from "./validate.js";
 
 type Runner = GraphPrimitives;
@@ -215,9 +216,32 @@ const candidateId = (candidate: ParsedEntityInput): string =>
  * @return (boolean): true on a folded match.
  */
 function surfaceMatch(candidate: ParsedEntityInput, ent: Entity): boolean {
-  const forms = new Set([ent.name, ...ent.aliases].map(folded));
-  return [candidate.name, ...candidate.aliases].some((f) => forms.has(folded(f)));
+  const forms = formsOf(ent.name, ent.aliases);
+  return [...formsOf(candidate.name, candidate.aliases)].some((f) => forms.has(f));
 }
+
+const FORMS_CACHE_LIMIT = 1 << 16;
+const formsCache = new Map<string, ReadonlySet<string>>();
+
+/**
+ * The folded name and aliases of an entity, cached since resolution compares each one against many.
+ *
+ * @param name (string): the name.
+ * @param aliases (readonly string[]): the aliases.
+ * @return (ReadonlySet<string>): the stripped, folded forms.
+ */
+function formsOf(name: string, aliases: readonly string[]): ReadonlySet<string> {
+  const key = [name, ...aliases].join("\u0000");
+  let forms = formsCache.get(key);
+  if (forms === undefined) {
+    if (formsCache.size >= FORMS_CACHE_LIMIT) formsCache.clear();
+    forms = new Set([name, ...aliases].map(folded));
+    formsCache.set(key, forms);
+  }
+  return forms;
+}
+
+const overlaps = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => [...a].some((f) => b.has(f));
 
 const noMatch = (): ResolutionDecision => ({ target_id: null, confidence: 0, reason: "no_match" });
 
@@ -275,20 +299,38 @@ export class DefaultResolver implements EntityResolver {
    * @return ([number, string] | null): the confidence and reason, or null when no signal fires.
    */
   score(candidate: ParsedEntityInput, ent: Entity): [number, string] | null {
+    return this.scorer(candidate)(ent);
+  }
+
+  /**
+   * Score existing entities against one candidate, deriving the candidate's type, id, and forms once.
+   *
+   * @param candidate (ParsedEntityInput): the candidate entity.
+   * @return ((ent: Entity) => [number, string] | null): score for one existing entity.
+   */
+  private scorer(candidate: ParsedEntityInput): (ent: Entity) => [number, string] | null {
     const ctype = ops.cleanText(candidate.type);
-    if (ctype === FALLBACK_TYPE && ent.type !== ctype) {
-      return surfaceMatch(candidate, ent) ? [ALIAS_CONFIDENCE, "alias"] : null;
-    }
-    if (candidateId(candidate) === ent.id) return [1, "id"];
-    if (Object.entries(ent.external_ids).some(([key, value]) => candidate.external_ids[key] === value)) {
-      return [1, "external_id"];
-    }
-    if (surfaceMatch(candidate, ent)) return [ALIAS_CONFIDENCE, "alias"];
-    if (this.fuzzy && ctype === ent.type && !distinctNames(candidate.name, ent.name, this.threshold)) {
-      const similarity = nameSimilarity(candidate.name, ent.name);
-      if (similarity >= this.threshold) return [similarity, "similarity"];
-    }
-    return null;
+    const forms = formsOf(candidate.name, candidate.aliases);
+    let derived: string | undefined;
+    const cid = (): string => {
+      derived ??= candidateId(candidate);
+      return derived;
+    };
+    return (ent) => {
+      if (ctype === FALLBACK_TYPE && ent.type !== ctype) {
+        return overlaps(forms, formsOf(ent.name, ent.aliases)) ? [ALIAS_CONFIDENCE, "alias"] : null;
+      }
+      if (cid() === ent.id) return [1, "id"];
+      if (Object.entries(ent.external_ids).some(([key, value]) => candidate.external_ids[key] === value)) {
+        return [1, "external_id"];
+      }
+      if (overlaps(forms, formsOf(ent.name, ent.aliases))) return [ALIAS_CONFIDENCE, "alias"];
+      if (this.fuzzy && ctype === ent.type && !distinctNames(candidate.name, ent.name, this.threshold)) {
+        const similarity = nameSimilarity(candidate.name, ent.name);
+        if (similarity >= this.threshold) return [similarity, "similarity"];
+      }
+      return null;
+    };
   }
 
   /**
@@ -302,8 +344,9 @@ export class DefaultResolver implements EntityResolver {
    */
   decide(candidate: ParsedEntityInput, existing: readonly Entity[]): ResolutionDecision {
     let best: [number, string, string] | null = null;
+    const score = this.scorer(candidate);
     for (const ent of existing) {
-      const scored = this.score(candidate, ent);
+      const scored = score(ent);
       if (scored === null) continue;
       if (best === null || scored[0] > best[0] || (scored[0] === best[0] && comparePy(ent.id, best[1]) < 0)) {
         best = [scored[0], ent.id, scored[1]];
@@ -434,6 +477,25 @@ export function asResolver(value: EntityResolver | ResolverMode, llm: LLMClient 
     return new LLMResolver(llm);
   }
   return value;
+}
+
+/**
+ * Build a resolver from a mode or an object, lowering a mode to the cost cap.
+ *
+ * @param value (EntityResolver | ResolverMode): the mode name or a resolver object.
+ * @param llm (LLMClient | null): the graph's LLM, needed for "llm".
+ * @param maxTier (Level): the cost cap.
+ * @return ([string, EntityResolver | null]): the tier name, "custom" for an object, and the resolver.
+ */
+export function resolverFor(
+  value: EntityResolver | ResolverMode,
+  llm: LLMClient | null,
+  maxTier: Level,
+): [string, EntityResolver | null] {
+  if (typeof value !== "string") return ["custom", asResolver(value, llm)];
+  requireResolver(value);
+  const tier = clamp("resolution", value, maxTier) as ResolverMode;
+  return [tier, asResolver(tier, llm)];
 }
 
 /**
@@ -645,17 +707,22 @@ export async function planResolution(
   const wanted = new Set<string | null>();
   for (const etype of candidateTypes) for (const t of compatibleTypes(etype, schema)) wanted.add(t);
   if (candidateTypes.has(FALLBACK_TYPE)) wanted.add(null);
-  const fallbacks = keyed.filter((k) => k.etype === FALLBACK_TYPE && !k.ent.id).map((k) => k.ent);
+  const fallbackForms = new Set(
+    keyed.filter((k) => k.etype === FALLBACK_TYPE && !k.ent.id).flatMap((k) => [...formsOf(k.ent.name, k.ent.aliases)]),
+  );
   const named = new Set(keyed.map((k) => k.eid));
+  const keep = (props: Props): boolean =>
+    wanted.has(props.type as string) ||
+    named.has(props.id as string) ||
+    overlaps(formsOf(props.name as string, (props.aliases as string[] | null) ?? []), fallbackForms);
   const pool = new Map<string, Entity>();
-  for (const etype of [...wanted].sort((a, b) => comparePy(String(a), String(b)))) {
+  const scans = wanted.has(null) ? [null] : [...wanted].sort((a, b) => comparePy(String(a), String(b)));
+  for (const etype of scans) {
     const equals = etype === null ? {} : { type: etype };
     for await (const rows of ops.keyset((after, limit) =>
       runner.matchNodes(ns, L_ENTITY, { equals, limit, id_gt: after }),
     )) {
-      for (const ent of rows.map(decodeEntity)) {
-        if (etype !== null || named.has(ent.id) || fallbacks.some((c) => surfaceMatch(c, ent))) pool.set(ent.id, ent);
-      }
+      for (const ent of rows.filter(keep).map(decodeEntity)) pool.set(ent.id, ent);
     }
   }
 
@@ -867,6 +934,13 @@ async function rewriteRefs(
   return { ...facts, relations, preferences, decisions };
 }
 
+/**
+ * The merge record node, without its sources and rewrites, which live in EntityMergeEntry rows. A record repeats every time an insert merges the same pair again, so its sources and rewrites grow without bound; kept inline they would outgrow a store's per-document limit (32000 bytes on HydraDB).
+ *
+ * @param ns (string): the namespace.
+ * @param rec (MergeRecord): the record.
+ * @return (Props): the node properties.
+ */
 function encodeMerge(ns: string, rec: MergeRecord): Props {
   return {
     id: rec.id,
@@ -876,18 +950,74 @@ function encodeMerge(ns: string, rec: MergeRecord): Props {
     reason: rec.reason,
     confidence: rec.confidence,
     source_id: rec.source_id,
-    source_ids_json: dumps(rec.source_ids),
     absorbed_json: dumps(rec.absorbed),
     added_aliases_json: dumps(rec.added_aliases),
     added_external_ids_json: dumps(rec.added_external_ids),
     added_properties_json: dumps(rec.added_properties),
-    rewrites_json: dumps(rec.rewrites),
+    source_entries: rec.source_ids.length,
+    rewrite_entries: rec.rewrites.length,
     created_at: toIso(rec.created_at),
     reverted_at: toIso(rec.reverted_at),
   };
 }
 
-function decodeMerge(props: Props): MergeRecord {
+/**
+ * One row per source and per rewrite of a merge record, keyed by a position that never moves.
+ *
+ * @param ns (string): the namespace.
+ * @param rec (MergeRecord): the record.
+ * @return (Map<string, Props>): the entry node properties by entry id.
+ */
+function entryRows(ns: string, rec: MergeRecord): Map<string, Props> {
+  const rows = new Map<string, Props>();
+  const kinds: Array<[string, readonly unknown[]]> = [
+    ["source", rec.source_ids],
+    ["rewrite", rec.rewrites],
+  ];
+  for (const [kind, values] of kinds) {
+    values.forEach((value, seq) => {
+      const id = ids.mergeEntryId(rec.id, kind, seq);
+      rows.set(id, { id, ns, merge_id: rec.id, kind, seq, value_json: dumps(value) });
+    });
+  }
+  return rows;
+}
+
+/**
+ * Read the source and rewrite rows of some stored merge records, by id from the counts each record keeps.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param records (readonly Props[]): the stored merge record nodes.
+ * @return (Map<string, Props[]>): each record's entry rows, in no particular order.
+ */
+async function loadEntries(runner: Runner, ns: string, records: readonly Props[]): Promise<Map<string, Props[]>> {
+  const found = new Map<string, Props[]>(records.map((props) => [props.id as string, []]));
+  const wanted: string[] = [];
+  for (const props of records) {
+    for (const kind of ["source", "rewrite"]) {
+      const count = Number(props[`${kind}_entries`] ?? 0) || 0;
+      for (let seq = 0; seq < count; seq++) wanted.push(ids.mergeEntryId(props.id as string, kind, seq));
+    }
+  }
+  for (const row of (await ops.nodesById(runner, ns, L_MERGE_ENTRY, wanted)).values()) {
+    found.get(row.merge_id as string)?.push(row);
+  }
+  return found;
+}
+
+/**
+ * Rebuild a merge record from its node and entry rows.
+ *
+ * @param props (Props): the record node.
+ * @param entries (readonly Props[]): its EntityMergeEntry rows.
+ * @return (MergeRecord): the record.
+ */
+function decodeMerge(props: Props, entries: readonly Props[] = []): MergeRecord {
+  const listed: Record<string, unknown[]> = { source: [], rewrite: [] };
+  for (const row of [...entries].sort((a, b) => Number(a.seq) - Number(b.seq))) {
+    listed[row.kind as string]!.push(loads<unknown>(row.value_json, null));
+  }
   return {
     id: props.id as string,
     survivor_id: props.survivor_id as string,
@@ -896,14 +1026,41 @@ function decodeMerge(props: Props): MergeRecord {
     reason: (props.reason as string | null) || "",
     confidence: Number(props.confidence ?? 0) || 0,
     source_id: (props.source_id as string | null | undefined) ?? null,
-    source_ids: loads<string[]>(props.source_ids_json, props.source_id ? [props.source_id as string] : []),
+    source_ids: listed.source as string[],
     added_aliases: loads<string[]>(props.added_aliases_json, []),
     added_external_ids: loads<string[]>(props.added_external_ids_json, []),
     added_properties: loads<string[]>(props.added_properties_json, []),
-    rewrites: loads<MergeRewrite[]>(props.rewrites_json, []).map((rw) => ({ ...rw, dropped: rw.dropped ?? false })),
+    rewrites: (listed.rewrite as MergeRewrite[]).map((rw) => ({ ...rw, dropped: rw.dropped ?? false })),
     created_at: fromIso(props.created_at)!,
     reverted_at: fromIso(props.reverted_at),
   };
+}
+
+/**
+ * Write merge records, rewriting only the entry rows that are new or changed, so a repeat costs its own rows.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param records (readonly MergeRecord[]): the records to store.
+ * @param stored (ReadonlyMap<string, Props[]>): each already stored record's entry rows, by id.
+ */
+async function writeMerges(
+  runner: Runner,
+  ns: string,
+  records: readonly MergeRecord[],
+  stored: ReadonlyMap<string, Props[]>,
+): Promise<void> {
+  const nodes: Array<readonly [string, Props]> = [];
+  const entries: Array<readonly [string, Props]> = [];
+  for (const rec of records) {
+    const rows = stored.get(rec.id) ?? [];
+    nodes.push([rec.id, encodeMerge(ns, rec)]);
+    const have = new Map(rows.map((row) => [row.id as string, row.value_json]));
+    for (const [id, row] of entryRows(ns, rec)) if (have.get(id) !== row.value_json) entries.push([id, row]);
+  }
+  for (const [, props] of [...nodes, ...entries]) ops.precheckWrite(runner, props);
+  if (entries.length) await runner.upsertNodes(ns, L_MERGE_ENTRY, entries);
+  await runner.upsertNodes(ns, L_MERGE, nodes);
 }
 
 /**
@@ -931,6 +1088,7 @@ export async function saveMerges(
     L_MERGE,
     keyed.map(([mid]) => mid),
   );
+  const entries = await loadEntries(runner, ns, [...stored.values()]);
   const records: MergeRecord[] = [];
   for (const [mid, merge] of keyed) {
     let rec: MergeRecord = {
@@ -950,7 +1108,7 @@ export async function saveMerges(
       reverted_at: null,
     };
     const prevProps = stored.get(mid);
-    const prev = prevProps === undefined ? null : decodeMerge(prevProps);
+    const prev = prevProps === undefined ? null : decodeMerge(prevProps, entries.get(mid));
     if (prev !== null && prev.reverted_at === null) {
       const seen = new Set(prev.rewrites.map((r) => `${r.kind}\u0000${r.id}`));
       rec = {
@@ -964,9 +1122,7 @@ export async function saveMerges(
     }
     records.push(rec);
   }
-  const rows = records.map((rec) => [rec.id, encodeMerge(ns, rec)] as const);
-  for (const [, props] of rows) ops.precheckWrite(runner, props);
-  await runner.upsertNodes(ns, L_MERGE, rows);
+  await writeMerges(runner, ns, records, entries);
   return records;
 }
 
@@ -1010,7 +1166,8 @@ export async function listMerges(
   if (!rows.length && skip === 0 && !(await runner.nodeExists(ns, L_ENTITY, entityId))) {
     throw new NotFoundError("Entity", entityId);
   }
-  return rows.map(decodeMerge);
+  const entries = await loadEntries(runner, ns, rows);
+  return rows.map((r) => decodeMerge(r, entries.get(r.id as string)));
 }
 
 type Moved = Array<[MergeRewrite, MergeRewrite]>;
@@ -1050,13 +1207,16 @@ async function forwardSiblings(
   moved: Moved,
   restored: Map<string, string>,
 ): Promise<void> {
-  for (const props of await ops.scan(ops.nodeListing(runner, ns, L_MERGE, { equals: {} }))) {
-    const sib = decodeMerge(props);
-    if (sib.id === mergeId || sib.reverted_at !== null) continue;
+  const rows = await ops.scan(ops.nodeListing(runner, ns, L_MERGE, { equals: {} }));
+  const live = rows.filter((props) => props.id !== mergeId && (props.reverted_at ?? null) === null);
+  const entries = await loadEntries(runner, ns, live);
+  for (const props of live) {
+    const own = entries.get(props.id as string) ?? [];
+    const sib = decodeMerge(props, own);
     const rewrites = sib.rewrites.map((rw) => forward(rw, moved, restored));
     if (rewrites.every((rw, i) => rw === sib.rewrites[i])) continue;
     await runner.lockNode(ns, L_MERGE, sib.id);
-    await runner.upsertNode(ns, L_MERGE, sib.id, encodeMerge(ns, { ...sib, rewrites }));
+    await writeMerges(runner, ns, [{ ...sib, rewrites }], entries);
   }
 }
 
@@ -1083,7 +1243,8 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
   await runner.lockNode(ns, L_MERGE, mergeId);
   const props = await runner.getNode(ns, L_MERGE, mergeId);
   if (props === null) throw new NotFoundError("EntityMerge", mergeId);
-  const rec = decodeMerge(props);
+  const entries = (await loadEntries(runner, ns, [props])).get(mergeId) ?? [];
+  const rec = decodeMerge(props, entries);
   if (rec.reverted_at !== null) {
     throw new ValidationError(`merge ${pyRepr(mergeId)} was already reverted at ${jsonIso(rec.reverted_at)}`);
   }
@@ -1215,6 +1376,6 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
       )
     : null;
   const reverted: MergeRecord = { ...rec, reverted_at: at };
-  await runner.upsertNode(ns, L_MERGE, reverted.id, encodeMerge(ns, reverted));
+  await writeMerges(runner, ns, [reverted], new Map([[rec.id, entries]]));
   return { merge: reverted, entity: entity!, survivor, relations, preferences, decisions };
 }

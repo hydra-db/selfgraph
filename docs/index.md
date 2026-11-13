@@ -13,7 +13,9 @@ Relations and preferences keep their version history.
 | [Install](install.md) | The package and its optional extras. |
 | [Quickstart](quickstart.md) | A first graph with no server and no LLM. |
 | [Inserting](inserting.md) | Extracting from text, and writing ready facts. |
+| [Tiers](tiers.md) | The `level` preset, what each level picks, and the cost cap. |
 | [Schema](schema.md) | Optional types that guide extraction and check writes. |
+| [Ontology](ontology.md) | Terms, synonyms, definitions, coverage checks, and drafts from table metadata. |
 | [Entity resolution](resolution.md) | Merging duplicate entities on insert, and undoing a merge. |
 | [Resources](resources.md) | Typed CRUD over entities, relations, preferences, and decisions. |
 | [Retrieval](retrieval.md) | `retrieve`, how it seeds and traverses, and raw Cypher. |
@@ -24,5 +26,6 @@ Relations and preferences keep their version history.
 | [Errors](errors.md) | Exceptions, messages, and logging. |
 | [TypeScript](typescript.md) | The npm package and how it differs from Python. |
 
-Out of scope: embeddings, vector search, GraphRAG, text-to-Cypher, and file
-parsing.
+Out of scope for the core: a vector store, GraphRAG, text-to-Cypher, file
+parsing, and row-level database ingestion. Embeddings are an optional
+[seeding tier](retrieval.md#seeding-tiers) you supply the embedder for.

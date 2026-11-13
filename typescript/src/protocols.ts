@@ -56,12 +56,23 @@ export interface LLMClient {
 
 export interface Extractor {
   extract(document: ParsedDocument): Promise<Extraction>;
+  tier?: string;
   /**
    * Return and clear warnings from the last extract call.
    *
    * @return (InsertWarning[]): the warnings.
    */
   popWarnings?(): InsertWarning[];
+}
+
+export interface Embedder {
+  /**
+   * Return one vector per text, in order, all of one length.
+   *
+   * @param texts (string[]): the texts to embed.
+   * @return (number[][]): the vectors.
+   */
+  embed(texts: string[]): Promise<number[][]>;
 }
 
 export interface GraphPrimitives {

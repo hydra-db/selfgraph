@@ -35,6 +35,7 @@ import { CypherStore, Neo4jStore } from "./stores/cypher.js";
 import { FalkorDBStore } from "./stores/falkordb.js";
 import { HydraDBStore } from "./stores/hydradb.js";
 import { KuzuStore } from "./stores/kuzu.js";
+import { requireLevel } from "./tiers.js";
 import { checkOptions, requireNamespace } from "./validate.js";
 
 export { version } from "../package.json";
@@ -58,6 +59,8 @@ export interface GraphSettings {
   schema_mode: string | null;
   resolver: string | null;
   contradiction: string | null;
+  level: string | null;
+  max_tier: string | null;
 }
 
 export const DEFAULT_SETTINGS: Readonly<GraphSettings> = Object.freeze({
@@ -78,6 +81,8 @@ export const DEFAULT_SETTINGS: Readonly<GraphSettings> = Object.freeze({
   schema_mode: null,
   resolver: null,
   contradiction: null,
+  level: null,
+  max_tier: null,
 });
 
 const IGNORED_BY_STORE: Record<string, ReadonlyArray<"auth" | "database">> = { kuzu: ["auth", "database"] };
@@ -481,8 +486,10 @@ export function checkSettings(settings: GraphSettings): GraphSettings {
   if (!STORES.includes(kind)) throw unknownStore(settings);
   if (kind !== "kuzu") requireStoreUri(kind, settings.uri);
   requireSchemaMode(settings.schema_mode || "warn");
-  requireContradictionMode(settings.contradiction || "warn");
-  requireResolver(settings.resolver || "exact");
+  requireLevel("level", settings.level || "balanced");
+  requireLevel("max_tier", settings.max_tier || "max");
+  if (settings.contradiction != null) requireContradictionMode(settings.contradiction);
+  if (settings.resolver != null) requireResolver(settings.resolver);
   llmTimeout(settings.llm_timeout);
   llmConcurrency(settings.llm_concurrency);
   const llm = buildLlm(settings);

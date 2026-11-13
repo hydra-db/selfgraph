@@ -5,8 +5,51 @@ import sys
 from datetime import datetime, timezone
 
 from selfgraph import EvidenceInput, Extraction, Schema, SelfGraph, ValidationError, ids
+from selfgraph.retrieval import _tokens
 from selfgraph.runtime import to_jsonable
 from selfgraph.schema import validate_against_schema
+from selfgraph.terms import expand_tokens, match_terms
+
+TERMS_SPEC = {
+    "entities": [
+        {
+            "name": "Company",
+            "synonyms": ["employer", "firm"],
+            "certified": True,
+            "definitions": [{"name": "headcount", "expression": "count(Person)", "synonyms": ["staff size"]}],
+        },
+        {"name": "Person", "aliases": ["user"], "synonyms": ["staff member"]},
+        {"name": "InvoiceLine", "mappings": [{"table": "sales.invoice_lines", "column": "id"}]},
+    ],
+    "relations": [{"type": "WORKS_AT", "synonyms": ["employed by"], "certified": True}],
+}
+TERM_QUESTIONS = [
+    "What is the staff size of the firm Acme by ad spend?",
+    "users employed by employers",
+    "which employers hired staff members named Hopper",
+    "total for invoice lines and Works At",
+    "Zoë ÅNGSTRÖM",
+]
+TABLES = [
+    {
+        "name": "sales.invoice_lines",
+        "description": "one line of an invoice",
+        "columns": [
+            {"name": "invoice_id", "type": "bigint", "references": "sales.invoices"},
+            {"name": "soldByCustomerId", "references": "Customers"},
+            {"name": "extended_price", "type": "numeric(18,2)", "nullable": False, "description": "net"},
+            {"name": "note", "type": "varchar", "nullable": True},
+            {"name": "is_void", "type": "BOOLEAN"},
+            {"name": "payload", "type": "jsonb"},
+            {"name": "qty", "type": "smallint"},
+            {"name": "untyped"},
+        ],
+    },
+    {"name": "sales.invoices", "columns": [{"name": "invoice_date", "type": "date"}, {"name": "id", "type": "uuid"}]},
+    {"name": "Customers", "columns": [{"name": "parent_id", "references": "Customers"}]},
+    {"name": "order_statuses"},
+    {"name": "Companies", "columns": [{"name": "customer_id", "references": "Customers"}]},
+]
 
 SCHEMA_SPEC = {
     "name": "conformance",
@@ -118,6 +161,15 @@ def schema_warnings():
             for facts in cases
         ],
         "unknown_keys": [unknown_key_error(kind, value) for kind, value in UNKNOWN_KEY_CASES],
+        "tables": to_jsonable(Schema.from_tables(TABLES, name="sales")),
+        "terms": [
+            {
+                "matches": to_jsonable(match_terms(_tokens(q), terms, _tokens)),
+                "expanded": sorted(expand_tokens(_tokens(q), terms, _tokens)),
+            }
+            for terms in [Schema.model_validate(TERMS_SPEC)]
+            for q in TERM_QUESTIONS
+        ],
     }
 
 
@@ -291,8 +343,17 @@ async def dump(graph, ns):
         walk: await graph.retrieve("Grace Hopper COBOL Jane acme", strategy=walk, k=1, depth=4, max_nodes=3)
         for walk in ("bfs", "dfs")
     }
+    termed = SelfGraph(store=store, namespace=ns, schema=TERMS_SPEC, extraction="regex")
+    coverage = [await termed.coverage(q) for q in TERM_QUESTIONS]
+    seeded = {
+        tier: await termed.retrieve("which employers hired staff members named Hopper", seeds=tier, depth=0)
+        for tier in ("bm25", "synonyms")
+    }
     return to_jsonable(
         {
+            "coverage": coverage,
+            "retrieval_seeded": {tier: {"seeds": r.seeds, "tiers": r.tiers} for tier, r in seeded.items()},
+            "tiers": termed.tiers,
             "entities": sorted(entities, key=lambda e: e.id),
             "relations": dict(sorted(relations.items())),
             "preferences": preferences,

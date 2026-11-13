@@ -3,7 +3,7 @@
 Entity resolution merges a new entity into a stored one that names the same
 thing differently, such as "Big Blue" with the same ticker as "International
 Business Machines". It runs on insert. Every merge is recorded and can be
-reversed. It is off by default.
+reversed. The default [level](tiers.md), `balanced`, runs the `default` mode.
 
 You may not need it. [Id derivation](resources.md#ids) already collapses "Acme
 Inc", "Acme Corp", and "ACME" into one `company:acme`, with no merge record.
@@ -20,8 +20,8 @@ await graph.insert.text(text, resolver="exact")
 
 | Mode | What merges |
 |------|-------------|
-| `exact` (default) | Nothing beyond derived ids. Runs no extra queries. |
-| `default` | An id match, a shared external id, or a name or alias match. LLM-free and deterministic. Same as `DefaultResolver()`. |
+| `exact` | Nothing beyond derived ids. Runs no extra queries. The mode at `level="light"`. |
+| `default` (default) | An id match, a shared external id, or a name or alias match. LLM-free and deterministic. Same as `DefaultResolver()`. |
 | `fuzzy` | Everything `default` merges, plus same-type names whose lexical similarity reaches 0.92, also within one insert. LLM-free. Same as `DefaultResolver(fuzzy=True)`. |
 | `llm` | Everything `fuzzy` merges, plus pairs in a similarity band that the configured LLM confirms. Needs `llm=`. |
 

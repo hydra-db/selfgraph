@@ -58,7 +58,7 @@ extraction.
 
 ## Tools
 
-Both servers register the same 34 tools. Arguments keep the library's names.
+Both servers register the same 35 tools. Arguments keep the library's names.
 Optional ones are in brackets.
 
 `list_*`, the evidence tools, and `entity_merges` also take `[limit]` (1 to 1000,
@@ -87,7 +87,8 @@ default 50) and `[cursor]`.
 | `update_decision` | `id`, `[title]`, `[steps]`, `[actor_entity]`, `[summary]`, `[rationale]`, `[outcome_entity]`, `[alternative_entities]`, `[status]`, `[event_time]`, `[clear]` |
 | `list_decisions` | `[actor_entity]`, `[status]` |
 | `get_decision`, `delete_decision` | `id` |
-| `retrieve` | `query`, `[strategy]`, `[depth]`, `[k]`, `[max_nodes]`, `[budget_tokens]`, `[as_of]` |
+| `retrieve` | `query`, `[strategy]`, `[depth]`, `[k]`, `[max_nodes]`, `[budget_tokens]`, `[as_of]`, `[seeds]` |
+| `coverage` | `question` |
 | `run_cypher` | `query`, `[params]` |
 | `maintenance_decay` | `[half_life_days]`, `[now]`, `[dry_run]` |
 | `maintenance_prune` | `[min_relevance]`, `[older_than]`, `[types]`, `[relation_types]`, `[dry_run]` |
@@ -97,7 +98,7 @@ default 50) and `[cursor]`.
 
 | Annotation | Tools |
 |------------|-------|
-| `readOnlyHint` | `get_*`, `list_*`, `*_versions`, `entity_evidence`, `relation_evidence`, `entity_merges`, `retrieve`, `run_cypher` |
+| `readOnlyHint` | `get_*`, `list_*`, `*_versions`, `entity_evidence`, `relation_evidence`, `entity_merges`, `retrieve`, `coverage`, `run_cypher` |
 | `destructiveHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, and `maintenance_dedupe_relations`. |
 | `idempotentHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, `maintenance_dedupe_relations`, and `insert_facts`. |
 

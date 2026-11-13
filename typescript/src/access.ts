@@ -1,8 +1,8 @@
-import { StoreError, TransientError } from "./errors.js";
+import { LLM_HINT, StoreError, TransientError, ValidationError } from "./errors.js";
 import { Lazy } from "./internal/lazy.js";
 import { sleep } from "./internal/time.js";
 import type { RelationCap, SchemaCheck } from "./ops.js";
-import type { GraphPrimitives, GraphStore } from "./protocols.js";
+import type { Embedder, GraphPrimitives, GraphStore, LLMClient } from "./protocols.js";
 import {
   type ContradictionMode,
   contradictionCaps,
@@ -12,11 +12,53 @@ import {
   type SchemaMode,
   warnSchema,
 } from "./schema.js";
+import { clamp, type Level, requireTier, type SeedTier } from "./tiers.js";
 
 const MAX_TX_RETRIES = 12;
 const TX_RETRY_BASE_DELAY_MS = 20;
 const TX_RETRY_MAX_DELAY_MS = 1000;
 const CLOSED_MESSAGE = "this SelfGraph is closed; create a new SelfGraph to keep using the store";
+
+export interface TierSetup {
+  llm: LLMClient | null;
+  max_tier: Level;
+  seeds: SeedTier;
+  strategy: string;
+  embedder: Embedder | null;
+  embeddings: Map<string, readonly [string, number[]]>;
+}
+
+/**
+ * Validate a contradiction mode and lower it to the cost cap.
+ *
+ * @param mode (unknown): "off", "warn", "supersede", or "llm".
+ * @param llm (LLMClient | null): the graph's LLM, needed for "llm".
+ * @param maxTier (Level): the cost cap.
+ * @return (ContradictionMode): the mode to apply; throws ValidationError for llm without an LLM.
+ */
+export function contradictionTier(mode: unknown, llm: LLMClient | null, maxTier: Level): ContradictionMode {
+  requireContradictionMode(mode);
+  const tier = clamp("contradiction", mode as string, maxTier) as ContradictionMode;
+  if (tier === "llm" && llm === null) throw new ValidationError(`contradiction 'llm' needs an LLM: ${LLM_HINT}`);
+  return tier;
+}
+
+/**
+ * Validate a seeding tier and lower it to the cost cap.
+ *
+ * @param seeds (unknown): "bm25", "synonyms", or "embeddings".
+ * @param embedder (Embedder | null): the graph's embedder, needed for "embeddings".
+ * @param maxTier (Level): the cost cap.
+ * @return (SeedTier): the tier to seed with; throws ValidationError for embeddings without an embedder.
+ */
+export function seedTier(seeds: unknown, embedder: Embedder | null, maxTier: Level): SeedTier {
+  requireTier("seeds", seeds);
+  const tier = clamp("seeds", seeds, maxTier) as SeedTier;
+  if (tier === "embeddings" && embedder === null) {
+    throw new ValidationError("seeds 'embeddings' needs an embedder: pass embedder in the SelfGraph options");
+  }
+  return tier;
+}
 
 export type GraphOp<T> = (store: GraphPrimitives, ns: string) => Promise<T>;
 
@@ -31,7 +73,8 @@ export class GraphAccess {
    * @param namespace (string): the namespace every read and write is scoped to.
    * @param schema (ParsedSchema | null): the graph-level schema every write is checked against.
    * @param schemaMode (SchemaMode): how schema violations are handled: off, warn, or strict.
-   * @param contradiction (ContradictionMode): how a relation that breaks a schema max_count is handled: off, warn, or supersede.
+   * @param contradiction (ContradictionMode): how a contradicting relation is handled: off, warn, supersede, or llm.
+   * @param tiers (TierSetup): the LLM, the cost cap, the default seeding tier and traversal, and the embedder with its vector cache.
    */
   constructor(
     readonly store: GraphStore,
@@ -39,6 +82,14 @@ export class GraphAccess {
     readonly schema: ParsedSchema | null = null,
     readonly schemaMode: SchemaMode = "warn",
     readonly contradiction: ContradictionMode = "warn",
+    readonly tiers: TierSetup = {
+      llm: null,
+      max_tier: "max",
+      seeds: "bm25",
+      strategy: "bfs",
+      embedder: null,
+      embeddings: new Map(),
+    },
   ) {
     this.ready = new Lazy(() => store.initialize());
   }
@@ -71,19 +122,22 @@ export class GraphAccess {
   };
 
   /**
-   * Resolve a per-call contradiction mode against the graph's and collect the schema's max_count limits.
+   * Resolve a per-call contradiction mode against the graph's, lowered to the cost cap, and collect the schema's max_count limits.
    *
    * @param contradiction (ContradictionMode | null | undefined): the per-call mode, or null for the graph's.
    * @param schema (ParsedSchema | null): the schema the write is checked against.
-   * @return ({ contradiction: ContradictionMode; caps: Map<string, RelationCap> }): the mode and the limits by relation type.
+   * @return ({ contradiction: ContradictionMode; caps: Map<string, RelationCap>; judged: boolean }): the mode the cardinality rules run at (supersede under llm), the limits by relation type, and whether the LLM then judges older rivals.
    */
   contradictionFor(
     contradiction: ContradictionMode | null | undefined,
     schema: ParsedSchema | null,
-  ): { contradiction: ContradictionMode; caps: Map<string, RelationCap> } {
-    const mode = contradiction ?? this.contradiction;
-    requireContradictionMode(mode);
-    return { contradiction: mode, caps: contradictionCaps(schema) };
+  ): { contradiction: ContradictionMode; caps: Map<string, RelationCap>; judged: boolean } {
+    const mode =
+      contradiction == null
+        ? this.contradiction
+        : contradictionTier(contradiction, this.tiers.llm, this.tiers.max_tier);
+    const judged = mode === "llm";
+    return { contradiction: judged ? "supersede" : mode, caps: contradictionCaps(schema), judged };
   }
 
   private requireOpen(): void {

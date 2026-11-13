@@ -39,6 +39,7 @@ from .runtime import (
     surfaced,
 )
 from .schema import ContradictionMode, Schema, SchemaMode
+from .tiers import LADDERS, LEVELS
 
 __all__ = ["main", "build_parser"]
 
@@ -58,7 +59,7 @@ _OBJECT_TYPES = {
     "preferences": "Preference",
     "decisions": "DecisionTrace",
 }
-_CONTRADICTION_HELP = "how to handle a relation that breaks a schema max_count (default warn)"
+_CONTRADICTION_HELP = "how to handle a contradicting relation; llm also judges with no max_count (default warn)"
 _RETIRED_HINT = "use relation versions or relation list --include-invalidated"
 _NEO4J_KEYS = ("node_types", "relationship_types", "patterns", "constraints", "nodeTypes", "relationshipTypes")
 _LOGGED_WARNINGS = ("basic_extraction", "ner_extraction")
@@ -147,6 +148,7 @@ async def _retrieve(graph, args):
         max_nodes=args.max_nodes,
         budget_tokens=args.budget_tokens,
         as_of=args.as_of,
+        seeds=args.seeds,
     )
     return _Text(result.context) if args.context_only else result
 
@@ -339,8 +341,13 @@ def _add_globals(p: argparse.ArgumentParser, *, nested: bool = False, listed: bo
         ("--instructions", {"help": "extraction instructions JSON file, or inline JSON when it starts with '{'"}),
         ("--prompts", {"help": "extraction prompt templates JSON file, or inline JSON when it starts with '{'"}),
         ("--schema-mode", {"choices": get_args(SchemaMode), "help": "default warn; strict needs --schema"}),
-        ("--resolver", {"choices": get_args(ResolverMode), "help": "entity resolution on insert (default exact)"}),
+        (
+            "--resolver",
+            {"choices": get_args(ResolverMode), "help": "entity resolution on insert (default: by level)"},
+        ),
         ("--contradiction", {"choices": get_args(ContradictionMode), "help": _CONTRADICTION_HELP}),
+        ("--level", {"choices": LEVELS, "help": "sets every capability's default tier (default balanced)"}),
+        ("--max-tier", {"choices": LEVELS, "help": "cost cap no capability climbs past (default max)"}),
     ]
     for flag, options in flags:
         if not nested:
@@ -411,9 +418,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     rt = sub.add_parser("retrieve", help="retrieve graph context for a query; unquoted words join into one query")
     rt.add_argument("query", nargs="+")
-    rt.add_argument(
-        "--strategy", choices=STRATEGIES, default="bfs", help="traversal order, or ppr for PageRank ranking"
-    )
+    rt.add_argument("--strategy", choices=STRATEGIES, default=None, help="traversal order, or ppr for PageRank ranking")
+    rt.add_argument("--seeds", choices=LADDERS["seeds"], default=None, help="seeding tier (default: the level's)")
     rt.add_argument("--depth", type=int, default=3, help="traversal hops (default 3)")
     rt.add_argument("--k", type=int, default=20, help="seed count (default 20)")
     rt.add_argument("--max-nodes", type=int, default=200, help="entity cap (default 200)")
@@ -421,6 +427,10 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--as-of", type=_time("as_of"), help=f"read the graph as of this time ({_ISO})")
     rt.add_argument("--context-only", action="store_true", help="print only the context text, not the JSON result")
     rt.set_defaults(func=_retrieve)
+
+    cv = sub.add_parser("coverage", help="report which words of a question the schema and graph can ground")
+    cv.add_argument("question", nargs="+")
+    cv.set_defaults(func=lambda g, a: g.coverage(" ".join(a.question)))
 
     mt = sub.add_parser("maintenance", help="decay (score relevance), prune, or deduplicate relations")
     mta = mt.add_subparsers(dest="action", required=True)

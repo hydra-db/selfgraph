@@ -108,7 +108,7 @@ function suite(spec: StoreSpec) {
   const seed = (g: SelfGraph, ...entities: Extraction["entities"] & object[]) => g.insert.facts({ entities });
 
   it("leaves exact mode unchanged", async () => {
-    const g = open();
+    const g = open({ resolver: "exact" });
     await seed(g, { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } });
     const res = await g.insert.facts({
       entities: [{ type: "Company", name: "Big Blue", external_ids: { ticker: "IBM" } }],
@@ -500,12 +500,38 @@ function suite(spec: StoreSpec) {
     expect((await g.entities.get(ROBERT))!.aliases).toEqual(["Bob"]);
   });
 
+  it("keeps a merge repeated by many inserts small and unmerges every relation it rewrote", async () => {
+    const g = open({ resolver: "default" });
+    await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] });
+    const sizes: number[] = [];
+    for (let i = 0; i < 80; i++) {
+      const relation = { from_entity: BOB, type: "VISITED", to_entity: entityId("Place", `Place ${i}`) };
+      const entities = [
+        { type: "Person", name: "Bob" },
+        { type: "Place", name: `Place ${i}` },
+      ];
+      await g.insert.facts({ entities, relations: [relation] }, { source_id: `s${i}` });
+      const [node] = await g.store.matchNodes(g.namespace, "EntityMerge");
+      sizes.push(JSON.stringify(node).length);
+    }
+    expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThan(10);
+    expect(Math.max(...sizes)).toBeLessThan(2000);
+    const [record] = (await g.entities.merges(ROBERT)).items;
+    expect(record!.source_ids).toEqual(Array.from({ length: 80 }, (_, i) => `s${i}`));
+    expect(record!.rewrites).toHaveLength(80);
+    const out = await g.entities.unmerge(record!.id);
+    expect([out.entity.id, out.relations.length]).toEqual([BOB, 80]);
+    const visited = (await g.relations.list({ type: "VISITED", limit: 200 })).items;
+    expect(new Set(visited.map((r) => r.from_entity))).toEqual(new Set([BOB]));
+  });
+
   it("drops merge records with a deleted survivor, or a deleted absorbed id so a later merge starts fresh", async () => {
     const gone = open({ resolver: "default" });
     await seed(gone, { type: "Person", name: "Robert", aliases: ["Bob"] });
     await gone.insert.facts({ entities: [{ type: "Person", name: "Bob" }] });
     await gone.entities.delete(ROBERT);
     expect(await gone.store.matchNodes(gone.namespace, "EntityMerge")).toEqual([]);
+    expect(await gone.store.matchNodes(gone.namespace, "EntityMergeEntry")).toEqual([]);
     await expect(gone.entities.merges(ROBERT)).rejects.toThrow(NotFoundError);
     const g = open({ resolver: "default" });
     await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] });

@@ -17,6 +17,7 @@ from .extraction import DEFAULT_PROMPTS, LLMExtractor, NERExtractor
 from .ids import decision_id, entity_id, normalize_rel_type, preference_id, profile_id, relation_id
 from .llm import build_llm_client
 from .models import (
+    Coverage,
     CypherResult,
     DecayResult,
     DecisionStep,
@@ -48,12 +49,14 @@ from .models import (
     RetrievalResult,
     RetrievalSeed,
     Subgraph,
+    TermMatch,
     UnmergeResult,
 )
-from .protocols import Extractor, GraphStore, LLMClient
+from .protocols import Embedder, Extractor, GraphStore, LLMClient
 from .resolution import DefaultResolver, EntityResolver, LLMResolver, ResolutionDecision, ResolverMode
-from .schema import EntityType, PropertySpec, RelationEndpoint, RelationType, Schema
+from .schema import Definition, EntityType, PropertySpec, RelationEndpoint, RelationType, Schema, TermMapping
 from .sync import SyncSelfGraph
+from .tiers import Level
 
 __version__ = "0.2.0"
 
@@ -97,6 +100,10 @@ __all__ = [
     "GraphStore",
     "LLMClient",
     "Extractor",
+    "Embedder",
+    "Level",
+    "Coverage",
+    "TermMatch",
     "Entity",
     "Relation",
     "Preference",
@@ -123,6 +130,8 @@ __all__ = [
     "RelationType",
     "RelationEndpoint",
     "PropertySpec",
+    "TermMapping",
+    "Definition",
     "LLMConfig",
     "PromptTemplate",
     "ExtractionInstructions",
