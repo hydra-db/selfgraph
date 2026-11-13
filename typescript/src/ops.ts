@@ -1286,7 +1286,7 @@ export async function deleteEntity(runner: Runner, ns: string, given: string): P
  * @param endpoints (readonly string[]): the endpoint ids.
  * @return (EdgeRow[]): the edge rows.
  */
-async function edgesAt(
+export async function edgesAt(
   runner: Runner,
   ns: string,
   filter: Omit<MatchEdgesOptions, "from_in" | "to_in" | "skip" | "limit">,
@@ -2496,7 +2496,7 @@ async function ensureProfile(runner: Runner, ns: string, subjectId: string, crea
 
 type PreferenceEnds = Pick<Preference, "value_entity" | "profile_id" | "stance">;
 
-const preferenceOf = (e: EdgeRow): Preference =>
+export const preferenceOf = (e: EdgeRow): Preference =>
   decodePreference(e.props, {
     value_entity: e.to_id,
     profile_id: e.from_id,
@@ -2839,25 +2839,38 @@ async function writeTraceStructure(
 ): Promise<void> {
   const { tid } = args;
   if (args.actor_entity !== null)
-    await runner.createEdge(ns, R_MADE_DECISION, L_ENTITY, args.actor_entity, L_TRACE, tid, { ns });
-  if (args.outcome_entity !== null)
-    await runner.createEdge(ns, R_RESULTED_IN, L_TRACE, tid, L_ENTITY, args.outcome_entity, { ns });
-  for (const alt of args.alternative_entities)
-    await runner.createEdge(ns, R_CONSIDERED, L_TRACE, tid, L_ENTITY, alt, { ns });
-  for (const step of args.steps) {
-    const sid = ids.stepId(tid, step.order);
-    await runner.upsertNode(ns, L_STEP, sid, {
-      id: sid,
-      ns,
-      relation_id: step.relation_id,
-      order: step.order,
-      from_entity: step.from_entity,
-      to_entity: step.to_entity,
-    });
-    await runner.createEdge(ns, R_HAS_STEP, L_TRACE, tid, L_STEP, sid, { ns, order: step.order });
-    await runner.createEdge(ns, R_FROM, L_STEP, sid, L_ENTITY, step.from_entity, { ns });
-    await runner.createEdge(ns, R_TO, L_STEP, sid, L_ENTITY, step.to_entity, { ns });
-  }
+    await runner.createEdges(ns, L_ENTITY, L_TRACE, [[R_MADE_DECISION, args.actor_entity, tid, { ns }]]);
+  const outcome: EdgeWrite[] = args.outcome_entity === null ? [] : [[R_RESULTED_IN, tid, args.outcome_entity, { ns }]];
+  const considered = args.alternative_entities.map((alt): EdgeWrite => [R_CONSIDERED, tid, alt, { ns }]);
+  await runner.createEdges(ns, L_TRACE, L_ENTITY, [...outcome, ...considered]);
+  const keyed = args.steps.map((step) => [ids.stepId(tid, step.order), step] as const);
+  await runner.upsertNodes(
+    ns,
+    L_STEP,
+    keyed.map(
+      ([sid, step]): NodeRow => [
+        sid,
+        {
+          id: sid,
+          ns,
+          relation_id: step.relation_id,
+          order: step.order,
+          from_entity: step.from_entity,
+          to_entity: step.to_entity,
+        },
+      ],
+    ),
+  );
+  await runner.createEdges(
+    ns,
+    L_TRACE,
+    L_STEP,
+    keyed.map(([sid, step]): EdgeWrite => [R_HAS_STEP, tid, sid, { ns, order: step.order }]),
+  );
+  await runner.createEdges(ns, L_STEP, L_ENTITY, [
+    ...keyed.map(([sid, step]): EdgeWrite => [R_FROM, sid, step.from_entity, { ns }]),
+    ...keyed.map(([sid, step]): EdgeWrite => [R_TO, sid, step.to_entity, { ns }]),
+  ]);
 }
 
 async function clearTraceStructure(runner: Runner, ns: string, tid: string): Promise<void> {

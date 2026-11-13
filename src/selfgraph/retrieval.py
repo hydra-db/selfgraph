@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import heapq
 import logging
 import math
@@ -16,6 +17,7 @@ from ._serde import (
     L_CHUNK,
     L_ENTITY,
     L_EVIDENCE,
+    L_PROFILE,
     L_SOURCE_VERSION,
     R_HAS_CHUNK,
     decode_entity,
@@ -24,7 +26,7 @@ from ._serde import (
 )
 from .errors import ValidationError
 from .extraction.chunking import count_tokens
-from .ids import normalize_text
+from .ids import normalize_text, profile_id
 from .models import Entity, Preference, Relation, RetrievalResult, RetrievalSeed, Subgraph
 
 _log = logging.getLogger("selfgraph")
@@ -80,6 +82,8 @@ _STOPWORDS = frozenset(
 
 _PAGE = 500
 _MAX_POOL = 5000
+_SEED_PAGE = 5000
+_NEIGHBOR_PARTS = 8
 _MAX_PASSAGE_SOURCES = 12
 _MAX_PASSAGES = 6
 _PASSAGE_BUDGET_PERCENT = 60
@@ -258,7 +262,8 @@ async def _scan_seeds(
     """Rank every entity as a seed, as _select_seeds does, in two streaming passes over id-ordered pages.
 
     The first pass gathers the BM25 corpus statistics and the second scores each page and keeps the best k, so
-    memory holds one page and the seeds, never the whole graph.
+    memory holds one page and the seeds, never the whole graph. When the first pass read a single page, the second
+    scores that page instead of reading it again.
 
     @param graph (SelfGraph): the open graph.
     @param ns (str): the namespace to read.
@@ -272,17 +277,29 @@ async def _scan_seeds(
     fetch = partial(_ops.list_entities, graph.store, ns, type=None, name=None, skip=0)
 
     async def pages():
-        async for page in _ops._keyset(lambda after, limit: fetch(limit=limit, after=after)):
+        async for page in _ops._keyset(lambda after, limit: fetch(limit=limit, after=after), page=_SEED_PAGE):
             if as_of is not None:
                 visible = await _visible_at(graph, ns, page, as_of, valid or [])
                 page = [e for e in page if e.id in visible]
             yield page
 
     stats = None
+    pages_read = 0
+    first: list[Entity] = []
     async for page in pages():
         stats = _corpus_stats(query_tokens, (list(_tokens(_entity_text(e))) for e in page), stats)
+        pages_read += 1
+        first = page if pages_read == 1 else []
+
+    async def scored():
+        if pages_read == 1:
+            yield first
+        else:
+            async for page in pages():
+                yield page
+
     best: list[tuple[Entity, float]] = []
-    async for page in pages():
+    async for page in scored():
         best = heapq.nsmallest(k, [*best, *_seed_scores(page, query_tokens, exact, stats)], key=_seed_rank)
     return best
 
@@ -395,13 +412,40 @@ async def _visible_at(
     return visible
 
 
+async def _adjacent(
+    graph: SelfGraph, ns: str, nodes: list[str], as_of: datetime | None
+) -> tuple[list[Relation], list[Relation]]:
+    """Fetch the outgoing and incoming relations of some entities, both sides at once.
+
+    With as_of, each relation is read as the version valid then; its other entity is visible through it, so only
+    one whose other entity is gone is dropped.
+
+    @param graph (SelfGraph): the open graph.
+    @param ns (str): the namespace to read.
+    @param nodes (list[str]): the entity ids to expand.
+    @param as_of (datetime | None): read the relations valid at this time instead of the current ones.
+    @return (tuple[list[Relation], list[Relation]]): the outgoing and the incoming relations.
+    """
+    if as_of is None:
+        fetch = partial(_ops.list_relations, graph.store, ns, from_entity=None, type=None, to_entity=None)
+        out, inc = await asyncio.gather(_paged(partial(fetch, from_in=nodes)), _paged(partial(fetch, to_in=nodes)))
+        return out, inc
+    out, inc = await asyncio.gather(
+        _ops.relations_as_of(graph.store, ns, as_of, from_in=nodes),
+        _ops.relations_as_of(graph.store, ns, as_of, to_in=nodes),
+    )
+    others = list(dict.fromkeys([*(r.to_entity for r in out), *(r.from_entity for r in inc)]))
+    alive = set(await _ops._nodes_by_id(graph.store, ns, L_ENTITY, others))
+    return [r for r in out if r.to_entity in alive], [r for r in inc if r.from_entity in alive]
+
+
 async def _neighbors(
     graph: SelfGraph, ns: str, nodes: list[str], as_of: datetime | None = None
 ) -> dict[str, list[Relation]]:
     """Fetch each entity's outgoing then incoming relations; one-sided queries, as OR scans every edge.
 
-    With as_of, each relation is read as the version valid then; its other entity is visible through it, so only
-    one whose other entity is gone is dropped.
+    Each page of entities is read as a few smaller id batches in parallel, which engines that serve one query per
+    session run on separate cores.
 
     @param graph (SelfGraph): the open graph.
     @param ns (str): the namespace to read.
@@ -413,21 +457,13 @@ async def _neighbors(
     incoming: dict[str, list[Relation]] = {n: [] for n in nodes}
     for start in range(0, len(nodes), _PAGE):
         chunk = nodes[start : start + _PAGE]
-        if as_of is None:
-            fetch = partial(_ops.list_relations, graph.store, ns, from_entity=None, type=None, to_entity=None)
-            found = (await _paged(partial(fetch, from_in=chunk)), await _paged(partial(fetch, to_in=chunk)))
-        else:
-            found = (
-                await _ops.relations_as_of(graph.store, ns, as_of, from_in=chunk),
-                await _ops.relations_as_of(graph.store, ns, as_of, to_in=chunk),
-            )
-            others = list(dict.fromkeys([*(r.to_entity for r in found[0]), *(r.from_entity for r in found[1])]))
-            alive = set(await _ops._nodes_by_id(graph.store, ns, L_ENTITY, others))
-            found = ([r for r in found[0] if r.to_entity in alive], [r for r in found[1] if r.from_entity in alive])
-        for rel in found[0]:
-            outgoing[rel.from_entity].append(rel)
-        for rel in found[1]:
-            incoming[rel.to_entity].append(rel)
+        size = -(-len(chunk) // _NEIGHBOR_PARTS)
+        parts = [chunk[i : i + size] for i in range(0, len(chunk), size)]
+        for out, inc in await asyncio.gather(*(_adjacent(graph, ns, part, as_of) for part in parts)):
+            for rel in out:
+                outgoing[rel.from_entity].append(rel)
+            for rel in inc:
+                incoming[rel.to_entity].append(rel)
     return {n: outgoing[n] + incoming[n] for n in nodes}
 
 
@@ -504,15 +540,11 @@ async def _collect_decisions(graph: SelfGraph, ns: str, relation_ids: set[str], 
     """
     if not relation_ids:
         return []
-    fetch = partial(_ops.list_traces, graph.store, ns, actor_entity=None, status=None, skip=0)
     found = []
-    async for page in _ops._keyset(lambda after, limit: fetch(limit=limit, after=after)):
-        found += [
-            t
-            for t in page
-            if any(step.relation_id in relation_ids for step in t.steps)
-            and (as_of is None or _ops.effective_time(t) <= as_of)
-        ]
+    for tid in sorted(await _ops._traces_touching_relations(graph.store, ns, sorted(relation_ids))):
+        trace = await _ops.get_trace(graph.store, ns, tid)
+        if trace is not None and (as_of is None or _ops.effective_time(trace) <= as_of):
+            found.append(trace)
     return found
 
 
@@ -600,8 +632,9 @@ async def _collect_preferences(
         return []
     preferences = valid
     if preferences is None:
-        fetch = partial(_ops.list_preferences, graph.store, ns, subject_entity=None, key=None, stance=None)
-        preferences = await _paged(fetch)
+        profiles = [profile_id(eid) for eid in order]
+        rows = await _ops._edges_into(graph.store, ns, L_PROFILE, None, "from_in", profiles, current_only=True)
+        preferences = [_ops._preference_of(r) for r in rows]
     return sorted((p for p in preferences if p.subject_entity in order), key=lambda p: order[p.subject_entity])
 
 

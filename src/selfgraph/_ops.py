@@ -2827,29 +2827,41 @@ async def upsert_trace(
             await runner.delete_edges_touching_by_type(ns, L_TRACE, tid, rtype)
     await runner.upsert_node(ns, L_TRACE, tid, props)
     if actor_entity is not None:
-        await runner.create_edge(ns, R_MADE_DECISION, L_ENTITY, actor_entity, L_TRACE, tid, {"ns": ns})
-    if outcome_entity is not None:
-        await runner.create_edge(ns, R_RESULTED_IN, L_TRACE, tid, L_ENTITY, outcome_entity, {"ns": ns})
-    for alt in alternative_entities:
-        await runner.create_edge(ns, R_CONSIDERED, L_TRACE, tid, L_ENTITY, alt, {"ns": ns})
-    for step in steps:
-        sid = _ids.step_id(tid, step.order)
-        await runner.upsert_node(
-            ns,
-            L_STEP,
-            sid,
-            {
-                "id": sid,
-                "ns": ns,
-                "relation_id": step.relation_id,
-                "order": step.order,
-                "from_entity": step.from_entity,
-                "to_entity": step.to_entity,
-            },
-        )
-        await runner.create_edge(ns, R_HAS_STEP, L_TRACE, tid, L_STEP, sid, {"ns": ns, "order": step.order})
-        await runner.create_edge(ns, R_FROM, L_STEP, sid, L_ENTITY, step.from_entity, {"ns": ns})
-        await runner.create_edge(ns, R_TO, L_STEP, sid, L_ENTITY, step.to_entity, {"ns": ns})
+        await runner.create_edges(ns, L_ENTITY, L_TRACE, [(R_MADE_DECISION, actor_entity, tid, {"ns": ns})])
+    outcome = [] if outcome_entity is None else [(R_RESULTED_IN, tid, outcome_entity, {"ns": ns})]
+    considered = [(R_CONSIDERED, tid, alt, {"ns": ns}) for alt in alternative_entities]
+    await runner.create_edges(ns, L_TRACE, L_ENTITY, [*outcome, *considered])
+    keyed = [(_ids.step_id(tid, step.order), step) for step in steps]
+    await runner.upsert_nodes(
+        ns,
+        L_STEP,
+        [
+            (
+                sid,
+                {
+                    "id": sid,
+                    "ns": ns,
+                    "relation_id": step.relation_id,
+                    "order": step.order,
+                    "from_entity": step.from_entity,
+                    "to_entity": step.to_entity,
+                },
+            )
+            for sid, step in keyed
+        ],
+    )
+    await runner.create_edges(
+        ns, L_TRACE, L_STEP, [(R_HAS_STEP, tid, sid, {"ns": ns, "order": step.order}) for sid, step in keyed]
+    )
+    await runner.create_edges(
+        ns,
+        L_STEP,
+        L_ENTITY,
+        [
+            *((R_FROM, sid, step.from_entity, {"ns": ns}) for sid, step in keyed),
+            *((R_TO, sid, step.to_entity, {"ns": ns}) for sid, step in keyed),
+        ],
+    )
     return decode_trace(props, steps)
 
 
