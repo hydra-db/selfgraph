@@ -40,6 +40,8 @@ Tiers run light to powerful.
 `level="max"` needs an LLM and raises `ValidationError` without one. So do
 `resolver="llm"`, `contradiction="llm"`, and `extraction="llm"`.
 `seeds="embeddings"` needs an `embedder=`.
+These checks run after the [cost cap](#cost-cap), so a tier the cap lowers
+never raises.
 
 ## Rules
 
