@@ -58,7 +58,7 @@ extraction.
 
 ## Tools
 
-Both servers register the same 34 tools. Arguments keep the library's names.
+Both servers register the same 35 tools. Arguments keep the library's names.
 Optional ones are in brackets.
 
 `list_*`, the evidence tools, and `entity_merges` also take `[limit]` (1 to 1000,
