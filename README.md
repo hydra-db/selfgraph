@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Turn unstructured text into a queryable, versioned knowledge graph.</b><br/>
-  One graph API over any graph database, in Python and TypeScript.
+  One SDK for graphs and ontologies, over any graph database, in Python and TypeScript.
 </p>
 
 <p align="center">
@@ -20,10 +20,11 @@
 
 - **Text in, graph out.** Extract entities and relations with any LLM, or without one.
 - **Any graph database.** Neo4j, Memgraph, FalkorDB, HydraDB, or embedded Kuzu, behind one API.
-- **History built in.** Every change is versioned, newer facts can retire older ones, and you can read the graph as of any past time.
-- **No vector store.** Retrieval walks the graph from keyword matches and returns the source passages.
+- **Facts that change.** Every change is versioned, newer facts retire older ones, and you can read the graph as of any past time.
+- **An ontology, not just a graph.** Types, synonyms, and definitions ground a question, and a coverage check says what the graph cannot answer.
 - **Light by default, powerful on request.** One `level` option moves every capability from free and deterministic to LLM-backed.
-- **SDK, CLI, and MCP server** over the same graph, in Python and TypeScript.
+- **No vector store.** Retrieval walks the graph from keyword matches and returns the source passages. Embeddings are optional.
+- **SDK, CLI, and MCP server** over the same graph.
 
 ## Install
 
@@ -82,7 +83,7 @@ async with SelfGraph(
 
 ## Levels
 
-Every capability is a ladder of tiers. `level` sets them all, and the default uses no LLM beyond extraction.
+Every capability is a ladder of tiers, and `level` sets them all. The default, `balanced`, is the strongest tier that is free and deterministic.
 
 | Capability | `light` | `balanced` (default) | `max` |
 |------------|---------|----------------------|-------|
@@ -93,13 +94,56 @@ Every capability is a ladder of tiers. `level` sets them all, and the default us
 | Traversal | BFS | BFS | PageRank |
 
 ```python
-graph = SelfGraph(store=store, llm=llm, level="max")
-await graph.relations.create("person:ann", "WORKS_AT", "company:acme")
-await graph.relations.create("person:ann", "WORKS_AT", "company:globex")  # the LLM retires WORKS_AT Acme
-print((await graph.coverage("Globex ad spend")).uncovered)                # ["ad", "spend"]
+graph = SelfGraph(store=store, llm=llm, level="max")              # everything on
+graph = SelfGraph(store=store, llm=llm, contradiction="llm")      # one capability
+graph = SelfGraph(store=store, llm=llm, level="max", max_tier="balanced")  # cap: no LLM calls
+print(graph.tiers)
 ```
 
-Set one capability with its own option (`resolver=`, `contradiction=`, `seeds=`), and cap cost with `max_tier`. See [tiers](https://github.com/hydra-db/selfgraph/blob/main/docs/tiers.md).
+- Passing `llm=` turns on LLM extraction only. Every other LLM tier is opt-in.
+- A higher tier runs the lower ones first and sends only the undecided cases up, so cost follows the hard cases.
+- Every tier writes the same ids and encoding. Changing a tier needs no migration.
+- Each result reports the tiers that produced it in `result.tiers`.
+
+See [tiers](https://github.com/hydra-db/selfgraph/blob/main/docs/tiers.md).
+
+## Facts that change
+
+A newer fact can retire an older one. Declare the rule in a schema, or let an LLM judge it with no schema:
+
+```python
+graph = SelfGraph(store=store, llm=llm, contradiction="llm")
+await graph.relations.create("person:ann", "WORKS_AT", "company:acme", event_time="2020-01-01")
+await graph.relations.create("person:ann", "WORKS_AT", "company:globex", event_time="2022-01-01")
+
+await graph.retrieve("where does Ann work")                       # Globex
+await graph.retrieve("where does Ann work", as_of="2021-06-01")   # Acme
+```
+
+Nothing is deleted. The retired relation keeps its history and records what replaced it. See [contradictions](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md#contradictions).
+
+## Ontology and coverage
+
+A schema can carry synonyms, certified definitions, and where each term's data lives. `coverage` then tells an agent what the graph can ground before it answers:
+
+```python
+schema = {
+    "entities": [
+        {
+            "name": "Company",
+            "synonyms": ["employer", "firm"],
+            "definitions": [{"name": "headcount", "expression": "count(Person)", "synonyms": ["staff size"]}],
+        }
+    ]
+}
+graph = SelfGraph(store=store, schema=schema)
+
+cov = await graph.coverage("What is the staff size of the firm Acme by ad spend?")
+cov.uncovered                               # ["ad", "spend"]
+await graph.retrieve("which employers")     # seeds Company entities through the synonym
+```
+
+`Schema.from_tables` drafts a schema from table and column metadata, with no database connection. See [ontology](https://github.com/hydra-db/selfgraph/blob/main/docs/ontology.md).
 
 ## Backends
 
