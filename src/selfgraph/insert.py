@@ -97,7 +97,7 @@ class Insert:
             resolver=resolver,
             contradiction=contradiction,
             extracted=True,
-            extraction="llm" if isinstance(extractor, DefaultExtractor) else getattr(extractor, "tier", "custom"),
+            extraction="llm" if isinstance(extractor, LLMExtractor) else getattr(extractor, "tier", "custom"),
         )
 
     async def facts(

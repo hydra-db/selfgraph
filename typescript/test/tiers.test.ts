@@ -102,7 +102,7 @@ function suite(spec: StoreSpec): void {
     const g = open({ llm: new Judge(), level: "max", max_tier: "balanced" });
     expect(g.tiers.extraction).toBe("regex");
     expect([g.tiers.resolution, g.tiers.contradiction, g.tiers.seeds]).toEqual(["fuzzy", "supersede", "synonyms"]);
-    const res = await g.insert.ontology({ entities: [BOB] }, { resolver: "llm", contradiction: "llm" });
+    const res = await g.insert.facts({ entities: [BOB] }, { resolver: "llm", contradiction: "llm" });
     expect(res.tiers).toEqual({ resolution: "fuzzy", contradiction: "supersede" });
     const quiet = open({ level: "max", max_tier: "balanced", resolver: "llm", contradiction: "llm" });
     expect([quiet.tiers.resolution, quiet.tiers.contradiction]).toEqual(["fuzzy", "supersede"]);
@@ -113,13 +113,13 @@ function suite(spec: StoreSpec): void {
 
   it("balanced merges by alias and results name their tiers", async () => {
     const g = open();
-    await g.insert.ontology({ entities: [ROBERT] });
-    const res = await g.insert.ontology({ entities: [BOB] });
+    await g.insert.facts({ entities: [ROBERT] });
+    const res = await g.insert.facts({ entities: [BOB] });
     expect(res.merges).toHaveLength(1);
     expect(res.tiers).toEqual({ resolution: "default", contradiction: "warn" });
     const light = open({ level: "light" });
-    await light.insert.ontology({ entities: [ROBERT] });
-    expect((await light.insert.ontology({ entities: [BOB] })).merges).toEqual([]);
+    await light.insert.facts({ entities: [ROBERT] });
+    expect((await light.insert.facts({ entities: [BOB] })).merges).toEqual([]);
     const text = await light.insert.text("Ann works at Acme.");
     expect(text.tiers).toEqual({ extraction: "regex", resolution: "exact", contradiction: "warn" });
     expect(Object.keys(text.tiers)).toEqual(["extraction", "resolution", "contradiction"]);
@@ -134,9 +134,9 @@ function suite(spec: StoreSpec): void {
   it("LLM-judged contradiction retires an older fact without a schema", async () => {
     const judge = new Judge();
     const g = open({ llm: judge, extraction: "regex", contradiction: "llm" });
-    await g.insert.ontology({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
     expect(judge.prompts).toEqual([]);
-    const res = await g.insert.ontology({ relations: [annAt("globex", 2022)] });
+    const res = await g.insert.facts({ relations: [annAt("globex", 2022)] });
     expect(res.tiers.contradiction).toBe("llm");
     expect(res.warnings.map((w) => w.code)).toEqual(["relation_superseded"]);
     expect(res.warnings[0]!.message).toBe(
@@ -160,18 +160,18 @@ function suite(spec: StoreSpec): void {
   it("LLM judge keeps compatible facts and skips same-write and older inputs", async () => {
     const judge = new Judge([]);
     let g = open({ llm: judge, extraction: "regex", contradiction: "llm" });
-    await g.insert.ontology({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
-    const res = await g.insert.ontology({ relations: [annAt("globex", 2022)] });
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
+    const res = await g.insert.facts({ relations: [annAt("globex", 2022)] });
     expect(res.warnings).toEqual([]);
     expect(judge.prompts).toHaveLength(1);
     expect((await g.relations.list({ from_entity: "person:ann" })).items).toHaveLength(2);
     g = open({ llm: new Judge(), extraction: "regex", contradiction: "llm" });
     const both = [annAt("acme", 2020), annAt("globex", 2022)];
-    expect((await g.insert.ontology({ entities: ANN_ACME_GLOBEX, relations: both })).warnings).toEqual([]);
+    expect((await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: both })).warnings).toEqual([]);
     const late = new Judge();
     g = open({ llm: late, extraction: "regex", contradiction: "llm" });
-    await g.insert.ontology({ entities: ANN_ACME_GLOBEX, relations: [annAt("globex", 2022)] });
-    expect((await g.insert.ontology({ relations: [annAt("acme", 2020)] })).warnings).toEqual([]);
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: [annAt("globex", 2022)] });
+    expect((await g.insert.facts({ relations: [annAt("acme", 2020)] })).warnings).toEqual([]);
     expect(late.prompts).toEqual([]);
   });
 
@@ -179,11 +179,11 @@ function suite(spec: StoreSpec): void {
     const judge = new Judge();
     const schema: Schema = { relations: [{ type: "WORKS_AT", from: { max_count: 1 } }] };
     const g = open({ llm: judge, extraction: "regex", contradiction: "llm", schema });
-    await g.insert.ontology({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
-    const res = await g.insert.ontology({ relations: [annAt("globex", 2022)] });
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
+    const res = await g.insert.facts({ relations: [annAt("globex", 2022)] });
     expect(res.warnings.map((w) => w.code)).toEqual(["relation_superseded"]);
     expect(judge.prompts).toEqual([]);
-    await g.insert.ontology({ relations: [{ from_entity: "person:ann", type: "LIKES", to_entity: "company:acme" }] });
+    await g.insert.facts({ relations: [{ from_entity: "person:ann", type: "LIKES", to_entity: "company:acme" }] });
     const rel = await g.relations.create("person:ann", "DISLIKES", "company:acme");
     expect(judge.prompts[0]).toContain("1. Ann -[LIKES]-> Acme");
     expect((await g.relations.list({ to_entity: "company:acme" })).items.map((r) => r.type)).toEqual(["DISLIKES"]);
@@ -193,7 +193,7 @@ function suite(spec: StoreSpec): void {
 
   it("coverage names schema terms, entities, and what is missing", async () => {
     const g = open({ schema: TERMS });
-    await g.insert.ontology({ entities: [{ type: "Company", name: "Acme" }] });
+    await g.insert.facts({ entities: [{ type: "Company", name: "Acme" }] });
     const cov = await g.coverage("What is the staff size of the firm Acme by ad spend?");
     expect(cov.terms.map((t) => [t.term, t.kind, t.matched, t.certified])).toEqual([
       ["Company", "entity", "firm", true],
@@ -216,7 +216,7 @@ function suite(spec: StoreSpec): void {
 
   it("synonym seeding finds entities by a type synonym", async () => {
     const g = open({ schema: TERMS });
-    await g.insert.ontology({
+    await g.insert.facts({
       entities: [
         { type: "Company", name: "Acme" },
         { type: "Person", name: "Ann" },
@@ -233,7 +233,7 @@ function suite(spec: StoreSpec): void {
   it("embedding seeding fuses with BM25 and embeds each entity once", async () => {
     const embedder = new FakeEmbedder();
     const g = open({ embedder, seeds: "embeddings" });
-    await g.insert.ontology({
+    await g.insert.facts({
       entities: [
         { type: "Animal", name: "Cat" },
         { type: "Animal", name: "Dog" },

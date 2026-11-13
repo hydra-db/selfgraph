@@ -79,7 +79,7 @@ def test_max_tier_caps_graph_and_per_call_options():
     g = fresh_graph("tier", llm=Judge(), level="max", max_tier="balanced")
     assert g.tiers["extraction"] == "spacy"
     assert (g.tiers["resolution"], g.tiers["contradiction"], g.tiers["seeds"]) == ("fuzzy", "supersede", "synonyms")
-    res = run(g.insert.ontology({"entities": [BOB]}, resolver="llm", contradiction="llm"))
+    res = run(g.insert.facts({"entities": [BOB]}, resolver="llm", contradiction="llm"))
     assert res.tiers == {"resolution": "fuzzy", "contradiction": "supersede"}
     quiet = fresh_graph("tier", level="max", max_tier="balanced", resolver="llm", contradiction="llm")
     assert (quiet.tiers["resolution"], quiet.tiers["contradiction"]) == ("fuzzy", "supersede")
@@ -89,13 +89,13 @@ def test_max_tier_caps_graph_and_per_call_options():
 
 def test_balanced_merges_by_alias_and_results_name_their_tiers():
     g = fresh_graph("tier")
-    run(g.insert.ontology({"entities": [ROBERT]}))
-    res = run(g.insert.ontology({"entities": [BOB]}))
+    run(g.insert.facts({"entities": [ROBERT]}))
+    res = run(g.insert.facts({"entities": [BOB]}))
     assert len(res.merges) == 1
     assert res.tiers == {"resolution": "default", "contradiction": "warn"}
     light = fresh_graph("tier", level="light")
-    run(light.insert.ontology({"entities": [ROBERT]}))
-    assert run(light.insert.ontology({"entities": [BOB]})).merges == []
+    run(light.insert.facts({"entities": [ROBERT]}))
+    assert run(light.insert.facts({"entities": [BOB]})).merges == []
     text = run(light.insert.text("Ann works at Acme."))
     assert text.tiers == {"extraction": "regex", "resolution": "exact", "contradiction": "warn"}
     found = run(light.retrieve("Ann"))
@@ -106,9 +106,9 @@ def test_balanced_merges_by_alias_and_results_name_their_tiers():
 def test_llm_judged_contradiction_retires_an_older_fact_without_a_schema():
     judge = Judge()
     g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
-    run(g.insert.ontology({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
     assert judge.prompts == []
-    res = run(g.insert.ontology({"relations": [works_at("globex", 2022)]}))
+    res = run(g.insert.facts({"relations": [works_at("globex", 2022)]}))
     assert res.tiers["contradiction"] == "llm"
     assert [w.code for w in res.warnings] == ["relation_superseded"]
     assert "New fact: Ann -[WORKS_AT]-> Globex" in judge.prompts[0]
@@ -123,17 +123,17 @@ def test_llm_judged_contradiction_retires_an_older_fact_without_a_schema():
 def test_llm_judge_keeps_compatible_facts_and_skips_same_write_and_older_inputs():
     judge = Judge(retire=())
     g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
-    run(g.insert.ontology({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
-    res = run(g.insert.ontology({"relations": [works_at("globex", 2022)]}))
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
+    res = run(g.insert.facts({"relations": [works_at("globex", 2022)]}))
     assert res.warnings == [] and len(judge.prompts) == 1
     assert len(run(g.relations.list(from_entity="person:ann")).items) == 2
     g = fresh_graph("tier", llm=Judge(), extraction="regex", contradiction="llm")
     both = [works_at("acme", 2020), works_at("globex", 2022)]
-    assert run(g.insert.ontology({"entities": ANN_ACME_GLOBEX, "relations": both})).warnings == []
+    assert run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": both})).warnings == []
     late = Judge()
     g = fresh_graph("tier", llm=late, extraction="regex", contradiction="llm")
-    run(g.insert.ontology({"entities": ANN_ACME_GLOBEX, "relations": [works_at("globex", 2022)]}))
-    assert run(g.insert.ontology({"relations": [works_at("acme", 2020)]})).warnings == []
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("globex", 2022)]}))
+    assert run(g.insert.facts({"relations": [works_at("acme", 2020)]})).warnings == []
     assert late.prompts == []
 
 
@@ -141,11 +141,11 @@ def test_llm_judge_leaves_cardinality_types_to_the_schema_rule_and_judges_other_
     judge = Judge()
     spec = {"relations": [{"type": "WORKS_AT", "from": {"max_count": 1}}]}
     g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm", schema=spec)
-    run(g.insert.ontology({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
-    res = run(g.insert.ontology({"relations": [works_at("globex", 2022)]}))
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
+    res = run(g.insert.facts({"relations": [works_at("globex", 2022)]}))
     assert [w.code for w in res.warnings] == ["relation_superseded"] and judge.prompts == []
     likes = {"from_entity": "person:ann", "type": "LIKES", "to_entity": "company:acme"}
-    run(g.insert.ontology({"relations": [likes]}))
+    run(g.insert.facts({"relations": [likes]}))
     rel = run(g.relations.create("person:ann", "DISLIKES", "company:acme"))
     assert "1. Ann -[LIKES]-> Acme" in judge.prompts[0]
     assert [r.type for r in run(g.relations.list(to_entity="company:acme")).items] == ["DISLIKES"]
@@ -156,7 +156,7 @@ def test_llm_judge_leaves_cardinality_types_to_the_schema_rule_and_judges_other_
 
 def test_coverage_names_schema_terms_entities_and_what_is_missing():
     g = fresh_graph("tier", schema=TERMS)
-    run(g.insert.ontology({"entities": [{"type": "Company", "name": "Acme"}]}))
+    run(g.insert.facts({"entities": [{"type": "Company", "name": "Acme"}]}))
     cov = run(g.coverage("What is the staff size of the firm Acme by ad spend?"))
     assert [(t.term, t.kind, t.matched, t.certified) for t in cov.terms] == [
         ("Company", "entity", "firm", True),
@@ -174,7 +174,7 @@ def test_coverage_names_schema_terms_entities_and_what_is_missing():
 
 def test_synonym_seeding_finds_entities_by_a_type_synonym():
     g = fresh_graph("tier", schema=TERMS)
-    run(g.insert.ontology({"entities": [{"type": "Company", "name": "Acme"}, {"type": "Person", "name": "Ann"}]}))
+    run(g.insert.facts({"entities": [{"type": "Company", "name": "Acme"}, {"type": "Person", "name": "Ann"}]}))
     found = run(g.retrieve("which employers are there"))
     assert found.tiers["seeds"] == "synonyms"
     assert [s.id for s in found.seeds] == ["company:acme"]
@@ -185,7 +185,7 @@ def test_synonym_seeding_finds_entities_by_a_type_synonym():
 def test_embedding_seeding_fuses_with_bm25_and_embeds_each_entity_once():
     embedder = Embedder()
     g = fresh_graph("tier", embedder=embedder, seeds="embeddings")
-    run(g.insert.ontology({"entities": [{"type": "Animal", "name": "Cat"}, {"type": "Animal", "name": "Dog"}]}))
+    run(g.insert.facts({"entities": [{"type": "Animal", "name": "Cat"}, {"type": "Animal", "name": "Dog"}]}))
     found = run(g.retrieve("feline"))
     assert found.tiers["seeds"] == "embeddings"
     assert [s.id for s in found.seeds] == ["animal:cat"]
@@ -239,7 +239,7 @@ def test_from_tables_drafts_types_properties_relations_and_mappings():
 
 def test_cli_mcp_and_settings_carry_the_level_and_coverage(capsys):
     g = fresh_graph("tier")
-    run(g.insert.ontology({"entities": [{"type": "Company", "name": "Acme"}]}))
+    run(g.insert.facts({"entities": [{"type": "Company", "name": "Acme"}]}))
     cov = cli(g, ["coverage", "Acme", "revenue"], capsys)
     assert (cov["covered"], cov["uncovered"]) == (["acme"], ["revenue"])
     assert cli(g, ["retrieve", "Acme", "--seeds", "bm25"], capsys)["tiers"] == {"seeds": "bm25", "traversal": "bfs"}
