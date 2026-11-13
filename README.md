@@ -128,6 +128,7 @@ selfgraph --store neo4j --uri bolt://localhost:7687 retrieve "who runs Acme" --c
 - [Resources](https://github.com/hydra-db/selfgraph/blob/main/docs/resources.md): entities, relations, preferences, decisions, ids
 - [Retrieval](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md) and [maintenance](https://github.com/hydra-db/selfgraph/blob/main/docs/maintenance.md)
 - [Backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md), [CLI](https://github.com/hydra-db/selfgraph/blob/main/docs/cli.md), [MCP](https://github.com/hydra-db/selfgraph/blob/main/docs/mcp.md), [errors](https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md), [TypeScript](https://github.com/hydra-db/selfgraph/blob/main/docs/typescript.md)
+- [Roadmap](https://github.com/hydra-db/selfgraph/blob/main/docs/roadmap/README.md): planned tiers, ontology, and query modules
 
 ## Contributing
 

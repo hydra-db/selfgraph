@@ -26,3 +26,5 @@ Relations and preferences keep their version history.
 
 Out of scope: embeddings, vector search, GraphRAG, text-to-Cypher, and file
 parsing.
+
+Planned work is in the [roadmap](roadmap/README.md).
