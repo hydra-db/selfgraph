@@ -13,7 +13,9 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from ._maintenance import scan_entities, scan_relations
 from ._ops import DECISION_CLEARABLE, PREFERENCE_CLEARABLE, invalidated_note, parse_time, require_changes
+from ._serde import EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES
 from .client import SelfGraph
 from .errors import STORE_KUZU_HINT, NotFoundError, StoreError, ValidationError, setting_hint, surface_hint
 from .extraction.prompts import check_prompts
@@ -22,6 +24,7 @@ from .llm.base import check_llm_config
 from .models import (
     LLM_CONCURRENCY,
     LLM_TIMEOUT,
+    CypherResult,
     ExtractionInstructions,
     ExtractionPrompts,
     InsertResult,
@@ -57,6 +60,8 @@ __all__ = [
     "blank_lexical_tokens",
     "bind_params",
     "ignored_settings",
+    "cypher_names",
+    "checked_cypher",
 ]
 
 _log = logging.getLogger("selfgraph")
@@ -222,6 +227,102 @@ def blank_lexical_tokens(query: str) -> str:
     if i < n:
         out.append(query[i:])
     return "".join(out)
+
+
+_PATTERN_NAMES = re.compile(
+    r"([(\[])\s*(?:[A-Za-z_]\w*)?\s*((?::\s*(?:`[^`]+`|\w+)\s*(?:\|\s*:?\s*(?:`[^`]+`|\w+)\s*)*)+)"
+)
+_NAME_PART = re.compile(r"`([^`]+)`|(\w+)")
+_NAME_LITERAL = re.compile(r"""(?:\.\s*name\s*=|\bname\s*:)\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")""")
+_LISTED_NAMES = 20
+
+
+def cypher_names(query: str) -> tuple[list[str], list[str], list[str]]:
+    """Read the node labels, relationship types, and entity name literals a Cypher query matches on.
+
+    Labels come from node patterns, (n:Label), types from relationship patterns, [r:TYPE|OTHER], and names from
+    n.name = 'x' or {name: 'x'}. This is a lexical read for advice, not a parse.
+
+    @param query (str): the Cypher query.
+    @return (tuple[list[str], list[str], list[str]]): the distinct labels, relationship types, and names, in order.
+    """
+    labels: dict[str, None] = {}
+    types: dict[str, None] = {}
+    for opener, names in _PATTERN_NAMES.findall(query):
+        for quoted, bare in _NAME_PART.findall(names):
+            (labels if opener == "(" else types)[quoted or bare] = None
+    literals = {single or double: None for single, double in _NAME_LITERAL.findall(query)}
+    return list(labels), list(types), list(literals)
+
+
+def _squash(text: str) -> str:
+    """Collapse whitespace and casefold, so a literal matches a stored name that differs only in case or spacing.
+
+    @param text (str): the text.
+    @return (str): the squashed text.
+    """
+    return " ".join(text.split()).casefold()
+
+
+async def _cypher_notes(graph: SelfGraph, query: str) -> list[str]:
+    """Explain likely mistakes in a Cypher query that found nothing; see checked_cypher.
+
+    @param graph (SelfGraph): the open graph.
+    @param query (str): the Cypher query.
+    @return (list[str]): one note per suspect label, relationship type, or name literal.
+    """
+    labels, types, literals = cypher_names(query)
+    if not (labels or types or literals):
+        return []
+    ns = graph.namespace
+    entities = await scan_entities(graph.store, ns)
+    relations = await scan_relations(graph.store, ns)
+    physical = {*LABELS, *EDGE_TYPES, *PREFERENCE_EDGE_TYPES, *getattr(graph.store, "query_labels", ())}
+    notes = []
+    for kind, used, stored in (
+        ("label", labels, sorted({e.type for e in entities})),
+        ("relationship type", types, sorted({r.type for r in relations})),
+    ):
+        listed = ", ".join(stored[:_LISTED_NAMES]) or "none"
+        notes += [
+            f"{kind} {name!r} is not stored in namespace {ns!r}; stored: {listed}"
+            for name in used
+            if name not in physical and name not in stored
+        ]
+    names = {e.name for e in entities}
+    squashed: dict[str, str] = {}
+    for name in sorted(names):
+        squashed.setdefault(_squash(name), name)
+    for literal in literals:
+        near = squashed.get(_squash(literal))
+        if literal not in names and near is not None:
+            notes.append(f"no entity in namespace {ns!r} is named {literal!r}, but one is named {near!r}")
+    return notes
+
+
+async def checked_cypher(graph: SelfGraph, query: str, params: Mapping[str, Any] | None) -> CypherResult:
+    """Run a Cypher query and, when it returns no rows or fails, explain likely mistakes.
+
+    A note names each label or relationship type the namespace never stored (internal ones and the store's own
+    physical names count as stored) and each name literal no entity has exactly while one differs only by letter
+    case or spacing. Notes go in the result's warnings, or are appended to the StoreError of a failed query. The
+    checks read every entity and relation, so they run only then.
+
+    @param graph (SelfGraph): the open graph.
+    @param query (str): the Cypher query.
+    @param params (Mapping[str, Any] | None): the query parameters.
+    @return (CypherResult): the result, with warnings when it is empty.
+    """
+    try:
+        result = await graph.run_cypher(query, params)
+    except StoreError as exc:
+        notes = await _cypher_notes(graph, query)
+        if notes:
+            raise StoreError(f"{exc}; {'; '.join(notes)}") from exc
+        raise
+    if not result.rows:
+        result.warnings = await _cypher_notes(graph, query)
+    return result
 
 
 def bind_params(query: str, params: Mapping[str, Any] | None) -> dict[str, Any]:

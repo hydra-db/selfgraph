@@ -66,6 +66,9 @@ unchanged.
 | `Schema.from_neo4j_ontology(data)`, `schema.to_neo4j_ontology()` | `fromNeo4jOntology(data)`, `toNeo4jOntology(schema)` |
 | `Schema.from_tables(tables, name="sales")` | `fromTables(tables, { name: "sales" })` |
 | `SelfGraph(store, level="light", max_tier="balanced", embedder=e)`, `graph.tiers` | `new SelfGraph(store, { level: "light", max_tier: "balanced", embedder: e })`, `graph.tiers` |
+| `schema.to_ossie()` | `toOssie(schema)` |
+| `graph.check_answerable(q, terms=[...])`, `graph.readiness()`, `graph.export_obsidian()` | `graph.checkAnswerable(q, { terms: [...] })`, `graph.readiness()`, `graph.exportObsidian()` |
+| `graph.relations.certify(id, by="hr")` | `graph.relations.certify(id, { by: "hr" })` |
 
 `await using` needs TypeScript 5.2+ or Node 24+. In plain JavaScript on Node 20
 to 22, call `await graph.close()` in a `finally` block.

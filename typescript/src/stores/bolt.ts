@@ -266,5 +266,5 @@ export async function recordsToResult(pending: Result): Promise<CypherResult> {
   const updates = result.summary.counters.updates();
   const counters: Record<string, number> = {};
   for (const [js, py] of COUNTER_NAMES) if (updates[js]) counters[py] = updates[js];
-  return { columns, rows, counters };
+  return { columns, rows, counters, warnings: [] };
 }

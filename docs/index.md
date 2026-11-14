@@ -15,10 +15,11 @@ Relations and preferences keep their version history.
 | [Inserting](inserting.md) | Extracting from text, and writing ready facts. |
 | [Tiers](tiers.md) | The `level` preset, what each level picks, and the cost cap. |
 | [Schema](schema.md) | Optional types that guide extraction and check writes. |
-| [Ontology](ontology.md) | Terms, synonyms, definitions, coverage checks, and drafts from table metadata. |
+| [Ontology](ontology.md) | Terms, synonyms, definitions, grounding a question, and drafts from table metadata. |
 | [Entity resolution](resolution.md) | Merging duplicate entities on insert, and undoing a merge. |
 | [Resources](resources.md) | Typed CRUD over entities, relations, preferences, and decisions. |
-| [Retrieval](retrieval.md) | `retrieve`, how it seeds and traverses, and raw Cypher. |
+| [Retrieval](retrieval.md) | `retrieve`, how it seeds and traverses, raw Cypher, and Obsidian export. |
+| [Answering safely](trust.md) | Readiness, answerability, hubs, and certified facts, for agents. |
 | [Maintenance](maintenance.md) | Relevance decay, pruning, and merging duplicate relations. |
 | [Backends](backends.md) | The built-in stores and how to add your own. |
 | [CLI](cli.md) | The `selfgraph` command. |

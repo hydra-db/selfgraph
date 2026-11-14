@@ -23,17 +23,6 @@ _SURVIVOR_RULE = (
 )
 
 
-def _require_flag(name: str, value: object) -> None:
-    """Validate a flag is a real boolean, so a truthy string never turns a dry run into a delete.
-
-    @param name (str): the argument name for the error message.
-    @param value (object): the value to check.
-    @return (None): nothing; raises ValidationError otherwise.
-    """
-    if not isinstance(value, bool):
-        raise ValidationError(f"{name} must be a boolean, got {type(value).__name__}")
-
-
 def _require_not_future(name: str, at: datetime, action: str) -> None:
     """Reject a reference time more than one minute ahead of now, allowing for clock skew.
 
@@ -66,7 +55,7 @@ class Maintenance(Resource):
         """
         _m.require_number("half_life_days", half_life_days, positive=True)
         now = _ops.parse_time(now, "now")
-        _require_flag("dry_run", dry_run)
+        _ops._require_bool("dry_run", dry_run)
         at = aware(now) if now is not None else _now()
         _require_not_future("now", at, "decay scores items as of")
         ns = self._c.namespace
@@ -110,6 +99,7 @@ class Maintenance(Resource):
         older_than: datetime | str | None = None,
         types: list[str] | None = None,
         relation_types: list[str] | None = None,
+        include_certified: bool = False,
         dry_run: bool = True,
     ) -> PruneResult:
         """Remove entities and current relations that are below a relevance or older than a time.
@@ -122,16 +112,20 @@ class Maintenance(Resource):
         removed entity takes its relations, evidence, preferences, and decisions with it; those cascaded
         relations are listed too. Only current relations are matched: a relation a contradiction invalidated stays
         as history unless its entity is removed, which deletes every version. Removal runs in batches
-        of up to 1000 ids per transaction.
+        of up to 1000 ids per transaction. A certified relation, and each entity it connects, is kept and listed in
+        certified unless include_certified is set. merge_ids lists the live merge records a removed entity takes with
+        it, whose unmerge is then lost.
 
         @param min_relevance (float | None): remove items whose relevance is below this.
         @param older_than (datetime | str | None): remove items whose latest timestamp is before this; at most one
             minute ahead.
         @param types (list[str] | None): only consider entities of these types.
         @param relation_types (list[str] | None): only consider relations of these types.
+        @param include_certified (bool): also remove certified relations and the entities they connect.
         @param dry_run (bool): list what would be removed without removing it; True by default.
-        @return (PruneResult): the entity and relation ids removed, or that would be, and delete counts (no
-            deleted block on a dry run); with min_relevance and nothing scored yet, a note says to run decay first.
+        @return (PruneResult): the entity and relation ids removed, or that would be, the certified relations kept,
+            the merge records lost, and delete counts (no deleted block on a dry run); with min_relevance and nothing
+            scored yet, a note says to run decay first.
         """
         if min_relevance is not None:
             _m.require_number("min_relevance", min_relevance, upper=1)
@@ -142,7 +136,8 @@ class Maintenance(Resource):
         for name, value in (("types", types), ("relation_types", relation_types)):
             if value is not None:
                 _ops._require_list(name, value)
-        _require_flag("dry_run", dry_run)
+        _ops._require_bool("include_certified", include_certified)
+        _ops._require_bool("dry_run", dry_run)
         if min_relevance is None and older_than is None:
             raise ValidationError("prune needs min_relevance or older_than; types and relation_types only narrow them")
         narrowed = types is not None or relation_types is not None
@@ -160,17 +155,23 @@ class Maintenance(Resource):
         reader = await self._c._reader()
         relations = await _m.scan_relations(reader, ns)
         entities = await _m.scan_entities(reader, ns)
-        doomed = sorted(
-            e.id for e in entities if matches(e.relevance, (e.created_at, e.updated_at), e.type, entity_types)
-        )
+        hit = {e.id for e in entities if matches(e.relevance, (e.created_at, e.updated_at), e.type, entity_types)}
+        hit_rels = {r.id for r in relations if matches(r.relevance, (r.created_at, r.event_time), r.type, rel_types)}
+        certified = [] if include_certified else [r for r in relations if r.certified_at is not None]
+        kept = {r.id for r in certified}
+        doomed = sorted(hit - {eid for r in certified for eid in (r.from_entity, r.to_entity)})
         gone = set(doomed)
         cascaded = {r.id for r in relations if r.from_entity in gone or r.to_entity in gone}
-        direct = sorted(
-            r.id
-            for r in relations
-            if r.id not in cascaded and matches(r.relevance, (r.created_at, r.event_time), r.type, rel_types)
+        direct = sorted(r.id for r in relations if r.id in hit_rels and r.id not in cascaded and r.id not in kept)
+        result = PruneResult(
+            dry_run=dry_run,
+            entity_ids=doomed,
+            relation_ids=sorted(cascaded | set(direct)),
+            certified=sorted(r.id for r in certified if r.id in hit_rels or r.from_entity in hit or r.to_entity in hit),
+            merge_ids=[
+                m["id"] for m in await _m.scan_live_merges(reader, ns) if gone & {m["survivor_id"], m["absorbed_id"]}
+            ],
         )
-        result = PruneResult(dry_run=dry_run, entity_ids=doomed, relation_ids=sorted(cascaded | set(direct)))
         if min_relevance is not None and all(item.relevance is None for item in (*entities, *relations)):
             result.note = _UNSCORED
         if dry_run:
@@ -202,25 +203,29 @@ class Maintenance(Resource):
         conflict, then each duplicate in id order, and every key a duplicate loses is reported in the group's
         conflicts. The survivor takes the earliest event_time of the group, the duplicates' evidence moves
         onto it (recounting its distinct sources), decisions that used a duplicate as a step are repointed
-        to it, and the duplicates are then deleted. Relations a contradiction invalidated are never grouped.
+        to it, and the duplicates are then deleted. Relations a contradiction invalidated are never grouped. A group
+        holding a certified relation is listed in certified and left alone, since merging would change or delete
+        what a person verified; uncertify it to merge.
 
         @param dry_run (bool): list the groups without merging them; True by default.
         @return (DedupeResult): each group's survivor, duplicates, conflicting keys, and versions lost per
-            duplicate, the survivor rule, and delete counts (no deleted block on a dry run).
+            duplicate, the groups left alone as certified, the survivor rule, and delete counts (no deleted block on a
+            dry run).
         """
-        _require_flag("dry_run", dry_run)
+        _ops._require_bool("dry_run", dry_run)
         ns = self._c.namespace
         reader = await self._c._reader()
         groups: dict[tuple[str, str, str], list[Relation]] = {}
         for rel in await _m.scan_relations(reader, ns):
             groups.setdefault((rel.from_entity, rel.type, rel.to_entity), []).append(rel)
         plan = []
+        held = []
         for (f, t, to), rels in sorted(groups.items()):
             if len(rels) < 2:
                 continue
             survivor, *duplicates = sorted(rels, key=lambda r: r.id)
             _, conflicts = _m.fold_properties(survivor, duplicates)
-            plan.append(
+            (held if any(r.certified_at is not None for r in rels) else plan).append(
                 DedupeGroup(
                     from_entity=f,
                     type=t,
@@ -234,7 +239,7 @@ class Maintenance(Resource):
                     },
                 )
             )
-        result = DedupeResult(dry_run=dry_run, groups=plan, note=_SURVIVOR_RULE if plan else None)
+        result = DedupeResult(dry_run=dry_run, groups=plan, certified=held, note=_SURVIVOR_RULE if plan else None)
         if dry_run:
             return result
         counts = dict(_ops._NO_DELETES)

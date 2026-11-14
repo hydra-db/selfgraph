@@ -3,16 +3,21 @@ import { homedir } from "node:os";
 import { join, sep } from "node:path";
 
 import type { SelfGraph } from "./client.js";
-import { NotFoundError, STORE_KUZU_HINT, settingHint, surfaceHint, ValidationError } from "./errors.js";
+import { NotFoundError, STORE_KUZU_HINT, StoreError, settingHint, surfaceHint, ValidationError } from "./errors.js";
 import { checkPrompts } from "./extraction/prompts.js";
+import { casefold } from "./internal/casefold.js";
 import { log } from "./internal/log.js";
-import { PY_WORD_CLASS, pyRepr, pyStrip } from "./internal/py.js";
+import { comparePy, PY_WORD_CLASS, PY_WS_CLASS, pyRepr, pySplit, pyStrip } from "./internal/py.js";
+import { EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES } from "./labels.js";
 import { checkLlmConfig } from "./llm/index.js";
+import { scanEntities, scanRelations } from "./maintenance.js";
 import {
   asInput,
+  type CypherResult,
   ExtractionInstructions,
   ExtractionPrompts,
   type InsertResult,
+  type JsonValue,
   LLM_DEFAULTS,
   type LLMConfig,
   type PruneResult,
@@ -267,6 +272,119 @@ export function blankLexicalTokens(query: string): string {
   }
   if (i < n) out.push(query.slice(i));
   return out.join("");
+}
+
+const W = `[${PY_WORD_CLASS}]`;
+const S = `[${PY_WS_CLASS}]`;
+const NAME = `(?:\`[^\`]+\`|${W}+)`;
+const PATTERN_NAMES = new RegExp(
+  `([(\\[])${S}*(?:[A-Za-z_]${W}*)?${S}*((?::${S}*${NAME}${S}*(?:\\|${S}*:?${S}*${NAME}${S}*)*)+)`,
+  "gu",
+);
+const NAME_PART = new RegExp(`\`([^\`]+)\`|(${W}+)`, "gu");
+const NAME_LITERAL = new RegExp(
+  `(?:\\.${S}*name${S}*=|(?<!${W})name${S}*:)${S}*(?:'((?:[^'\\\\]|\\\\.)*)'|"((?:[^"\\\\]|\\\\.)*)")`,
+  "gu",
+);
+const LISTED_NAMES = 20;
+
+/**
+ * Read the node labels, relationship types, and entity name literals a Cypher query matches on.
+ *
+ * Labels come from node patterns, (n:Label), types from relationship patterns, [r:TYPE|OTHER], and names from n.name = 'x' or {name: 'x'}. This is a lexical read for advice, not a parse.
+ *
+ * @param query (string): the Cypher query.
+ * @return ([string[], string[], string[]]): the distinct labels, relationship types, and names, in order.
+ */
+export function cypherNames(query: string): [string[], string[], string[]] {
+  const labels = new Set<string>();
+  const types = new Set<string>();
+  for (const [, opener, names] of query.matchAll(PATTERN_NAMES)) {
+    for (const [, quoted, bare] of names!.matchAll(NAME_PART)) (opener === "(" ? labels : types).add(quoted || bare!);
+  }
+  const literals = new Set<string>();
+  for (const [, single, double] of query.matchAll(NAME_LITERAL)) literals.add(single ?? double ?? "");
+  return [[...labels], [...types], [...literals]];
+}
+
+/**
+ * Collapse whitespace and casefold, so a literal matches a stored name that differs only in case or spacing.
+ *
+ * @param text (string): the text.
+ * @return (string): the squashed text.
+ */
+const squash = (text: string): string => casefold(pySplit(text).join(" "));
+
+/**
+ * Explain likely mistakes in a Cypher query that found nothing; see checkedCypher.
+ *
+ * @param graph (SelfGraph): the open graph.
+ * @param query (string): the Cypher query.
+ * @return (string[]): one note per suspect label, relationship type, or name literal.
+ */
+async function cypherNotes(graph: SelfGraph, query: string): Promise<string[]> {
+  const [labels, types, literals] = cypherNames(query);
+  if (!(labels.length || types.length || literals.length)) return [];
+  const ns = graph.namespace;
+  const entities = await scanEntities(graph.store, ns);
+  const relations = await scanRelations(graph.store, ns);
+  const physical = new Set([
+    ...LABELS,
+    ...EDGE_TYPES,
+    ...PREFERENCE_EDGE_TYPES,
+    ...((graph.store as { queryLabels?: readonly string[] }).queryLabels ?? []),
+  ]);
+  const notes: string[] = [];
+  const kinds: Array<[string, string[], string[]]> = [
+    ["label", labels, [...new Set(entities.map((e) => e.type))].sort(comparePy)],
+    ["relationship type", types, [...new Set(relations.map((r) => r.type))].sort(comparePy)],
+  ];
+  for (const [kind, used, stored] of kinds) {
+    const listed = stored.slice(0, LISTED_NAMES).join(", ") || "none";
+    for (const name of used) {
+      if (!physical.has(name) && !stored.includes(name)) {
+        notes.push(`${kind} ${pyRepr(name)} is not stored in namespace ${pyRepr(ns)}; stored: ${listed}`);
+      }
+    }
+  }
+  const names = new Set(entities.map((e) => e.name));
+  const squashed = new Map<string, string>();
+  for (const name of [...names].sort(comparePy)) if (!squashed.has(squash(name))) squashed.set(squash(name), name);
+  for (const literal of literals) {
+    const near = squashed.get(squash(literal));
+    if (!names.has(literal) && near !== undefined) {
+      notes.push(`no entity in namespace ${pyRepr(ns)} is named ${pyRepr(literal)}, but one is named ${pyRepr(near)}`);
+    }
+  }
+  return notes;
+}
+
+/**
+ * Run a Cypher query and, when it returns no rows or fails, explain likely mistakes.
+ *
+ * A note names each label or relationship type the namespace never stored (internal ones and the store's own physical names count as stored) and each name literal no entity has exactly while one differs only by letter case or spacing. Notes go in the result's warnings, or are appended to the StoreError of a failed query. The checks read every entity and relation, so they run only then.
+ *
+ * @param graph (SelfGraph): the open graph.
+ * @param query (string): the Cypher query.
+ * @param params (Record<string, JsonValue> | null | undefined): the query parameters.
+ * @return (CypherResult): the result, with warnings when it is empty.
+ */
+export async function checkedCypher(
+  graph: SelfGraph,
+  query: string,
+  params?: Record<string, JsonValue> | null,
+): Promise<CypherResult> {
+  let result: CypherResult;
+  try {
+    result = await graph.runCypher(query, params);
+  } catch (exc) {
+    if (!(exc instanceof StoreError)) throw exc;
+    const notes = await cypherNotes(graph, query);
+    if (notes.length) throw new StoreError(`${exc.message}; ${notes.join("; ")}`, { cause: exc });
+    throw exc;
+  }
+  if (!result.rows.length) result.warnings = await cypherNotes(graph, query);
+  return result;
 }
 
 /**

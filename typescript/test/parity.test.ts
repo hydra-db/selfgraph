@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { chunkByChars, chunkText, loadTokenizer } from "../src/chunking.js";
 import { errorReason, ValidationError } from "../src/errors.js";
+import { obsidianVault, toOssie } from "../src/export.js";
 import { NERExtractor } from "../src/extraction/basic.js";
 import { assembleExtraction, isNoiseName } from "../src/extraction/extractor.js";
 import {
@@ -23,16 +24,17 @@ import { setLogger } from "../src/index.js";
 import { log } from "../src/internal/log.js";
 import { comparePy, pyFloatRepr, pyJsonDumps, pyRepr, utf8 } from "../src/internal/py.js";
 import { epochMicros, fromIso, jsonIso, parseIso, pyStrDate, toIso } from "../src/internal/time.js";
-import { relevanceScore } from "../src/maintenance.js";
+import { lint, relevanceScore } from "../src/maintenance.js";
 import { isBlockedQuery } from "../src/mcp.js";
-import { EntityInput, type Preference, type Relation } from "../src/models.js";
+import { type DecisionTrace, type Entity, EntityInput, type Preference, type Relation } from "../src/models.js";
 import { fromNeo4jOntology, toNeo4jOntology } from "../src/neo4jSchema.js";
 import { Contradictions, versionAsOf } from "../src/ops.js";
 import { toJsonable } from "../src/output.js";
 import { DefaultResolver, distinctNames, jaroWinkler, nameSimilarity, tokenJaccard } from "../src/resolution.js";
 import { decodeCursor, decodeKeyCursor, encodeCursor } from "../src/resources/common.js";
-import { fold, formatProps, grepScore, pprRank, selectSeeds, tokens } from "../src/retrieval.js";
-import { contradictionCaps, Schema } from "../src/schema.js";
+import { answerability, fold, formatProps, grepScore, pprRank, selectSeeds, tokens } from "../src/retrieval.js";
+import { cypherNames } from "../src/runtime.js";
+import { asSchema, contradictionCaps, Schema } from "../src/schema.js";
 import { quoteLabel } from "../src/stores/cypherPrimitives.js";
 import { surrogateKey } from "../src/stores/hydradb.js";
 import { requireStr } from "../src/validate.js";
@@ -246,7 +248,7 @@ describe("retrieval ranking matches Python (NFC + casefold tokens, specificity, 
 describe("contradiction and as-of rules match Python", () => {
   const dates = (o: Record<string, unknown>) => {
     const out: Record<string, unknown> = { ...o };
-    for (const key of ["created_at", "event_time", "invalidated_at"]) {
+    for (const key of ["created_at", "event_time", "invalidated_at", "certified_at"]) {
       if (typeof out[key] === "string") out[key] = parseIso(out[key] as string);
     }
     return out;
@@ -394,5 +396,67 @@ describe("validation and diagnostics", () => {
     });
     expect(logged.length).toBe(1);
     expect(logged[0]).toMatch(/^warning: neo4j ontology: no Neo4j counterpart for: /);
+  });
+});
+
+const DATE_KEYS = ["created_at", "updated_at", "event_time", "invalidated_at", "relevance_at", "certified_at"];
+
+/**
+ * Revive the ISO timestamps of a fixture model dump into Dates.
+ *
+ * @param o (Record<string, unknown>): the dumped model.
+ * @return (T): the model with Date fields.
+ */
+function revive<T>(o: Record<string, unknown>): T {
+  const out: Record<string, unknown> = { ...o };
+  for (const key of DATE_KEYS) if (typeof out[key] === "string") out[key] = parseIso(out[key] as string);
+  return out as T;
+}
+
+describe("answerability, readiness lint, exports, and Cypher advice match Python", () => {
+  it("judges answerability identically", () => {
+    const a = fx.answerability;
+    const entities = a.entities.map(revive<Entity>);
+    const relations = a.relations.map(revive<Relation>);
+    const schema = asSchema(a.schema);
+    for (const [question, terms, depth, expected] of a.cases as Array<[string, string[] | null, number, unknown]>) {
+      expect(answerability(question, terms, entities, relations, a.keys, schema, depth), question).toEqual(expected);
+    }
+  });
+
+  it("lints identically", () => {
+    const l = fx.lint;
+    const args: [Entity[], Relation[], Preference[], DecisionTrace[], Set<string>] = [
+      l.entities.map(revive<Entity>),
+      l.relations.map(revive<Relation>),
+      [],
+      l.decisions.map(revive<DecisionTrace>),
+      new Set<string>(l.supported),
+    ];
+    expect(lint(...args, asSchema(l.schema))).toEqual(l.lint);
+    expect(lint(...args, null)).toEqual(l.lint_without_schema);
+  });
+
+  it("exports Ossie ontologies and Obsidian vaults identically", async () => {
+    await captureWarnings(() => {
+      for (const [raw, expected] of fx.ossie as Array<[Schema, unknown]>) {
+        expect(attempt(() => toOssie(raw))).toEqual(expected);
+      }
+    });
+    const o = fx.obsidian;
+    const vault = obsidianVault(
+      o.entities.map(revive<Entity>),
+      o.relations.map(revive<Relation>),
+      o.preferences.map(revive<Preference>),
+      o.decisions.map(revive<DecisionTrace>),
+    );
+    expect(Object.keys(vault)).toEqual(Object.keys(o.vault));
+    expect(vault).toEqual(o.vault);
+  });
+
+  it("reads Cypher labels, types, and name literals identically", () => {
+    for (const [query, expected] of fx.cypher_names as Array<[string, unknown]>) {
+      expect(cypherNames(query), query).toEqual(expected);
+    }
   });
 });

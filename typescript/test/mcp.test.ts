@@ -20,12 +20,12 @@ const BYPASSES = [
 
 const READS = ["MATCH (n) RETURN n.set AS x;", "RETURN 1; MATCH (n) RETURN n"];
 
-const TOOL_NAMES =
-  `coverage create_decision create_entity create_preference create_relation delete_decision delete_entity
-  delete_preference delete_relation entity_evidence entity_merges get_decision get_entity get_preference get_relation
-  get_schema insert_facts insert_text list_decisions list_entities list_preferences list_relations
-  maintenance_decay maintenance_dedupe_relations maintenance_prune preference_versions relation_evidence relation_versions
-  retrieve run_cypher unmerge_entity update_decision update_entity update_preference update_relation`.split(/\s+/);
+const TOOL_NAMES = `certify_relation check_answerable check_readiness create_decision create_entity create_preference
+  create_relation delete_decision delete_entity delete_preference delete_relation entity_evidence entity_merges
+  get_decision get_entity get_preference get_relation get_schema insert_facts insert_text list_decisions
+  list_entities list_preferences list_relations maintenance_decay maintenance_dedupe_relations maintenance_prune
+  preference_versions relation_evidence relation_versions retrieve run_cypher uncertify_relation unmerge_entity
+  update_decision update_entity update_preference update_relation`.split(/\s+/);
 
 const uri = tempKuzu("selfgraph-mcp-");
 afterAll(close);
@@ -108,7 +108,9 @@ describe("MCP tools over Kuzu", () => {
     await configure();
     const keys = (name: string) => Object.keys(mcpTool(name).input).sort();
     expect(keys("insert_text")).toEqual(
-      "contradiction event_time instructions metadata prompts resolver schema schema_mode source_id text".split(" "),
+      "contradiction event_time instructions metadata prompts replace_source resolver schema schema_mode source_id text".split(
+        " ",
+      ),
     );
     const dated = "insert_facts create_relation update_relation create_preference update_preference create_decision";
     for (const name of [...dated.split(" "), "update_decision"]) expect(keys(name), name).toContain("event_time");
@@ -258,7 +260,7 @@ describe("MCP tools over Kuzu", () => {
     }
   });
 
-  it("lists 35 tools over a transport and reports bad arguments as path: message lines", async () => {
+  it("lists 38 tools over a transport and reports bad arguments as path: message lines", async () => {
     await configure();
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
@@ -268,6 +270,7 @@ describe("MCP tools over Kuzu", () => {
     await server.connect(serverSide);
     await client.connect(clientSide);
     try {
+      expect(client.getInstructions()).toContain("check_answerable");
       const tools = (await client.listTools()).tools;
       expect(tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES);
       expect(TOOLS.map((t) => t.name).sort()).toEqual(TOOL_NAMES);
@@ -279,11 +282,11 @@ describe("MCP tools over Kuzu", () => {
         expect(hints[name]).toMatchObject({ destructiveHint: true, idempotentHint: true });
       }
       expect(hints.retrieve).toMatchObject({ readOnlyHint: true });
-      expect(hints.coverage).toMatchObject({ readOnlyHint: true });
+      expect(hints.check_answerable).toMatchObject({ readOnlyHint: true });
       expect(hints.create_entity).toMatchObject({ destructiveHint: false, idempotentHint: false });
       expect(hints.insert_facts).toMatchObject({ idempotentHint: true });
       for (const [tool, args, message] of [
-        ["get_schema", { format: "bogus" }, "invalid arguments: format: expected 'selfgraph' or 'neo4j'"],
+        ["get_schema", { format: "bogus" }, "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'"],
         ["create_entity", { name: "a" }, "invalid arguments: type: field required"],
         ["list_entitys", {}, "unknown tool 'list_entitys'"],
       ] as const) {

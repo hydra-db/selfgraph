@@ -1,22 +1,28 @@
 import { contradictionTier, GraphAccess, seedTier } from "./access.js";
-import { LLM_HINT, ValidationError } from "./errors.js";
+import { LLM_HINT, StoreError, ValidationError } from "./errors.js";
+import { obsidianVault } from "./export.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { Insert } from "./insert.js";
 import { pyStrip } from "./internal/py.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
+import { inspect, scanEntities, scanRelations } from "./maintenance.js";
 import {
+  type AnswerabilityReport,
   asInput,
-  type Coverage,
   type CypherResult,
+  type DateTimeInput,
   ExtractionInstructions,
   ExtractionPrompts,
   type JsonValue,
+  type LintIssue,
+  type Readiness,
   type RetrievalResult,
 } from "./models.js";
+import * as ops from "./ops.js";
 import type { Embedder, Extractor, GraphStore } from "./protocols.js";
 import { type EntityResolver, type ResolverMode, resolverFor } from "./resolution.js";
 import { Decisions, Entities, Maintenance, Preferences, Relations } from "./resources/index.js";
-import { coverage, type RetrieveOptions, retrieve } from "./retrieval.js";
+import { checkAnswerable, type RetrieveOptions, retrieve } from "./retrieval.js";
 import {
   buildLlm,
   buildStore,
@@ -36,7 +42,25 @@ import {
   type SchemaMode,
 } from "./schema.js";
 import { clamp, type ExtractionTier, type Level, PRESETS, requireLevel, requireTier, type SeedTier } from "./tiers.js";
-import { checkOptions, keysOf, requireJsonMapping, requireNamespace, typeName } from "./validate.js";
+import {
+  checkOptions,
+  keysOf,
+  parseTime,
+  requireInt,
+  requireJsonMapping,
+  requireList,
+  requireNamespace,
+  typeName,
+} from "./validate.js";
+
+export interface CheckAnswerableOptions {
+  terms?: readonly string[] | null;
+  as_of?: DateTimeInput | null;
+  depth?: number;
+}
+
+const LEXICAL_NOTE = "the check is lexical; embedding seeds may still find what the missing terms ask about";
+const ANSWERABLE_KEYS = keysOf<CheckAnswerableOptions>({ terms: true, as_of: true, depth: true });
 
 export interface SelfGraphOptions {
   llm?: LLMArg;
@@ -233,23 +257,99 @@ export class SelfGraph {
    * Retrieve graph context for a query via keyword seeds and bounded traversal.
    *
    * @param query (string): the natural-language query to seed from.
-   * @param options (RetrieveOptions): strategy ("bfs", "dfs", or "ppr"; the level's by default), seeds ("bm25", "synonyms" to also expand schema synonyms, or "embeddings" to fuse embedder similarity with BM25; the graph's tier by default), depth, k, max_nodes, budget_tokens, and as_of (read on the valid-time axis: relations and preferences valid then, with their entities).
-   * @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
+   * @param options (RetrieveOptions): strategy ("bfs", "dfs", or "ppr"; the level's by default), seeds ("bm25", "synonyms" to also expand schema synonyms, or "embeddings" to fuse embedder similarity with BM25; the graph's tier by default), depth, k, max_nodes, budget_tokens, and as_of (read on the valid-time axis: relations and preferences valid then, with their entities), and skip_hubs (do not walk through hubs, entities with at least 50 relations, other than seeds).
+   * @return (RetrievalResult): the seeds, the collected subgraph, the assembled context, and the hubs reached.
    */
   async retrieve(query: string, options: RetrieveOptions = {}): Promise<RetrievalResult> {
     return retrieve(this.graph, query, options);
   }
 
   /**
-   * Report which words of a question the graph can ground, without an LLM.
+   * Judge, without an LLM, whether the graph holds what a question asks about, before answering from it.
    *
-   * A content word is covered when a schema term names it (an entity type, relation type, or definition, by name, alias, or synonym) or when a stored entity's text holds it. Uncovered words mark what the graph cannot answer about.
+   * Each term of the question (or each given term) is matched against entity names and aliases, then entity types, definitions, relation types, and property and preference keys; a schema term covers a word only when the graph holds something of it. Entities matched by different terms must connect within depth hops, and not only through a hub. The verdict is answerable, partial (some terms missing), uncertain (all covered but not connected, or only through a hub), or not_answerable (nothing covered). With embedding seeds, a report with missing terms carries a note that the check is lexical.
    *
-   * @param question (string): the natural-language question.
-   * @return (Coverage): the matched terms, the covered and uncovered words, and the covered share.
+   * @param question (string): the question.
+   * @param options (CheckAnswerableOptions): terms, the phrases to check (else each run of question words that spells a stored name, and every other content word); as_of, judge the graph as it stood then (no offset means UTC); depth, the most hops between matched entities (default 3).
+   * @return (AnswerabilityReport): the verdict, each term's coverage, the missing terms, and the hub-only pairs.
    */
-  async coverage(question: string): Promise<Coverage> {
-    return coverage(this.graph, question);
+  async checkAnswerable(question: string, options: CheckAnswerableOptions = {}): Promise<AnswerabilityReport> {
+    checkOptions("check_answerable", options, ANSWERABLE_KEYS);
+    if (typeof question !== "string" || !pyStrip(question)) {
+      throw new ValidationError("question must be a non-empty string");
+    }
+    let terms: string[] | null = null;
+    if (options.terms != null) {
+      requireList("terms", options.terms);
+      if (!options.terms.length || !options.terms.every((t) => typeof t === "string" && pyStrip(t))) {
+        throw new ValidationError("terms must be a non-empty list of non-empty strings");
+      }
+      terms = [...new Set(options.terms.map((t) => pyStrip(t)))];
+    }
+    const depth = options.depth ?? 3;
+    requireInt("depth", depth);
+    if (depth < 1) throw new ValidationError(`depth must be >= 1, got ${depth}`);
+    const asOf = parseTime(options.as_of, "as_of");
+    const report = await this.graph.read((store, ns) =>
+      checkAnswerable(store, ns, this.schema, question, terms, asOf, depth),
+    );
+    if (report.missing.length && this.graph.tiers.seeds === "embeddings") report.note = LEXICAL_NOTE;
+    return report;
+  }
+
+  /**
+   * Report whether the graph can answer: the store is reachable and the namespace holds entities, with counts and lint (orphan entities, relations without evidence, decisions with a retired step, off-schema types).
+   *
+   * An unreachable store is reported, not thrown. This reads every item in the namespace and writes nothing.
+   *
+   * @return (Readiness): ready, reachable, any connection error, the counts, and the lint issues.
+   */
+  async readiness(): Promise<Readiness> {
+    const base = { store: this.store.constructor.name, namespace: this.namespace };
+    const hasSchema = this.schema !== null;
+    let counts: Record<string, number>;
+    let lint: LintIssue[];
+    try {
+      [counts, lint] = await this.graph.read((store, ns) => inspect(store, ns, this.schema));
+    } catch (exc) {
+      if (!(exc instanceof StoreError)) throw exc;
+      return {
+        ready: false,
+        ...base,
+        reachable: false,
+        error: exc.message,
+        has_schema: hasSchema,
+        counts: {},
+        lint: [],
+      };
+    }
+    return {
+      ready: (counts.entities ?? 0) > 0,
+      ...base,
+      reachable: true,
+      error: null,
+      has_schema: hasSchema,
+      counts,
+      lint,
+    };
+  }
+
+  /**
+   * Render the namespace as an Obsidian vault: a note per entity with its links, and a note per decision.
+   *
+   * Only current relations and preferences are written. Nothing is written to disk; the CLI's export obsidian command writes the notes to a folder.
+   *
+   * @return (Record<string, string>): each note's path relative to the vault, with its Markdown.
+   */
+  async exportObsidian(): Promise<Record<string, string>> {
+    return this.graph.read(async (store, ns) =>
+      obsidianVault(
+        await scanEntities(store, ns),
+        await scanRelations(store, ns),
+        await ops.scan((skip, limit) => ops.listPreferences(store, ns, { skip, limit })),
+        await ops.scan((skip, limit) => ops.listTraces(store, ns, { skip, limit })),
+      ),
+    );
   }
 }
 

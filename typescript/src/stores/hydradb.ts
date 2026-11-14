@@ -1,13 +1,18 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { blake2b } from "@noble/hashes/blake2.js";
 import type { Driver, Session } from "neo4j-driver";
 
 import { errorMessage, OTHER_ENGINE_HINT, StoreError, TOKEN_HINT } from "../errors.js";
-import { pyJsonDumps, pyRepr, pyStr, utf8 } from "../internal/py.js";
+import { comparePy, pyJsonDumps, pyRepr, pyStr, utf8 } from "../internal/py.js";
+import { L_ENTITY, L_EVIDENCE, L_MERGE } from "../labels.js";
 import type { CypherResult } from "../models.js";
+import { batches } from "../ops.js";
 import {
   DEFAULT_MATCH_LIMIT,
   type EdgeRow,
   type EdgeWrite,
+  type GraphPrimitives,
   type GraphStore,
   type MatchEdgesOptions,
   type MatchNodesOptions,
@@ -15,6 +20,8 @@ import {
   type Props,
   type UpsertNodeOptions,
 } from "../protocols.js";
+import { matchKeys } from "../resolution.js";
+import { decodeEntity } from "../serde.js";
 import {
   type BoltStoreOptions,
   boltFailure,
@@ -28,6 +35,10 @@ import { AutoCommitStore, quoteLabel, sortedEntries, toCount, whereAfter } from 
 import { docs, edgeRow, firstDoc, mergedCurrentEdge } from "./docRows.js";
 
 const EDGE = "RELATES";
+const KEY = "_SgEntityKey";
+const SEEK_BATCH = 256;
+const PARALLEL = 32;
+const queuing = new AsyncLocalStorage<object>();
 const HANDSHAKE_RETRIES = 50;
 const HANDSHAKE_JITTER_MS = 25;
 
@@ -196,6 +207,70 @@ const sets = (alias: string, row: Props, skip: readonly string[]): string =>
     .map((k) => `${alias}.\`${k}\` = row.\`${k}\``)
     .join(", ");
 
+/**
+ * The match keys a stored entity is indexed under.
+ *
+ * @param props (Props): the entity's encoded properties.
+ * @return (Set<string>): the keys.
+ */
+function keysOf(props: Props): Set<string> {
+  const ent = decodeEntity(props);
+  return matchKeys(ent.name, ent.aliases, ent.external_ids);
+}
+
+/**
+ * The key index rows of some entities, one per entity and match key, keyed so a rewrite merges in place.
+ *
+ * @param ns (string): the namespace.
+ * @param rows (Iterable<NodeRow>): (entity id, encoded entity properties) pairs.
+ * @return (Props[]): the key rows, each with its own id, the hashed key, the entity's surrogate id, and ns.
+ */
+function keyRows(ns: string, rows: Iterable<NodeRow>): Props[] {
+  const out: Props[] = [];
+  for (const [id, props] of rows) {
+    for (const key of [...keysOf(props)].sort(comparePy)) {
+      out.push({
+        id: surrogateKey(ns, `\x00key\x00${key}\x00${id}`),
+        key: surrogateKey(ns, key),
+        eid: surrogateKey(ns, id),
+        ns,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The key an edge id's versions are tracked under, so they are written in order and reads by edge id wait.
+ *
+ * @param ns (string): the namespace.
+ * @param sid (string): the edge id.
+ * @return (bigint): the key.
+ */
+const sidKey = (ns: string, sid: string): bigint => surrogateKey(ns, `\x00sid\x00${sid}`);
+
+/**
+ * The key a queued node write is tracked under for reads of every node of its label.
+ *
+ * @param label (string): the node label.
+ * @return (bigint): the key.
+ */
+const labelKey = (label: string): bigint => surrogateKey("", `\x00label\x00${label}`);
+
+const compareKeys = (a: unknown, b: unknown): number => {
+  const [x, y] = [BigInt(a as bigint), BigInt(b as bigint)];
+  return x < y ? -1 : x > y ? 1 : 0;
+};
+
+interface QueuedWrite {
+  query: string;
+  params: Record<string, unknown>;
+  writes: ReadonlySet<bigint>;
+  needs: ReadonlySet<bigint>;
+}
+
+const overlap = (a: ReadonlySet<bigint>, b: ReadonlySet<bigint>): boolean => [...a].some((x) => b.has(x));
+
 export type HydraDBStoreOptions = BoltStoreOptions;
 
 export class HydraDBStore extends AutoCommitStore implements GraphStore {
@@ -203,6 +278,11 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   private readonly uri: string;
   private readonly database: string;
   private readonly hasAuth: boolean;
+  private queued: QueuedWrite[] = [];
+  private readonly dirty = new Set<bigint>();
+  private readonly pendingNodes = new Set<string>();
+  private failure: unknown = null;
+  private draining: Promise<void> | null = null;
 
   /**
    * A store for HydraDB over Bolt, using integer surrogate keys and auto-commit writes.
@@ -230,7 +310,141 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
    * @param params (Record<string, unknown> | null): the query parameters.
    * @return (CypherResult): the rows.
    */
-  protected async _run(query: string, params?: Record<string, unknown> | null): Promise<CypherResult> {
+  /**
+   * Run one statement, inside the write transaction once the queued writes it can see have run. Only the transaction that queued the writes runs them, so another task reads what is committed.
+   *
+   * @param query (string): the Cypher statement.
+   * @param params (Record<string, unknown> | null): the query parameters.
+   * @param reads (Iterable<bigint> | null): the only ids the statement reads, so it waits only for queued writes to them, or null to wait for every queued write.
+   * @return (CypherResult): the rows.
+   */
+  protected async _run(
+    query: string,
+    params?: Record<string, unknown> | null,
+    reads: Iterable<bigint> | null = null,
+  ): Promise<CypherResult> {
+    const visible = reads === null || [...reads].some((id) => this.dirty.has(id));
+    if (queuing.getStore() === this && (this.draining || (this.queued.length && visible))) await this.drain();
+    return this.exec(query, params);
+  }
+
+  /**
+   * Run one write, or queue it inside a write transaction so it runs concurrently with the writes around it. Every write waits for a WAL flush, and writes in flight together share one, so queued writes run in waves: a write runs in the wave after the last one that writes an id it writes or needs, or needs an id it writes.
+   *
+   * @param query (string): the statement.
+   * @param params (Record<string, unknown>): the parameters.
+   * @param writes (Iterable<bigint>): the surrogate ids of the nodes or edges it writes.
+   * @param needs (Iterable<bigint>): the surrogate ids of the nodes it reads, such as an edge's endpoints.
+   * @param marks (Iterable<bigint>): further keys reads wait on, such as its label.
+   * @param afterAll (boolean): run after every write queued before it, for a write that records that they are done (evidence, a merge record, a retirement), so a failure never leaves it without them.
+   */
+  private async write(
+    query: string,
+    params: Record<string, unknown>,
+    writes: Iterable<bigint>,
+    needs: Iterable<bigint> = [],
+    marks: Iterable<bigint> = [],
+    afterAll = false,
+  ): Promise<void> {
+    if (queuing.getStore() !== this) {
+      await this.exec(query, params);
+      return;
+    }
+    const item = { query, params, writes: new Set(writes), needs: new Set(needs) };
+    if (afterAll) for (const queued of this.queued) for (const id of queued.writes) item.needs.add(id);
+    this.queued.push(item);
+    for (const id of [...item.writes, ...marks]) this.dirty.add(id);
+  }
+
+  /**
+   * Run the queued writes in waves, up to PARALLEL writes at a time, one wave after another.
+   *
+   * A failure is also kept for the transaction to throw, so it is never lost to a caller that drops it.
+   *
+   * @return (void): nothing; throws the first error of the first wave that fails, skipping later waves.
+   */
+  private async drain(): Promise<void> {
+    while (this.draining) await this.draining.catch(() => undefined);
+    if (!this.queued.length) return;
+    const queued = this.queued;
+    this.queued = [];
+    this.dirty.clear();
+    this.pendingNodes.clear();
+    const run = this.runWaves(queued);
+    this.draining = run.finally(() => {
+      this.draining = null;
+    });
+    await run;
+  }
+
+  /**
+   * Group queued writes into waves, each after every wave it conflicts with, and run them.
+   *
+   * @param queued (readonly QueuedWrite[]): the writes, in the order queued.
+   * @return (void): nothing; throws the first failure.
+   */
+  private async runWaves(queued: readonly QueuedWrite[]): Promise<void> {
+    const waves: { statements: QueuedWrite[]; writes: Set<bigint>; needs: Set<bigint> }[] = [];
+    for (const item of queued) {
+      let after = -1;
+      waves.forEach((wave, i) => {
+        if (overlap(item.writes, wave.writes) || overlap(item.writes, wave.needs) || overlap(item.needs, wave.writes))
+          after = i;
+      });
+      if (after + 1 === waves.length) waves.push({ statements: [], writes: new Set(), needs: new Set() });
+      const wave = waves[after + 1]!;
+      wave.statements.push(item);
+      for (const id of item.writes) wave.writes.add(id);
+      for (const id of item.needs) wave.needs.add(id);
+    }
+    for (const { statements } of waves) {
+      for (const batch of batches(statements, PARALLEL)) {
+        const results = await Promise.allSettled(batch.map((s) => this.exec(s.query, s.params)));
+        for (const res of results) {
+          if (res.status !== "rejected") continue;
+          this.failure ??= res.reason;
+          throw res.reason;
+        }
+      }
+    }
+  }
+
+  /**
+   * Run one write at a time on this store, running its queued writes before it ends, even when it fails.
+   *
+   * @param fn ((tx: GraphPrimitives) => Promise<T>): the writes to run.
+   * @return (T): the result of fn.
+   */
+  override async transaction<T>(fn: (tx: GraphPrimitives) => Promise<T>): Promise<T> {
+    if (queuing.getStore() === this) return fn(this);
+    return super.transaction((tx) =>
+      queuing.run(this, async () => {
+        let failure: unknown = null;
+        let result: T;
+        try {
+          result = await fn(tx);
+        } finally {
+          try {
+            await this.drain();
+          } finally {
+            failure = this.failure;
+            this.failure = null;
+          }
+        }
+        if (failure !== null) throw failure;
+        return result;
+      }),
+    );
+  }
+
+  /**
+   * Run one statement now, bypassing the write queue.
+   *
+   * @param query (string): the Cypher statement.
+   * @param params (Record<string, unknown> | null): its parameters.
+   * @return (CypherResult): the rows.
+   */
+  private async exec(query: string, params?: Record<string, unknown> | null): Promise<CypherResult> {
     this.requireOpen();
     const boltParams = toBoltParams(params);
     try {
@@ -288,12 +502,14 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   }
 
   async getNode(ns: string, label: string, id: string): Promise<Props | null> {
-    const res = await this._run(`MATCH (n:${label} {id: $iid}) RETURN n.doc AS doc`, { iid: surrogateKey(ns, id) });
+    const iid = surrogateKey(ns, id);
+    const res = await this._run(`MATCH (n:${label} {id: $iid}) RETURN n.doc AS doc`, { iid }, [iid]);
     return firstDoc(res.rows);
   }
 
   async nodeExists(ns: string, label: string, id: string): Promise<boolean> {
-    const res = await this._run(`MATCH (n:${label} {id: $iid}) RETURN n.sid AS sid`, { iid: surrogateKey(ns, id) });
+    const iid = surrogateKey(ns, id);
+    const res = await this._run(`MATCH (n:${label} {id: $iid}) RETURN n.sid AS sid`, { iid }, [iid]);
     return res.rows.length > 0;
   }
 
@@ -345,21 +561,109 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       }
       return row;
     });
-    for (const batch of byColumns(out)) {
-      await this._run(`UNWIND $rows AS row MERGE (n {id: row.id}) SET n:${label}, ${sets("n", batch[0]!, ["id"])}`, {
-        rows: batch,
-      });
-    }
+    const held: [string[], { iids: bigint[] }][] = [];
     for (const [keys, iids] of cleared.values()) {
-      for (let i = 0; i < iids.length; i += DELETE_BATCH) {
-        const params = { iids: iids.slice(i, i + DELETE_BATCH) };
-        const held = await this._run(
+      for (const batch of batches(iids, DELETE_BATCH)) {
+        const params = { iids: batch };
+        const found = await this._run(
           `MATCH (n:${label}) WHERE n.id IN $iids AND (${keys.map((k) => `n.\`${k}\` IS NOT NULL`).join(" OR ")}) RETURN n.sid AS sid`,
           params,
+          batch,
         );
-        if (held.rows.length)
-          await this._run(`MATCH (n:${label}) WHERE n.id IN $iids REMOVE ${removes("n", keys)}`, params);
+        const members = new Set(batch);
+        if (found.rows.length || out.some((r) => members.has(r.id as bigint) && keys.some((k) => Object.hasOwn(r, k))))
+          held.push([keys, params]);
       }
+    }
+    const indexRows = label === L_ENTITY ? keyRows(ns, rows) : [];
+    await this.mergeRows(KEY, indexRows);
+    await this.mergeRows(
+      label,
+      out,
+      indexRows.map((r) => r.id as bigint),
+    );
+    for (const [keys, params] of held) {
+      await this._run(`MATCH (n:${label}) WHERE n.id IN $iids REMOVE ${removes("n", keys)}`, params);
+    }
+  }
+
+  /**
+   * Upsert node rows by surrogate id with one UNWIND statement per batch of rows sharing a column set.
+   *
+   * @param label (string): the node label.
+   * @param rows (Props[]): the rows, each with its surrogate id and the columns to set.
+   * @param needs (readonly bigint[]): ids that must be written first, such as the entities' key rows, so a failed write never leaves an entity stored without them.
+   * @return (void): nothing.
+   */
+  private async mergeRows(label: string, rows: Props[], needs: readonly bigint[] = []): Promise<void> {
+    for (const batch of byColumns(rows)) {
+      await this.write(
+        `UNWIND $rows AS row MERGE (n {id: row.id}) SET n:${label}, ${sets("n", batch[0]!, ["id"])}`,
+        { rows: batch },
+        batch.map((r) => r.id as bigint),
+        needs,
+        [labelKey(label)],
+        label === L_EVIDENCE || label === L_MERGE,
+      );
+      if (queuing.getStore() === this) for (const r of batch) this.pendingNodes.add(`${label}\x00${r.id}`);
+    }
+  }
+
+  /**
+   * Read the entities sharing a match key with some keys, through the key index instead of a scan. A key row whose entity is gone or no longer has that key, after an alias or external id was removed, is deleted on the way, so the index never grows stale.
+   *
+   * @param ns (string): the namespace.
+   * @param keys (Iterable<string>): the match keys, as matchKeys derives them.
+   * @return (Props[]): the matching entities' properties.
+   */
+  async entitiesMatching(ns: string, keys: Iterable<string>): Promise<Props[]> {
+    const wanted = new Map([...keys].map((k) => [String(surrogateKey(ns, k)), k]));
+    const hits: [bigint, string, string][] = [];
+    const iids = new Map<string, unknown>();
+    for (const batch of batches([...wanted.keys()].map(BigInt).sort(compareKeys), SEEK_BATCH)) {
+      const res = await this._run(
+        `MATCH (k:${KEY}) WHERE k.key IN $keys RETURN k.id AS id, k.key AS key, k.eid AS eid`,
+        {
+          keys: batch,
+        },
+      );
+      for (const r of res.rows) {
+        hits.push([BigInt(r.id as bigint), wanted.get(String(r.key))!, String(r.eid)]);
+        iids.set(String(r.eid), r.eid);
+      }
+    }
+    const found = new Map<string, Props>();
+    for (const batch of batches([...iids.values()].sort(compareKeys), SEEK_BATCH)) {
+      const res = await this._run(
+        `MATCH (n:${L_ENTITY}) WHERE n.id IN $iids AND ${same("n", "ns", "ns")} RETURN n.id AS iid, n.doc AS doc`,
+        { iids: batch, ns },
+      );
+      for (const r of res.rows) {
+        const [doc] = docs([r]);
+        if (doc !== undefined) found.set(String(r.iid), doc);
+      }
+    }
+    const stale = hits
+      .filter(([, key, eid]) => !found.has(eid) || !keysOf(found.get(eid)!).has(key))
+      .map(([id]) => id)
+      .sort(compareKeys);
+    for (const batch of batches(stale, SEEK_BATCH)) {
+      await this.write(`MATCH (k:${KEY}) WHERE k.id IN $ids DETACH DELETE k`, { ids: batch }, batch);
+    }
+    return [...found.values()];
+  }
+
+  /**
+   * Delete the key index rows of deleted entities, so the index only holds stored entities' keys.
+   *
+   * @param label (string): the label of the deleted nodes; only entities have key rows.
+   * @param iids (readonly bigint[]): the deleted nodes' surrogate ids.
+   * @return (void): nothing.
+   */
+  private async dropKeys(label: string, iids: readonly bigint[]): Promise<void> {
+    if (label !== L_ENTITY) return;
+    for (const batch of batches(iids, SEEK_BATCH)) {
+      await this._run(`MATCH (k:${KEY}) WHERE k.eid IN $iids DETACH DELETE k`, { iids: batch });
     }
   }
 
@@ -378,6 +682,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
         `MATCH (n:${label}) WHERE ${where.join(" AND ")} ` +
           `RETURN n.doc AS doc ORDER BY n.\`${key}\` SKIP $skip LIMIT $limit`,
         params,
+        [labelKey(label)],
       );
       return docs(res.rows);
     }
@@ -407,18 +712,21 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       `MATCH (${pattern}) WHERE ${where.join(" AND ")} ` +
         "RETURN n.doc AS doc, n.`sid` AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
       params,
+      (params.iids as bigint[] | undefined) ?? [labelKey(label)],
     );
     return docs(res.rows);
   }
 
   async deleteNode(ns: string, label: string, id: string): Promise<void> {
     await this._run(`MATCH (n:${label} {id: $iid}) DETACH DELETE n`, { iid: surrogateKey(ns, id) });
+    await this.dropKeys(label, [surrogateKey(ns, id)]);
   }
 
-  async deleteNodes(ns: string, _label: string, ids: readonly string[]): Promise<void> {
-    for (let i = 0; i < ids.length; i += DELETE_BATCH) {
-      const iids = ids.slice(i, i + DELETE_BATCH).map((id) => surrogateKey(ns, id));
+  async deleteNodes(ns: string, label: string, ids: readonly string[]): Promise<void> {
+    for (const batch of batches(ids, DELETE_BATCH)) {
+      const iids = batch.map((id) => surrogateKey(ns, id));
       await this._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", { iids });
+      await this.dropKeys(label, iids);
     }
   }
 
@@ -430,7 +738,13 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     for (;;) {
       const res = await this._run(`MATCH (${pattern}) WHERE ${where} RETURN n.id AS iid LIMIT $batch`, params);
       const ids = res.rows.map((r) => r.iid);
-      if (ids.length) await this._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", { iids: ids });
+      if (ids.length) {
+        await this._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", { iids: ids });
+        await this.dropKeys(
+          label,
+          ids.map((id) => BigInt(id as bigint)),
+        );
+      }
       deleted += ids.length;
       if (ids.length < DELETE_BATCH) return deleted;
     }
@@ -445,11 +759,23 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     toId: string,
     props: Props,
   ): Promise<boolean> {
-    const both = await this._run(`MATCH (a:${fromLabel} {id: $f}), (b:${toLabel} {id: $t}) RETURN a.sid AS sid`, {
-      f: surrogateKey(ns, fromId),
-      t: surrogateKey(ns, toId),
-    });
-    if (!both.rows.length) return false;
+    const ends: Record<string, bigint> = {};
+    const nodes: Record<string, string> = { f: `(a:${fromLabel} {id: $f})`, t: `(b:${toLabel} {id: $t})` };
+    for (const [k, label, iid] of [
+      ["f", fromLabel, surrogateKey(ns, fromId)],
+      ["t", toLabel, surrogateKey(ns, toId)],
+    ] as const) {
+      if (!this.pendingNodes.has(`${label}\x00${iid}`)) ends[k] = iid;
+    }
+    if (Object.keys(ends).length) {
+      const pattern = Object.keys(ends).map((k) => nodes[k]);
+      const found = await this._run(
+        `MATCH ${pattern.join(", ")} RETURN ${"f" in ends ? "a" : "b"}.sid AS sid`,
+        ends,
+        Object.values(ends),
+      );
+      if (!found.rows.length) return false;
+    }
     await this.createEdges(ns, fromLabel, toLabel, [[type, fromId, toId, props]]);
     return true;
   }
@@ -480,10 +806,17 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       return row;
     });
     for (const batch of byColumns(out)) {
-      await this._run(
+      await this.write(
         `UNWIND $rows AS row MATCH (a:${fromLabel} {id: row.f}), (b:${toLabel} {id: row.t}) ` +
           `MERGE (a)-[r:${EDGE} {id: row.id}]->(b) SET ${sets("r", batch[0]!, ["f", "t", "id"])}`,
         { rows: batch },
+        [
+          ...batch.map((r) => r.id as bigint),
+          ...batch.filter((r) => r.sid != null).map((r) => sidKey(ns, r.sid as string)),
+        ],
+        batch.flatMap((r) => [r.f as bigint, r.t as bigint]),
+        [],
+        batch.some((r) => r.is_current === false && Boolean(r.invalidated_by)),
       );
     }
   }
@@ -492,6 +825,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     const res = await this._run(
       `${BY_SID} AND r.is_current = true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et`,
       { ns, sid: id },
+      [sidKey(ns, id)],
     );
     const row = res.rows[0];
     return row ? edgeRow(row) : null;
@@ -501,8 +835,42 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     const res = await this._run(
       `${BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
       { ns, sid: id },
+      [sidKey(ns, id)],
     );
     return res.rows.map(edgeRow);
+  }
+
+  /**
+   * Read every version of some edges by edge id, a point seek per id, run concurrently, when there are few. More than SEEK_BATCH ids cost more seeks than reading them by endpoint, so the caller reads them that way.
+   *
+   * @param ns (string): the namespace.
+   * @param fromLabel (string | null): the source node label the edges must have, or null for any.
+   * @param toLabel (string | null): the destination node label the edges must have, or null for any.
+   * @param ids (readonly string[]): the edge ids.
+   * @return (EdgeRow[] | null): the edge rows, grouped by id in the order given, or null for too many ids.
+   */
+  async edgeVersions(
+    ns: string,
+    fromLabel: string | null,
+    toLabel: string | null,
+    ids: readonly string[],
+  ): Promise<EdgeRow[] | null> {
+    if (ids.length > SEEK_BATCH) return null;
+    const labels: Props = {};
+    if (fromLabel !== null) labels.fl = fromLabel;
+    if (toLabel !== null) labels.tl = toLabel;
+    const where = Object.keys(labels)
+      .map((k) => ` AND ${same("r", k, k)}`)
+      .join("");
+    const query = `${BY_SID}${where} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et`;
+    const out: EdgeRow[] = [];
+    for (const batch of batches(ids, PARALLEL)) {
+      const results = await Promise.all(
+        batch.map((sid) => this._run(query, { ns, sid, ...labels }, [sidKey(ns, sid)])),
+      );
+      for (const res of results) out.push(...res.rows.map(edgeRow));
+    }
+    return out;
   }
 
   async updateCurrentEdge(ns: string, id: string, props: Props): Promise<void> {
@@ -609,6 +977,41 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       { iid: surrogateKey(ns, parentId), ns, et: edgeType },
     );
     return docs(res.rows);
+  }
+
+  /**
+   * Read the child nodes of many parents along one edge type, a batch of parents per read.
+   *
+   * @param ns (string): the namespace.
+   * @param parentLabel (string): the parents' label.
+   * @param parentIds (readonly string[]): the parent ids.
+   * @param edgeType (string): the edge type from parent to child.
+   * @param childLabel (string): the children's label.
+   * @return (Map<string, Props[]>): each parent's children's properties, by parent id, for parents with any.
+   */
+  async childrenOf(
+    ns: string,
+    parentLabel: string,
+    parentIds: readonly string[],
+    edgeType: string,
+    childLabel: string,
+  ): Promise<Map<string, Props[]>> {
+    const out = new Map<string, Props[]>();
+    for (const batch of batches(parentIds, SEEK_BATCH)) {
+      const res = await this._run(
+        `MATCH (p:${parentLabel})-[r:${EDGE}]->(c:${childLabel}) WHERE p.id IN $iids ` +
+          `AND ${same("r", "ns", "ns")} AND ${same("r", "etype", "et")} RETURN p.sid AS parent, c.doc AS doc`,
+        { iids: batch.map((i) => surrogateKey(ns, i)), ns, et: edgeType },
+      );
+      for (const row of res.rows) {
+        const [doc] = docs([row]);
+        if (doc === undefined) continue;
+        const children = out.get(row.parent as string);
+        if (children) children.push(doc);
+        else out.set(row.parent as string, [doc]);
+      }
+    }
+    return out;
   }
 
   async deleteEdgesTouchingByType(ns: string, label: string, id: string, type: string): Promise<void> {

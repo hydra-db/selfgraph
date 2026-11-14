@@ -7,7 +7,7 @@ export {
   setTokenizer,
   type Tokenizer,
 } from "./chunking.js";
-export { buildGraph, SelfGraph, type SelfGraphOptions } from "./client.js";
+export { buildGraph, type CheckAnswerableOptions, SelfGraph, type SelfGraphOptions } from "./client.js";
 export {
   ConflictError,
   ExtractionError,
@@ -18,6 +18,7 @@ export {
   TransientError,
   ValidationError,
 } from "./errors.js";
+export { obsidianVault, toOssie } from "./export.js";
 export { NERExtractor } from "./extraction/basic.js";
 export { LLMExtractor, type LLMExtractorOptions } from "./extraction/extractor.js";
 export { DEFAULT_PROMPTS } from "./extraction/prompts.js";
@@ -27,6 +28,7 @@ export type { InsertFactsOptions, InsertTextOptions } from "./insert.js";
 export { type Logger, type LogLevel, setLogger } from "./internal/log.js";
 export { buildLlmClient, type LLMArg } from "./llm/index.js";
 export {
+  type AnswerabilityReport,
   type CypherResult,
   type CypherRow,
   DateTimeInput,
@@ -48,6 +50,7 @@ export {
   type InsertWarning,
   type JsonObject,
   JsonValue,
+  type LintIssue,
   LLMConfig,
   type MergeRecord,
   type MergeRewrite,
@@ -64,14 +67,16 @@ export {
   PreferenceInput,
   PromptTemplate,
   type PruneResult,
+  type Readiness,
   type Relation,
   RelationInput,
   type RetrievalResult,
   type RetrievalSeed,
+  type SourceDiff,
   Stance,
   Status,
   type Subgraph,
-  type TermMatch,
+  type TermCoverage,
   type UnmergeResult,
 } from "./models.js";
 export { fromNeo4jOntology, toNeo4jOntology } from "./neo4jSchema.js";

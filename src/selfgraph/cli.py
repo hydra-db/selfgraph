@@ -9,6 +9,7 @@ import os
 import sys
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any, get_args
 
 from .errors import NotFoundError, PromptTemplateError, SelfGraphError, ValidationError, surface_hint
@@ -25,6 +26,7 @@ from .runtime import (
     bind_params,
     build_graph,
     check_settings,
+    checked_cypher,
     current_relation,
     dumps,
     ignored_settings,
@@ -65,7 +67,7 @@ _NEO4J_KEYS = ("node_types", "relationship_types", "patterns", "constraints", "n
 _LOGGED_WARNINGS = ("basic_extraction", "ner_extraction")
 _SCHEMA_HELP = """schema: print the active schema (--schema FILE), or null
 schema import [--from neo4j] FILE: convert a Neo4j graph schema
-schema export [--to neo4j]: print the active schema as a Neo4j graph schema"""
+schema export [--to neo4j|ossie]: print the active schema as a Neo4j graph schema or an Apache Ossie ontology"""
 _USAGE_ERRORS = (ValidationError, PromptTemplateError, FileNotFoundError)
 _EVIDENCE_HELP = (
     "evidence as JSON: {source_id, chunk_id?, quote?, start_offset?, end_offset?, confidence?} or an array of them "
@@ -149,6 +151,7 @@ async def _retrieve(graph, args):
         budget_tokens=args.budget_tokens,
         as_of=args.as_of,
         seeds=args.seeds,
+        skip_hubs=args.skip_hubs,
     )
     return _Text(result.context) if args.context_only else result
 
@@ -160,6 +163,7 @@ async def _prune(graph, args):
             older_than=args.older_than,
             types=args.type,
             relation_types=args.relation_type,
+            include_certified=args.include_certified,
             dry_run=not args.apply,
         )
     )
@@ -238,7 +242,17 @@ async def _schema_import(graph, args):
 async def _schema_export(graph, args):
     if graph.schema is None:
         raise ValidationError(f"no schema to export; {_NO_SCHEMA}")
-    return graph.schema.to_neo4j_ontology()
+    return graph.schema.to_ossie() if args.target == "ossie" else graph.schema.to_neo4j_ontology()
+
+
+async def _export_obsidian(graph, args):
+    folder = Path(args.directory)
+    notes = await graph.export_obsidian()
+    for path, text in notes.items():
+        target = folder / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return {"directory": str(folder), "notes": len(notes)}
 
 
 def _add_list_paging(p: argparse.ArgumentParser) -> None:
@@ -400,9 +414,29 @@ def build_parser() -> argparse.ArgumentParser:
     si.add_argument("path")
     si.add_argument("--from", dest="source", choices=["neo4j"], default="neo4j", help="the source format (neo4j)")
     si.set_defaults(func=_schema_import)
-    se = sca.add_parser("export", help="print the active schema (--schema) as a Neo4j graph schema")
-    se.add_argument("--to", dest="target", choices=["neo4j"], default="neo4j", help="the target format (neo4j)")
+    se = sca.add_parser("export", help="print the active schema (--schema) as a Neo4j graph schema or Ossie ontology")
+    se.add_argument("--to", dest="target", choices=["neo4j", "ossie"], default="neo4j", help="the target format")
     se.set_defaults(func=_schema_export)
+
+    sub.add_parser(
+        "readiness", help="check the store is reachable and the namespace holds data, with counts and lint"
+    ).set_defaults(func=lambda g, a: g.readiness())
+    ca = sub.add_parser(
+        "check-answerable", help="judge whether the graph holds what a question asks about; words join into one"
+    )
+    ca.add_argument("question", nargs="+")
+    ca.add_argument(
+        "--term", action="append", help="a key phrase to check instead of the question's words (repeatable)"
+    )
+    ca.add_argument("--as-of", type=_time("as_of"), help=f"judge the graph as of this time ({_ISO})")
+    ca.add_argument("--depth", type=int, default=3, help="most hops between matched entities (default 3)")
+    ca.set_defaults(
+        func=lambda g, a: g.check_answerable(" ".join(a.question), terms=a.term, as_of=a.as_of, depth=a.depth)
+    )
+    ex = sub.add_parser("export", help="export the graph").add_subparsers(dest="target", required=True)
+    eo = ex.add_parser("obsidian", help="write the namespace as an Obsidian vault of Markdown notes into DIRECTORY")
+    eo.add_argument("directory")
+    eo.set_defaults(func=_export_obsidian)
 
     query_help = "run one raw Cypher statement; it can write and is not scoped to the namespace"
     q = sub.add_parser(
@@ -414,7 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     q.add_argument("cypher")
     q.add_argument("--param", action="append", metavar="KEY=VALUE", help=f"query parameter (repeatable){_JSON_VALUE}")
-    q.set_defaults(func=lambda g, a: g.run_cypher(a.cypher, bind_params(a.cypher, _kv(a.param, "--param"))))
+    q.set_defaults(func=lambda g, a: checked_cypher(g, a.cypher, bind_params(a.cypher, _kv(a.param, "--param"))))
 
     rt = sub.add_parser("retrieve", help="retrieve graph context for a query; unquoted words join into one query")
     rt.add_argument("query", nargs="+")
@@ -425,12 +459,9 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--max-nodes", type=int, default=200, help="entity cap (default 200)")
     rt.add_argument("--budget-tokens", type=int, default=3000, help="context budget (default 3000)")
     rt.add_argument("--as-of", type=_time("as_of"), help=f"read the graph as of this time ({_ISO})")
+    rt.add_argument("--skip-hubs", action="store_true", help="do not walk through entities with 50 or more relations")
     rt.add_argument("--context-only", action="store_true", help="print only the context text, not the JSON result")
     rt.set_defaults(func=_retrieve)
-
-    cv = sub.add_parser("coverage", help="report which words of a question the schema and graph can ground")
-    cv.add_argument("question", nargs="+")
-    cv.set_defaults(func=lambda g, a: g.coverage(" ".join(a.question)))
 
     mt = sub.add_parser("maintenance", help="decay (score relevance), prune, or deduplicate relations")
     mta = mt.add_subparsers(dest="action", required=True)
@@ -448,6 +479,9 @@ def build_parser() -> argparse.ArgumentParser:
     mp.add_argument("--older-than", type=_time("older_than"), help=f"remove items last touched before this ({_ISO})")
     mp.add_argument("--type", action="append", help="only consider entities of this type (repeatable)")
     mp.add_argument("--relation-type", action="append", help="only consider relations of this type (repeatable)")
+    mp.add_argument(
+        "--include-certified", action="store_true", help="also remove certified relations and the entities they connect"
+    )
     mp.add_argument("--apply", action="store_true", help="remove what the plan lists")
     mp.set_defaults(func=_prune)
     mc = mta.add_parser("dedupe-relations", help="merge duplicate parallel relations; prints the plan unless --apply")
@@ -465,6 +499,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="JSON|KEY=VALUE",
         help=f"source metadata: a JSON object, or KEY=VALUE pairs (repeatable){_JSON_VALUE}",
     )
+    it.add_argument(
+        "--replace-source",
+        action="store_true",
+        help="the text replaces --source-id's earlier versions: retire relations only they stated",
+    )
     _add_call_overrides(it)
 
     async def insert_text(g, a):
@@ -476,6 +515,7 @@ def build_parser() -> argparse.ArgumentParser:
                 metadata=_metadata(a.metadata),
                 resolver=a.call_resolver,
                 contradiction=a.call_contradiction,
+                replace_source=a.replace_source,
             )
         )
 
@@ -558,9 +598,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _id_command(ent, "entities", "delete", help="delete an entity with its relations, preferences, and decisions")
 
-    rel = sub.add_parser("relation", help="create/get/list/versions/evidence/update/delete relations").add_subparsers(
-        dest="action", required=True
-    )
+    rel = sub.add_parser(
+        "relation", help="create/get/list/versions/evidence/update/certify/delete relations"
+    ).add_subparsers(dest="action", required=True)
     rc = rel.add_parser("create", help="create a relation between two entities")
     rc.add_argument("from_entity", metavar="FROM")
     rc.add_argument("type", metavar="TYPE")
@@ -628,6 +668,11 @@ def build_parser() -> argparse.ArgumentParser:
             ),
         )
     )
+    rce = rel.add_parser("certify", help="mark a current relation as verified, so nothing retires it automatically")
+    rce.add_argument("id")
+    rce.add_argument("--by", required=True, help="who verified it")
+    rce.set_defaults(func=lambda g, a: g.relations.certify(a.id, by=a.by))
+    _id_command(rel, "relations", "uncertify", help="remove a relation's certification")
     _id_command(
         rel, "relations", "delete", help="delete a relation, its versions, and decision traces that use it as a step"
     )

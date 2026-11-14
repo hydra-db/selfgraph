@@ -255,6 +255,8 @@ def decode_relation(props: dict[str, Any], *, from_entity: str, to_entity: str, 
         invalidated_by=props.get("invalidated_by"),
         relevance=_relevance_of(props),
         relevance_at=from_iso(props.get("relevance_at")),
+        certified_at=from_iso(props.get("certified_at")),
+        certified_by=props.get("certified_by"),
     )
 
 

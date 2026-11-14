@@ -61,6 +61,7 @@ const UPDATE_KEYS = keysOf<RelationUpdateOptions>({
   event_time: true,
   evidence: true,
 });
+const CERTIFY_KEYS = keysOf<{ by: string }>({ by: true });
 
 export class Relations extends Resource {
   /**
@@ -213,6 +214,32 @@ export class Relations extends Resource {
     );
     if (!versions.length) throw new NotFoundError("Relation", id);
     return versions;
+  }
+
+  /**
+   * Mark the current version of a relation as verified, in place, without a new version.
+   *
+   * A certified relation stays current when a supersede contradiction or insert.text with replace_source would retire it, and retrieval puts it first among equally close facts, marked "[certified]". A later version of the relation starts uncertified.
+   *
+   * @param id (string): the relation id.
+   * @param options ({ by: string }): who verified it.
+   * @return (Relation): the current version with certified_at and certified_by set.
+   */
+  async certify(id: string, options: { by: string }): Promise<Relation> {
+    checkOptions("relations.certify", options, CERTIFY_KEYS);
+    ops.validateOwnId("relation", id);
+    return this.graph.write((tx, ns) => ops.certifyRelation(tx, ns, id, options.by, new Date()));
+  }
+
+  /**
+   * Remove the certification of the current version of a relation.
+   *
+   * @param id (string): the relation id.
+   * @return (Relation): the current version without certification.
+   */
+  async uncertify(id: string): Promise<Relation> {
+    ops.validateOwnId("relation", id);
+    return this.graph.write((tx, ns) => ops.certifyRelation(tx, ns, id, null, new Date()));
   }
 
   /**

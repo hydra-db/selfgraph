@@ -139,6 +139,8 @@ def _where_doc_any_of(ns: str, any_of: dict | None, where: list[str], params: di
 
 
 class KuzuStore(AutoCommitStore):
+    query_labels = ("N", "R")
+
     def __init__(self, path: str = "selfgraph_kuzu", **db_kwargs: Any) -> None:
         try:
             import kuzu

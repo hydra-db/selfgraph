@@ -17,7 +17,7 @@ from .extraction import DEFAULT_PROMPTS, LLMExtractor, NERExtractor
 from .ids import decision_id, entity_id, normalize_rel_type, preference_id, profile_id, relation_id
 from .llm import build_llm_client
 from .models import (
-    Coverage,
+    AnswerabilityReport,
     CypherResult,
     DecayResult,
     DecisionStep,
@@ -35,6 +35,7 @@ from .models import (
     ExtractionPrompts,
     InsertResult,
     InsertWarning,
+    LintIssue,
     LLMConfig,
     MergeRecord,
     MergeRewrite,
@@ -44,12 +45,14 @@ from .models import (
     PreferenceInput,
     PromptTemplate,
     PruneResult,
+    Readiness,
     Relation,
     RelationInput,
     RetrievalResult,
     RetrievalSeed,
+    SourceDiff,
     Subgraph,
-    TermMatch,
+    TermCoverage,
     UnmergeResult,
 )
 from .protocols import Embedder, Extractor, GraphStore, LLMClient
@@ -102,8 +105,6 @@ __all__ = [
     "Extractor",
     "Embedder",
     "Level",
-    "Coverage",
-    "TermMatch",
     "Entity",
     "Relation",
     "Preference",
@@ -140,6 +141,11 @@ __all__ = [
     "RetrievalResult",
     "RetrievalSeed",
     "Subgraph",
+    "AnswerabilityReport",
+    "TermCoverage",
+    "Readiness",
+    "LintIssue",
+    "SourceDiff",
     "EntityResolver",
     "ResolutionDecision",
     "DefaultResolver",

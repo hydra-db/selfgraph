@@ -268,7 +268,7 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
  * @param schema (ParsedSchema): the schema.
  * @return (Map<string, ParsedRelationType>): normalized type and alias to type.
  */
-function relationIndex(schema: ParsedSchema): Map<string, ParsedRelationType> {
+export function relationIndex(schema: ParsedSchema): Map<string, ParsedRelationType> {
   const index = new Map<string, ParsedRelationType>();
   for (const relation of schema.relations) {
     index.set(normalizeRelType(relation.type), relation);

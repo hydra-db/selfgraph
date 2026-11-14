@@ -218,7 +218,13 @@ Inserting the same merge again updates the one record.
 - Moves each rewritten object back between its original endpoints, with the
   current properties, event time, and evidence, and deletes the redirected one.
   An object that existed before the merge stays, and the original is added beside
-  it. Decision steps follow moved relations.
+  it. Decision steps follow moved relations. A moved relation that a
+  [replaced source](inserting.md#replacing-a-source) retired is written back
+  retired, so an unmerge never brings back a withdrawn fact. One a contradiction
+  retired comes back current, since the conflict came from the merged identity.
+- Refuses, with `ValidationError` and before writing anything, when a relation
+  it would move is [certified](trust.md#certification). The mark verified the
+  merged endpoints, so uncertify the relation first.
 - Where another live merge rewrote the same object, updates that merge's record
   to undo from the new place. Unmerging every merge of an insert, in any order,
   leaves exactly what the insert would have written without them.

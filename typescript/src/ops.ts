@@ -12,6 +12,8 @@ import {
   L_MERGE,
   L_MERGE_ENTRY,
   L_PROFILE,
+  L_SOURCE,
+  L_SOURCE_VERSION,
   L_STEP,
   L_TRACE,
   LABELS,
@@ -22,6 +24,7 @@ import {
   R_FROM,
   R_HAS_PROFILE,
   R_HAS_STEP,
+  R_HAS_VERSION,
   R_MADE_DECISION,
   R_RESULTED_IN,
   R_TO,
@@ -431,14 +434,15 @@ export async function scan<T>(
 }
 
 /**
- * Split a list into consecutive batches of at most BATCH items.
+ * Split a list into consecutive batches of at most size items.
  *
  * @param items (readonly T[]): the items to split.
+ * @param size (number): the largest batch.
  * @return (T[][]): the batches, in order.
  */
-export function batches<T>(items: readonly T[]): T[][] {
+export function batches<T>(items: readonly T[], size = BATCH): T[][] {
   const out: T[][] = [];
-  for (let i = 0; i < items.length; i += BATCH) out.push(items.slice(i, i + BATCH));
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
 }
 
@@ -1618,10 +1622,16 @@ export async function currentRelations(
 ): Promise<Map<string, EdgeRow>> {
   const wanted = new Set(keyed.map(([rid]) => rid));
   const found = new Map<string, EdgeRow>();
+  const versions = (await runner.edgeVersions?.(ns, L_ENTITY, L_ENTITY, dedupList(keyed.map(([rid]) => rid)))) ?? null;
   for (const currentOnly of [true, false]) {
     const pending = dedupList(keyed.filter(([rid]) => !found.has(rid)).map(([, rel]) => rel.from_entity));
     const filter = { from_label: L_ENTITY, to_label: L_ENTITY, current_only: currentOnly };
-    for (const edge of await edgesAt(runner, ns, filter, "from_in", pending)) {
+    const sources = new Set(pending);
+    const edges =
+      versions === null
+        ? await edgesAt(runner, ns, filter, "from_in", pending)
+        : versions.filter((e) => sources.has(e.from_id) && (Boolean(e.props.is_current) || !currentOnly));
+    for (const edge of edges) {
       if (wanted.has(idOf(edge.props)) && isRelationType(edge.type)) keepNewest(found, edge);
     }
     for (const rid of found.keys()) wanted.delete(rid);
@@ -1679,6 +1689,7 @@ export class Contradictions {
   private readonly times = new Map<string, Date>();
   private readonly order = new Map<string, number>();
   private readonly dirty = new Map<string, number>();
+  private readonly certified = new Set<string>();
 
   /**
    * Track the current relations at every endpoint a schema max_count constrains.
@@ -1702,6 +1713,7 @@ export class Contradictions {
       }
     }
     for (const rel of current) {
+      if (rel.certified_at !== null) this.certified.add(rel.id);
       for (const [slot] of this.slots(rel.type, rel.from_entity, rel.to_entity)) {
         this.seat(slot, rel.id, rankOf(rel), effectiveTime(rel));
       }
@@ -1754,6 +1766,7 @@ export class Contradictions {
    * @param toEntity (string): the destination entity id.
    * @param rank (Rank): the relation's rank, from rankOf.
    * @param effective (Date): the relation's effective time.
+   * @param certified (boolean): whether the version becoming current is certified, which spares it in settle.
    * @return (InsertWarning[]): the warn-mode contradiction warnings.
    */
   admit(
@@ -1763,7 +1776,10 @@ export class Contradictions {
     toEntity: string,
     rank: Rank,
     effective: Date,
+    certified = false,
   ): InsertWarning[] {
+    if (certified) this.certified.add(rid);
+    else this.certified.delete(rid);
     const warnings: InsertWarning[] = [];
     const slots = this.slots(rtype, fromEntity, toEntity);
     for (const [slot, limit] of slots) {
@@ -1800,8 +1816,9 @@ export class Contradictions {
    * Retire the oldest current relations beyond max_count at every endpoint a supersede-mode write touched.
    *
    * The current relations at an endpoint, the ones just written included, rank by effective time, then revision,
-   * then creation time, and all but the newest max_count are retired. A retired relation is invalidated by the fact
-   * that displaced it in time order, the max_count-th newer fact at the endpoint with retired history counted, at
+   * then creation time, and all but the newest max_count are retired, except a certified relation, which stays
+   * current with a "certified_kept" warning. A retired relation is invalidated by the fact that displaced it in time
+   * order, the max_count-th newer fact at the endpoint with retired history counted, at
    * that fact's effective time. Each retired relation gets one warning: "contradiction_out_of_order" when it was
    * written by this write after that fact was current, else "relation_superseded".
    *
@@ -1815,6 +1832,16 @@ export class Contradictions {
       const ranked = [...group.keys()].sort((a, b) => compareRanked([group.get(b)!, b], [group.get(a)!, a]));
       const [canonical, side, endpoint] = JSON.parse(key) as [string, string, string];
       for (const old of ranked.slice(limit)) {
+        if (this.certified.has(old)) {
+          warnings.push(
+            insertWarning(
+              "certified_kept",
+              `relation ${old} is certified, so it stays current beside newer ${canonical} relations at ${side} ` +
+                `entity ${endpoint} (max_count ${limit})`,
+            ),
+          );
+          continue;
+        }
         const facts = new Map([...(this.past.get(key) ?? []), ...group]);
         const mine: [Rank, string] = [facts.get(old)!, old];
         const newer = [...facts]
@@ -2008,21 +2035,22 @@ export async function rivalRelations(
 }
 
 /**
- * Retire current relations that newer relations displaced, each once, by the first relation named for it.
+ * Retire current relations, each once, by the first retirement named for it.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
- * @param pairs (Iterable<readonly [EdgeRow, Relation]>): each current edge row with the relation that displaced it.
+ * @param retirements (Iterable<readonly [EdgeRow, string, Date]>): each current edge row with what retired it (a
+ * relation or source version id) and when.
  * @return (Relation[]): the retired versions.
  */
 export async function retireRelations(
   runner: Runner,
   ns: string,
-  pairs: Iterable<readonly [EdgeRow, Relation]>,
+  retirements: Iterable<readonly [EdgeRow, string, Date]>,
 ): Promise<Relation[]> {
   const gone = new Map<string, EdgeRow>();
-  for (const [edge, by] of pairs) {
-    if (!gone.has(idOf(edge.props))) gone.set(idOf(edge.props), retiredEdge(edge, by.id, effectiveTime(by)));
+  for (const [edge, by, at] of retirements) {
+    if (!gone.has(idOf(edge.props))) gone.set(idOf(edge.props), retiredEdge(edge, by, at));
   }
   for (const edge of gone.values()) precheckWrite(runner, edge.props);
   const rows: EdgeWrite[] = [...gone.values()].map((e) => [e.type, e.from_id, e.to_id, e.props]);
@@ -2040,7 +2068,8 @@ export async function retireRelations(
  * invalidated_by, so the version list shows exactly the writes that happened. In supersede mode each constrained
  * endpoint the batch touches is settled once after the whole batch (see Contradictions.settle): an input older than
  * the relations it conflicts with is written already invalidated. New versions are written before any retirement,
- * so a failed write never leaves an endpoint without its current relation.
+ * so a failed write never leaves an endpoint without its current relation. A new revision of a certified relation is
+ * not certified, and a certified_dropped warning says so.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -2122,6 +2151,10 @@ export async function upsertRelations(
         if (prev.is_current) {
           writes.set(JSON.stringify([rid, prev.revision]), [rid, { ...edge.props, is_current: false }]);
         }
+        if (prev.is_current && prev.certified_at !== null) {
+          const message = `relation ${rid} was certified, but this write changed it, so its new revision is not`;
+          options.warnings?.push(insertWarning("certified_dropped", message));
+        }
         const live = prev.is_current || reassert;
         props = encodeRelationProps({
           ns,
@@ -2141,7 +2174,15 @@ export async function upsertRelations(
     if (tracker !== null && props.is_current) {
       const version = relationOf(edge);
       options.warnings?.push(
-        ...tracker.admit(rid, rtype, rel.from_entity, rel.to_entity, rankOf(version), effectiveTime(version)),
+        ...tracker.admit(
+          rid,
+          rtype,
+          rel.from_entity,
+          rel.to_entity,
+          rankOf(version),
+          effectiveTime(version),
+          version.certified_at !== null,
+        ),
       );
     }
     if (write) writes.set(JSON.stringify([rid, props.revision]), [rid, props]);
@@ -2539,6 +2580,138 @@ export async function preferencesAsOf(runner: Runner, ns: string, asOf: Date): P
 }
 
 /**
+ * Mark the current version of a relation as verified by someone, in place, or clear the mark when by is null.
+ *
+ * A certified relation stays current when a supersede contradiction or a replaced source would retire it. The mark
+ * belongs to the version: a later revision of the relation starts uncertified.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param rid (string): the relation id.
+ * @param by (string | null): who verified it, or null to remove the certification.
+ * @param at (Date): when it was certified.
+ * @return (Relation): the current version with its certification.
+ */
+export async function certifyRelation(
+  runner: Runner,
+  ns: string,
+  rid: string,
+  by: string | null,
+  at: Date,
+): Promise<Relation> {
+  requireStr("relation id", rid);
+  if (by !== null && (typeof by !== "string" || !pyStrip(by))) {
+    throw new ValidationError("certified_by must be a non-empty string");
+  }
+  let edge = await runner.getCurrentEdge(ns, rid);
+  if (edge !== null) {
+    await runner.lockNode(ns, L_ENTITY, edge.from_id);
+    edge = await runner.getCurrentEdge(ns, rid);
+  }
+  if (edge === null || !isRelationType(edge.type)) {
+    const newest = await newestRelation(runner, ns, rid);
+    if (newest === null) throw new NotFoundError("Relation", rid);
+    throw new ValidationError(`${invalidatedNote(newest)}; only a current relation can be certified`);
+  }
+  const props = { ...edge.props, certified_at: by === null ? null : toIso(at), certified_by: by };
+  precheckWrite(runner, props);
+  await runner.createEdges(ns, L_ENTITY, L_ENTITY, [[edge.type, edge.from_id, edge.to_id, props]]);
+  return relationOf({ ...edge, props });
+}
+
+/**
+ * List the entities and relations that have evidence from any version of a source.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param sourceId (string): the source id.
+ * @return (Set<string>): the evidence target ids.
+ */
+export async function sourceTargets(runner: Runner, ns: string, sourceId: string): Promise<Set<string>> {
+  const rows = await scan(nodeListing(runner, ns, L_EVIDENCE, { equals: { source_id: sourceId } }), Infinity, BATCH);
+  return new Set(rows.map((row) => row.target_id as string));
+}
+
+/**
+ * Make one version of a source replace its others: mark them replaced_at and replaced_by, so retrieval stops quoting
+ * them, and retire the current relations among some candidates whose every evidence record is from one of them, as a
+ * newer fact retires one: invalidated_at is set and nothing is deleted.
+ *
+ * A relation with evidence from the given version, or from a version of another source that was not itself replaced,
+ * stays current, and so does a certified one, with a "certified_kept" warning. Evidence recorded by hand has no stored
+ * version and always counts.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param sourceId (string): the source id.
+ * @param version (string): the source version just recorded; it is stored as invalidated_by.
+ * @param stale (Iterable<string>): the ids the source supported before and the new version did not produce again.
+ * @param at (Date): the new version's effective time.
+ * @return ([string[], InsertWarning[]]): the retired relation ids, and one warning per decision.
+ */
+export async function replaceSource(
+  runner: Runner,
+  ns: string,
+  sourceId: string,
+  version: string,
+  stale: Iterable<string>,
+  at: Date,
+): Promise<[string[], InsertWarning[]]> {
+  const candidates = [...new Set(stale)].sort(comparePy);
+  const support = new Map<string, Props[]>();
+  for (const row of await nodesWhere(runner, ns, L_EVIDENCE, "target_id", candidates)) {
+    const target = row.target_id as string;
+    support.set(target, [...(support.get(target) ?? []), row]);
+  }
+  const others = dedupList(
+    [...support.values()]
+      .flat()
+      .filter((r) => r.source_id !== sourceId)
+      .map((r) => r.source_version as string),
+  );
+  const replaced = new Set(
+    [...(await nodesById(runner, ns, L_SOURCE_VERSION, others))].filter(([, row]) => row.replaced_by).map(([sv]) => sv),
+  );
+  const active = (r: Props): boolean =>
+    r.source_id === sourceId ? r.source_version === version : !replaced.has(r.source_version as string);
+  const retired: string[] = [];
+  const retirements: Array<readonly [EdgeRow, string, Date]> = [];
+  const warnings: InsertWarning[] = [];
+  for (const rid of candidates) {
+    if ((support.get(rid) ?? []).some(active)) continue;
+    const edge = await runner.getCurrentEdge(ns, rid);
+    if (edge === null || !isRelationType(edge.type)) continue;
+    if (edge.props.certified_at !== null && edge.props.certified_at !== undefined) {
+      const message = `relation ${rid} is certified, so it stays current though source ${sourceId} no longer states it`;
+      warnings.push(insertWarning("certified_kept", message));
+      continue;
+    }
+    retirements.push([edge, version, at]);
+    retired.push(rid);
+    const message = `relation ${rid} was retired: only older versions of source ${sourceId} stated it`;
+    warnings.push(insertWarning("fact_retired_by_source", message));
+  }
+  await retireRelations(runner, ns, retirements);
+  const marks: NodeRow[] = [];
+  for (const row of await runner.childNodes(
+    ns,
+    L_SOURCE,
+    ids.sourceNodeId(sourceId),
+    R_HAS_VERSION,
+    L_SOURCE_VERSION,
+  )) {
+    const replacedBy = row.replaced_by ?? null;
+    if (row.id === version && replacedBy !== null) {
+      marks.push([row.id as string, { ...row, replaced_at: null, replaced_by: null }]);
+    } else if (row.id !== version && replacedBy === null) {
+      marks.push([row.id as string, { ...row, replaced_at: toIso(at), replaced_by: version }]);
+    }
+  }
+  if (marks.length) await runner.upsertNodes(ns, L_SOURCE_VERSION, marks);
+  return [retired, warnings];
+}
+
+/**
  * Delete a relation, all of its versions, and any decision trace that uses it as a step.
  *
  * @param runner (Runner): the graph runner.
@@ -2867,7 +3040,16 @@ export async function deletePreference(runner: Runner, ns: string, pid: string):
 }
 
 async function readSteps(runner: Runner, ns: string, tid: string): Promise<DecisionStep[]> {
-  const rows = await runner.childNodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP);
+  return stepsOf(await runner.childNodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP));
+}
+
+/**
+ * Decode a trace's stored step nodes into its steps, in step order.
+ *
+ * @param rows (readonly Props[]): the step nodes' properties.
+ * @return (DecisionStep[]): the steps.
+ */
+function stepsOf(rows: readonly Props[]): DecisionStep[] {
   return rows
     .map((r) => ({
       order: Math.trunc(Number(r.order)),
@@ -2886,6 +3068,28 @@ export async function getTrace(runner: Runner, ns: string, tid: string): Promise
 }
 
 /**
+ * Fetch many decision traces by id, in the order given, skipping ids with no trace. A store that reads the children of many parents at once (childrenOf) loads every trace's steps in one read.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param tids (readonly string[]): decision ids.
+ * @return (DecisionTrace[]): the traces found.
+ */
+export async function getTraces(runner: Runner, ns: string, tids: readonly string[]): Promise<DecisionTrace[]> {
+  if (!runner.childrenOf) {
+    const traces: DecisionTrace[] = [];
+    for (const tid of tids) {
+      const trace = await getTrace(runner, ns, tid);
+      if (trace !== null) traces.push(trace);
+    }
+    return traces;
+  }
+  const nodes = await nodesById(runner, ns, L_TRACE, tids);
+  const steps = await runner.childrenOf(ns, L_TRACE, [...nodes.keys()], R_HAS_STEP, L_STEP);
+  return tids.filter((tid) => nodes.has(tid)).map((tid) => decodeTrace(nodes.get(tid)!, stepsOf(steps.get(tid) ?? [])));
+}
+
+/**
  * Resolve decision step relation ids to their latest versions, so a step can name a retired relation.
  *
  * @param runner (Runner): the graph runner.
@@ -2894,9 +3098,13 @@ export async function getTrace(runner: Runner, ns: string, tid: string): Promise
  * @return (DecisionStep[]): the steps; throws ValidationError for an id with no version.
  */
 async function resolveSteps(runner: Runner, ns: string, stepRelIds: readonly string[]): Promise<DecisionStep[]> {
+  const versions = runner.edgeVersions ? await runner.edgeVersions(ns, null, null, dedupList(stepRelIds)) : null;
+  const newest = new Map<string, EdgeRow>();
+  for (const edge of versions ?? []) if (isRelationType(edge.type)) keepNewest(newest, edge);
   const steps: DecisionStep[] = [];
   for (const [order, relId] of stepRelIds.entries()) {
-    const rel = await newestRelation(runner, ns, relId);
+    const found = newest.get(relId);
+    const rel = versions === null ? await newestRelation(runner, ns, relId) : found ? relationOf(found) : null;
     if (rel === null) throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`);
     steps.push({ order, relation_id: relId, from_entity: rel.from_entity, to_entity: rel.to_entity });
   }

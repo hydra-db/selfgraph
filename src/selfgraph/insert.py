@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from ._ops import _require_json_mapping, _require_optional_text, parse_time
+from ._ops import _require_bool, _require_json_mapping, _require_optional_text, parse_time
 from .errors import ExtractionError, SelfGraphError, ValidationError
 from .extraction.extractor import LLMExtractor
 from .ids import _unstorable
@@ -52,7 +52,19 @@ class Insert:
         schema_mode: SchemaMode | None = None,
         resolver: EntityResolver | ResolverMode | None = None,
         contradiction: ContradictionMode | None = None,
+        replace_source: bool = False,
     ) -> InsertResult:
+        """Extract an ontology from text and merge it into the graph, recording the text as a source version.
+
+        With replace_source, the text is the new content of source_id: every current relation that only older
+        versions of the source stated, and that this text no longer yields, is retired (invalidated_at set, nothing
+        deleted, still visible to as_of), and the result's source_diff lists what was kept, added, and retired.
+
+        @param text (str): the text.
+        @param source_id (str | None): the stable id of the source the text comes from.
+        @param replace_source (bool): treat the text as a replacement of source_id's earlier versions.
+        @return (InsertResult): what was inserted, with source_diff when replace_source is set.
+        """
         if resolver is not None:
             self._c._resolver_for(resolver)
         if not isinstance(text, str):
@@ -60,6 +72,9 @@ class Insert:
         if _unstorable(text):
             raise ValidationError("text cannot contain NUL or unpaired surrogate characters")
         _require_optional_text("source_id", source_id)
+        _require_bool("replace_source", replace_source)
+        if replace_source and source_id is None:
+            raise ValidationError("replace_source needs a source_id: it replaces that source's earlier versions")
         _require_json_mapping("metadata", metadata)
         event_time = parse_time(event_time, "event_time")
         if not text.strip():
@@ -98,6 +113,7 @@ class Insert:
             contradiction=contradiction,
             extracted=True,
             extraction="llm" if isinstance(extractor, LLMExtractor) else getattr(extractor, "tier", "custom"),
+            replace_source=replace_source,
         )
 
     async def facts(

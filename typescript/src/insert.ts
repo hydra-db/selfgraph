@@ -3,7 +3,7 @@ import { judgeContradictions } from "./contradiction.js";
 import { ExtractionError, errorMessage, SelfGraphError, ValidationError } from "./errors.js";
 import { NERExtractor } from "./extraction/basic.js";
 import { LLMExtractor } from "./extraction/extractor.js";
-import { pyStrip } from "./internal/py.js";
+import { comparePy, pyStrip } from "./internal/py.js";
 import {
   asInput,
   type DateTimeInput,
@@ -19,6 +19,7 @@ import {
   type ParsedExtraction,
   type Preference,
   parseOrThrow,
+  type SourceDiff,
 } from "./models.js";
 import * as ops from "./ops.js";
 import type { Extractor, LLMClient } from "./protocols.js";
@@ -48,6 +49,7 @@ import {
   isUnstorable,
   keysOf,
   parseTime,
+  requireBool,
   requireJsonMapping,
   requireOptionalText,
   typeName,
@@ -63,6 +65,7 @@ export interface InsertTextOptions {
   schema_mode?: SchemaMode | null;
   resolver?: EntityResolver | ResolverMode | null;
   contradiction?: ContradictionMode | null;
+  replace_source?: boolean;
 }
 
 export interface InsertFactsOptions {
@@ -92,6 +95,7 @@ const TEXT_KEYS = keysOf<InsertTextOptions>({
   schema_mode: true,
   resolver: true,
   contradiction: true,
+  replace_source: true,
 });
 
 export interface ExtractionSetup {
@@ -111,6 +115,7 @@ interface Provenance {
   metadata: JsonObject | null;
   default_event_time: Date | null;
   warnings: InsertWarning[];
+  replace_source: boolean;
 }
 
 export class Insert {
@@ -199,6 +204,10 @@ export class Insert {
       if (mode === "strict" && conflicts === "warn") await ops.requireMaxCount(tx, ns, caps, resolved.relations);
       let sourceVersion: string | null = null;
       let baseEvidence: Evidence[] = [];
+      const prior =
+        source.replace_source && source.source_id !== null
+          ? await ops.sourceTargets(tx, ns, source.source_id)
+          : new Set<string>();
 
       if (source.source_id !== null) {
         [sourceVersion, baseEvidence] = await recordSource(tx, ns, {
@@ -223,6 +232,23 @@ export class Insert {
       if (judged && llm !== null) {
         const fresh = relations.filter((r) => r.created_at.getTime() === createdAt.getTime());
         found.push(...(await judgeContradictions(tx, ns, llm, fresh, caps)));
+      }
+
+      let diff: SourceDiff | null = null;
+      if (source.replace_source && source.source_id !== null && sourceVersion !== null) {
+        const produced = new Set(relations.map((r) => r.id));
+        const at = source.default_event_time ?? createdAt;
+        const [retired, notes] = await ops.replaceSource(
+          tx,
+          ns,
+          source.source_id,
+          sourceVersion,
+          [...prior].filter((id) => !produced.has(id)),
+          at,
+        );
+        found.push(...notes);
+        const sorted = (keep: (id: string) => boolean) => [...produced].filter(keep).sort(comparePy);
+        diff = { kept: sorted((id) => prior.has(id)), added: sorted((id) => !prior.has(id)), retired };
       }
 
       const preferences: Preference[] = [];
@@ -268,6 +294,7 @@ export class Insert {
         ].map((w) => (w.source_id == null ? { ...w, source_id: source.source_id } : w)),
         merges,
         tiers: used,
+        source_diff: diff,
       };
     });
   }
@@ -286,9 +313,13 @@ export class Insert {
   /**
    * Extract facts from text and merge them into the graph in one transaction.
    *
+   * With replace_source, the text is the new content of source_id: every current relation that only older versions of
+   * the source stated, and that this text no longer yields, is retired (invalidated_at set, nothing deleted, still
+   * visible to as_of), and the result's source_diff lists what was kept, added, and retired.
+   *
    * @param text (string): the text to extract from.
-   * @param options (InsertTextOptions): the source id, a default event time, source metadata, and per-call instructions or prompts.
-   * @return (InsertResult): what was inserted.
+   * @param options (InsertTextOptions): the source id, a default event time, source metadata, per-call instructions or prompts, and replace_source.
+   * @return (InsertResult): what was inserted, with source_diff when replace_source is set.
    */
   async text(text: string, options: InsertTextOptions = {}): Promise<InsertResult> {
     if (typeof text !== "string") throw new ValidationError(`text must be a string, got ${typeName(text)}`);
@@ -297,6 +328,11 @@ export class Insert {
       throw new ValidationError("text cannot contain NUL or unpaired surrogate characters");
     }
     requireOptionalText("source_id", options.source_id);
+    const replaceSource = options.replace_source ?? false;
+    requireBool("replace_source", replaceSource);
+    if (replaceSource && options.source_id == null) {
+      throw new ValidationError("replace_source needs a source_id: it replaces that source's earlier versions");
+    }
     requireJsonMapping("metadata", options.metadata);
     if (options.resolver != null) resolverFor(options.resolver, this.graph.tiers.llm, this.graph.tiers.max_tier);
     const eventTime = parseTime(options.event_time, "event_time");
@@ -328,6 +364,7 @@ export class Insert {
         metadata: options.metadata ?? null,
         default_event_time: eventTime,
         warnings,
+        replace_source: replaceSource,
       },
       activeSchema,
       options.schema_mode ?? null,
@@ -359,6 +396,7 @@ export class Insert {
         metadata: null,
         default_event_time: eventTime,
         warnings: [],
+        replace_source: false,
       },
       asSchema(options.schema),
       options.schema_mode ?? null,

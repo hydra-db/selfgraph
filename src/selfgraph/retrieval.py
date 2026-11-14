@@ -6,12 +6,13 @@ import logging
 import math
 import re
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING
 
 from . import _ops
+from ._maintenance import scan_entities, scan_relations
 from ._ops import _paged
 from ._serde import (
     L_CHUNK,
@@ -27,15 +28,25 @@ from ._serde import (
 from .errors import ValidationError
 from .extraction.chunking import count_tokens
 from .ids import normalize_text, profile_id
-from .models import Coverage, Entity, Preference, Relation, RetrievalResult, RetrievalSeed, Subgraph
-from .terms import expand_tokens, match_terms, stem
+from .models import (
+    AnswerabilityReport,
+    Entity,
+    Preference,
+    Relation,
+    RetrievalResult,
+    RetrievalSeed,
+    Subgraph,
+    TermCoverage,
+)
+from .terms import expand_tokens, grounded_terms, schema_forms, stem
 
 _log = logging.getLogger("selfgraph")
 
 if TYPE_CHECKING:
     from .client import SelfGraph
+    from .schema import Schema
 
-__all__ = ["coverage", "retrieve"]
+__all__ = ["answerability", "check_answerable", "retrieve"]
 
 _STOPWORDS = frozenset(
     {
@@ -81,6 +92,40 @@ _STOPWORDS = frozenset(
     }
 )
 
+_FILLER = frozenset(
+    {
+        "about",
+        "all",
+        "any",
+        "can",
+        "could",
+        "describe",
+        "does",
+        "explain",
+        "find",
+        "give",
+        "i",
+        "know",
+        "list",
+        "many",
+        "me",
+        "much",
+        "my",
+        "our",
+        "please",
+        "should",
+        "show",
+        "tell",
+        "there",
+        "we",
+        "where",
+        "whom",
+        "whose",
+        "would",
+        "you",
+        "your",
+    }
+)
 _PAGE = 500
 _MAX_POOL = 5000
 _SEED_PAGE = 5000
@@ -100,6 +145,8 @@ _PPR_TOLERANCE = 1e-6
 _EMBED_BATCH = 64
 _EMBED_CACHE = 50_000
 _RRF_K = 60
+HUB_DEGREE = 50
+_MAX_MATCHES = 10
 
 
 def _fold(text: str) -> str:
@@ -111,13 +158,22 @@ def _fold(text: str) -> str:
     return normalize_text(text).casefold()
 
 
+def _token_list(text: str) -> list[str]:
+    """Split text into casefolded Unicode letter and digit tokens in order, dropping stopwords.
+
+    @param text (str): the text to tokenize.
+    @return (list[str]): the content tokens, repeats kept.
+    """
+    return [t for t in re.findall(r"[^\W_]+", _fold(text)) if t not in _STOPWORDS]
+
+
 def _tokens(text: str) -> set[str]:
     """Split text into casefolded Unicode letter and digit tokens, dropping stopwords.
 
     @param text (str): the text to tokenize.
     @return (set[str]): the distinct content tokens.
     """
-    return {t for t in re.findall(r"[^\W_]+", _fold(text)) if t not in _STOPWORDS}
+    return set(_token_list(text))
 
 
 def _short_tokens(text: str) -> set[str]:
@@ -389,8 +445,12 @@ async def _traverse(
     max_nodes: int,
     prefetch: int,
     as_of: datetime | None = None,
-) -> tuple[dict[str, int], list[Relation]]:
+    skip_hubs: bool = False,
+) -> tuple[dict[str, int], list[Relation], set[str]]:
     """Walk the current-relation graph out from the seeds in BFS or DFS order over prefetched adjacency.
+
+    A hub is an entity with at least HUB_DEGREE relations. With skip_hubs, a hub reached from a seed is kept but
+    not expanded, so the walk never passes through one.
 
     @param graph (SelfGraph): the open graph.
     @param ns (str): the namespace to traverse.
@@ -400,7 +460,9 @@ async def _traverse(
     @param max_nodes (int): the maximum number of entities to collect.
     @param prefetch (int): the most entities whose adjacency to load up front; DFS needs more than it keeps.
     @param as_of (datetime | None): walk the relations valid at this time instead of the current ones.
-    @return (tuple[dict[str, int], list[Relation]]): visited entity ids with distance, and the relations among them.
+    @param skip_hubs (bool): do not expand hubs other than the seeds.
+    @return (tuple[dict[str, int], list[Relation], set[str]]): visited entity ids with distance, the relations among
+        them, and the visited hubs.
     """
     adjacency = await _prefetch(graph, ns, seed_ids, depth, prefetch, as_of)
     start = [(sid, 0) for sid in seed_ids]
@@ -418,12 +480,15 @@ async def _traverse(
             upcoming = frontier if strategy == "bfs" else reversed(frontier)
             pending = [n for n, nd in upcoming if nd < depth and n not in adjacency]
             adjacency.update(await _neighbors(graph, ns, list(dict.fromkeys([node, *pending]))[:_PAGE], as_of))
+        if skip_hubs and d > 0 and len(adjacency[node]) >= HUB_DEGREE:
+            continue
         for rel in adjacency[node]:
             relations[rel.id] = rel
             other = rel.to_entity if rel.from_entity == node else rel.from_entity
             if dist.get(other, depth + 1) > d + 1:
                 frontier.append((other, d + 1))
-    return dist, _within(relations.values(), dist)
+    hubs = {n for n in dist if len(adjacency.get(n, ())) >= HUB_DEGREE}
+    return dist, _within(relations.values(), dist), hubs
 
 
 async def _prefetch(
@@ -567,12 +632,17 @@ def _within(relations, nodes) -> list[Relation]:
     return [r for r in relations if r.from_entity in nodes and r.to_entity in nodes]
 
 
-def _ppr_rank(seeds: list[tuple[Entity, float]], nodes, relations: list[Relation]) -> dict[str, int]:
+def _ppr_rank(
+    seeds: list[tuple[Entity, float]], nodes, relations: list[Relation], blocked: Collection[str] = ()
+) -> dict[str, int]:
     """Rank entities by personalized PageRank over source-weighted undirected edges, restarting at the seeds.
+
+    A blocked entity takes mass but passes none on: its mass restarts at the seeds, as from a dead end.
 
     @param seeds (list[tuple[Entity, float]]): seed entities with their scores.
     @param nodes (Iterable[str]): the entity ids collected by traversal.
     @param relations (list[Relation]): the relations collected by traversal.
+    @param blocked (Collection[str]): entities the walk may reach but not pass through, such as skipped hubs.
     @return (dict[str, int]): each entity's rank by PageRank mass, 0 for the highest.
     """
     nodes = set(nodes)
@@ -590,7 +660,7 @@ def _ppr_rank(seeds: list[tuple[Entity, float]], nodes, relations: list[Relation
     for _ in range(_PPR_MAX_ITERATIONS):
         nxt = {n: (1 - _PPR_DAMPING) * teleport.get(n, 0.0) for n in nodes}
         for n, m in mass.items():
-            out = edges[n]
+            out = {} if n in blocked else edges[n]
             if out:
                 norm = _PPR_DAMPING * m / sum(out.values())
                 for other, weight in out.items():
@@ -616,12 +686,25 @@ async def _collect_decisions(graph: SelfGraph, ns: str, relation_ids: set[str], 
     """
     if not relation_ids:
         return []
-    found = []
-    for tid in sorted(await _ops._traces_touching_relations(graph.store, ns, sorted(relation_ids))):
-        trace = await _ops.get_trace(graph.store, ns, tid)
-        if trace is not None and (as_of is None or _ops.effective_time(trace) <= as_of):
-            found.append(trace)
-    return found
+    tids = sorted(await _ops._traces_touching_relations(graph.store, ns, sorted(relation_ids)))
+    traces = await _ops.get_traces(graph.store, ns, tids)
+    return [t for t in traces if as_of is None or _ops.effective_time(t) <= as_of]
+
+
+def _quotable(version: dict | None, as_of: datetime | None) -> bool:
+    """Report whether a source version can supply passages: it exists, took effect by as_of, and was not replaced
+    by a newer version of its source by then.
+
+    @param version (dict | None): the stored source version, or None when it is gone.
+    @param as_of (datetime | None): the point in time read, or None for now.
+    @return (bool): True when its chunks may be quoted.
+    """
+    if version is None:
+        return False
+    if as_of is not None and from_iso(version.get("event_time") or version["created_at"]) > as_of:
+        return False
+    replaced = from_iso(version.get("replaced_at"))
+    return replaced is None or (as_of is not None and replaced > as_of)
 
 
 async def _collect_passages(
@@ -640,11 +723,12 @@ async def _collect_passages(
     @param dist (dict[str, int]): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
     @param query_tokens (set[str]): the content tokens from the query.
     @param as_of (datetime | None): skip source versions whose effective time (event_time, else created_at) is after it.
-    @return (list[str]): passage texts, most query-relevant first.
+    @return (list[str]): passage texts, most query-relevant first; a version replaced by a newer one of its source
+        (insert.text with replace_source) by then is skipped.
     """
     far = len(dist) + 1
     sv_dist: dict[str, int] = {}
-    stored_at: dict[str, bool] = {}
+    usable: dict[str, bool] = {}
     for e in sorted(entities, key=lambda e: dist.get(e.id, far)):
         if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
             break
@@ -654,16 +738,11 @@ async def _collect_passages(
         skip = 0
         while len(sv_dist) < _MAX_PASSAGE_SOURCES:
             rows = await fetch(skip=skip, limit=_PAGE)
-            if as_of is not None:
-                unseen = list(dict.fromkeys(r["source_version"] for r in rows if r["source_version"] not in stored_at))
-                versions = await _ops._nodes_by_id(graph.store, ns, L_SOURCE_VERSION, unseen)
-                for sv in unseen:
-                    props = versions.get(sv)
-                    stored_at[sv] = (
-                        props is not None and from_iso(props.get("event_time") or props["created_at"]) <= as_of
-                    )
+            unseen = list(dict.fromkeys(r["source_version"] for r in rows if r["source_version"] not in usable))
+            versions = await _ops._nodes_by_id(graph.store, ns, L_SOURCE_VERSION, unseen)
+            usable.update((sv, _quotable(versions.get(sv), as_of)) for sv in unseen)
             for row in rows:
-                if as_of is not None and not stored_at[row["source_version"]]:
+                if not usable[row["source_version"]]:
                     continue
                 sv_dist.setdefault(row["source_version"], dist.get(e.id, far))
                 if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
@@ -723,6 +802,7 @@ def _assemble(
     names: dict[str, str],
     dist: dict[str, int],
     budget_tokens: int,
+    hubs: Collection[str] = (),
 ) -> str:
     """Serialise passages and the subgraph into text for an LLM, under a token budget, nearest first.
 
@@ -735,7 +815,9 @@ def _assemble(
     @param dist (dict[str, int]): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
     @param budget_tokens (int): the maximum estimated tokens to emit; when even the first line does not fit, that
         line is cut to the budget, so a non-empty subgraph never yields an empty context.
-    @return (str): the assembled context text.
+    @param hubs (Collection[str]): hub entity ids; a relation line through one is marked "(via hub)".
+    @return (str): the assembled context text. Certified relations come first among equally close ones and are
+        marked "[certified]".
     """
     lines: list[str] = []
     first: list[str] = []
@@ -759,9 +841,9 @@ def _assemble(
 
     far = len(dist) + 1
 
-    def rel_rank(r: Relation) -> tuple[int, int, float]:
+    def rel_rank(r: Relation) -> tuple[int, int, bool, float]:
         a, b = dist.get(r.from_entity, far), dist.get(r.to_entity, far)
-        return min(a, b), max(a, b), -r.created_at.timestamp()
+        return min(a, b), max(a, b), r.certified_at is None, -r.created_at.timestamp()
 
     ordered = sorted(relations, key=rel_rank)
     for r in ordered:
@@ -769,6 +851,10 @@ def _assemble(
         props = _format_props(r.properties)
         if props:
             line += f" {props}"
+        if r.certified_at is not None:
+            line += " [certified]"
+        if r.from_entity in hubs or r.to_entity in hubs:
+            line += " (via hub)"
         if not add(line, budget_tokens):
             break
 
@@ -827,12 +913,16 @@ async def retrieve(
     budget_tokens: int = 3000,
     as_of: datetime | None = None,
     seeds: str = "bm25",
+    skip_hubs: bool = False,
 ) -> RetrievalResult:
     """Retrieve graph context for a query via keyword seeds and bounded traversal.
 
     Seeding climbs a ladder: "bm25" scores entities lexically; "synonyms" first adds the name of each schema
     entity type the query names by alias or synonym; "embeddings" also ranks entities by the graph embedder and
     fuses the two rankings.
+
+    Entities with at least HUB_DEGREE relations reached by the walk are listed in hubs, and a context line through
+    one that is not a seed is marked "(via hub)": a link through a hub is weak evidence of a real connection.
 
     With as_of, the graph is read on the valid-time axis: each relation and preference at its version valid then
     (see version_as_of), and an entity when it was stored by then or is an endpoint, subject, value, or about
@@ -848,7 +938,8 @@ async def retrieve(
     @param budget_tokens (int): the assembled-context token budget.
     @param as_of (datetime | None): the point in time to read the graph at (naive means UTC), or None for now.
     @param seeds (str): the seeding tier: "bm25", "synonyms", or "embeddings".
-    @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
+    @param skip_hubs (bool): do not walk through hubs other than the seeds.
+    @return (RetrievalResult): the seeds, the collected subgraph, the assembled context, and the hubs reached.
     """
     strategy = strategy.lower()
     if strategy not in STRATEGIES:
@@ -881,9 +972,12 @@ async def retrieve(
     walk = "dfs" if strategy == "dfs" else "bfs"
     pool = max(max_nodes, min(_MAX_POOL, max_nodes * _POOL_FACTOR))
     cap = pool if strategy == "ppr" else max_nodes
-    dist, relations = await _traverse(graph, ns, seed_ids, walk, depth, cap, cap if walk == "bfs" else pool, as_of)
+    prefetch = cap if walk == "bfs" else pool
+    dist, relations, hubs = await _traverse(graph, ns, seed_ids, walk, depth, cap, prefetch, as_of, skip_hubs)
     if strategy == "ppr":
-        dist = {n: rank for n, rank in _ppr_rank(seeds_scored, dist, relations).items() if rank < max_nodes}
+        blocked = hubs - set(seed_ids) if skip_hubs else set()
+        ranks = _ppr_rank(seeds_scored, dist, relations, blocked)
+        dist = {n: rank for n, rank in ranks.items() if rank < max_nodes}
         relations = _within(relations, dist)
 
     await _load(graph, ns, known, dist)
@@ -912,7 +1006,9 @@ async def retrieve(
             names[eid] = known[eid].name
     if as_of is not None:
         preferences = [p for p in preferences if p.subject_entity in names and p.value_entity in names]
-    context = _assemble(passages, entities, relations, preferences, decisions, names, dist, budget_tokens)
+    hubs = {h for h in hubs if h in dist}
+    marked = hubs - set(seed_ids)
+    context = _assemble(passages, entities, relations, preferences, decisions, names, dist, budget_tokens, marked)
 
     _log.debug(
         "retrieve %r: %d seeds, %d entities, %d relations, %d passages",
@@ -929,35 +1025,189 @@ async def retrieve(
         subgraph=Subgraph(entities=entities, relations=relations, preferences=preferences, decisions=decisions),
         context=context,
         tiers={"seeds": seed_tier, "traversal": strategy},
+        hubs=sorted(hubs),
     )
 
 
-async def coverage(graph: SelfGraph, question: str) -> Coverage:
-    """Report which content words of a question a schema term or a stored entity grounds.
+def _question_terms(question: str, names: Iterable[str]) -> list[str]:
+    """Split a question into terms: each longest run of its content tokens that spells a multi-word name or alias,
+    and every other content token on its own, except filler words such as "where", "tell", and "me".
 
-    Words compare ignoring case and a plain plural ending. The scan over entities stops once every word is
-    covered.
+    @param question (str): the question.
+    @param names (Iterable[str]): the entity names, aliases, and schema term forms a run may spell, ignoring a plain
+        plural ending.
+    @return (list[str]): the distinct terms, in question order.
+    """
+    words = [w for w in _token_list(question) if w not in _FILLER]
+    stems = [stem(w) for w in words]
+    spelled = {phrase for phrase in (tuple(map(stem, _token_list(n))) for n in names) if len(phrase) > 1}
+    longest = max(map(len, spelled), default=1)
+    terms: list[str] = []
+    i = 0
+    while i < len(words):
+        size = next(
+            n for n in range(min(longest, len(words) - i), 0, -1) if n == 1 or tuple(stems[i : i + n]) in spelled
+        )
+        terms.append(" ".join(words[i : i + size]))
+        i += size
+    return list(dict.fromkeys(terms))
+
+
+def _covers(words: list[str], text: str) -> bool:
+    """Report whether every term token appears in a text as a token, ignoring a plain plural ending, or, when long
+    enough, as a substring.
+
+    @param words (list[str]): the term's content tokens.
+    @param text (str): the name, type, or key to match.
+    @return (bool): True when the text covers the term.
+    """
+    folded = _fold(text)
+    stems = {stem(t) for t in _tokens(text)}
+    return all(stem(t) in stems or _grep_score({t}, folded) for t in words)
+
+
+def _reaches(
+    start: set[str], goal: set[str], adjacency: dict[str, set[str]], depth: int, hubs: Collection[str]
+) -> bool:
+    """Report whether a path of at most depth hops joins two entity sets without passing through a hub.
+
+    @param start (set[str]): the entities to walk from.
+    @param goal (set[str]): the entities to reach.
+    @param adjacency (dict[str, set[str]]): the undirected neighbours of each entity.
+    @param depth (int): the most hops.
+    @param hubs (Collection[str]): entities the path may end at but not pass through.
+    @return (bool): True when goal is reachable.
+    """
+    if start & goal:
+        return True
+    seen = set(start)
+    level = list(start)
+    for _ in range(depth):
+        following = []
+        for node in level:
+            if node in hubs and node not in start:
+                continue
+            for other in adjacency.get(node, ()):
+                if other in goal:
+                    return True
+                if other not in seen:
+                    seen.add(other)
+                    following.append(other)
+        level = following
+    return False
+
+
+def answerability(
+    question: str,
+    terms: list[str] | None,
+    entities: list[Entity],
+    relations: list[Relation],
+    keys: Iterable[str],
+    schema: Schema | None,
+    depth: int,
+) -> AnswerabilityReport:
+    """Judge whether a graph holds what a question asks about, by lexical matching only.
+
+    Each term is matched in turn against entity names and aliases, entity types, definitions, relation types, and
+    property and preference keys; the first kind with a match the graph holds covers it. Schema terms match by name,
+    alias, and synonym, and a match through a certified one is marked certified; a schema term with nothing stored
+    for it (see grounded_terms) covers nothing, and a term only such terms match is schema_only, which counts as
+    missing. Entities matched by different terms must be
+    joined by a path of at most depth hops; a pair joined only through a hub (HUB_DEGREE or more relations) is listed
+    in hub_only. The verdict is not_answerable when no term is covered, partial when some are missing, uncertain when
+    all are covered but not connected or only through a hub, and answerable otherwise.
+
+    @param question (str): the question.
+    @param terms (list[str] | None): the terms to check, or None to take them from the question.
+    @param entities (list[Entity]): the entities to match.
+    @param relations (list[Relation]): the relations to match and walk.
+    @param keys (Iterable[str]): the property and preference keys to match.
+    @param schema (Schema | None): its entity types, definitions, and relation types match too.
+    @param depth (int): the most hops between matched entities.
+    @return (AnswerabilityReport): the coverage of each term, the connectivity, and the verdict.
+    """
+    forms = schema_forms(schema)
+    if terms is None:
+        names = [n for e in entities for n in (e.name, *e.aliases)]
+        terms = _question_terms(question, [*names, *(f for named in forms.values() for f in named)])
+    held = grounded_terms(schema, (e.type for e in entities), (r.type for r in relations))
+    kinds: tuple[tuple[str, dict[str, tuple[str, bool]]], ...] = (
+        ("type", {**{e.type: (e.type, False) for e in entities}, **forms["type"]}),
+        ("definition", forms["definition"]),
+        ("relation", {**{r.type: (r.type, False) for r in relations}, **forms["relation"]}),
+        ("property", {k: (k, False) for k in keys}),
+    )
+    coverage: list[TermCoverage] = []
+    linked: dict[str, set[str]] = {}
+    for term in terms:
+        words = _token_list(term)
+        found = {e.id for e in entities if words and any(_covers(words, n) for n in (e.name, *e.aliases))}
+        status, certified = "entity", False
+        if found:
+            linked[term] = found
+        else:
+            status, declared = "missing", []
+            for kind, named in kinds:
+                hits = [named[form] for form in named if words and _covers(words, form)]
+                live = [(t, c) for t, c in hits if kind not in held or t in held[kind]]
+                if live:
+                    status, found, certified = kind, {t for t, _ in live}, any(c for _, c in live)
+                    break
+                declared = declared or hits
+            if status == "missing" and declared:
+                status, found, certified = "schema_only", {t for t, _ in declared}, any(c for _, c in declared)
+        coverage.append(
+            TermCoverage(term=term, status=status, matches=sorted(found)[:_MAX_MATCHES], certified=certified)
+        )
+    adjacency: dict[str, set[str]] = {}
+    degree: dict[str, int] = {}
+    for r in relations:
+        adjacency.setdefault(r.from_entity, set()).add(r.to_entity)
+        adjacency.setdefault(r.to_entity, set()).add(r.from_entity)
+        for eid in (r.from_entity, r.to_entity):
+            degree[eid] = degree.get(eid, 0) + 1
+    hubs = {eid for eid, n in degree.items() if n >= HUB_DEGREE}
+    pairs = [(a, b) for i, a in enumerate(linked) for b in list(linked)[i + 1 :]]
+    joined = [(a, b) for a, b in pairs if _reaches(linked[a], linked[b], adjacency, depth, ())]
+    hub_only = [[a, b] for a, b in joined if not _reaches(linked[a], linked[b], adjacency, depth, hubs)]
+    missing = [c.term for c in coverage if c.status in ("schema_only", "missing")]
+    connected = len(joined) == len(pairs)
+    if len(missing) == len(coverage):
+        verdict = "not_answerable"
+    elif missing:
+        verdict = "partial"
+    elif not connected or hub_only:
+        verdict = "uncertain"
+    else:
+        verdict = "answerable"
+    return AnswerabilityReport(
+        question=question, verdict=verdict, terms=coverage, missing=missing, connected=connected, hub_only=hub_only
+    )
+
+
+async def check_answerable(
+    graph: SelfGraph, question: str, *, terms: list[str] | None, as_of: datetime | None, depth: int
+) -> AnswerabilityReport:
+    """Read the namespace and judge whether it holds what a question asks about; see answerability.
 
     @param graph (SelfGraph): the open graph to read.
-    @param question (str): the natural-language question.
-    @return (Coverage): the matched terms, the covered and uncovered words in sorted order, and the covered share.
+    @param question (str): the question.
+    @param terms (list[str] | None): the terms to check, or None to take them from the question.
+    @param as_of (datetime | None): judge the graph as it stood at this time, or None for now.
+    @param depth (int): the most hops between matched entities.
+    @return (AnswerabilityReport): the coverage of each term, the connectivity, and the verdict.
     """
-    tokens = _tokens(question)
-    terms = match_terms(tokens, graph.schema, _tokens)
-    covered = {t for term in terms for t in term.tokens}
-    stems: dict[str, set[str]] = {}
-    for token in tokens - covered:
-        stems.setdefault(stem(token), set()).add(token)
-    async for page in _entity_pages(graph, graph.namespace, None, None):
-        if not stems:
-            break
-        for entity in page:
-            for word in {stem(t) for t in _tokens(_entity_text(entity))} & stems.keys():
-                covered |= stems.pop(word)
-    return Coverage(
-        question=question,
-        terms=terms,
-        covered=sorted(covered),
-        uncovered=sorted(tokens - covered),
-        ratio=len(covered) / len(tokens) if tokens else 0.0,
-    )
+    ns = graph.namespace
+    entities = await scan_entities(graph.store, ns)
+    if as_of is None:
+        relations = await scan_relations(graph.store, ns)
+        fetch = partial(_ops.list_preferences, graph.store, ns, subject_entity=None, key=None, stance=None)
+        preferences = await _paged(fetch)
+    else:
+        relations = await _ops.relations_as_of(graph.store, ns, as_of)
+        preferences = await _ops.preferences_as_of(graph.store, ns, as_of)
+        visible = await _visible_at(graph, ns, entities, as_of, preferences)
+        entities = [e for e in entities if e.id in visible]
+    keys = [k for item in (*entities, *relations) for k in item.properties]
+    keys += [p.key for p in preferences]
+    return answerability(question, terms, entities, relations, keys, graph.schema, depth)

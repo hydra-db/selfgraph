@@ -192,6 +192,7 @@ function whereDocAnyOf(
 }
 
 export class KuzuStore extends AutoCommitStore implements GraphStore {
+  readonly queryLabels: readonly string[] = ["N", "R"];
   private readonly path: string;
   private readonly conn = new Lazy<KuzuConnection>(async () => {
     const mod = await loadOptional<KuzuModule & { default?: KuzuModule }>(
@@ -254,7 +255,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     try {
       const columns = await res.getColumnNames();
       const rows = (await res.getAll()).map((row) => normalize(row) as Record<string, JsonValue>);
-      return { columns, rows, counters: {} };
+      return { columns, rows, counters: {}, warnings: [] };
     } finally {
       res.close?.();
     }

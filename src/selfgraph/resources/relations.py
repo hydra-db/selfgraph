@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
 
 from .. import _ops
+from .._serde import now
 from ..errors import NotFoundError
 from ..models import DeleteResult, Evidence, EvidenceInput, JsonValue, Page, Relation, check_options
 from ..schema import ContradictionMode, canonical_relation_type
@@ -172,6 +173,29 @@ class Relations(Resource):
         if not versions:
             raise NotFoundError("Relation", id)
         return versions
+
+    async def certify(self, id: str, *, by: str) -> Relation:
+        """Mark the current version of a relation as verified, in place, without a new version.
+
+        A certified relation stays current when a supersede contradiction or insert.text(replace_source=True) would
+        retire it, and retrieval puts it first among equally close facts, marked "[certified]". A later version of
+        the relation starts uncertified.
+
+        @param id (str): the relation id.
+        @param by (str): who verified it.
+        @return (Relation): the current version with certified_at and certified_by set.
+        """
+        _ops._validate_own_id("relation", id)
+        return await self._c._write(_ops.certify_relation, id, by, now())
+
+    async def uncertify(self, id: str) -> Relation:
+        """Remove the certification of the current version of a relation.
+
+        @param id (str): the relation id.
+        @return (Relation): the current version without certification.
+        """
+        _ops._validate_own_id("relation", id)
+        return await self._c._write(_ops.certify_relation, id, None, now())
 
     async def delete(self, id: str) -> DeleteResult:
         """Delete a relation, all its versions, and any decision trace that uses it as a step.

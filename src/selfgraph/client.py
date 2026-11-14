@@ -5,9 +5,12 @@ import logging
 import random
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
+from functools import partial
 from typing import Any
 
 from . import _ops, tiers
+from ._export import obsidian_vault
+from ._maintenance import inspect, scan_entities, scan_relations
 from ._serde import aware, now
 from .contradiction import judge_contradictions
 from .errors import CLOSED_MESSAGE, LLM_HINT, StoreError, TransientError, ValidationError
@@ -17,7 +20,7 @@ from .ids import _require_namespace
 from .insert import Insert
 from .llm.base import resolve_llm
 from .models import (
-    Coverage,
+    AnswerabilityReport,
     CypherResult,
     Extraction,
     ExtractionInstructions,
@@ -26,7 +29,9 @@ from .models import (
     InsertWarning,
     JsonValue,
     LLMConfig,
+    Readiness,
     RetrievalResult,
+    SourceDiff,
     as_input,
     check_options,
 )
@@ -42,7 +47,7 @@ from .resolution import (
     save_merges,
 )
 from .resources import Decisions, Entities, Maintenance, Preferences, Relations
-from .retrieval import coverage as _coverage
+from .retrieval import check_answerable as _check_answerable
 from .retrieval import retrieve as _retrieve
 from .schema import (
     ContradictionMode,
@@ -64,6 +69,7 @@ __all__ = ["SelfGraph"]
 _MAX_TX_RETRIES = 12
 _TX_RETRY_BASE_DELAY = 0.02
 _TX_RETRY_MAX_DELAY = 1.0
+_LEXICAL_NOTE = "the check is lexical; embedding seeds may still find what the missing terms ask about"
 
 _log = logging.getLogger("selfgraph")
 
@@ -294,6 +300,7 @@ class SelfGraph:
         budget_tokens: int = 3000,
         as_of: datetime | str | None = None,
         seeds: tiers.SeedTier | None = None,
+        skip_hubs: bool = False,
     ) -> RetrievalResult:
         """Retrieve graph context for a query via keyword seeds and bounded traversal.
 
@@ -308,7 +315,8 @@ class SelfGraph:
             preferences valid then, with their entities; naive means UTC), or None for now.
         @param seeds (SeedTier | None): how to seed: "bm25", "synonyms" to also expand schema synonyms, "embeddings"
             to fuse embedder similarity with BM25, or None for the graph's tier.
-        @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
+        @param skip_hubs (bool): do not walk through hubs, entities with at least 50 relations, other than seeds.
+        @return (RetrievalResult): the seeds, the collected subgraph, the assembled context, and the hubs reached.
         """
         if not isinstance(query, str):
             raise ValidationError(f"query must be a string, got {type(query).__name__}")
@@ -321,9 +329,8 @@ class SelfGraph:
             raise ValidationError(f"strategy must be a string, got {type(strategy).__name__}")
         for name, value in (("depth", depth), ("k", k), ("max_nodes", max_nodes), ("budget_tokens", budget_tokens)):
             _ops._require_int(name, value)
-        as_of = _ops.parse_time(as_of, "as_of")
-        if as_of is not None:
-            as_of = aware(as_of)
+        _ops._require_bool("skip_hubs", skip_hubs)
+        as_of = self._as_of(as_of)
         await self._ensure_ready()
         return await _retrieve(
             self,
@@ -335,24 +342,97 @@ class SelfGraph:
             budget_tokens=budget_tokens,
             as_of=as_of,
             seeds=seed_tier,
+            skip_hubs=skip_hubs,
         )
 
-    async def coverage(self, question: str) -> Coverage:
-        """Report which words of a question the graph can ground, without an LLM.
+    @staticmethod
+    def _as_of(value: datetime | str | None) -> datetime | None:
+        """Parse an as_of argument, reading a naive time as UTC.
 
-        A content word is covered when a schema term names it (an entity type, relation type, or definition, by
-        name, alias, or synonym) or when a stored entity's text holds it. Uncovered words mark what the graph
-        cannot answer about.
-
-        @param question (str): the natural-language question.
-        @return (Coverage): the matched terms, the covered and uncovered words, and the covered share.
+        @param value (datetime | str | None): a datetime, ISO 8601 text, or None.
+        @return (datetime | None): the aware time, or None.
         """
-        if not isinstance(question, str):
-            raise ValidationError(f"question must be a string, got {type(question).__name__}")
-        if not question.strip():
-            raise ValidationError("question cannot be empty")
+        parsed = _ops.parse_time(value, "as_of")
+        return None if parsed is None else aware(parsed)
+
+    async def check_answerable(
+        self,
+        question: str,
+        *,
+        terms: list[str] | None = None,
+        as_of: datetime | str | None = None,
+        depth: int = 3,
+    ) -> AnswerabilityReport:
+        """Judge, without an LLM, whether the graph holds what a question asks about, before answering from it.
+
+        Each term of the question (or each given term) is matched against entity names and aliases, then entity
+        types, definitions, relation types, and property and preference keys; a schema term covers a word only when
+        the graph holds something of it. Entities matched by different terms must connect within depth hops, and not
+        only through a hub. The verdict is answerable, partial (some terms missing), uncertain (all covered but not
+        connected, or only through a hub), or not_answerable (nothing covered). With embedding seeds, a report with
+        missing terms carries a note that the check is lexical.
+
+        @param question (str): the question.
+        @param terms (list[str] | None): the phrases to check, such as a model extracted, or None to take each run of
+            question words that spells a stored name, and every other content word.
+        @param as_of (datetime | str | None): judge the graph as it stood at this time (naive means UTC), or None.
+        @param depth (int): the most hops between matched entities.
+        @return (AnswerabilityReport): the verdict, each term's coverage, the missing terms, and the hub-only pairs.
+        """
+        if not isinstance(question, str) or not question.strip():
+            raise ValidationError("question must be a non-empty string")
+        if terms is not None:
+            _ops._require_list("terms", terms)
+            if not terms or not all(isinstance(t, str) and t.strip() for t in terms):
+                raise ValidationError("terms must be a non-empty list of non-empty strings")
+            terms = list(dict.fromkeys(t.strip() for t in terms))
+        _ops._require_int("depth", depth)
+        if depth < 1:
+            raise ValidationError(f"depth must be >= 1, got {depth}")
+        as_of = self._as_of(as_of)
         await self._ensure_ready()
-        return await _coverage(self, question)
+        report = await _check_answerable(self, question, terms=terms, as_of=as_of, depth=depth)
+        if report.missing and self._seeds == "embeddings":
+            report.note = _LEXICAL_NOTE
+        return report
+
+    async def readiness(self) -> Readiness:
+        """Report whether the graph can answer: the store is reachable and the namespace holds entities, with counts
+        and lint (orphan entities, relations without evidence, decisions with a retired step, off-schema types).
+
+        An unreachable store is reported, not raised. This reads every item in the namespace and writes nothing.
+
+        @return (Readiness): ready, reachable, any connection error, the counts, and the lint issues.
+        """
+        fields = {
+            "store": type(self.store).__name__,
+            "namespace": self.namespace,
+            "has_schema": self._schema is not None,
+        }
+        try:
+            reader = await self._reader()
+            counts, issues = await inspect(reader, self.namespace, self._schema)
+        except StoreError as exc:
+            return Readiness(ready=False, reachable=False, error=str(exc), **fields)
+        return Readiness(ready=counts["entities"] > 0, reachable=True, counts=counts, lint=issues, **fields)
+
+    async def export_obsidian(self) -> dict[str, str]:
+        """Render the namespace as an Obsidian vault: a note per entity with its links, and a note per decision.
+
+        Only current relations and preferences are written. Nothing is written to disk; the CLI's export obsidian
+        command writes the notes to a folder.
+
+        @return (dict[str, str]): each note's path relative to the vault, with its Markdown.
+        """
+        reader = await self._reader()
+        ns = self.namespace
+        entities = await scan_entities(reader, ns)
+        relations = await scan_relations(reader, ns)
+        preferences = await _ops._paged(
+            partial(_ops.list_preferences, reader, ns, subject_entity=None, key=None, stance=None)
+        )
+        decisions = await _ops._paged(partial(_ops.list_traces, reader, ns, actor_entity=None, status=None))
+        return obsidian_vault(entities, relations, preferences, decisions)
 
     async def _in_tx(self, fn: Callable[[Any], Awaitable[Any]]) -> Any:
         await self._ensure_ready()
@@ -473,6 +553,7 @@ class SelfGraph:
         contradiction: ContradictionMode | None = None,
         extracted: bool = False,
         extraction: str | None = None,
+        replace_source: bool = False,
     ) -> InsertResult:
         created_at = now()
         ns = self.namespace
@@ -509,6 +590,7 @@ class SelfGraph:
                 await _ops.require_max_count(tx, ns, caps, resolved.relations)
             source_version: str | None = None
             base_evidence = []
+            prior = await _ops.source_targets(tx, ns, source_id) if replace_source and source_id else set()
 
             if source_id is not None:
                 source_version, base_evidence = await record_source(
@@ -546,6 +628,14 @@ class SelfGraph:
             if judged and self._llm is not None:
                 fresh = [r for r in relations if r.created_at == created_at]
                 found.extend(await judge_contradictions(tx, ns, self._llm, fresh, caps))
+
+            diff = None
+            if replace_source and source_id is not None and source_version is not None:
+                produced = {r.id for r in relations}
+                at = aware(default_event_time or created_at)
+                retired, notes = await _ops.replace_source(tx, ns, source_id, source_version, prior - produced, at)
+                found.extend(notes)
+                diff = SourceDiff(kept=sorted(produced & prior), added=sorted(produced - prior), retired=retired)
 
             preferences = [
                 await _ops.upsert_preference(tx, ns, pref, default_event_time=default_event_time, created_at=created_at)
@@ -604,6 +694,7 @@ class SelfGraph:
                 ],
                 merges=merges,
                 tiers=used,
+                source_diff=diff,
             )
 
         return await self._in_tx(_apply)

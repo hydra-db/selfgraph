@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -48,14 +49,16 @@ async def judge_contradictions(
     """Ask the LLM which older relations each written relation makes untrue, and retire those.
 
     Only relations the cardinality rules left alone are judged: one call per written relation that has a rival
-    (see _ops.rival_relations). A retired relation is invalidated by the written one at its effective time.
+    (see _ops.rival_relations). A retired relation is invalidated by the written one at its effective time. A
+    certified relation is never retired, as with the cardinality rules.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param llm (LLMClient): the LLM to ask.
     @param written (list[Relation]): the relations a write just stored.
     @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits by relation type.
-    @return (list[InsertWarning]): one relation_superseded warning per retired relation.
+    @return (list[InsertWarning]): one relation_superseded warning per retired relation, and one certified_kept warning
+        per certified relation the LLM judged contradicted, which stays current.
     """
     rivals = await _ops.rival_relations(runner, ns, written, caps, _MAX_RIVALS)
     if not rivals:
@@ -69,7 +72,8 @@ async def judge_contradictions(
     def name(eid: str) -> str:
         return names.get(eid, eid)
 
-    pairs: list[tuple[dict, Relation]] = []
+    retirements: list[tuple[dict, str, datetime]] = []
+    kept: list[InsertWarning] = []
     taken: set[str] = set()
     for rid, edges in rivals.items():
         new = by_id[rid]
@@ -91,9 +95,16 @@ async def judge_contradictions(
             if 1 <= number <= len(open_edges):
                 edge = open_edges[number - 1]
                 taken.add(edge["props"]["id"])
-                pairs.append((edge, new))
-    retired = await _ops.retire_relations(runner, ns, pairs)
-    return [
+                if edge["props"].get("certified_at") is None:
+                    retirements.append((edge, new.id, _ops.effective_time(new)))
+                    continue
+                message = (
+                    f"relation {edge['props']['id']} is certified, so it stays current though the LLM judged "
+                    f"{rid} to contradict it"
+                )
+                kept.append(InsertWarning(code="certified_kept", message=message))
+    retired = await _ops.retire_relations(runner, ns, retirements)
+    return kept + [
         InsertWarning(
             code="relation_superseded",
             message=f"relation {rel.id} was superseded by {rel.invalidated_by}, which the LLM judged to contradict it",

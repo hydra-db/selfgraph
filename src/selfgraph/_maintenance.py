@@ -10,6 +10,8 @@ from . import _ops
 from ._serde import (
     L_ENTITY,
     L_EVIDENCE,
+    L_MERGE,
+    L_SOURCE,
     aware,
     decode_entity,
     decode_evidence,
@@ -18,12 +20,15 @@ from ._serde import (
     to_iso,
 )
 from .errors import ValidationError
-from .models import Entity, Relation
+from .ids import normalize_rel_type
+from .models import DecisionTrace, Entity, LintIssue, Preference, Relation
+from .schema import Schema, _relation_index, canonical_entity_type, canonical_relation_type
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _MS = timedelta(milliseconds=1)
 _DAY_MS = 86_400_000
 _SCALE = 1_000_000
+_LINT_SAMPLE = 5
 
 
 def epoch_ms(dt: datetime) -> int:
@@ -88,6 +93,17 @@ async def scan_entities(runner: Any, ns: str) -> list[Entity]:
     @return (list[Entity]): the entities in id order.
     """
     return await _ops._paged(partial(_ops.list_entities, runner, ns, type=None, name=None))
+
+
+async def scan_live_merges(runner: Any, ns: str) -> list[dict]:
+    """Read every merge record in the namespace that has not been reverted, a page at a time.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @return (list[dict]): the stored merge records, in id order.
+    """
+    rows = await _ops._paged(partial(runner.match_nodes, ns, L_MERGE, order_by="id"))
+    return [row for row in rows if row.get("reverted_at") is None]
 
 
 async def scan_relations(runner: Any, ns: str) -> list[Relation]:
@@ -227,3 +243,81 @@ async def merge_relations(runner: Any, ns: str, survivor: str, duplicates: list[
         counts["deleted_relation_versions"] += await runner.delete_edges(ns, rid)
         await _ops._delete_evidence(runner, ns, rid)
     return counts
+
+
+def lint(
+    entities: list[Entity],
+    relations: list[Relation],
+    preferences: list[Preference],
+    decisions: list[DecisionTrace],
+    supported: set[str],
+    schema: Schema | None,
+    merged: Iterable[str] = (),
+) -> list[LintIssue]:
+    """Find what makes a graph a weak source of answers, without changing it.
+
+    orphan_entity: an entity no current relation, preference, decision, or live merge record references; a merge
+    survivor is kept off it, since deleting it would delete the merge and lose its unmerge. unsupported_fact: a current
+    relation with no evidence record. stale_decision_step: a decision with a step whose relation is no longer
+    current. type_off_schema: with a schema, an entity or relation whose type it does not declare.
+
+    @param entities (list[Entity]): every entity.
+    @param relations (list[Relation]): every current relation.
+    @param preferences (list[Preference]): every current preference.
+    @param decisions (list[DecisionTrace]): every decision.
+    @param supported (set[str]): the ids that have at least one evidence record.
+    @param schema (Schema | None): the schema, or None to skip the type check.
+    @param merged (Iterable[str]): the entity ids a live merge record references.
+    @return (list[LintIssue]): each problem found, with its count and the first ids in id order.
+    """
+    used = {*merged, *(eid for r in relations for eid in (r.from_entity, r.to_entity))}
+    used.update(eid for p in preferences for eid in (p.subject_entity, p.value_entity, p.about_entity) if eid)
+    for d in decisions:
+        used.update(eid for eid in (d.actor_entity, d.outcome_entity, *d.alternative_entities) if eid)
+        used.update(eid for step in d.steps for eid in (step.from_entity, step.to_entity))
+    current = {r.id for r in relations}
+    found = {
+        "orphan_entity": [e.id for e in entities if e.id not in used],
+        "unsupported_fact": [r.id for r in relations if r.id not in supported],
+        "stale_decision_step": [d.id for d in decisions if any(s.relation_id not in current for s in d.steps)],
+        "type_off_schema": [],
+    }
+    if schema is not None:
+        names = {t.name for t in schema.entities}
+        declared = _relation_index(schema)
+        found["type_off_schema"] = [
+            *(e.id for e in entities if canonical_entity_type(e.type, schema) not in names),
+            *(r.id for r in relations if normalize_rel_type(canonical_relation_type(r.type, schema)) not in declared),
+        ]
+    return [
+        LintIssue(code=code, count=len(ids), sample=sorted(ids)[:_LINT_SAMPLE]) for code, ids in found.items() if ids
+    ]
+
+
+async def inspect(runner: Any, ns: str, schema: Schema | None) -> tuple[dict[str, int], list[LintIssue]]:
+    """Count what a namespace holds and lint it, reading every item a page at a time.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param schema (Schema | None): the schema to check types against, or None.
+    @return (tuple[dict[str, int], list[LintIssue]]): the counts of entities, current relations, current
+        preferences, decisions, and sources, and the lint issues.
+    """
+    entities = await scan_entities(runner, ns)
+    relations = await scan_relations(runner, ns)
+    preferences = await _ops._paged(
+        partial(_ops.list_preferences, runner, ns, subject_entity=None, key=None, stance=None)
+    )
+    decisions = await _ops._paged(partial(_ops.list_traces, runner, ns, actor_entity=None, status=None))
+    sources = await _ops._paged(partial(runner.match_nodes, ns, L_SOURCE, order_by="id"))
+    evidence = await _ops._paged(partial(runner.match_nodes, ns, L_EVIDENCE, order_by="id"))
+    counts = {
+        "entities": len(entities),
+        "relations": len(relations),
+        "preferences": len(preferences),
+        "decisions": len(decisions),
+        "sources": len(sources),
+    }
+    supported = {row["target_id"] for row in evidence}
+    merged = {m[side] for m in await scan_live_merges(runner, ns) for side in ("survivor_id", "absorbed_id")}
+    return counts, lint(entities, relations, preferences, decisions, supported, schema, merged)

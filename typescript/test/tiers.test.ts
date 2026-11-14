@@ -191,27 +191,37 @@ function suite(spec: StoreSpec): void {
     expect(liked.at(-1)!.invalidated_by).toBe(rel.id);
   });
 
-  it("coverage names schema terms, entities, and what is missing", async () => {
+  it("check_answerable grounds schema synonyms, definitions, and plurals", async () => {
     const g = open({ schema: TERMS });
     await g.insert.facts({ entities: [{ type: "Company", name: "Acme" }] });
-    const cov = await g.coverage("What is the staff size of the firm Acme by ad spend?");
-    expect(cov.terms.map((t) => [t.term, t.kind, t.matched, t.certified])).toEqual([
-      ["Company", "entity", "firm", true],
-      ["headcount", "definition", "staff size", false],
+    let report = await g.checkAnswerable("What is the staff size of the firm Acme by ad spend?");
+    expect(report.terms.map((t) => [t.term, t.status, t.matches, t.certified])).toEqual([
+      ["staff size", "definition", ["headcount"], false],
+      ["firm", "type", ["Company"], true],
+      ["acme", "entity", ["company:acme"], false],
+      ["ad", "missing", [], false],
+      ["spend", "missing", [], false],
     ]);
-    expect(cov.terms.map((t) => t.tokens)).toEqual([["firm"], ["size", "staff"]]);
-    expect(cov.covered).toEqual(["acme", "firm", "size", "staff"]);
-    expect(cov.uncovered).toEqual(["ad", "spend"]);
-    expect(cov.ratio).toBeCloseTo(4 / 6);
-    expect((await g.coverage("users employed by employers")).terms.map((t) => t.term)).toEqual([
-      "Company",
-      "Person",
-      "WORKS_AT",
+    expect([report.verdict, report.missing]).toEqual(["partial", ["ad", "spend"]]);
+    report = await g.checkAnswerable("users employed by employers");
+    expect(report.terms.map((t) => [t.status, t.matches])).toEqual([
+      ["schema_only", ["Person"]],
+      ["schema_only", ["WORKS_AT"]],
+      ["type", ["Company"]],
     ]);
-    const bare = await open().coverage("anything");
-    expect(bare).toEqual({ question: "anything", terms: [], covered: [], uncovered: ["anything"], ratio: 0 });
-    await expect(g.coverage(" ")).rejects.toThrow(/question cannot be empty/);
-    await expect(g.coverage(1 as never)).rejects.toThrow(/question must be a string/);
+    expect([report.verdict, report.missing]).toEqual(["partial", ["users", "employed"]]);
+    await g.insert.facts({
+      entities: [{ type: "Person", name: "Ann" }],
+      relations: [worksAt("person:ann", "company:acme")],
+    });
+    report = await g.checkAnswerable("users employed by employers");
+    expect(report.terms.map((t) => [t.status, t.matches])).toEqual([
+      ["type", ["Person"]],
+      ["relation", ["WORKS_AT"]],
+      ["type", ["Company"]],
+    ]);
+    expect(report.verdict).toBe("answerable");
+    expect((await open().checkAnswerable("anything")).verdict).toBe("not_answerable");
   });
 
   it("synonym seeding finds entities by a type synonym", async () => {
@@ -285,7 +295,10 @@ function suite(spec: StoreSpec): void {
       ["Invoice"],
     ]);
     const g = open({ schema });
-    expect((await g.coverage("total for invoice lines")).terms[0]!.term).toBe("InvoiceLine");
+    const { terms } = await g.checkAnswerable("total for invoice lines");
+    expect(terms.filter((t) => t.status === "schema_only").map((t) => [t.term, t.matches])).toEqual([
+      ["invoice lines", ["InvoiceLine"]],
+    ]);
     expect(() => fromTables([{ name: "t", columns: [{ name: "x_id", references: "nope" }] }])).toThrow(
       /unknown table 'nope'/,
     );
@@ -309,13 +322,11 @@ describe("tiers over the CLI, MCP, and settings", () => {
   beforeAll(buildCli);
   afterAll(closeMcp);
 
-  it("the CLI, MCP, and settings carry the level and coverage", async () => {
+  it("the CLI, MCP, and settings carry the level", async () => {
     const env = { SELFGRAPH_STORE: "", SELFGRAPH_URI: undefined, SELFGRAPH_LEVEL: undefined };
     const flags = ["--store", "kuzu", "--uri", tempKuzu("selfgraph-tiers-cli-"), "--namespace", "tier"];
     const cli = (...args: string[]) => runCli([...flags, ...args], { env });
     expect(cli("entity", "create", "--name", "Acme", "--type", "Company").code).toBe(0);
-    const cov = cli("coverage", "Acme", "revenue").out as { covered: string[]; uncovered: string[] };
-    expect([cov.covered, cov.uncovered]).toEqual([["acme"], ["revenue"]]);
     const found = cli("retrieve", "Acme", "--seeds", "bm25").out as { tiers: Record<string, string> };
     expect(found.tiers).toEqual({ seeds: "bm25", traversal: "bfs" });
     const capped = cli("--level", "max", "--max-tier", "bogus", "init");
@@ -335,8 +346,6 @@ describe("tiers over the CLI, MCP, and settings", () => {
 
     await configureMcp(settings({ level: "light" }));
     expect((await callTool("create_entity", { name: "Acme", type: "Company" })).isError).toBe(false);
-    const coverage = await callTool("coverage", { question: "Acme revenue" });
-    expect((coverage.result as { uncovered: string[] }).uncovered).toEqual(["revenue"]);
     const retrieved = await callTool("retrieve", { query: "Acme" });
     expect((retrieved.result as { tiers: Record<string, string> }).tiers).toEqual({ seeds: "bm25", traversal: "bfs" });
     const seeded = await callTool("retrieve", { query: "Acme", seeds: "vector" });

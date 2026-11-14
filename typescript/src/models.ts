@@ -132,6 +132,8 @@ export interface Relation {
   invalidated_by: string | null;
   relevance: number | null;
   relevance_at: Date | null;
+  certified_at: Date | null;
+  certified_by: string | null;
 }
 
 export interface Preference {
@@ -217,6 +219,12 @@ export interface MergeRecord {
   reverted_at: Date | null;
 }
 
+export interface SourceDiff {
+  kept: string[];
+  added: string[];
+  retired: string[];
+}
+
 export interface InsertResult {
   source_id: string | null;
   source_version: string | null;
@@ -228,6 +236,7 @@ export interface InsertResult {
   warnings: InsertWarning[];
   merges: MergeRecord[];
   tiers: Record<string, string>;
+  source_diff: SourceDiff | null;
 }
 
 export interface UnmergeResult {
@@ -265,6 +274,10 @@ export interface PruneResult {
   dry_run: boolean;
   entity_ids: string[];
   relation_ids: string[];
+  /** The certified relations kept, with the entities they connect, unless include_certified was set. */
+  certified: string[];
+  /** The live merge records a removed entity takes with it, whose unmerge is then lost. */
+  merge_ids: string[];
   /** The delete counts; absent on a dry run. */
   deleted?: DeleteResult;
   note: string | null;
@@ -283,6 +296,8 @@ export interface DedupeGroup {
 export interface DedupeResult {
   dry_run: boolean;
   groups: DedupeGroup[];
+  /** The groups left alone because one of their relations is certified. */
+  certified: DedupeGroup[];
   /** The delete counts; absent on a dry run. */
   deleted?: DeleteResult;
   note: string | null;
@@ -295,6 +310,7 @@ export interface CypherResult {
   /** Row values; an integer beyond Number.MAX_SAFE_INTEGER, such as a HydraDB internal id, is a bigint (toJsonable renders it as a string). */
   rows: CypherRow[];
   counters: Record<string, number>;
+  warnings: string[];
 }
 
 export const EntityInput = z.strictObject({
@@ -485,22 +501,42 @@ export interface RetrievalResult {
   subgraph: Subgraph;
   context: string;
   tiers: Record<string, string>;
+  hubs: string[];
 }
 
-export interface TermMatch {
+export interface TermCoverage {
   term: string;
-  kind: "entity" | "relation" | "definition";
-  matched: string;
-  tokens: string[];
+  status: "entity" | "type" | "definition" | "relation" | "property" | "schema_only" | "missing";
+  matches: string[];
   certified: boolean;
 }
 
-export interface Coverage {
+export interface AnswerabilityReport {
   question: string;
-  terms: TermMatch[];
-  covered: string[];
-  uncovered: string[];
-  ratio: number;
+  verdict: "answerable" | "partial" | "not_answerable" | "uncertain";
+  terms: TermCoverage[];
+  missing: string[];
+  connected: boolean;
+  hub_only: string[][];
+  /** Set when the check cannot rule out what embedding seeds would find. */
+  note: string | null;
+}
+
+export interface LintIssue {
+  code: "orphan_entity" | "unsupported_fact" | "stale_decision_step" | "type_off_schema";
+  count: number;
+  sample: string[];
+}
+
+export interface Readiness {
+  ready: boolean;
+  store: string;
+  namespace: string;
+  reachable: boolean;
+  error: string | null;
+  has_schema: boolean;
+  counts: Record<string, number>;
+  lint: LintIssue[];
 }
 
 /**

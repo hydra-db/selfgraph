@@ -4,7 +4,7 @@ import { comparePy } from "../../src/internal/py.js";
 import { Extraction, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
-import { expandTokens, matchTerms } from "../../src/terms.js";
+import { expandTokens, schemaForms } from "../../src/terms.js";
 import { STORE_SPECS } from "../helpers.js";
 
 const TERMS_SPEC = {
@@ -152,12 +152,13 @@ function unknownKeyError(kind: "facts" | "schema", value: unknown): string {
 /**
  * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
  *
- * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; terms: unknown[] }): one list per case, one message per unknown-key case, the schema drafted from tables, and the matched terms and expanded tokens per question.
+ * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; term_forms: unknown; terms: unknown[] }): one list per case, one message per unknown-key case, the schema drafted from tables, the schema term forms, and the expanded tokens per question.
  */
 export function schemaWarnings(): {
   warnings: Array<Array<{ code: string; message: string }>>;
   unknown_keys: string[];
   tables: unknown;
+  term_forms: unknown;
   terms: unknown[];
 } {
   const terms = Schema.parse(TERMS_SPEC);
@@ -171,10 +172,10 @@ export function schemaWarnings(): {
     ),
     unknown_keys: UNKNOWN_KEY_CASES.map(([kind, value]) => unknownKeyError(kind, value)),
     tables: toJsonable(fromTables(TABLES, { name: "sales" })),
-    terms: TERM_QUESTIONS.map((q) => ({
-      matches: toJsonable(matchTerms(tokens(q), terms, tokens)),
-      expanded: [...expandTokens(tokens(q), terms, tokens)].sort(comparePy),
-    })),
+    term_forms: Object.fromEntries(
+      Object.entries(schemaForms(terms)).map(([kind, named]) => [kind, Object.fromEntries(named)]),
+    ),
+    terms: TERM_QUESTIONS.map((q) => [...expandTokens(tokens(q), terms, tokens)].sort(comparePy)),
   };
 }
 
@@ -356,15 +357,15 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     tight[walk] = { entities: r.subgraph.entities.map((e) => e.id), relations: r.subgraph.relations.map((x) => x.id) };
   }
   const termed = new SelfGraph(store, { namespace: ns, schema: TERMS_SPEC, extraction: "regex" });
-  const coverage = [];
-  for (const q of TERM_QUESTIONS) coverage.push(await termed.coverage(q));
+  const answerable = [];
+  for (const q of TERM_QUESTIONS) answerable.push(await termed.checkAnswerable(q));
   const seeded: Record<string, unknown> = {};
   for (const tier of ["bm25", "synonyms"] as const) {
     const r = await termed.retrieve("which employers hired staff members named Hopper", { seeds: tier, depth: 0 });
     seeded[tier] = { seeds: r.seeds, tiers: r.tiers };
   }
   return toJsonable({
-    coverage,
+    answerable,
     retrieval_seeded: seeded,
     tiers: termed.tiers,
     entities,

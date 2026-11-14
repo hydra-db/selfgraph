@@ -5,16 +5,18 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 
 from selfgraph import _serde, ids
-from selfgraph._maintenance import relevance_score
+from selfgraph._export import obsidian_vault
+from selfgraph._maintenance import lint, relevance_score
 from selfgraph._ops import Contradictions, version_as_of
 from selfgraph.extraction import chunking
 from selfgraph.extraction.basic import _regex_extract
 from selfgraph.extraction.extractor import LLMExtractor, _is_noise_name, _RelOut
 from selfgraph.mcp.server import _is_blocked_query
-from selfgraph.models import Entity, EntityInput, Evidence, Preference, Relation
+from selfgraph.models import DecisionStep, DecisionTrace, Entity, EntityInput, Evidence, Preference, Relation
 from selfgraph.resolution import DefaultResolver, distinct_names, jaro_winkler, name_similarity, token_jaccard
 from selfgraph.resources._common import encode_cursor
-from selfgraph.retrieval import _fold, _format_props, _grep_score, _ppr_rank, _select_seeds, _tokens
+from selfgraph.retrieval import _fold, _format_props, _grep_score, _ppr_rank, _select_seeds, _tokens, answerability
+from selfgraph.runtime import cypher_names
 from selfgraph.schema import Schema, contradiction_caps
 from selfgraph.stores.hydradb import _sk
 
@@ -518,6 +520,14 @@ CONTRADICTION_CASES = {
         [version(1, day(0), rid="relation:acme")],
         [admit("relation:globex", "WORKS_AT", "person:ann", "company:globex", day(3))],
     ),
+    "certified_kept": (
+        "supersede",
+        [version(1, day(0), rid="relation:acme").model_copy(update={"certified_at": day(1), "certified_by": "hr"})],
+        [
+            admit("relation:globex", "WORKS_AT", "person:ann", "company:globex", day(3)),
+            admit("relation:initech", "WORKS_AT", "person:ann", "company:initech", day(4)),
+        ],
+    ),
     "out_of_order": (
         "supersede",
         [version(1, day(10), rid="relation:globex", ends=("person:ann", "WORKS_AT", "company:globex"))],
@@ -621,6 +631,215 @@ def contradiction_cases():
             "results": results,
         }
     return out
+
+
+def _ent(eid, name, etype="Thing", aliases=(), **props):
+    return Entity(
+        id=eid, type=etype, name=name, aliases=list(aliases), properties=props, created_at=day(0), updated_at=day(0)
+    )
+
+
+def _rel(rid, frm, rtype, to, **props):
+    return Relation(
+        id=rid,
+        revision=1,
+        from_entity=frm,
+        type=rtype,
+        to_entity=to,
+        properties=props,
+        created_at=day(0),
+        is_current=True,
+    )
+
+
+ANSWER_ENTITIES = [
+    _ent("person:ann-lee", "Ann Lee", "Person", aliases=["Annie"]),
+    _ent("company:acme", "Acme Corp", "Company", revenue=5),
+    _ent("company:globex", "Globex", "Company"),
+    _ent("thing:hub", "Hub"),
+    _ent("thing:ada", "Ada"),
+    _ent("thing:bo", "Bo"),
+    _ent("city:new-york", "New York", "City"),
+    _ent("city:york", "York", "City"),
+]
+ANSWER_RELATIONS = [
+    _rel("relation:w", "person:ann-lee", "WORKS_AT", "company:acme", since=2020),
+    *(_rel(f"relation:h{i}", "thing:hub", "HAS", f"thing:leaf{i}") for i in range(48)),
+    _rel("relation:ha", "thing:hub", "HAS", "thing:ada"),
+    _rel("relation:hb", "thing:hub", "HAS", "thing:bo"),
+    _rel("relation:ny", "company:acme", "LOCATED_IN", "city:new-york"),
+]
+ANSWER_SCHEMA = Schema.model_validate(
+    {
+        "entities": [{"name": "Person", "aliases": ["employee"]}, {"name": "Company"}],
+        "relations": [{"type": "FOUNDED", "aliases": ["started"]}],
+    }
+)
+ANSWER_CASES = [
+    ["where does Ann Lee work", None, 3],
+    ["what is the revenue of Acme Corp", None, 3],
+    ["Acme churn in Q3", None, 3],
+    ["tell me about churn", None, 3],
+    ["is there a link", ["Ann Lee", "Globex"], 3],
+    ["Ada and Bo", None, 3],
+    ["Ada and Bo", None, 1],
+    ["which employee founded or started Acme Corp in New York", None, 3],
+    ["Annie since", None, 3],
+    ["the a of", None, 3],
+    ["ÉCOLE Straße 北京", None, 3],
+]
+
+
+def answerability_cases():
+    keys = ["revenue", "diet_plan", "since"]
+    return {
+        "entities": [e.model_dump(mode="json") for e in ANSWER_ENTITIES],
+        "relations": [r.model_dump(mode="json") for r in ANSWER_RELATIONS],
+        "keys": keys,
+        "schema": ANSWER_SCHEMA.model_dump(mode="json", by_alias=True, exclude_none=True),
+        "cases": [
+            [
+                q,
+                terms,
+                depth,
+                answerability(q, terms, ANSWER_ENTITIES, ANSWER_RELATIONS, keys, ANSWER_SCHEMA, depth).model_dump(
+                    mode="json"
+                ),
+            ]
+            for q, terms, depth in ANSWER_CASES
+        ],
+    }
+
+
+def lint_case():
+    entities = [_ent("thing:a", "A"), _ent("thing:b", "B"), _ent("gadget:c", "C", "Gadget"), _ent("thing:d", "D")]
+    relations = [_rel("relation:ab", "thing:a", "KNOWS", "thing:b"), _rel("relation:ad", "thing:a", "LIKES", "thing:d")]
+    decisions = [
+        DecisionTrace(
+            id="decision:x",
+            title="X",
+            status="completed",
+            steps=[DecisionStep(order=0, relation_id="relation:gone", from_entity="thing:a", to_entity="thing:b")],
+            created_at=day(0),
+            updated_at=day(0),
+        )
+    ]
+    schema = Schema.model_validate({"entities": [{"name": "Thing"}], "relations": [{"type": "knows"}]})
+    supported = ["relation:ab"]
+    return {
+        "entities": [e.model_dump(mode="json") for e in entities],
+        "relations": [r.model_dump(mode="json") for r in relations],
+        "decisions": [d.model_dump(mode="json") for d in decisions],
+        "supported": supported,
+        "schema": schema.model_dump(mode="json", by_alias=True, exclude_none=True),
+        "lint": [i.model_dump(mode="json") for i in lint(entities, relations, [], decisions, set(supported), schema)],
+        "lint_without_schema": [
+            i.model_dump(mode="json") for i in lint(entities, relations, [], decisions, set(supported), None)
+        ],
+    }
+
+
+OSSIE_SCHEMAS = [
+    {
+        "name": "hr",
+        "entities": [
+            {"name": "Person", "description": "a human", "properties": [{"name": "age", "type": "integer"}]},
+            {"name": "Employee", "parent": "Person", "properties": [{"name": "since", "type": "datetime"}]},
+            {"name": "Company", "properties": [{"name": "meta", "type": "json"}, {"name": "ok", "type": "boolean"}]},
+        ],
+        "relations": [
+            {
+                "type": "works at",
+                "description": "job",
+                "from": {"types": ["Person"], "max_count": 1},
+                "to": {"types": ["Company"], "max_count": 1},
+            },
+            {"type": "KNOWS", "from": {"types": ["Person", "Employee"]}, "to": {"types": ["Person", "Company"]}},
+            {
+                "type": "OWNS",
+                "from": {"types": ["Company"], "max_count": 1},
+                "properties": [{"name": "pct", "type": "float"}],
+            },
+            {"type": "MENTIONS", "to": {"types": ["Company"]}},
+            {"type": "PART_OF", "from": {"types": ["Division"]}, "to": {"types": ["Company"]}},
+        ],
+    },
+    {"entities": [{"name": "Thing"}]},
+    {"relations": [{"type": "KNOWS"}]},
+]
+
+
+def ossie_cases():
+    out = []
+    for raw in OSSIE_SCHEMAS:
+        schema = Schema.model_validate(raw)
+        out.append([raw, attempt(schema.to_ossie)])
+    return out
+
+
+def obsidian_case():
+    entities = [
+        _ent("person:ann", "Ann", "Person", aliases=["Annie", "A. Lee"], age=30, tags=["x", "é"]),
+        _ent("company:acme", "Acme", "Company"),
+        _ent("product:acme", "Acme", "Product"),
+        _ent("thing:acme", "ACME", "Thing"),
+        _ent("thing:slash", "A/B: c?", "Thing"),
+        _ent("thing:dots", " ..", "Thing"),
+    ]
+    relations = [
+        _rel("relation:w", "person:ann", "WORKS_AT", "company:acme", role="cto", since=2020),
+        _rel("relation:x", "person:ann", "USES", "thing:missing"),
+        _rel("relation:a", "person:ann", "LIKES", "thing:acme"),
+    ]
+    preferences = [
+        Preference(
+            id="preference:p",
+            revision=1,
+            profile_id="profile:ann",
+            subject_entity="person:ann",
+            stance="disinterest",
+            key="tool",
+            value_entity="product:acme",
+            strength=0.5,
+            created_at=day(0),
+            is_current=True,
+        )
+    ]
+    decisions = [
+        DecisionTrace(
+            id="decision:b",
+            title="Join",
+            status="completed",
+            actor_entity="person:ann",
+            outcome_entity="company:acme",
+            alternative_entities=["product:acme", "thing:acme"],
+            summary="s",
+            rationale="r",
+            steps=[
+                DecisionStep(order=1, relation_id="relation:a", from_entity="person:ann", to_entity="thing:acme"),
+                DecisionStep(order=0, relation_id="relation:w", from_entity="person:ann", to_entity="company:acme"),
+            ],
+            created_at=day(0),
+            updated_at=day(0),
+        ),
+        DecisionTrace(id="decision:a", title="Join", status="active", created_at=day(0), updated_at=day(0)),
+    ]
+    return {
+        "entities": [e.model_dump(mode="json") for e in entities],
+        "relations": [r.model_dump(mode="json") for r in relations],
+        "preferences": [p.model_dump(mode="json") for p in preferences],
+        "decisions": [d.model_dump(mode="json") for d in decisions],
+        "vault": obsidian_vault(entities, relations, preferences, decisions),
+    }
+
+
+CYPHER_NAME_QUERIES = [
+    "MATCH (n:Person:`Big Co` {name: 'Ann'})-[r:WORKS_AT|:KNOWS]->(c) WHERE c.name = \"acme\" RETURN n",
+    "MATCH (n {ns: $ns}) RETURN [x IN [1] | x]",
+    "MATCH (a:Person)-[:KNOWS*1..3]-(b:Person) WHERE a.name='O\\'Reilly' RETURN b",
+    "match ( n : Company ) , ( :City ) return n",
+    "MATCH (n:N {label: 'Entity'}) RETURN n.doc",
+]
 
 
 def chunk_cases():
@@ -947,6 +1166,11 @@ def main():
             for stamps, now, half_life, signal in RELEVANCE_CASES
         ],
         "neo4j_schema": neo4j_cases(),
+        "answerability": answerability_cases(),
+        "lint": lint_case(),
+        "ossie": ossie_cases(),
+        "obsidian": obsidian_case(),
+        "cypher_names": [[q, list(cypher_names(q))] for q in CYPHER_NAME_QUERIES],
     }
     json.dump(out, sys.stdout, ensure_ascii=True, indent=1)
 

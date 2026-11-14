@@ -53,7 +53,7 @@ scores.
 
 ## prune
 
-`prune(min_relevance=None, older_than=None, types=None, relation_types=None, dry_run=True)`
+`prune(min_relevance=None, older_than=None, types=None, relation_types=None, include_certified=False, dry_run=True)`
 removes entities and current relations that match every criterion given. At
 least one of `min_relevance` or `older_than` is required.
 
@@ -81,6 +81,15 @@ Removal goes through the normal deletes, so a pruned entity takes what
 [`entities.delete`](resources.md#updating-and-deleting) takes. A relation a
 [contradiction](schema.md#contradictions) retired is never matched or scored. It
 stays as history until an endpoint is pruned.
+
+A [certified](trust.md#certification) relation is kept, and so is each entity it
+connects, since removing the entity would take the relation with it. The plan
+lists the certified relations it kept in `certified`. Pass
+`include_certified=True` to remove them too.
+
+Removing a merge survivor deletes its [merge records](resolution.md#merge-records-and-unmerge),
+so the merge can no longer be undone. The plan lists those records in
+`merge_ids`; review them in the dry run.
 
 The `PruneResult` lists `entity_ids` and `relation_ids`, including relations
 removed with an endpoint. Once applied, it adds `deleted` counts, and one line is
@@ -111,7 +120,10 @@ are created with explicit ids. Each group collapses into its lowest id:
   survivor's history is kept, even when a duplicate is newer or has more
   versions.
 
-Relations a contradiction invalidated are never grouped.
+Relations a contradiction invalidated are never grouped. A group holding a
+[certified](trust.md#certification) relation is listed in `certified` and left
+alone, since merging would change or delete what a person verified. Uncertify
+it to merge the group.
 
 The `DedupeResult` lists each group's `survivor`, `duplicates`, `conflicts`,
 and `versions_lost` (each duplicate's version count, all deleted). It also has a

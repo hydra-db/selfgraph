@@ -31,6 +31,7 @@ _LABELS = (
     "Evidence",
     "EntityMerge",
     "EntityMergeEntry",
+    "_SgEntityKey",
 )
 _HYDRADB_DELETE_BATCH = 1024
 

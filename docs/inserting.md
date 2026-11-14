@@ -25,6 +25,7 @@ result = await graph.insert.text(
 | `source_id` | Records where the text came from and stores it as chunks. [Retrieval](retrieval.md) returns these as passages. |
 | `event_time` | The default time for the extracted facts. |
 | `metadata` | Fields attached to the source. |
+| `replace_source` | The text is the new content of `source_id`. See [Replacing a source](#replacing-a-source). |
 
 Empty or whitespace-only text raises `ValidationError` before any LLM call.
 
@@ -45,6 +46,35 @@ Which extractor runs depends on what you configure:
 `extraction=` on the graph pins the choice: `"regex"` or `"spacy"` keeps the LLM
 out of extraction even when `llm=` is set, and `"llm"` requires one. The result's
 `tiers["extraction"]` names the engine that ran. See [tiers](tiers.md).
+
+### Replacing a source
+
+Sources are content-addressed. Inserting changed text under the same
+`source_id` records a new version, and the facts extracted from the old version
+stay current. When the new text replaces the old one, say so:
+
+```python
+result = await graph.insert.text(handbook_v2, source_id="handbook", replace_source=True)
+print(result.source_diff)  # kept, added, and retired relation ids
+```
+
+- Every current relation whose evidence all comes from older versions of the
+  source, and that the new text no longer yields, is retired: `invalidated_at` is
+  set to the new version's effective time and `invalidated_by` to its version id.
+  Nothing is deleted, so `as_of` before the change still reads it.
+- A relation with evidence from the new version, or from another source whose
+  version was not itself replaced, stays current. Evidence added by hand always
+  counts. So a fact two sources stated is retired once both are replaced without
+  it. A [certified](trust.md#certification) relation stays current too, with a
+  `certified_kept` warning.
+- The older versions are marked replaced, so retrieval stops quoting their
+  passages, except when reading `as_of` a time before the replacement.
+- Each retired relation adds a `fact_retired_by_source` warning. Entities are
+  never retired; one left with no facts shows up in
+  [readiness](trust.md#readiness) as `orphan_entity`.
+
+`replace_source` needs a `source_id`. Preferences carry no evidence, so they are
+not retired.
 
 ### With an LLM
 

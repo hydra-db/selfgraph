@@ -35,14 +35,16 @@ function line(edgeType: string, source: string, target: string, properties: Json
  * Ask the LLM which older relations each written relation makes untrue, and retire those.
  *
  * Only relations the cardinality rules left alone are judged: one call per written relation that has a rival (see
- * ops.rivalRelations). A retired relation is invalidated by the written one at its effective time.
+ * ops.rivalRelations). A retired relation is invalidated by the written one at its effective time. A certified
+ * relation is never retired, as with the cardinality rules.
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
  * @param llm (LLMClient): the LLM to ask.
  * @param written (readonly Relation[]): the relations a write just stored.
  * @param caps (ReadonlyMap<string, ops.RelationCap> | null): the schema's max_count limits by relation type.
- * @return (InsertWarning[]): one relation_superseded warning per retired relation.
+ * @return (InsertWarning[]): one relation_superseded warning per retired relation, and one certified_kept warning per
+ * certified relation the LLM judged contradicted, which stays current.
  */
 export async function judgeContradictions(
   runner: GraphPrimitives,
@@ -65,7 +67,8 @@ export async function judgeContradictions(
     return props === undefined ? eid : decodeEntity(props).name;
   };
 
-  const pairs: Array<readonly [EdgeRow, Relation]> = [];
+  const retirements: Array<readonly [EdgeRow, string, Date]> = [];
+  const kept: InsertWarning[] = [];
   const taken = new Set<unknown>();
   for (const [rid, edges] of rivals) {
     const fresh = byId.get(rid)!;
@@ -84,15 +87,23 @@ export async function judgeContradictions(
       if (number >= 1 && number <= open.length) {
         const edge = open[number - 1]!;
         taken.add(edge.props.id);
-        pairs.push([edge, fresh]);
+        if (edge.props.certified_at === null || edge.props.certified_at === undefined) {
+          retirements.push([edge, fresh.id, ops.effectiveTime(fresh)]);
+          continue;
+        }
+        const message = `relation ${edge.props.id} is certified, so it stays current though the LLM judged ${rid} to contradict it`;
+        kept.push(insertWarning("certified_kept", message));
       }
     }
   }
-  const retired = await ops.retireRelations(runner, ns, pairs);
-  return retired.map((rel) =>
-    insertWarning(
-      "relation_superseded",
-      `relation ${rel.id} was superseded by ${rel.invalidated_by}, which the LLM judged to contradict it`,
+  const retired = await ops.retireRelations(runner, ns, retirements);
+  return [
+    ...kept,
+    ...retired.map((rel) =>
+      insertWarning(
+        "relation_superseded",
+        `relation ${rel.id} was superseded by ${rel.invalidated_by}, which the LLM judged to contradict it`,
+      ),
     ),
-  );
+  ];
 }
