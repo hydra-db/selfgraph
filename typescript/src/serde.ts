@@ -144,6 +144,8 @@ export function decodeRelation(props: Props, edge: { from_entity: string; to_ent
     invalidated_by: optStr(props.invalidated_by),
     relevance: optNum(props.relevance),
     relevance_at: fromIso(props.relevance_at),
+    certified_at: fromIso(props.certified_at),
+    certified_by: optStr(props.certified_by),
   };
 }
 

@@ -49,13 +49,16 @@ __all__ = [
     "RetrievalSeed",
     "Subgraph",
     "RetrievalResult",
-    "TermMatch",
-    "Coverage",
     "Stance",
     "Status",
     "MergeRewrite",
     "MergeRecord",
     "UnmergeResult",
+    "SourceDiff",
+    "TermCoverage",
+    "AnswerabilityReport",
+    "LintIssue",
+    "Readiness",
     "validation_message",
 ]
 
@@ -377,6 +380,8 @@ class Relation(BaseModel):
     invalidated_by: str | None = None
     relevance: float | None = None
     relevance_at: datetime | None = None
+    certified_at: datetime | None = None
+    certified_by: str | None = None
 
 
 class Preference(BaseModel):
@@ -451,6 +456,12 @@ class MergeRecord(BaseModel):
     reverted_at: datetime | None = None
 
 
+class SourceDiff(BaseModel):
+    kept: list[str] = Field(default_factory=list)
+    added: list[str] = Field(default_factory=list)
+    retired: list[str] = Field(default_factory=list)
+
+
 class InsertResult(BaseModel):
     source_id: str | None = None
     source_version: str | None = None
@@ -462,6 +473,7 @@ class InsertResult(BaseModel):
     warnings: list[InsertWarning] = Field(default_factory=list)
     merges: list[MergeRecord] = Field(default_factory=list)
     tiers: dict[str, str] = Field(default_factory=dict)
+    source_diff: SourceDiff | None = None
 
 
 class UnmergeResult(BaseModel):
@@ -513,6 +525,8 @@ class PruneResult(_PlanResult):
     dry_run: bool
     entity_ids: list[str] = Field(default_factory=list)
     relation_ids: list[str] = Field(default_factory=list)
+    certified: list[str] = Field(default_factory=list)
+    merge_ids: list[str] = Field(default_factory=list)
     deleted: DeleteResult | None = None
     note: str | None = None
 
@@ -530,6 +544,7 @@ class DedupeGroup(BaseModel):
 class DedupeResult(_PlanResult):
     dry_run: bool
     groups: list[DedupeGroup] = Field(default_factory=list)
+    certified: list[DedupeGroup] = Field(default_factory=list)
     deleted: DeleteResult | None = None
     note: str | None = None
 
@@ -538,6 +553,7 @@ class CypherResult(BaseModel):
     columns: list[str] = Field(default_factory=list)
     rows: list[dict[str, JsonValue]] = Field(default_factory=list)
     counters: dict[str, int] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class EntityInput(InputModel):
@@ -768,19 +784,38 @@ class RetrievalResult(BaseModel):
     subgraph: Subgraph = Field(default_factory=Subgraph)
     context: str = ""
     tiers: dict[str, str] = Field(default_factory=dict)
+    hubs: list[str] = Field(default_factory=list)
 
 
-class TermMatch(BaseModel):
+class TermCoverage(BaseModel):
     term: str
-    kind: Literal["entity", "relation", "definition"]
-    matched: str
-    tokens: list[str] = Field(default_factory=list)
+    status: Literal["entity", "type", "definition", "relation", "property", "schema_only", "missing"]
+    matches: list[str] = Field(default_factory=list)
     certified: bool = False
 
 
-class Coverage(BaseModel):
+class AnswerabilityReport(BaseModel):
     question: str
-    terms: list[TermMatch] = Field(default_factory=list)
-    covered: list[str] = Field(default_factory=list)
-    uncovered: list[str] = Field(default_factory=list)
-    ratio: float = 0.0
+    verdict: Literal["answerable", "partial", "not_answerable", "uncertain"]
+    terms: list[TermCoverage] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    connected: bool
+    hub_only: list[list[str]] = Field(default_factory=list)
+    note: str | None = None
+
+
+class LintIssue(BaseModel):
+    code: Literal["orphan_entity", "unsupported_fact", "stale_decision_step", "type_off_schema"]
+    count: int
+    sample: list[str] = Field(default_factory=list)
+
+
+class Readiness(BaseModel):
+    ready: bool
+    store: str
+    namespace: str
+    reachable: bool
+    error: str | None = None
+    has_schema: bool
+    counts: dict[str, int] = Field(default_factory=dict)
+    lint: list[LintIssue] = Field(default_factory=list)

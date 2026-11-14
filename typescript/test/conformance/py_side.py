@@ -8,7 +8,7 @@ from selfgraph import EvidenceInput, Extraction, Schema, SelfGraph, ValidationEr
 from selfgraph.retrieval import _tokens
 from selfgraph.runtime import to_jsonable
 from selfgraph.schema import validate_against_schema
-from selfgraph.terms import expand_tokens, match_terms
+from selfgraph.terms import expand_tokens, schema_forms
 
 TERMS_SPEC = {
     "entities": [
@@ -162,11 +162,9 @@ def schema_warnings():
         ],
         "unknown_keys": [unknown_key_error(kind, value) for kind, value in UNKNOWN_KEY_CASES],
         "tables": to_jsonable(Schema.from_tables(TABLES, name="sales")),
+        "term_forms": to_jsonable(schema_forms(Schema.model_validate(TERMS_SPEC))),
         "terms": [
-            {
-                "matches": to_jsonable(match_terms(_tokens(q), terms, _tokens)),
-                "expanded": sorted(expand_tokens(_tokens(q), terms, _tokens)),
-            }
+            sorted(expand_tokens(_tokens(q), terms, _tokens))
             for terms in [Schema.model_validate(TERMS_SPEC)]
             for q in TERM_QUESTIONS
         ],
@@ -344,14 +342,14 @@ async def dump(graph, ns):
         for walk in ("bfs", "dfs")
     }
     termed = SelfGraph(store=store, namespace=ns, schema=TERMS_SPEC, extraction="regex")
-    coverage = [await termed.coverage(q) for q in TERM_QUESTIONS]
+    answerable = [await termed.check_answerable(q) for q in TERM_QUESTIONS]
     seeded = {
         tier: await termed.retrieve("which employers hired staff members named Hopper", seeds=tier, depth=0)
         for tier in ("bm25", "synonyms")
     }
     return to_jsonable(
         {
-            "coverage": coverage,
+            "answerable": answerable,
             "retrieval_seeded": {tier: {"seeds": r.seeds, "tiers": r.tiers} for tier, r in seeded.items()},
             "tiers": termed.tiers,
             "entities": sorted(entities, key=lambda e: e.id),

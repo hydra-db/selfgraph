@@ -13,10 +13,13 @@ print(result.context)
 | `query`, `strategy` | The query and strategy used. |
 | `seeds` | The seed entities as `{id, score}`, best first. |
 | `subgraph` | The collected `entities`, `relations`, `preferences`, and `decisions`. |
-| `context` | Source passages, then relation lines (`Jane Doe -[WORKS_AT]-> Acme`), preferences, decisions, and entity lines (`Acme [Company]`). Passages appear only here. |
+| `context` | Source passages, then relation lines (`Jane Doe -[WORKS_AT]-> Acme`), preferences, decisions, and entity lines (`Acme [Company]`). Passages appear only here. A relation line ends with `[certified]` for a [certified](trust.md#certification) relation and `(via hub)` when it touches a [hub](trust.md#hubs). |
+| `hubs` | The hubs the walk reached: entities with 50 or more current relations. |
 
 Passages come only from `insert.text` calls made with a `source_id`. A graph
 built with `insert.facts` returns relation and entity lines but no passages.
+Before answering, an agent can ask whether the graph holds the answer at all with
+[`check_answerable`](trust.md#check_answerable).
 
 From the CLI, run `selfgraph retrieve QUERY` (`--context-only` prints just the
 context). The MCP tool is `retrieve`.
@@ -33,6 +36,7 @@ await graph.retrieve(
     budget_tokens=3000,  # size cap on the context
     as_of=None,          # read the graph at this time
     seeds=None,          # "bm25", "synonyms", or "embeddings"; default by level
+    skip_hubs=False,     # do not walk through hubs other than the seeds
 )
 ```
 
@@ -79,7 +83,7 @@ graph = SelfGraph(store=store, embedder=MyEmbedder(), seeds="embeddings")
 | Preferences (also) | Left out when the subject or value entity no longer exists. |
 | Decisions | The trace's effective time is at or before T, and every entity it names is visible at T. |
 | Entities | First stored by T, or an endpoint, subject, value, or about entity of a relation or preference version valid at T. |
-| Passages | Their source version's effective time (the insert's `event_time`, else when it was stored) is at or before T. |
+| Passages | Their source version's effective time (the insert's `event_time`, else when it was stored) is at or before T, and no [replacing version](inserting.md#replacing-a-source) took effect by T. |
 
 What follows from these rules:
 
@@ -113,7 +117,8 @@ What follows from these rules:
    budget, and at most six of them. The context never exceeds `budget_tokens`.
    When even the first line does not fit, it is cut to the longest prefix that
    fits. The budget trims only the context. The subgraph is bounded by
-   `max_nodes`.
+   `max_nodes`. Among relations equally close to the query, certified ones come
+   first.
 
 **Cost.** Seeding scores every entity, with no cap. It reads entities in
 id-ordered pages twice per query, once for the BM25 corpus statistics and once to
@@ -140,3 +145,24 @@ print(result.rows)
 
 `run_cypher` speaks the store's dialect and sees its physical layout, so the
 query above differs per backend. See [Raw Cypher in Backends](backends.md#raw-cypher).
+
+## Export to Obsidian
+
+```python
+notes = await graph.export_obsidian()  # {"Jane Doe.md": "...", "decisions/Pick a database.md": "..."}
+```
+
+`export_obsidian` renders the namespace as an [Obsidian](https://obsidian.md)
+vault, one Markdown note per entity and one per decision, and returns each
+note's path and text. It writes nothing; `selfgraph export obsidian DIR` writes
+the notes into a folder you can open as a vault.
+
+- An entity note is named after the entity. When two names collide, ignoring
+  case, the later one in id order is named `Name (Type)`. Characters a file name
+  or wiki link cannot hold become `-`.
+- It holds the id, type, and aliases as front matter, then the properties, the
+  current outgoing relations and preferences as `[[wiki links]]`, and links to the
+  decisions the entity made. Obsidian derives backlinks, so incoming links are
+  not repeated.
+- A decision note, in `decisions/`, links its actor, outcome, alternatives, and
+  steps in order.

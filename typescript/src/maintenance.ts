@@ -1,14 +1,26 @@
 import { ValidationError } from "./errors.js";
+import { normalizeRelType } from "./ids.js";
 import { comparePy, deepEqual, pyRepr } from "./internal/py.js";
 import { epochMicros, toIso } from "./internal/time.js";
-import { L_ENTITY, L_EVIDENCE } from "./labels.js";
-import type { DeleteResult, Entity, Evidence, JsonObject, Relation } from "./models.js";
+import { L_ENTITY, L_EVIDENCE, L_MERGE, L_SOURCE } from "./labels.js";
+import type {
+  DecisionTrace,
+  DeleteResult,
+  Entity,
+  Evidence,
+  JsonObject,
+  LintIssue,
+  Preference,
+  Relation,
+} from "./models.js";
 import * as ops from "./ops.js";
-import type { EdgeWrite, GraphPrimitives, NodeRow } from "./protocols.js";
+import type { EdgeWrite, GraphPrimitives, NodeRow, Props } from "./protocols.js";
+import { canonicalEntityType, canonicalRelationType, type ParsedSchema, relationIndex } from "./schema.js";
 import { decodeEntity, decodeEvidence, encodeEntityProps, relevanceProps } from "./serde.js";
 
 const DAY_MS = 86_400_000;
 const SCALE = 1_000_000;
+const LINT_SAMPLE = 5;
 
 /**
  * The most recent of the given timestamps, ignoring missing ones.
@@ -77,6 +89,20 @@ export function requireNumber(
  */
 export function scanEntities(runner: GraphPrimitives, ns: string): Promise<Entity[]> {
   return ops.scan((skip, limit) => ops.listEntities(runner, ns, { skip, limit }));
+}
+
+/**
+ * Read every merge record in the namespace that has not been reverted, a page at a time.
+ *
+ * @param runner (GraphPrimitives): the graph runner.
+ * @param ns (string): the namespace.
+ * @return (Props[]): the stored merge records, in id order.
+ */
+export async function scanLiveMerges(runner: GraphPrimitives, ns: string): Promise<Props[]> {
+  const rows = await ops.scan(ops.nodeListing(runner, ns, L_MERGE, {}));
+  return rows
+    .filter((row) => (row.reverted_at ?? null) === null)
+    .sort((a, b) => comparePy(a.id as string, b.id as string));
 }
 
 /**
@@ -233,4 +259,88 @@ export async function mergeRelations(
     await ops.deleteEvidence(runner, ns, rid);
   }
   return counts;
+}
+
+/**
+ * Find what makes a graph a weak source of answers, without changing it.
+ *
+ * orphan_entity: an entity no current relation, preference, decision, or live merge record references; a merge survivor is kept off it, since deleting it would delete the merge and lose its unmerge. unsupported_fact: a current relation with no evidence record. stale_decision_step: a decision with a step whose relation is no longer current. type_off_schema: with a schema, an entity or relation whose type it does not declare.
+ *
+ * @param entities (Entity[]): every entity.
+ * @param relations (Relation[]): every current relation.
+ * @param preferences (Preference[]): every current preference.
+ * @param decisions (DecisionTrace[]): every decision.
+ * @param supported (ReadonlySet<string>): the ids that have at least one evidence record.
+ * @param schema (ParsedSchema | null): the schema, or null to skip the type check.
+ * @param merged (Iterable<string>): the entity ids a live merge record references.
+ * @return (LintIssue[]): each problem found, with its count and the first ids in id order.
+ */
+export function lint(
+  entities: Entity[],
+  relations: Relation[],
+  preferences: Preference[],
+  decisions: DecisionTrace[],
+  supported: ReadonlySet<string>,
+  schema: ParsedSchema | null,
+  merged: Iterable<string> = [],
+): LintIssue[] {
+  const used = new Set<string>(merged);
+  for (const r of relations) used.add(r.from_entity).add(r.to_entity);
+  for (const p of preferences)
+    for (const eid of [p.subject_entity, p.value_entity, p.about_entity]) if (eid) used.add(eid);
+  for (const d of decisions) {
+    for (const eid of [d.actor_entity, d.outcome_entity, ...d.alternative_entities]) if (eid) used.add(eid);
+    for (const step of d.steps) used.add(step.from_entity).add(step.to_entity);
+  }
+  const current = new Set(relations.map((r) => r.id));
+  const found: Array<[LintIssue["code"], string[]]> = [
+    ["orphan_entity", entities.filter((e) => !used.has(e.id)).map((e) => e.id)],
+    ["unsupported_fact", relations.filter((r) => !supported.has(r.id)).map((r) => r.id)],
+    ["stale_decision_step", decisions.filter((d) => d.steps.some((s) => !current.has(s.relation_id))).map((d) => d.id)],
+    ["type_off_schema", []],
+  ];
+  if (schema !== null) {
+    const names = new Set(schema.entities.map((t) => t.name));
+    const declared = relationIndex(schema);
+    found[3]![1] = [
+      ...entities.filter((e) => !names.has(canonicalEntityType(e.type, schema))).map((e) => e.id),
+      ...relations
+        .filter((r) => !declared.has(normalizeRelType(canonicalRelationType(r.type, schema))))
+        .map((r) => r.id),
+    ];
+  }
+  return found
+    .filter(([, ids]) => ids.length)
+    .map(([code, ids]) => ({ code, count: ids.length, sample: [...ids].sort(comparePy).slice(0, LINT_SAMPLE) }));
+}
+
+/**
+ * Count what a namespace holds and lint it, reading every item a page at a time.
+ *
+ * @param runner (GraphPrimitives): the graph runner.
+ * @param ns (string): the namespace.
+ * @param schema (ParsedSchema | null): the schema to check types against, or null.
+ * @return ([Record<string, number>, LintIssue[]]): the counts of entities, current relations, current preferences, decisions, and sources, and the lint issues.
+ */
+export async function inspect(
+  runner: GraphPrimitives,
+  ns: string,
+  schema: ParsedSchema | null,
+): Promise<[Record<string, number>, LintIssue[]]> {
+  const entities = await scanEntities(runner, ns);
+  const relations = await scanRelations(runner, ns);
+  const preferences = await ops.scan((skip, limit) => ops.listPreferences(runner, ns, { skip, limit }));
+  const decisions = await ops.scan((skip, limit) => ops.listTraces(runner, ns, { skip, limit }));
+  const sources = await ops.scan(ops.nodeListing(runner, ns, L_SOURCE, {}));
+  const evidence = await ops.scan(ops.nodeListing(runner, ns, L_EVIDENCE, {}));
+  const counts = {
+    entities: entities.length,
+    relations: relations.length,
+    preferences: preferences.length,
+    decisions: decisions.length,
+    sources: sources.length,
+  };
+  const supported = new Set(evidence.map((row) => row.target_id as string));
+  const merged = (await scanLiveMerges(runner, ns)).flatMap((m) => [m.survivor_id as string, m.absorbed_id as string]);
+  return [counts, lint(entities, relations, preferences, decisions, supported, schema, merged)];
 }

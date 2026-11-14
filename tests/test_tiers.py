@@ -154,22 +154,34 @@ def test_llm_judge_leaves_cardinality_types_to_the_schema_rule_and_judges_other_
     )
 
 
-def test_coverage_names_schema_terms_entities_and_what_is_missing():
+def test_check_answerable_grounds_schema_synonyms_definitions_and_plurals():
     g = fresh_graph("tier", schema=TERMS)
     run(g.insert.facts({"entities": [{"type": "Company", "name": "Acme"}]}))
-    cov = run(g.coverage("What is the staff size of the firm Acme by ad spend?"))
-    assert [(t.term, t.kind, t.matched, t.certified) for t in cov.terms] == [
-        ("Company", "entity", "firm", True),
-        ("headcount", "definition", "staff size", False),
+    report = run(g.check_answerable("What is the staff size of the firm Acme by ad spend?"))
+    assert [(t.term, t.status, t.matches, t.certified) for t in report.terms] == [
+        ("staff size", "definition", ["headcount"], False),
+        ("firm", "type", ["Company"], True),
+        ("acme", "entity", ["company:acme"], False),
+        ("ad", "missing", [], False),
+        ("spend", "missing", [], False),
     ]
-    assert cov.covered == ["acme", "firm", "size", "staff"]
-    assert cov.uncovered == ["ad", "spend"]
-    assert cov.ratio == pytest.approx(4 / 6)
-    assert [t.term for t in run(g.coverage("users employed by employers")).terms] == ["Company", "Person", "WORKS_AT"]
-    bare = run(fresh_graph("tier").coverage("anything"))
-    assert (bare.terms, bare.covered, bare.uncovered, bare.ratio) == ([], [], ["anything"], 0.0)
-    with pytest.raises(ValidationError, match="question cannot be empty"):
-        run(g.coverage(" "))
+    assert (report.verdict, report.missing) == ("partial", ["ad", "spend"])
+    report = run(g.check_answerable("users employed by employers"))
+    assert [(t.status, t.matches) for t in report.terms] == [
+        ("schema_only", ["Person"]),
+        ("schema_only", ["WORKS_AT"]),
+        ("type", ["Company"]),
+    ]
+    assert (report.verdict, report.missing) == ("partial", ["users", "employed"])
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Ann"}], "relations": [works_at("acme")]}))
+    report = run(g.check_answerable("users employed by employers"))
+    assert [(t.status, t.matches) for t in report.terms] == [
+        ("type", ["Person"]),
+        ("relation", ["WORKS_AT"]),
+        ("type", ["Company"]),
+    ]
+    assert report.verdict == "answerable"
+    assert run(fresh_graph("tier").check_answerable("anything")).verdict == "not_answerable"
 
 
 def test_synonym_seeding_finds_entities_by_a_type_synonym():
@@ -230,18 +242,17 @@ def test_from_tables_drafts_types_properties_relations_and_mappings():
         ["Invoice"],
     )
     g = fresh_graph("tier", schema=schema)
-    assert [t.term for t in run(g.coverage("total for invoice lines")).terms][0] == "InvoiceLine"
+    terms = run(g.check_answerable("total for invoice lines")).terms
+    assert [(t.term, t.matches) for t in terms if t.status == "schema_only"] == [("invoice lines", ["InvoiceLine"])]
     with pytest.raises(ValidationError, match="unknown table 'nope'"):
         Schema.from_tables([{"name": "t", "columns": [{"name": "x_id", "references": "nope"}]}])
     with pytest.raises(ValidationError, match="each table needs a name"):
         Schema.from_tables([{}])
 
 
-def test_cli_mcp_and_settings_carry_the_level_and_coverage(capsys):
+def test_cli_mcp_and_settings_carry_the_level(capsys):
     g = fresh_graph("tier")
     run(g.insert.facts({"entities": [{"type": "Company", "name": "Acme"}]}))
-    cov = cli(g, ["coverage", "Acme", "revenue"], capsys)
-    assert (cov["covered"], cov["uncovered"]) == (["acme"], ["revenue"])
     assert cli(g, ["retrieve", "Acme", "--seeds", "bm25"], capsys)["tiers"] == {"seeds": "bm25", "traversal": "bfs"}
     assert build_graph(store_settings(level="light")).tiers["resolution"] == "exact"
     assert build_graph(store_settings(max_tier="light", resolver="fuzzy")).tiers["resolution"] == "exact"
@@ -249,5 +260,4 @@ def test_cli_mcp_and_settings_carry_the_level_and_coverage(capsys):
         build_graph(store_settings(level="huge"))
     with mcp_session("tier", level="light") as srv:
         run(srv.create_entity("Acme", "Company"))
-        assert run(srv.coverage("Acme revenue"))["uncovered"] == ["revenue"]
         assert run(srv.retrieve("Acme"))["tiers"] == {"seeds": "bm25", "traversal": "bfs"}

@@ -211,6 +211,15 @@ class Schema(TopInputModel):
 
         return to_neo4j(self)
 
+    def to_ossie(self) -> dict[str, Any]:
+        """Render this schema as an Apache Ossie ontology document; see _export.to_ossie for the mapping.
+
+        @return (dict[str, Any]): the Ossie document.
+        """
+        from ._export import to_ossie
+
+        return to_ossie(self)
+
 
 def as_schema(value: "Schema | Mapping | None") -> "Schema | None":
     """Coerce a schema argument: a Schema passes through, a mapping is validated, None stays None.

@@ -26,6 +26,7 @@ from ..runtime import (
     blank_lexical_tokens,
     build_graph,
     check_settings,
+    checked_cypher,
     current_relation,
     parse_time,
     present,
@@ -165,13 +166,38 @@ async def _graph_handle() -> SelfGraph:
     return _graph
 
 
-async def get_schema(format: Literal["selfgraph", "neo4j"] = "selfgraph") -> dict[str, Any] | None:
+async def get_schema(format: Literal["selfgraph", "neo4j", "ossie"] = "selfgraph") -> dict[str, Any] | None:
     """Return the schema inserts are checked against (entity and relation types), or null when none is set.
-    format "neo4j" renders it as a Neo4j graph schema (node_types, relationship_types, patterns, constraints)."""
+    format "neo4j" renders it as a Neo4j graph schema (node_types, relationship_types, patterns, constraints);
+    "ossie" as an Apache Ossie ontology (concepts and relationships)."""
     g = await _graph_handle()
     if format == "neo4j" and g.schema is not None:
         return g.schema.to_neo4j_ontology()
+    if format == "ossie" and g.schema is not None:
+        return g.schema.to_ossie()
     return to_jsonable(g.schema)
+
+
+async def check_readiness() -> dict[str, Any]:
+    """Check the graph can answer before relying on it: whether the store is reachable and the namespace holds
+    entities, the counts of entities, relations, preferences, decisions, and sources, and lint (orphan entities,
+    relations with no evidence, decisions with a retired step, types the schema does not declare)."""
+    g = await _graph_handle()
+    return to_jsonable(await g.readiness())
+
+
+async def check_answerable(
+    question: str, terms: list[str] | None = None, as_of: str | None = None, depth: PositiveInt = 3
+) -> dict[str, Any]:
+    """Check whether the graph holds what a question asks about before retrieving or answering. terms are the
+    key phrases of the question (names, types, attributes); pass them when you can, else they are read from the
+    question. Each term is matched to entities, types, definitions, relation types, or property keys; a schema term
+    with nothing stored for it is schema_only and counts as missing. verdict is answerable, partial (missing lists
+    what the graph lacks), uncertain (matched entities are not connected within depth hops, or only through a hub),
+    or not_answerable. A note means the check is lexical and embedding seeds may still find the missing terms, so
+    try retrieve before concluding. as_of (ISO 8601) judges the graph as it stood then."""
+    g = await _graph_handle()
+    return to_jsonable(await g.check_answerable(question, terms=terms, as_of=parse_time(as_of, "as_of"), depth=depth))
 
 
 async def insert_text(
@@ -185,6 +211,7 @@ async def insert_text(
     schema_mode: SchemaMode | None = None,
     instructions: dict | None = None,
     prompts: dict | None = None,
+    replace_source: StrictBool = False,
 ) -> dict[str, Any]:
     """Extract facts from text and merge them into the graph. Uses the configured LLM, or with none
     configured falls back to a built-in LLM-free extractor (coarser). event_time (ISO 8601) is the default
@@ -195,7 +222,9 @@ async def insert_text(
     fuzzy, or llm) overrides the server's entity resolution for this call. contradiction (off, warn, supersede, llm)
     overrides how a relation that breaks a schema max_count is handled. schema (a SelfGraph schema object) and
     schema_mode (off, warn, strict) override the server's for this call. instructions and prompts override the
-    extraction instructions and prompt templates for this call.
+    extraction instructions and prompt templates for this call. replace_source (needs source_id) treats the text as
+    the new content of that source: relations only its older versions stated are retired, and source_diff lists
+    the kept, added, and retired relation ids.
     """
     g = await _graph_handle()
     return to_jsonable(
@@ -211,6 +240,7 @@ async def insert_text(
                 schema_mode=schema_mode,
                 instructions=instructions,
                 prompts=prompts,
+                replace_source=replace_source,
             )
         )
     )
@@ -427,6 +457,19 @@ async def update_relation(
     return to_jsonable(await g.relations.update(id, **changes))
 
 
+async def certify_relation(id: str, by: str) -> dict[str, Any]:
+    """Mark a current relation as verified by someone (by). A certified relation is not retired by a supersede
+    contradiction or a replaced source, and retrieval lists it first, marked [certified]."""
+    g = await _graph_handle()
+    return to_jsonable(await g.relations.certify(id, by=by))
+
+
+async def uncertify_relation(id: str) -> dict[str, Any]:
+    """Remove the certification of a relation."""
+    g = await _graph_handle()
+    return to_jsonable(await g.relations.uncertify(id))
+
+
 async def relation_versions(id: str, newest_first: StrictBool = True) -> list[dict[str, Any]]:
     """Return every version of a relationship, newest first by default."""
     g = await _graph_handle()
@@ -619,7 +662,9 @@ async def list_decisions(
 
 async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
     """Run a read Cypher statement and return its rows; a keyword scan rejects writes but is a guard, not a sandbox.
-    Not scoped to the namespace: it sees every namespace on the server, so filter on the ns property yourself."""
+    Not scoped to the namespace: it sees every namespace on the server, so filter on the ns property yourself.
+    When no rows come back, warnings name labels and relationship types the namespace never stored and name
+    literals that differ from a stored entity name only by case or spacing."""
     if not isinstance(query, str):
         raise ValidationError(f"query must be a string, got {type(query).__name__}")
     if _is_blocked_query(query):
@@ -634,7 +679,7 @@ async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
         )
     bound = bind_params(query, params)
     g = await _graph_handle()
-    return to_jsonable(await g.run_cypher(query, bound))
+    return to_jsonable(await checked_cypher(g, query, bound))
 
 
 async def retrieve(
@@ -646,10 +691,12 @@ async def retrieve(
     budget_tokens: PositiveInt = 3000,
     as_of: str | None = None,
     seeds: str | None = None,
+    skip_hubs: StrictBool = False,
 ) -> dict[str, Any]:
     """Retrieve graph context for a query by keyword seeds and bounded BFS, DFS, or PageRank ("ppr") ranking.
     as_of (ISO 8601; no offset means UTC) reads the graph as it stood at that time. strategy and seeds (bm25,
-    synonyms, embeddings) default to the server's level."""
+    synonyms, embeddings) default to the server's level. hubs lists entities with 50 or more relations the walk
+    reached; context lines through one are marked (via hub), as weak links. skip_hubs stops the walk at hubs."""
     g = await _graph_handle()
     return to_jsonable(
         await g.retrieve(
@@ -661,15 +708,9 @@ async def retrieve(
             budget_tokens=budget_tokens,
             as_of=parse_time(as_of, "as_of"),
             seeds=seeds,
+            skip_hubs=skip_hubs,
         )
     )
-
-
-async def coverage(question: str) -> dict[str, Any]:
-    """Report which words of a question the schema terms and stored entities can ground, with no LLM call.
-    uncovered lists the words nothing grounds; check it before answering to see what the graph cannot speak to."""
-    g = await _graph_handle()
-    return to_jsonable(await g.coverage(question))
 
 
 async def maintenance_decay(
@@ -689,12 +730,15 @@ async def maintenance_prune(
     older_than: str | None = None,
     types: list[str] | None = None,
     relation_types: list[str] | None = None,
+    include_certified: StrictBool = False,
     dry_run: StrictBool = True,
 ) -> dict[str, Any]:
     """Remove entities and relations below min_relevance (set by maintenance_decay) and/or last touched
     before older_than (ISO 8601); types narrows entities and relation_types relations (given only one, the other
-    kind is not matched). Needs min_relevance or older_than. Dry run by default: returns the plan; pass dry_run
-    false to delete, which cascades like delete_entity."""
+    kind is not matched). Needs min_relevance or older_than. Certified relations and the entities they connect are
+    kept (listed in certified) unless include_certified is true; merge_ids lists merge records whose unmerge a removal
+    would lose. Dry run by default: returns the plan; pass dry_run false to delete, which cascades like
+    delete_entity."""
     g = await _graph_handle()
     cutoff = parse_time(older_than, "older_than")
     result = await g.maintenance.prune(
@@ -702,6 +746,7 @@ async def maintenance_prune(
         older_than=cutoff,
         types=types,
         relation_types=relation_types,
+        include_certified=include_certified,
         dry_run=dry_run,
     )
     return to_jsonable(surfaced(result))
@@ -716,6 +761,8 @@ async def maintenance_dedupe_relations(dry_run: StrictBool = True) -> dict[str, 
 
 
 TOOLS = [
+    check_readiness,
+    check_answerable,
     get_schema,
     insert_text,
     insert_facts,
@@ -733,6 +780,8 @@ TOOLS = [
     update_relation,
     relation_versions,
     relation_evidence,
+    certify_relation,
+    uncertify_relation,
     delete_relation,
     create_preference,
     list_preferences,
@@ -747,7 +796,6 @@ TOOLS = [
     list_decisions,
     run_cypher,
     retrieve,
-    coverage,
     maintenance_decay,
     maintenance_prune,
     maintenance_dedupe_relations,
@@ -755,10 +803,28 @@ TOOLS = [
 
 
 _READ_ONLY = frozenset(
-    {"get_schema", "retrieve", "coverage", "run_cypher", "entity_evidence", "entity_merges", "relation_evidence"}
+    {
+        "get_schema",
+        "retrieve",
+        "run_cypher",
+        "entity_evidence",
+        "entity_merges",
+        "relation_evidence",
+        "check_readiness",
+        "check_answerable",
+    }
 )
 _DESTRUCTIVE = frozenset({"maintenance_prune", "maintenance_dedupe_relations"})
-_IDEMPOTENT = frozenset({"insert_facts", "maintenance_prune", "maintenance_dedupe_relations"})
+_IDEMPOTENT = frozenset(
+    {"insert_facts", "maintenance_prune", "maintenance_dedupe_relations", "certify_relation", "uncertify_relation"}
+)
+INSTRUCTIONS = (
+    "SelfGraph is a knowledge graph built from text. To answer from it: call check_readiness once to confirm the "
+    "graph is reachable and holds data; call check_answerable with the question and its key terms; if the verdict "
+    "is not_answerable, say the graph does not hold the answer instead of guessing, and if it is partial, say "
+    "which terms are missing; then call retrieve and answer only from the facts and passages it returns. Treat "
+    "context lines marked (via hub) as weak links, and prefer facts marked [certified]."
+)
 
 
 def _annotations(name: str) -> dict[str, bool]:
@@ -840,9 +906,9 @@ def build_server(name: str = "selfgraph"):
 
     server_class, tool_error = _server_class()
     if "version" in inspect.signature(server_class).parameters:
-        server = server_class(name, version=__version__, log_level="WARNING")
+        server = server_class(name, version=__version__, instructions=INSTRUCTIONS, log_level="WARNING")
     else:
-        server = server_class(name, log_level="WARNING")
+        server = server_class(name, instructions=INSTRUCTIONS, log_level="WARNING")
         server._mcp_server.version = __version__
     logging.getLogger("mcp").setLevel(logging.WARNING)
     options = inspect.signature(server.tool).parameters

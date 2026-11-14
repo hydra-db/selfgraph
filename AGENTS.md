@@ -14,7 +14,7 @@ invariants below.
 - Install for development: `pip install -e ".[dev]"`. Add `[llm]` to run extraction, `[tokenizer]` for token-aware chunking and budgets. BM25 seeding is built in, no extra needed.
 - Build the package: `python -m build`.
 - `typescript/` is a pure TypeScript port that derives the same ids, stores the same encoding, and versions, validates, and retrieves the same way (it has no spaCy path and no sync client). When you change ids, encoding, validation, retrieval, tiers, schema fields, or term matching in Python, port the change there and run `npm test` in `typescript/` with `SELFGRAPH_PY` set to a Python that has this checkout installed; the conformance test compares both sides byte for byte.
-- Wire formats match across the two SDKs: result and schema keys, CLI flags, `SELFGRAPH_*` variables, MCP tool names and arguments, warning codes, error text, and LLM prompts. The conformance pair (`typescript/test/conformance/py_side.py` and `ts_side.ts`) covers the deterministic paths, including `from_tables`, term matching, coverage, synonym seeding, and `graph.tiers`. Extend both sides when you add a deterministic behaviour. LLM tiers are covered by mirrored tests with a fake client, not by conformance.
+- Wire formats match across the two SDKs: result and schema keys, CLI flags, `SELFGRAPH_*` variables, MCP tool names and arguments, warning codes, error text, and LLM prompts. The conformance pair (`typescript/test/conformance/py_side.py` and `ts_side.ts`) covers the deterministic paths, including `from_tables`, schema term forms, `check_answerable`, synonym seeding, and `graph.tiers`. Extend both sides when you add a deterministic behaviour. LLM tiers are covered by mirrored tests with a fake client, not by conformance.
 - Run `pre-commit install` once; the hook runs ruff, Biome, and `tsc` on each commit. Lint and format before pushing: `ruff check .` and `ruff format .` (config lives in `pyproject.toml`; CI runs `ruff check` and `ruff format --check`).
 - In `typescript/`, lint and format with Biome before pushing: `npm run lint` checks and `npm run format` fixes (config lives in `typescript/biome.json`; CI runs `npm run lint`, `typecheck`, `build`, and `test`).
 - The test suite lives in `tests/` and needs a graph backend: a Bolt server (Neo4j by default, or Memgraph), FalkorDB, HydraDB, or embedded Kuzu, selected with `SELFGRAPH_TEST_STORE` (or the first entry of `SELFGRAPH_TEST_STORES`, the TypeScript suite's plural selector). Backend connection details accept the TypeScript `SG_*` names first (`SG_NEO4J_URI`, `SG_NEO4J_PASSWORD`, `SG_MEMGRAPH_URI`, `SG_FALKOR_PORT`, `SG_HYDRADB_URI`, `SG_HYDRADB_TOKEN`), then the bare names (`NEO4J_URI`, `NEO4J_AUTH`, `CYPHER_URI`, `FALKOR_PORT`, `HYDRADB_URI`, `HYDRADB_TOKEN`), so one set of variables drives both suites. If you add tests, drive async code with `asyncio.run(...)` and do not add `pytest-asyncio`. Test an LLM or embedder tier with a small fake object that implements `generate` or `embed`, as `tests/test_tiers.py` does; never call a real model. CI runs both suites on embedded Kuzu with the `tokenizer` extra installed.
@@ -37,12 +37,13 @@ Where things live: `client.py` is the `SelfGraph` entry point. `tiers.py` holds 
 capability ladders, the `level` presets, and the `max_tier` ceilings. `insert.py` is the
 insert namespace, `schema.py` is the optional TBox that guides extraction and
 validates inserts (`_neo4j_schema.py` converts it to and from the Neo4j graph
-schema, `_tables.py` drafts one from table metadata), `terms.py` matches question words
-to schema terms, `resolution.py` merges duplicate entities on insert, `contradiction.py`
+schema, `_tables.py` drafts one from table metadata, `_export.py` renders it as an Apache Ossie ontology and
+the graph as an Obsidian vault), `terms.py` maps schema terms to their
+surface forms, `resolution.py` merges duplicate entities on insert, `contradiction.py`
 is the LLM judge behind `contradiction="llm"`, `resources/` holds the
 typed CRUD and `graph.maintenance` (with `_maintenance.py`), `extraction/` runs LLM
 extraction, `retrieval.py` does seeded BFS/DFS/PageRank retrieval (BM25, schema synonym,
-and embedder seeding) and the `coverage` check, `llm/` wraps the
+and embedder seeding) and the `check_answerable` check, `llm/` wraps the
 LLM through litellm, `stores/` holds the backends (`_cypher.py` is the Cypher
 primitive base, `cypher.py` holds `CypherStore` and `Neo4jStore`, `falkordb.py`, `kuzu.py`, `hydradb.py`),
 and `runtime.py` is the shared factory

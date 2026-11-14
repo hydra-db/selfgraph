@@ -21,10 +21,11 @@
 - **Text in, graph out.** Extract entities and relations with any LLM, or without one.
 - **Any graph database.** Neo4j, Memgraph, FalkorDB, HydraDB, or embedded Kuzu, behind one API.
 - **Facts that change.** Every change is versioned, newer facts retire older ones, and you can read the graph as of any past time.
-- **An ontology, not just a graph.** Types, synonyms, and definitions ground a question, and a coverage check says what the graph cannot answer.
+- **An ontology, not just a graph.** Types, synonyms, and definitions ground a question, so the answerability check knows a firm is a `Company`.
 - **Light by default, powerful on request.** One `level` option moves every capability from free and deterministic to LLM-backed.
+- **Knows when it has no answer.** An LLM-free answerability check, readiness lint, and certified facts tell an agent what the graph holds.
 - **No vector store.** Retrieval walks the graph from keyword matches and returns the source passages. Embeddings are optional.
-- **SDK, CLI, and MCP server** over the same graph.
+- **SDK, CLI, and MCP server** over the same graph, in Python and TypeScript.
 
 ## Install
 
@@ -122,9 +123,9 @@ await graph.retrieve("where does Ann work", as_of="2021-06-01")  # Acme
 
 Nothing is deleted. The retired relation keeps its history and records what replaced it. See [contradictions](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md#contradictions).
 
-## Ontology and coverage
+## Ontology
 
-A schema can carry synonyms, certified definitions, and where each term's data lives. `coverage` then tells an agent what the graph can ground before it answers:
+A schema can carry synonyms, certified definitions, and where each term's data lives. `check_answerable` then grounds a question in those terms before an agent answers:
 
 ```python
 schema = {
@@ -137,9 +138,10 @@ schema = {
     ]
 }
 graph = SelfGraph(store=store, schema=schema)
+await graph.insert.facts({"entities": [{"name": "Acme", "type": "Company"}]})
 
-cov = await graph.coverage("What is the staff size of the firm Acme by ad spend?")
-cov.uncovered  # ["ad", "spend"]
+report = await graph.check_answerable("What is the staff size of the firm Acme by ad spend?")
+report.missing  # ["ad", "spend"]
 await graph.retrieve("which employers")  # seeds Company entities through the synonym
 ```
 
@@ -190,11 +192,12 @@ selfgraph --store neo4j --uri bolt://localhost:7687 retrieve "who runs Acme" --c
 - [Install](https://github.com/hydra-db/selfgraph/blob/main/docs/install.md) and [quickstart](https://github.com/hydra-db/selfgraph/blob/main/docs/quickstart.md)
 - [Inserting](https://github.com/hydra-db/selfgraph/blob/main/docs/inserting.md): text, facts, LLM setup, custom prompts
 - [Tiers](https://github.com/hydra-db/selfgraph/blob/main/docs/tiers.md): the `level` preset and the cost cap
-- [Schema](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md): types, validation, contradictions, Neo4j interop
-- [Ontology](https://github.com/hydra-db/selfgraph/blob/main/docs/ontology.md): terms, synonyms, coverage checks, drafts from table metadata
+- [Schema](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md): types, validation, contradictions, Neo4j interop, Ossie export
+- [Ontology](https://github.com/hydra-db/selfgraph/blob/main/docs/ontology.md): terms, synonyms, grounding a question, drafts from table metadata
 - [Entity resolution](https://github.com/hydra-db/selfgraph/blob/main/docs/resolution.md): merging duplicates
 - [Resources](https://github.com/hydra-db/selfgraph/blob/main/docs/resources.md): entities, relations, preferences, decisions, ids
 - [Retrieval](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md) and [maintenance](https://github.com/hydra-db/selfgraph/blob/main/docs/maintenance.md)
+- [Answering safely](https://github.com/hydra-db/selfgraph/blob/main/docs/trust.md): readiness, answerability, hubs, certified facts
 - [Backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md), [CLI](https://github.com/hydra-db/selfgraph/blob/main/docs/cli.md), [MCP](https://github.com/hydra-db/selfgraph/blob/main/docs/mcp.md), [errors](https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md), [TypeScript](https://github.com/hydra-db/selfgraph/blob/main/docs/typescript.md)
 
 ## Contributing

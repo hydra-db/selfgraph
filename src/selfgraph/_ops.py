@@ -13,6 +13,8 @@ from ._serde import (
     L_MERGE,
     L_MERGE_ENTRY,
     L_PROFILE,
+    L_SOURCE,
+    L_SOURCE_VERSION,
     L_STEP,
     L_TRACE,
     LABELS,
@@ -21,6 +23,7 @@ from ._serde import (
     R_FROM,
     R_HAS_PROFILE,
     R_HAS_STEP,
+    R_HAS_VERSION,
     R_MADE_DECISION,
     R_RESULTED_IN,
     R_TO,
@@ -191,6 +194,17 @@ def _require_int(field: str, value: Any) -> None:
     """
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValidationError(f"{field} must be an integer, got {type(value).__name__}")
+
+
+def _require_bool(name: str, value: object) -> None:
+    """Validate a flag is a real boolean, so a truthy string never flips an option.
+
+    @param name (str): the argument name for the error message.
+    @param value (object): the value to check.
+    @return (None): nothing; raises ValidationError otherwise.
+    """
+    if not isinstance(value, bool):
+        raise ValidationError(f"{name} must be a boolean, got {type(value).__name__}")
 
 
 def _require_optional_text(field: str, value: Any) -> None:
@@ -555,13 +569,14 @@ async def _keyset(fetch: Callable[[str | None, int], Awaitable[list]], page: int
         after = last["id"] if isinstance(last, dict) else last.id
 
 
-def _batches(items: list) -> list[list]:
-    """Split a list into consecutive batches of at most _BATCH items.
+def _batches(items: list, size: int = _BATCH) -> list[list]:
+    """Split a list into consecutive batches of at most size items.
 
     @param items (list): the items to split.
+    @param size (int): the largest batch.
     @return (list[list]): the batches, in order.
     """
-    return [items[i : i + _BATCH] for i in range(0, len(items), _BATCH)]
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 async def _nodes_where(
@@ -1618,7 +1633,8 @@ async def _current_relations(runner: Any, ns: str, keyed: list[tuple[str, Relati
     A derived relation id fixes its endpoints, so its stored versions are among its source entity's relations; an
     explicit id may name a relation between other entities, so one not found that way is looked up by id. Only
     source entities with a relation not found current are read again across all versions, so an insert of new
-    relations from new entities costs one query.
+    relations from new entities costs one query. A store that reads edges by id (edge_versions) may instead read
+    only the wanted relations' versions, once, and the same selection runs over them.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -1627,9 +1643,16 @@ async def _current_relations(runner: Any, ns: str, keyed: list[tuple[str, Relati
     """
     wanted = {rid for rid, _ in keyed}
     found: dict[str, dict] = {}
+    by_id = getattr(runner, "edge_versions", None)
+    versions = None if by_id is None else await by_id(ns, L_ENTITY, L_ENTITY, _dedup_list(rid for rid, _ in keyed))
     for current_only in (True, False):
         pending = _dedup_list(rel.from_entity for rid, rel in keyed if rid not in found)
-        for edge in await _edges_into(runner, ns, L_ENTITY, L_ENTITY, "from_in", pending, current_only=current_only):
+        if versions is None:
+            edges = await _edges_into(runner, ns, L_ENTITY, L_ENTITY, "from_in", pending, current_only=current_only)
+        else:
+            sources = set(pending)
+            edges = [e for e in versions if e["from_id"] in sources and (e["props"]["is_current"] or not current_only)]
+        for edge in edges:
             if edge["props"]["id"] in wanted and _is_relation_type(edge["type"]):
                 _keep_newest(found, edge)
         wanted -= set(found)
@@ -1688,6 +1711,7 @@ class Contradictions:
         self._where: dict[str, dict[tuple[str, str, str], None]] = {}
         self._order: dict[str, int] = {}
         self._dirty: dict[tuple[str, str, str], int] = {}
+        self._certified = {rel.id for rel in current if rel.certified_at is not None}
         for rel in history:
             for key, _ in self._slots(rel.type, rel.from_entity, rel.to_entity):
                 self._past.setdefault(key, {})[rel.id] = _rank(rel)
@@ -1719,7 +1743,9 @@ class Contradictions:
         for key in self._where.pop(rid, {}):
             self._past.setdefault(key, {})[rid] = self._groups[key].pop(rid)
 
-    def admit(self, rid: str, rtype: str, from_entity: str, to_entity: str, rank: tuple) -> list[InsertWarning]:
+    def admit(
+        self, rid: str, rtype: str, from_entity: str, to_entity: str, rank: tuple, *, certified: bool = False
+    ) -> list[InsertWarning]:
         """Record a relation becoming current at every constrained endpoint.
 
         A conflict is more than max_count current relations of one type at one endpoint. In warn mode both are
@@ -1731,8 +1757,13 @@ class Contradictions:
         @param from_entity (str): the source entity id.
         @param to_entity (str): the destination entity id.
         @param rank (tuple): the relation's rank, from _rank.
+        @param certified (bool): whether the version becoming current is certified, which spares it in settle.
         @return (list[InsertWarning]): the warn-mode contradiction warnings.
         """
+        if certified:
+            self._certified.add(rid)
+        else:
+            self._certified.discard(rid)
         warnings: list[InsertWarning] = []
         slots = self._slots(rtype, from_entity, to_entity)
         for key, limit in slots:
@@ -1765,9 +1796,10 @@ class Contradictions:
         """Retire the oldest current relations beyond max_count at every endpoint a supersede-mode write touched.
 
         The current relations at an endpoint, the ones just written included, rank by effective time, then
-        revision, then creation time, and all but the newest max_count are retired. A retired relation is
-        invalidated by the fact that displaced it in time order, the max_count-th newer fact at the endpoint with
-        retired history counted, at that fact's effective time. Each retired relation gets one warning:
+        revision, then creation time, and all but the newest max_count are retired, except a certified relation,
+        which stays current with a "certified_kept" warning. A retired relation is invalidated by the fact that
+        displaced it in time order, the max_count-th newer fact at the endpoint with retired history counted, at
+        that fact's effective time. Each retired relation gets one warning:
         "contradiction_out_of_order" when it was written by this write after that fact was current, else
         "relation_superseded".
 
@@ -1781,6 +1813,15 @@ class Contradictions:
             ranked = sorted(group, key=lambda o: (group[o], o), reverse=True)
             canonical, side, endpoint = key
             for old in ranked[limit:]:
+                if old in self._certified:
+                    warnings.append(
+                        InsertWarning(
+                            code="certified_kept",
+                            message=f"relation {old} is certified, so it stays current beside newer {canonical} "
+                            f"relations at {side} entity {endpoint} (max_count {limit})",
+                        )
+                    )
+                    continue
                 facts = {**self._past.get(key, {}), **group}
                 mine = (facts[old], old)
                 newer = sorted((facts[o], o) for o in facts if (facts[o], o) > mine)
@@ -1929,17 +1970,18 @@ async def rival_relations(
     return out
 
 
-async def retire_relations(runner: Any, ns: str, pairs: Iterable[tuple[dict, Relation]]) -> list[Relation]:
-    """Retire current relations that newer relations displaced, each once, by the first relation named for it.
+async def retire_relations(runner: Any, ns: str, retirements: Iterable[tuple[dict, str, datetime]]) -> list[Relation]:
+    """Retire current relations, each once, by the first retirement named for it.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
-    @param pairs (Iterable[tuple[dict, Relation]]): each current edge row with the relation that displaced it.
+    @param retirements (Iterable[tuple[dict, str, datetime]]): each current edge row with what retired it (a relation
+        or source version id) and when.
     @return (list[Relation]): the retired versions.
     """
     gone: dict[str, dict] = {}
-    for edge, by in pairs:
-        gone.setdefault(edge["props"]["id"], _retired(edge, by.id, effective_time(by)))
+    for edge, by, at in retirements:
+        gone.setdefault(edge["props"]["id"], _retired(edge, by, at))
     for edge in gone.values():
         await _precheck_write(runner, edge["props"])
     rows = [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in gone.values()]
@@ -1968,7 +2010,8 @@ async def upsert_relations(
     invalidated_by, so the version list shows exactly the writes that happened. In supersede mode each constrained
     endpoint the batch touches is settled once after the whole batch (see Contradictions.settle): an input older than
     the relations it conflicts with is written already invalidated. New versions are written before any retirement,
-    so a failed write never leaves an endpoint without its current relation.
+    so a failed write never leaves an endpoint without its current relation. A new revision of a certified relation
+    is not certified, and a certified_dropped warning says so.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -2036,6 +2079,9 @@ async def upsert_relations(
             else:
                 if prev.is_current:
                     writes[(rid, prev.revision)] = {**edge["props"], "is_current": False}
+                if prev.is_current and prev.certified_at is not None and warnings is not None:
+                    message = f"relation {rid} was certified, but this write changed it, so its new revision is not"
+                    warnings.append(InsertWarning(code="certified_dropped", message=message))
                 props = encode_relation_props(
                     ns=ns,
                     id=rid,
@@ -2050,7 +2096,10 @@ async def upsert_relations(
                 )
             edge = {**edge, "props": props}
         if tracker is not None and props["is_current"]:
-            found = tracker.admit(rid, rtype, rel.from_entity, rel.to_entity, _rank(_relation_of(edge)))
+            version = _relation_of(edge)
+            found = tracker.admit(
+                rid, rtype, rel.from_entity, rel.to_entity, _rank(version), certified=version.certified_at is not None
+            )
             if warnings is not None:
                 warnings.extend(found)
         if write:
@@ -2414,6 +2463,109 @@ async def delete_relation(runner: Any, ns: str, rid: str) -> dict[str, int]:
     return {**_NO_DELETES, "deleted_relation_versions": n, "deleted_decisions": deleted_decisions}
 
 
+async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: datetime) -> Relation:
+    """Mark the current version of a relation as verified by someone, in place, or clear the mark when by is None.
+
+    A certified relation stays current when a supersede contradiction or a replaced source would retire it.
+    The mark belongs to the version: a later revision of the relation starts uncertified.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param rid (str): relation id.
+    @param by (str | None): who verified it, or None to remove the certification.
+    @param at (datetime): when it was certified.
+    @return (Relation): the current version with its certification.
+    """
+    _ids._require_str("relation id", rid)
+    if by is not None and (not isinstance(by, str) or not by.strip()):
+        raise ValidationError("certified_by must be a non-empty string")
+    edge = await runner.get_current_edge(ns, rid)
+    if edge is not None:
+        await runner.lock_node(ns, L_ENTITY, edge["from_id"])
+        edge = await runner.get_current_edge(ns, rid)
+    if edge is None or not _is_relation_type(edge["type"]):
+        newest = await _newest_edge(runner, ns, rid, _is_relation_type)
+        if newest is None:
+            raise NotFoundError("Relation", rid)
+        raise ValidationError(f"{invalidated_note(_relation_of(newest))}; only a current relation can be certified")
+    props = {**edge["props"], "certified_at": None if by is None else to_iso(at), "certified_by": by}
+    await _precheck_write(runner, props)
+    await runner.create_edges(ns, L_ENTITY, L_ENTITY, [(edge["type"], edge["from_id"], edge["to_id"], props)])
+    return _relation_of({**edge, "props": props})
+
+
+async def source_targets(runner: Any, ns: str, source_id: str) -> set[str]:
+    """List the entities and relations that have evidence from any version of a source.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param source_id (str): the source id.
+    @return (set[str]): the evidence target ids.
+    """
+    fetch = partial(runner.match_nodes, ns, L_EVIDENCE, equals={"source_id": source_id}, order_by="id")
+    return {row["target_id"] for row in await _paged(fetch, page=_BATCH)}
+
+
+async def replace_source(
+    runner: Any, ns: str, source_id: str, version: str, stale: Iterable[str], at: datetime
+) -> tuple[list[str], list[InsertWarning]]:
+    """Make one version of a source replace its others: mark them replaced_at and replaced_by, so retrieval stops
+    quoting them, and retire the current relations among some candidates whose every evidence record is from one of
+    them, as a newer fact retires one: invalidated_at is set and nothing is deleted.
+
+    A relation with evidence from the given version, or from a version of another source that was not itself
+    replaced, stays current, and so does a certified one, with a "certified_kept" warning. Evidence recorded by hand
+    has no stored version and always counts.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param source_id (str): the source id.
+    @param version (str): the source version just recorded; it is stored as invalidated_by.
+    @param stale (Iterable[str]): the ids the source supported before and the new version did not produce again.
+    @param at (datetime): the new version's effective time.
+    @return (tuple[list[str], list[InsertWarning]]): the retired relation ids, and one warning per decision.
+    """
+    candidates = sorted(set(stale))
+    support: dict[str, list[dict]] = {}
+    for row in await _nodes_where(runner, ns, L_EVIDENCE, "target_id", candidates):
+        support.setdefault(row["target_id"], []).append(row)
+    others = _dedup_list(r["source_version"] for rows in support.values() for r in rows if r["source_id"] != source_id)
+    replaced = {
+        sv for sv, row in (await _nodes_by_id(runner, ns, L_SOURCE_VERSION, others)).items() if row.get("replaced_by")
+    }
+
+    def active(r: dict) -> bool:
+        return r["source_version"] == version if r["source_id"] == source_id else r["source_version"] not in replaced
+
+    retired: list[str] = []
+    retirements: list[tuple[dict, str, datetime]] = []
+    warnings: list[InsertWarning] = []
+    for rid in candidates:
+        if any(map(active, support.get(rid, []))):
+            continue
+        edge = await runner.get_current_edge(ns, rid)
+        if edge is None or not _is_relation_type(edge["type"]):
+            continue
+        if edge["props"].get("certified_at") is not None:
+            message = f"relation {rid} is certified, so it stays current though source {source_id} no longer states it"
+            warnings.append(InsertWarning(code="certified_kept", message=message))
+            continue
+        retirements.append((edge, version, at))
+        retired.append(rid)
+        message = f"relation {rid} was retired: only older versions of source {source_id} stated it"
+        warnings.append(InsertWarning(code="fact_retired_by_source", message=message))
+    await retire_relations(runner, ns, retirements)
+    marks = []
+    for row in await runner.child_nodes(ns, L_SOURCE, _ids.source_node_id(source_id), R_HAS_VERSION, L_SOURCE_VERSION):
+        if row["id"] == version and row.get("replaced_by") is not None:
+            marks.append((row["id"], {**row, "replaced_at": None, "replaced_by": None}))
+        elif row["id"] != version and row.get("replaced_by") is None:
+            marks.append((row["id"], {**row, "replaced_at": to_iso(at), "replaced_by": version}))
+    if marks:
+        await runner.upsert_nodes(ns, L_SOURCE_VERSION, marks)
+    return retired, warnings
+
+
 async def _ensure_profile(runner: Any, ns: str, subject_id: str, created_at: datetime) -> str:
     pid = _ids.profile_id(subject_id)
     if await runner.node_exists(ns, L_PROFILE, pid):
@@ -2759,7 +2911,15 @@ async def delete_preference(runner: Any, ns: str, pid: str) -> dict[str, int]:
 
 
 async def _read_steps(runner: Any, ns: str, tid: str) -> list[DecisionStep]:
-    rows = await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP, order_by="order")
+    return _steps_of(await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP, order_by="order"))
+
+
+def _steps_of(rows: list[dict]) -> list[DecisionStep]:
+    """Decode a trace's stored step nodes into its steps, in step order.
+
+    @param rows (list[dict]): the step nodes' properties.
+    @return (list[DecisionStep]): the steps.
+    """
     return [
         DecisionStep(
             order=int(r["order"]),
@@ -2786,6 +2946,24 @@ async def get_trace(runner: Any, ns: str, tid: str) -> DecisionTrace | None:
     return decode_trace(props, await _read_steps(runner, ns, tid))
 
 
+async def get_traces(runner: Any, ns: str, tids: list[str]) -> list[DecisionTrace]:
+    """Fetch many decision traces by id, in the order given, skipping ids with no trace.
+
+    A store that reads the children of many parents at once (children_of) loads every trace's steps in one read.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param tids (list[str]): decision ids.
+    @return (list[DecisionTrace]): the traces found.
+    """
+    many = getattr(runner, "children_of", None)
+    if many is None:
+        return [t for t in [await get_trace(runner, ns, tid) for tid in tids] if t is not None]
+    nodes = await _nodes_by_id(runner, ns, L_TRACE, tids)
+    steps = await many(ns, L_TRACE, list(nodes), R_HAS_STEP, L_STEP)
+    return [decode_trace(nodes[tid], _steps_of(steps.get(tid, []))) for tid in tids if tid in nodes]
+
+
 async def _resolve_steps(runner: Any, ns: str, step_rel_ids: list[str]) -> list[DecisionStep]:
     """Resolve decision step relation ids to their latest versions, so a step can name a retired relation.
 
@@ -2794,9 +2972,15 @@ async def _resolve_steps(runner: Any, ns: str, step_rel_ids: list[str]) -> list[
     @param step_rel_ids (list[str]): ordered relation ids.
     @return (list[DecisionStep]): the steps; raises ValidationError for an id with no version.
     """
+    by_id = getattr(runner, "edge_versions", None)
+    versions = None if by_id is None else await by_id(ns, None, None, _dedup_list(step_rel_ids))
+    newest: dict[str, dict] = {}
+    for edge in versions or ():
+        if _is_relation_type(edge["type"]):
+            _keep_newest(newest, edge)
     steps: list[DecisionStep] = []
     for order, rel_id in enumerate(step_rel_ids):
-        edge = await _newest_edge(runner, ns, rel_id, _is_relation_type)
+        edge = newest.get(rel_id) if versions is not None else await _newest_edge(runner, ns, rel_id, _is_relation_type)
         if edge is None:
             raise ValidationError(f"decision step references unknown relation {rel_id!r}")
         steps.append(

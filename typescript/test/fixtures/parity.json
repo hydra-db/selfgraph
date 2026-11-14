@@ -3567,7 +3567,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:b>c",
@@ -3583,7 +3585,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:c>d",
@@ -3599,7 +3603,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "ranks": {
@@ -3638,7 +3644,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:hub>y",
@@ -3654,7 +3662,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:hub>z",
@@ -3670,7 +3680,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:w>hub",
@@ -3686,7 +3698,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "ranks": {
@@ -3730,7 +3744,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:a>c",
@@ -3746,7 +3762,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:b>d",
@@ -3762,7 +3780,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:c>d",
@@ -3778,7 +3798,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:d>e",
@@ -3794,7 +3816,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "ranks": {
@@ -3837,7 +3861,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "ranks": {
@@ -3873,7 +3899,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:a>b",
@@ -3889,7 +3917,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "ranks": {
@@ -3924,7 +3954,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "ranks": {
@@ -3965,7 +3997,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:b>m",
@@ -3981,7 +4015,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:a>n2",
@@ -3997,7 +4033,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "r:b>n2",
@@ -4013,7 +4051,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "ranks": {
@@ -4899,7 +4939,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "relation:r",
@@ -4915,7 +4957,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "picked": {
@@ -4947,7 +4991,9 @@
      "invalidated_at": "2024-01-06T00:00:00Z",
      "invalidated_by": "relation:x",
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "picked": {
@@ -4975,7 +5021,9 @@
      "invalidated_at": "2024-01-06T00:00:00Z",
      "invalidated_by": "relation:x",
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "relation:r",
@@ -4991,7 +5039,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "picked": {
@@ -5021,7 +5071,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "relation:r",
@@ -5037,7 +5089,9 @@
      "invalidated_at": "2024-01-21T00:00:00Z",
      "invalidated_by": "relation:x",
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "picked": {
@@ -5069,7 +5123,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "relation:r",
@@ -5085,7 +5141,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "picked": {
@@ -5109,7 +5167,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     },
     {
      "id": "relation:r",
@@ -5125,7 +5185,9 @@
      "invalidated_at": null,
      "invalidated_by": null,
      "relevance": null,
-     "relevance_at": null
+     "relevance_at": null,
+     "certified_at": null,
+     "certified_by": null
     }
    ],
    "picked": {
@@ -5274,7 +5336,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5315,7 +5379,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5344,6 +5410,74 @@
      ]
     ]
    },
+   "certified_kept": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:acme",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:acme",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "relevance": null,
+      "relevance_at": null,
+      "certified_at": "2024-01-02T00:00:00Z",
+      "certified_by": "hr"
+     }
+    ],
+    "admits": [
+     [
+      "relation:globex",
+      "WORKS_AT",
+      "person:ann",
+      "company:globex",
+      "2024-01-04T00:00:00+00:00"
+     ],
+     [
+      "relation:initech",
+      "WORKS_AT",
+      "person:ann",
+      "company:initech",
+      "2024-01-05T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {},
+      [
+       [
+        "certified_kept",
+        "relation relation:acme is certified, so it stays current beside newer WORKS_AT relations at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ],
+     [
+      {
+       "relation:globex": [
+        "relation:initech",
+        "2024-01-05T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "relation_superseded",
+        "relation relation:globex was superseded by relation:initech, a newer WORKS_AT relation at from entity person:ann (max_count 1)"
+       ],
+       [
+        "certified_kept",
+        "relation relation:acme is certified, so it stays current beside newer WORKS_AT relations at from entity person:ann (max_count 1)"
+       ]
+      ]
+     ]
+    ]
+   },
    "out_of_order": {
     "mode": "supersede",
     "existing": [
@@ -5361,7 +5495,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5407,7 +5543,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      },
      {
       "id": "relation:b",
@@ -5423,7 +5561,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5490,7 +5630,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5536,7 +5678,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      },
      {
       "id": "relation:b",
@@ -5552,7 +5696,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5630,7 +5776,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      },
      {
       "id": "relation:w",
@@ -5646,7 +5794,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5700,7 +5850,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5786,7 +5938,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -5849,7 +6003,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      },
      {
       "id": "relation:b",
@@ -5865,7 +6021,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      },
      {
       "id": "relation:c",
@@ -5881,7 +6039,9 @@
       "invalidated_at": null,
       "invalidated_by": null,
       "relevance": null,
-      "relevance_at": null
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null
      }
     ],
     "admits": [
@@ -8183,5 +8343,2261 @@
     "constraints": []
    }
   }
+ ],
+ "answerability": {
+  "entities": [
+   {
+    "id": "person:ann-lee",
+    "type": "Person",
+    "name": "Ann Lee",
+    "aliases": [
+     "Annie"
+    ],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "company:acme",
+    "type": "Company",
+    "name": "Acme Corp",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {
+     "revenue": 5
+    },
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "company:globex",
+    "type": "Company",
+    "name": "Globex",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "thing:hub",
+    "type": "Thing",
+    "name": "Hub",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "thing:ada",
+    "type": "Thing",
+    "name": "Ada",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "thing:bo",
+    "type": "Thing",
+    "name": "Bo",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "city:new-york",
+    "type": "City",
+    "name": "New York",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "city:york",
+    "type": "City",
+    "name": "York",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   }
+  ],
+  "relations": [
+   {
+    "id": "relation:w",
+    "revision": 1,
+    "from_entity": "person:ann-lee",
+    "type": "WORKS_AT",
+    "to_entity": "company:acme",
+    "properties": {
+     "since": 2020
+    },
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h0",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf0",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h1",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf1",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h2",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf2",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h3",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf3",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h4",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf4",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h5",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf5",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h6",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf6",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h7",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf7",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h8",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf8",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h9",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf9",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h10",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf10",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h11",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf11",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h12",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf12",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h13",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf13",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h14",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf14",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h15",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf15",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h16",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf16",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h17",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf17",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h18",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf18",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h19",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf19",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h20",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf20",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h21",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf21",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h22",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf22",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h23",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf23",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h24",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf24",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h25",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf25",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h26",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf26",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h27",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf27",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h28",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf28",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h29",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf29",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h30",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf30",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h31",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf31",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h32",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf32",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h33",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf33",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h34",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf34",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h35",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf35",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h36",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf36",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h37",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf37",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h38",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf38",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h39",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf39",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h40",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf40",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h41",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf41",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h42",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf42",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h43",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf43",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h44",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf44",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h45",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf45",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h46",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf46",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:h47",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:leaf47",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:ha",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:ada",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:hb",
+    "revision": 1,
+    "from_entity": "thing:hub",
+    "type": "HAS",
+    "to_entity": "thing:bo",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:ny",
+    "revision": 1,
+    "from_entity": "company:acme",
+    "type": "LOCATED_IN",
+    "to_entity": "city:new-york",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   }
+  ],
+  "keys": [
+   "revenue",
+   "diet_plan",
+   "since"
+  ],
+  "schema": {
+   "entities": [
+    {
+     "name": "Person",
+     "aliases": [
+      "employee"
+     ],
+     "synonyms": [],
+     "properties": [],
+     "mappings": [],
+     "definitions": [],
+     "certified": false
+    },
+    {
+     "name": "Company",
+     "aliases": [],
+     "synonyms": [],
+     "properties": [],
+     "mappings": [],
+     "definitions": [],
+     "certified": false
+    }
+   ],
+   "relations": [
+    {
+     "type": "FOUNDED",
+     "aliases": [
+      "started"
+     ],
+     "synonyms": [],
+     "certified": false,
+     "from": {
+      "types": []
+     },
+     "to": {
+      "types": []
+     },
+     "properties": []
+    }
+   ]
+  },
+  "cases": [
+   [
+    "where does Ann Lee work",
+    null,
+    3,
+    {
+     "question": "where does Ann Lee work",
+     "verdict": "answerable",
+     "terms": [
+      {
+       "term": "ann lee",
+       "status": "entity",
+       "matches": [
+        "person:ann-lee"
+       ],
+       "certified": false
+      },
+      {
+       "term": "work",
+       "status": "relation",
+       "matches": [
+        "WORKS_AT"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "what is the revenue of Acme Corp",
+    null,
+    3,
+    {
+     "question": "what is the revenue of Acme Corp",
+     "verdict": "answerable",
+     "terms": [
+      {
+       "term": "revenue",
+       "status": "property",
+       "matches": [
+        "revenue"
+       ],
+       "certified": false
+      },
+      {
+       "term": "acme corp",
+       "status": "entity",
+       "matches": [
+        "company:acme"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "Acme churn in Q3",
+    null,
+    3,
+    {
+     "question": "Acme churn in Q3",
+     "verdict": "partial",
+     "terms": [
+      {
+       "term": "acme",
+       "status": "entity",
+       "matches": [
+        "company:acme"
+       ],
+       "certified": false
+      },
+      {
+       "term": "churn",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      },
+      {
+       "term": "q3",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "churn",
+      "q3"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "tell me about churn",
+    null,
+    3,
+    {
+     "question": "tell me about churn",
+     "verdict": "not_answerable",
+     "terms": [
+      {
+       "term": "churn",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "churn"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "is there a link",
+    [
+     "Ann Lee",
+     "Globex"
+    ],
+    3,
+    {
+     "question": "is there a link",
+     "verdict": "uncertain",
+     "terms": [
+      {
+       "term": "Ann Lee",
+       "status": "entity",
+       "matches": [
+        "person:ann-lee"
+       ],
+       "certified": false
+      },
+      {
+       "term": "Globex",
+       "status": "entity",
+       "matches": [
+        "company:globex"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": false,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "Ada and Bo",
+    null,
+    3,
+    {
+     "question": "Ada and Bo",
+     "verdict": "uncertain",
+     "terms": [
+      {
+       "term": "ada",
+       "status": "entity",
+       "matches": [
+        "thing:ada"
+       ],
+       "certified": false
+      },
+      {
+       "term": "bo",
+       "status": "entity",
+       "matches": [
+        "thing:bo"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": true,
+     "hub_only": [
+      [
+       "ada",
+       "bo"
+      ]
+     ],
+     "note": null
+    }
+   ],
+   [
+    "Ada and Bo",
+    null,
+    1,
+    {
+     "question": "Ada and Bo",
+     "verdict": "uncertain",
+     "terms": [
+      {
+       "term": "ada",
+       "status": "entity",
+       "matches": [
+        "thing:ada"
+       ],
+       "certified": false
+      },
+      {
+       "term": "bo",
+       "status": "entity",
+       "matches": [
+        "thing:bo"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": false,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "which employee founded or started Acme Corp in New York",
+    null,
+    3,
+    {
+     "question": "which employee founded or started Acme Corp in New York",
+     "verdict": "partial",
+     "terms": [
+      {
+       "term": "employee",
+       "status": "type",
+       "matches": [
+        "Person"
+       ],
+       "certified": false
+      },
+      {
+       "term": "founded",
+       "status": "schema_only",
+       "matches": [
+        "FOUNDED"
+       ],
+       "certified": false
+      },
+      {
+       "term": "started",
+       "status": "schema_only",
+       "matches": [
+        "FOUNDED"
+       ],
+       "certified": false
+      },
+      {
+       "term": "acme corp",
+       "status": "entity",
+       "matches": [
+        "company:acme"
+       ],
+       "certified": false
+      },
+      {
+       "term": "new york",
+       "status": "entity",
+       "matches": [
+        "city:new-york"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "founded",
+      "started"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "Annie since",
+    null,
+    3,
+    {
+     "question": "Annie since",
+     "verdict": "answerable",
+     "terms": [
+      {
+       "term": "annie",
+       "status": "entity",
+       "matches": [
+        "person:ann-lee"
+       ],
+       "certified": false
+      },
+      {
+       "term": "since",
+       "status": "property",
+       "matches": [
+        "since"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "the a of",
+    null,
+    3,
+    {
+     "question": "the a of",
+     "verdict": "not_answerable",
+     "terms": [],
+     "missing": [],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "\u00c9COLE Stra\u00dfe \u5317\u4eac",
+    null,
+    3,
+    {
+     "question": "\u00c9COLE Stra\u00dfe \u5317\u4eac",
+     "verdict": "not_answerable",
+     "terms": [
+      {
+       "term": "\u00e9cole",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      },
+      {
+       "term": "strasse",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      },
+      {
+       "term": "\u5317\u4eac",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "\u00e9cole",
+      "strasse",
+      "\u5317\u4eac"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ]
+  ]
+ },
+ "lint": {
+  "entities": [
+   {
+    "id": "thing:a",
+    "type": "Thing",
+    "name": "A",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "thing:b",
+    "type": "Thing",
+    "name": "B",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "gadget:c",
+    "type": "Gadget",
+    "name": "C",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "thing:d",
+    "type": "Thing",
+    "name": "D",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   }
+  ],
+  "relations": [
+   {
+    "id": "relation:ab",
+    "revision": 1,
+    "from_entity": "thing:a",
+    "type": "KNOWS",
+    "to_entity": "thing:b",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:ad",
+    "revision": 1,
+    "from_entity": "thing:a",
+    "type": "LIKES",
+    "to_entity": "thing:d",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   }
+  ],
+  "decisions": [
+   {
+    "id": "decision:x",
+    "actor_entity": null,
+    "title": "X",
+    "summary": null,
+    "rationale": null,
+    "status": "completed",
+    "outcome_entity": null,
+    "alternative_entities": [],
+    "steps": [
+     {
+      "order": 0,
+      "relation_id": "relation:gone",
+      "from_entity": "thing:a",
+      "to_entity": "thing:b"
+     }
+    ],
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+   }
+  ],
+  "supported": [
+   "relation:ab"
+  ],
+  "schema": {
+   "entities": [
+    {
+     "name": "Thing",
+     "aliases": [],
+     "synonyms": [],
+     "properties": [],
+     "mappings": [],
+     "definitions": [],
+     "certified": false
+    }
+   ],
+   "relations": [
+    {
+     "type": "knows",
+     "aliases": [],
+     "synonyms": [],
+     "certified": false,
+     "from": {
+      "types": []
+     },
+     "to": {
+      "types": []
+     },
+     "properties": []
+    }
+   ]
+  },
+  "lint": [
+   {
+    "code": "orphan_entity",
+    "count": 1,
+    "sample": [
+     "gadget:c"
+    ]
+   },
+   {
+    "code": "unsupported_fact",
+    "count": 1,
+    "sample": [
+     "relation:ad"
+    ]
+   },
+   {
+    "code": "stale_decision_step",
+    "count": 1,
+    "sample": [
+     "decision:x"
+    ]
+   },
+   {
+    "code": "type_off_schema",
+    "count": 2,
+    "sample": [
+     "gadget:c",
+     "relation:ad"
+    ]
+   }
+  ],
+  "lint_without_schema": [
+   {
+    "code": "orphan_entity",
+    "count": 1,
+    "sample": [
+     "gadget:c"
+    ]
+   },
+   {
+    "code": "unsupported_fact",
+    "count": 1,
+    "sample": [
+     "relation:ad"
+    ]
+   },
+   {
+    "code": "stale_decision_step",
+    "count": 1,
+    "sample": [
+     "decision:x"
+    ]
+   }
+  ]
+ },
+ "ossie": [
+  [
+   {
+    "name": "hr",
+    "entities": [
+     {
+      "name": "Person",
+      "description": "a human",
+      "properties": [
+       {
+        "name": "age",
+        "type": "integer"
+       }
+      ]
+     },
+     {
+      "name": "Employee",
+      "parent": "Person",
+      "properties": [
+       {
+        "name": "since",
+        "type": "datetime"
+       }
+      ]
+     },
+     {
+      "name": "Company",
+      "properties": [
+       {
+        "name": "meta",
+        "type": "json"
+       },
+       {
+        "name": "ok",
+        "type": "boolean"
+       }
+      ]
+     }
+    ],
+    "relations": [
+     {
+      "type": "works at",
+      "description": "job",
+      "from": {
+       "types": [
+        "Person"
+       ],
+       "max_count": 1
+      },
+      "to": {
+       "types": [
+        "Company"
+       ],
+       "max_count": 1
+      }
+     },
+     {
+      "type": "KNOWS",
+      "from": {
+       "types": [
+        "Person",
+        "Employee"
+       ]
+      },
+      "to": {
+       "types": [
+        "Person",
+        "Company"
+       ]
+      }
+     },
+     {
+      "type": "OWNS",
+      "from": {
+       "types": [
+        "Company"
+       ],
+       "max_count": 1
+      },
+      "properties": [
+       {
+        "name": "pct",
+        "type": "float"
+       }
+      ]
+     },
+     {
+      "type": "MENTIONS",
+      "to": {
+       "types": [
+        "Company"
+       ]
+      }
+     },
+     {
+      "type": "PART_OF",
+      "from": {
+       "types": [
+        "Division"
+       ]
+      },
+      "to": {
+       "types": [
+        "Company"
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "version": "0.3.0.dev0",
+    "name": "hr",
+    "ontology": [
+     {
+      "concept": "Person",
+      "type": "EntityType",
+      "description": "a human",
+      "relationships": [
+       {
+        "name": "age",
+        "roles": [
+         {
+          "concept": "Integer"
+         }
+        ],
+        "multiplicity": "ManyToOne",
+        "verbalizes": [
+         "{Person} has age {Integer}"
+        ]
+       },
+       {
+        "name": "WORKS_AT",
+        "description": "job",
+        "roles": [
+         {
+          "concept": "Company"
+         }
+        ],
+        "multiplicity": "OneToOne",
+        "verbalizes": [
+         "{Person} works at {Company}"
+        ]
+       },
+       {
+        "name": "KNOWS_Person",
+        "roles": [
+         {
+          "concept": "Person",
+          "name": "other"
+         }
+        ],
+        "verbalizes": [
+         "{Person} knows {Person:other}"
+        ]
+       },
+       {
+        "name": "KNOWS_Company",
+        "roles": [
+         {
+          "concept": "Company"
+         }
+        ],
+        "verbalizes": [
+         "{Person} knows {Company}"
+        ]
+       }
+      ]
+     },
+     {
+      "concept": "Employee",
+      "type": "EntityType",
+      "extends": [
+       "Person"
+      ],
+      "relationships": [
+       {
+        "name": "since",
+        "roles": [
+         {
+          "concept": "DateTime"
+         }
+        ],
+        "multiplicity": "ManyToOne",
+        "verbalizes": [
+         "{Employee} has since {DateTime}"
+        ]
+       },
+       {
+        "name": "KNOWS_Person",
+        "roles": [
+         {
+          "concept": "Person"
+         }
+        ],
+        "verbalizes": [
+         "{Employee} knows {Person}"
+        ]
+       },
+       {
+        "name": "KNOWS_Company",
+        "roles": [
+         {
+          "concept": "Company"
+         }
+        ],
+        "verbalizes": [
+         "{Employee} knows {Company}"
+        ]
+       }
+      ]
+     },
+     {
+      "concept": "Company",
+      "type": "EntityType",
+      "relationships": [
+       {
+        "name": "meta",
+        "roles": [
+         {
+          "concept": "String"
+         }
+        ],
+        "multiplicity": "ManyToOne",
+        "verbalizes": [
+         "{Company} has meta {String}"
+        ]
+       },
+       {
+        "name": "ok",
+        "roles": [
+         {
+          "concept": "Boolean"
+         }
+        ],
+        "multiplicity": "ManyToOne",
+        "verbalizes": [
+         "{Company} has ok {Boolean}"
+        ]
+       },
+       {
+        "name": "OWNS",
+        "roles": [
+         {
+          "concept": "Any"
+         }
+        ],
+        "multiplicity": "ManyToOne",
+        "verbalizes": [
+         "{Company} owns {Any}"
+        ]
+       }
+      ]
+     },
+     {
+      "concept": "Division",
+      "type": "EntityType",
+      "relationships": [
+       {
+        "name": "PART_OF",
+        "roles": [
+         {
+          "concept": "Company"
+         }
+        ],
+        "verbalizes": [
+         "{Division} part of {Company}"
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   {
+    "entities": [
+     {
+      "name": "Thing"
+     }
+    ]
+   },
+   {
+    "version": "0.3.0.dev0",
+    "name": "selfgraph",
+    "ontology": [
+     {
+      "concept": "Thing",
+      "type": "EntityType"
+     }
+    ]
+   }
+  ],
+  [
+   {
+    "relations": [
+     {
+      "type": "KNOWS"
+     }
+    ]
+   },
+   {
+    "error": "ValidationError"
+   }
+  ]
+ ],
+ "obsidian": {
+  "entities": [
+   {
+    "id": "person:ann",
+    "type": "Person",
+    "name": "Ann",
+    "aliases": [
+     "Annie",
+     "A. Lee"
+    ],
+    "external_ids": {},
+    "properties": {
+     "age": 30,
+     "tags": [
+      "x",
+      "\u00e9"
+     ]
+    },
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "company:acme",
+    "type": "Company",
+    "name": "Acme",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "product:acme",
+    "type": "Product",
+    "name": "Acme",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "thing:acme",
+    "type": "Thing",
+    "name": "ACME",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "thing:slash",
+    "type": "Thing",
+    "name": "A/B: c?",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   },
+   {
+    "id": "thing:dots",
+    "type": "Thing",
+    "name": " ..",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
+   }
+  ],
+  "relations": [
+   {
+    "id": "relation:w",
+    "revision": 1,
+    "from_entity": "person:ann",
+    "type": "WORKS_AT",
+    "to_entity": "company:acme",
+    "properties": {
+     "role": "cto",
+     "since": 2020
+    },
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:x",
+    "revision": 1,
+    "from_entity": "person:ann",
+    "type": "USES",
+    "to_entity": "thing:missing",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   },
+   {
+    "id": "relation:a",
+    "revision": 1,
+    "from_entity": "person:ann",
+    "type": "LIKES",
+    "to_entity": "thing:acme",
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true,
+    "source_count": 0,
+    "invalidated_at": null,
+    "invalidated_by": null,
+    "relevance": null,
+    "relevance_at": null,
+    "certified_at": null,
+    "certified_by": null
+   }
+  ],
+  "preferences": [
+   {
+    "id": "preference:p",
+    "revision": 1,
+    "profile_id": "profile:ann",
+    "subject_entity": "person:ann",
+    "stance": "disinterest",
+    "key": "tool",
+    "value_entity": "product:acme",
+    "about_entity": null,
+    "strength": 0.5,
+    "properties": {},
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_current": true
+   }
+  ],
+  "decisions": [
+   {
+    "id": "decision:b",
+    "actor_entity": "person:ann",
+    "title": "Join",
+    "summary": "s",
+    "rationale": "r",
+    "status": "completed",
+    "outcome_entity": "company:acme",
+    "alternative_entities": [
+     "product:acme",
+     "thing:acme"
+    ],
+    "steps": [
+     {
+      "order": 1,
+      "relation_id": "relation:a",
+      "from_entity": "person:ann",
+      "to_entity": "thing:acme"
+     },
+     {
+      "order": 0,
+      "relation_id": "relation:w",
+      "from_entity": "person:ann",
+      "to_entity": "company:acme"
+     }
+    ],
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+   },
+   {
+    "id": "decision:a",
+    "actor_entity": null,
+    "title": "Join",
+    "summary": null,
+    "rationale": null,
+    "status": "active",
+    "outcome_entity": null,
+    "alternative_entities": [],
+    "steps": [],
+    "event_time": null,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+   }
+  ],
+  "vault": {
+   "Acme.md": "---\nid: \"company:acme\"\ntype: \"Company\"\n---\n# Acme\n",
+   "Ann.md": "---\nid: \"person:ann\"\ntype: \"Person\"\naliases: [\"Annie\", \"A. Lee\"]\n---\n# Ann\n\n## Properties\n- age: 30\n- tags: [\"x\", \"\\u00e9\"]\n\n## Links\n- LIKES [[ACME (Thing)]]\n- USES thing:missing\n- WORKS_AT [[Acme]] {\"role\": \"cto\", \"since\": 2020}\n- avoids [[Acme (Product)]] for tool (strength 0.5)\n\n## Decisions\n- [[decisions/decision-b]]\n",
+   "Acme (Product).md": "---\nid: \"product:acme\"\ntype: \"Product\"\n---\n# Acme\n",
+   "ACME (Thing).md": "---\nid: \"thing:acme\"\ntype: \"Thing\"\n---\n# ACME\n",
+   "(Thing).md": "---\nid: \"thing:dots\"\ntype: \"Thing\"\n---\n#  ..\n",
+   "A-B- c-.md": "---\nid: \"thing:slash\"\ntype: \"Thing\"\n---\n# A/B: c?\n",
+   "decisions/Join.md": "---\nid: \"decision:a\"\nstatus: \"active\"\n---\n# Join\n",
+   "decisions/decision-b.md": "---\nid: \"decision:b\"\nstatus: \"completed\"\n---\n# Join\n\n- Actor: [[Ann]]\n- Outcome: [[Acme]]\n- Alternatives: [[Acme (Product)]], [[ACME (Thing)]]\n- Summary: s\n- Rationale: r\n\n## Steps\n1. [[Ann]] to [[Acme]] (relation:w)\n2. [[Ann]] to [[ACME (Thing)]] (relation:a)\n"
+  }
+ },
+ "cypher_names": [
+  [
+   "MATCH (n:Person:`Big Co` {name: 'Ann'})-[r:WORKS_AT|:KNOWS]->(c) WHERE c.name = \"acme\" RETURN n",
+   [
+    [
+     "Person",
+     "Big Co"
+    ],
+    [
+     "WORKS_AT",
+     "KNOWS"
+    ],
+    [
+     "Ann",
+     "acme"
+    ]
+   ]
+  ],
+  [
+   "MATCH (n {ns: $ns}) RETURN [x IN [1] | x]",
+   [
+    [],
+    [],
+    []
+   ]
+  ],
+  [
+   "MATCH (a:Person)-[:KNOWS*1..3]-(b:Person) WHERE a.name='O\\'Reilly' RETURN b",
+   [
+    [
+     "Person"
+    ],
+    [
+     "KNOWS"
+    ],
+    [
+     "O\\'Reilly"
+    ]
+   ]
+  ],
+  [
+   "match ( n : Company ) , ( :City ) return n",
+   [
+    [
+     "Company",
+     "City"
+    ],
+    [],
+    []
+   ]
+  ],
+  [
+   "MATCH (n:N {label: 'Entity'}) RETURN n.doc",
+   [
+    [
+     "N"
+    ],
+    [],
+    []
+   ]
+  ]
  ]
 }

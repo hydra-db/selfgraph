@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache, partial
@@ -12,11 +12,13 @@ from pydantic import BaseModel
 
 from . import _ops
 from . import ids as _ids
+from ._maintenance import scan_live_merges
 from ._serde import (
     L_ENTITY,
     L_EVIDENCE,
     L_MERGE,
     L_MERGE_ENTRY,
+    L_SOURCE_VERSION,
     L_TRACE,
     _dumps,
     _loads,
@@ -40,6 +42,7 @@ from .models import (
     MergeRecord,
     MergeRewrite,
     PreferenceInput,
+    Relation,
     RelationInput,
     UnmergeResult,
 )
@@ -238,6 +241,20 @@ def _forms(ent: EntityInput | Entity) -> frozenset[str]:
     @return (frozenset[str]): the stripped, folded forms.
     """
     return _folded_forms(ent.name, tuple(ent.aliases))
+
+
+def match_keys(name: str, aliases: Sequence[str], external_ids: Mapping[str, str]) -> frozenset[str]:
+    """The keys an entity is indexed under for the default resolver: its folded name and aliases, and its external ids.
+
+    Two entities share a key exactly when the default resolver's alias or external id signal can fire between them.
+
+    @param name (str): the name.
+    @param aliases (Sequence[str]): the aliases.
+    @param external_ids (Mapping[str, str]): the external ids.
+    @return (frozenset[str]): the keys.
+    """
+    forms = (f"form:{f}" for f in _folded_forms(name, tuple(aliases)))
+    return frozenset((*forms, *(f"xid:{_dumps([k, v])}" for k, v in external_ids.items())))
 
 
 def _surface_match(candidate: EntityInput, ent: Entity) -> bool:
@@ -583,6 +600,8 @@ async def plan_resolution(
     id-ordered pages. A candidate of the extraction fallback type (Thing) is also offered entities of other types,
     stored and from the same batch, whose name or alias matches its own, and is resolved after the others so a typed
     entity later in the batch can absorb it; of the stored entities of other types, only those are kept in memory.
+    When the store indexes match keys (entities_matching), the default resolver is offered only the stored entities
+    sharing a key with a candidate, the only ones it can merge with, instead of every entity of the compatible types.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -596,7 +615,8 @@ async def plan_resolution(
     for ent in facts.entities:
         etype, ename = _ops._clean_text(ent.type), _ops._clean_text(ent.name)
         keyed.append((ent, ent.id or _ids.entity_id(etype, ename), etype, ename))
-    stored = set(await _ops._nodes_by_id(runner, ns, L_ENTITY, _ops._dedup_list(eid for _, eid, _, _ in keyed)))
+    found = await _ops._nodes_by_id(runner, ns, L_ENTITY, _ops._dedup_list(eid for _, eid, _, _ in keyed))
+    stored = set(found)
     candidate_types = {etype for ent, eid, etype, _ in keyed if ent.id is None and eid not in stored}
     if not candidate_types:
         return Resolution(facts)
@@ -615,12 +635,22 @@ async def plan_resolution(
             return True
         return not fallback_forms.isdisjoint(_folded_forms(props["name"], tuple(props.get("aliases") or ())))
 
+    async def candidates() -> AsyncIterator[list[dict[str, Any]]]:
+        lookup = getattr(runner, "entities_matching", None)
+        if lookup is not None and type(resolver) is DefaultResolver and not resolver.fuzzy:
+            new = [ent for ent, eid, _, _ in keyed if ent.id is None and eid not in stored]
+            keys = frozenset().union(*(match_keys(ent.name, ent.aliases, ent.external_ids) for ent in new))
+            yield [*found.values(), *await lookup(ns, keys)]
+            return
+        for etype in [None] if None in wanted else sorted(wanted, key=str):
+            fetch = partial(runner.match_nodes, ns, L_ENTITY, equals={} if etype is None else {"type": etype}, skip=0)
+            async for rows in _ops._keyset(lambda after, limit, fetch=fetch: fetch(limit=limit, id_gt=after)):
+                yield rows
+
     pool: dict[str, Entity] = {}
-    for etype in [None] if None in wanted else sorted(wanted, key=str):
-        fetch = partial(runner.match_nodes, ns, L_ENTITY, equals={} if etype is None else {"type": etype}, skip=0)
-        async for rows in _ops._keyset(lambda after, limit, fetch=fetch: fetch(limit=limit, id_gt=after)):
-            for ent in map(decode_entity, filter(keep, rows)):
-                pool[ent.id] = ent
+    async for rows in candidates():
+        for ent in map(decode_entity, filter(keep, rows)):
+            pool[ent.id] = ent
 
     within = bool(getattr(resolver, "within_batch", True))
     batch: dict[str, Entity] = {}
@@ -1064,8 +1094,7 @@ async def _forward_siblings(
     @param restored (dict[str, str]): the relation ids the unmerge moved, old to new.
     @return (None): nothing.
     """
-    rows = await _ops._paged(partial(runner.match_nodes, ns, L_MERGE, equals={}, order_by="id"))
-    live = [props for props in rows if props["id"] != merge_id and props.get("reverted_at") is None]
+    live = [props for props in await scan_live_merges(runner, ns) if props["id"] != merge_id]
     entries = await _load_entries(runner, ns, live)
     for props in live:
         sib = _decode_merge(props, entries[props["id"]])
@@ -1082,8 +1111,11 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     The record is replayed exactly: the absorbed entity gets back the created_at of the merge and the survivor's
     evidence from every source the merge was seen in (source_ids), which restores its source_count, a relation the merge
     dropped as a self-loop is restored, and a relation the merge created on the survivor is removed with all its
-    versions, including one a contradiction retired after the merge, and its original is written back as the
-    current relation of the absorbed entity. An endpoint whose own merge is still live keeps pointing at that
+    versions, and its original is written back as the current relation of the absorbed entity, or retired again when
+    a replaced source retired its last version, so an unmerge never reasserts a withdrawn fact; one a contradiction
+    retired comes back current, since the conflict came from the merged identity.
+    A merge whose moved relation is certified is refused until it is uncertified, since the mark verified other
+    endpoints. An endpoint whose own merge is still live keeps pointing at that
     merge's survivor, and that merge is updated to undo from the new location, so unmerging every merge of an
     insert, in any order, restores the relations it would have written without them. Restored relations are
     written with contradiction checks off, so an unmerge never supersedes or warns about another relation, and a
@@ -1103,6 +1135,12 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     rec = _decode_merge(props, entries)
     if rec.reverted_at is not None:
         raise ValidationError(f"merge {merge_id!r} was already reverted at {json_iso(rec.reverted_at)}")
+    history: dict[str, list[Relation]] = {}
+    for rw in rec.rewrites:
+        if rw.kind == "relation" and not rw.existed and not rw.dropped:
+            history[rw.id] = await _ops.list_relation_versions(runner, ns, rw.id, newest_first=True)
+            if history[rw.id] and history[rw.id][0].is_current and history[rw.id][0].certified_at is not None:
+                raise ValidationError(f"relation {rw.id} is certified; uncertify it before unmerging {merge_id!r}")
     at = now()
     absorbed_id = rec.absorbed_id
     evidence = []
@@ -1136,8 +1174,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     relations = []
     for rw in (r for r in rec.rewrites if r.kind == "relation"):
         original, rewritten = RelationInput.model_validate(rw.original), RelationInput.model_validate(rw.rewritten)
-        live = not rw.existed and not rw.dropped
-        versions = await _ops.list_relation_versions(runner, ns, rw.id, newest_first=True) if live else []
+        versions = history.pop(rw.id, [])
         properties, event_time, carried, touching = dict(original.properties), original.event_time, [], set()
         if versions:
             properties, event_time = versions[0].properties, versions[0].event_time
@@ -1159,6 +1196,12 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         [rel] = await _ops.upsert_relations(
             runner, ns, [(back, carried)], default_event_time=None, created_at=at, contradiction="off"
         )
+        withdrawn = versions and not versions[0].is_current and not existed
+        if withdrawn and await runner.node_exists(ns, L_SOURCE_VERSION, versions[0].invalidated_by):
+            edge = await runner.get_current_edge(ns, rel.id)
+            [rel] = await _ops.retire_relations(
+                runner, ns, [(edge, versions[0].invalidated_by, versions[0].invalidated_at)]
+            )
         restored[rw.id] = rel.id
         relations.append(rel)
         moved.append((rw, _moved_to(rw, rel.id, _dump(back, exclude={"evidence"}), existed)))

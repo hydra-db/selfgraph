@@ -1,4 +1,5 @@
-import { realpathSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -12,6 +13,7 @@ import {
 
 import { SelfGraph } from "./client.js";
 import { NotFoundError, PromptTemplateError, SelfGraphError, surfaceHint, ValidationError } from "./errors.js";
+import { toOssie } from "./export.js";
 import { setLogger } from "./internal/log.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
 import { runStdio } from "./mcp.js";
@@ -33,6 +35,7 @@ import { DEFAULT_PAGE_LIMIT } from "./resources/common.js";
 import { RETRIEVE_DEFAULTS, STRATEGIES } from "./retrieval.js";
 import {
   bindParams,
+  checkedCypher,
   checkSettings,
   currentRelation,
   DEFAULT_SETTINGS,
@@ -375,7 +378,9 @@ function entityCommands(program: Command<[], GlobalOptions>): void {
 }
 
 function relationCommands(program: Command<[], GlobalOptions>): void {
-  const rel = program.command("relation").description("create/get/list/versions/evidence/update/delete relations");
+  const rel = program
+    .command("relation")
+    .description("create/get/list/versions/evidence/update/certify/delete relations");
   rel
     .command("create <FROM> <TYPE> <TO>")
     .description("create a relation between two entities")
@@ -455,6 +460,15 @@ function relationCommands(program: Command<[], GlobalOptions>): void {
         ),
       ),
     );
+  rel
+    .command("certify <id>")
+    .description("mark a current relation as verified, so nothing retires it automatically")
+    .requiredOption("--by <name>", "who verified it")
+    .action((id, o, cmd) => emit(cmd, (g) => g.relations.certify(id, { by: o.by })));
+  rel
+    .command("uncertify <id>")
+    .description("remove a relation's certification")
+    .action((id, _o, cmd) => emit(cmd, (g) => g.relations.uncertify(id)));
   rel
     .command("delete <id>")
     .description("delete a relation, its versions, and decision traces that use it as a step")
@@ -620,6 +634,7 @@ function maintenanceCommands(program: Command<[], GlobalOptions>): void {
     .option("--older-than <iso>", `remove items last touched before this (${ISO})`, timeArg("older_than"))
     .option("--type <type>", "only consider entities of this type (repeatable)", collect, [])
     .option("--relation-type <type>", "only consider relations of this type (repeatable)", collect, [])
+    .option("--include-certified", "also remove certified relations and the entities they connect", false)
     .option("--apply", "remove what the plan lists", false)
     .action((o, cmd) =>
       emit(cmd, async (g) =>
@@ -629,6 +644,7 @@ function maintenanceCommands(program: Command<[], GlobalOptions>): void {
             older_than: o.olderThan,
             types: listOrNull(o.type),
             relation_types: listOrNull(o.relationType),
+            include_certified: o.includeCertified,
             dry_run: !o.apply,
           }),
         ),
@@ -712,7 +728,7 @@ export function buildParser(): Command<[], GlobalOptions> {
     .description(
       "schema: print the active schema (--schema FILE), or null\n" +
         "schema import [--from neo4j] FILE: convert a Neo4j graph schema\n" +
-        "schema export [--to neo4j]: print the active schema as a Neo4j graph schema",
+        "schema export [--to neo4j|ossie]: print the active schema as a Neo4j graph schema or an Apache Ossie ontology",
     )
     .action((_o, cmd) =>
       emit(cmd, async (g) => {
@@ -741,12 +757,47 @@ export function buildParser(): Command<[], GlobalOptions> {
     );
   schema
     .command("export")
-    .description("print the active schema (--schema) as a Neo4j graph schema")
-    .addOption(new Option("--to <format>", "the target format").choices(["neo4j"]).default("neo4j"))
-    .action((_o, cmd) =>
+    .description("print the active schema (--schema) as a Neo4j graph schema or Ossie ontology")
+    .addOption(new Option("--to <format>", "the target format").choices(["neo4j", "ossie"]).default("neo4j"))
+    .action((o, cmd) =>
       emit(cmd, async (g) => {
         if (g.schema === null) throw new ValidationError(`no schema to export; ${NO_SCHEMA}`);
-        return toNeo4jOntology(g.schema);
+        return o.to === "ossie" ? toOssie(g.schema) : toNeo4jOntology(g.schema);
+      }),
+    );
+  program
+    .command("readiness")
+    .description("check the store is reachable and the namespace holds data, with counts and lint")
+    .action((_o, cmd) => emit(cmd, (g) => g.readiness()));
+  program
+    .command("check-answerable <question...>")
+    .description("judge whether the graph holds what a question asks about; words join into one")
+    .option("--term <phrase>", "a key phrase to check instead of the question's words (repeatable)", collect, [])
+    .option("--as-of <iso>", `judge the graph as of this time (${ISO})`, timeArg("as_of"))
+    .option("--depth <n>", "most hops between matched entities", intArg("--depth"), 3)
+    .action((words, o, cmd) =>
+      emit(cmd, (g) =>
+        g.checkAnswerable(words.join(" "), {
+          terms: o.term.length ? o.term : null,
+          as_of: o.asOf,
+          depth: o.depth,
+        }),
+      ),
+    );
+  program
+    .command("export")
+    .description("export the graph")
+    .command("obsidian <directory>")
+    .description("write the namespace as an Obsidian vault of Markdown notes into DIRECTORY")
+    .action((directory, _o, cmd) =>
+      emit(cmd, async (g) => {
+        const notes = await g.exportObsidian();
+        for (const [path, text] of Object.entries(notes)) {
+          const target = join(directory, path);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, text, "utf8");
+        }
+        return { directory: normalize(directory).replace(/(.)\/+$/, "$1"), notes: Object.keys(notes).length };
       }),
     );
   maintenanceCommands(program);
@@ -755,7 +806,7 @@ export function buildParser(): Command<[], GlobalOptions> {
     .description("run one raw Cypher statement; it can write and is not scoped to the namespace")
     .addHelpText("after", QUERY_EXAMPLES)
     .option("--param <KEY=VALUE>", `query parameter (repeatable)${JSON_VALUE}`, collect, [])
-    .action((cypher, o, cmd) => emit(cmd, (g) => g.runCypher(cypher, bindParams(cypher, kv(o.param, "--param")))));
+    .action((cypher, o, cmd) => emit(cmd, (g) => checkedCypher(g, cypher, bindParams(cypher, kv(o.param, "--param")))));
   program
     .command("retrieve <query...>")
     .description("retrieve graph context for a query; unquoted words join into one query")
@@ -766,6 +817,7 @@ export function buildParser(): Command<[], GlobalOptions> {
     .option("--max-nodes <n>", "entity cap", intArg("--max-nodes"), RETRIEVE_DEFAULTS.max_nodes)
     .option("--budget-tokens <n>", "context budget", intArg("--budget-tokens"), RETRIEVE_DEFAULTS.budget_tokens)
     .option("--as-of <iso>", `read the graph as of this time (${ISO})`, timeArg("as_of"))
+    .option("--skip-hubs", "do not walk through entities with 50 or more relations")
     .option("--context-only", "print only the context text, not the JSON result")
     .action((words, o, cmd) =>
       emit(cmd, async (g) => {
@@ -777,14 +829,11 @@ export function buildParser(): Command<[], GlobalOptions> {
           budget_tokens: o.budgetTokens,
           as_of: o.asOf,
           seeds: o.seeds,
+          skip_hubs: o.skipHubs === true,
         });
         return o.contextOnly ? new Text(result.context) : result;
       }),
     );
-  program
-    .command("coverage <question...>")
-    .description("report which words of a question the schema and graph can ground")
-    .action((words, _o, cmd) => emit(cmd, (g) => g.coverage(words.join(" "))));
 
   const insert = program.command("insert").description("insert text or facts");
   insert
@@ -798,6 +847,7 @@ export function buildParser(): Command<[], GlobalOptions> {
       collect,
       [],
     )
+    .option("--replace-source", "the text replaces --source-id's earlier versions: retire relations only they stated")
     .addOption(callResolver())
     .addOption(contradictionOption())
     .action((text, o, cmd) =>
@@ -809,6 +859,7 @@ export function buildParser(): Command<[], GlobalOptions> {
             metadata: metadataOf(o.metadata),
             resolver: (o.resolver as ResolverMode | undefined) ?? null,
             contradiction: o.contradiction as ContradictionMode | undefined,
+            replace_source: o.replaceSource === true,
           })
           .then(inserted),
       ),

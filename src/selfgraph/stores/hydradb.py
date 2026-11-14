@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any
 
+from .._ops import _batches
+from .._serde import L_ENTITY, L_EVIDENCE, L_MERGE, decode_entity
 from ..errors import OTHER_ENGINE_HINT, TOKEN_HINT, StoreError
 from ..ids import quote_label
 from ..models import CypherResult
+from ..resolution import match_keys
 from ._cypher import (
     AutoCommitStore,
     bolt_auth,
@@ -23,6 +29,10 @@ from ._docrows import docs, edge_row, first_doc, merged_current_edge
 __all__ = ["HydraDBStore"]
 
 _EDGE = "RELATES"
+_KEY = "_SgEntityKey"
+_SEEK_BATCH = 256
+_PARALLEL = 32
+_QUEUING: ContextVar[HydraDBStore | None] = ContextVar("selfgraph_hydradb_queuing", default=None)
 _SCALARS = (str, int, float, bool)
 _MAX_STRING_BYTES = 32000
 _WRITE_BATCH = 1000
@@ -153,6 +163,49 @@ def _sets(alias: str, row: dict, skip: tuple[str, ...]) -> str:
     return ", ".join(f"{alias}.`{k}` = row.`{k}`" for k in sorted(row) if k not in skip)
 
 
+def _keys_of(props: Mapping[str, Any]) -> frozenset[str]:
+    """The match keys of a stored entity.
+
+    @param props (Mapping[str, Any]): the encoded entity properties.
+    @return (frozenset[str]): its keys, as resolution.match_keys derives them.
+    """
+    ent = decode_entity(dict(props))
+    return match_keys(ent.name, ent.aliases, ent.external_ids)
+
+
+def _key_rows(ns: str, rows: Iterable[tuple[str, Mapping[str, Any]]]) -> list[dict]:
+    """The key index rows of some entities, one per entity and match key, keyed so a rewrite merges in place.
+
+    @param ns (str): namespace.
+    @param rows (Iterable[tuple[str, Mapping[str, Any]]]): (entity id, encoded entity properties) pairs.
+    @return (list[dict]): the key rows, each with its own id, the hashed key, the entity's surrogate id, and ns.
+    """
+    return [
+        {"id": _sk(ns, f"\x00key\x00{key}\x00{id}"), "key": _sk(ns, key), "eid": _sk(ns, id), "ns": ns}
+        for id, props in rows
+        for key in sorted(_keys_of(props))
+    ]
+
+
+def _sid_key(ns: str, sid: str) -> int:
+    """The key an edge id's versions are tracked under, so they are written in order and reads by edge id wait.
+
+    @param ns (str): namespace.
+    @param sid (str): the edge id.
+    @return (int): the key.
+    """
+    return _sk(ns, f"\x00sid\x00{sid}")
+
+
+def _label_key(label: str) -> int:
+    """The key a queued node write is tracked under for reads of every node of its label.
+
+    @param label (str): the node label.
+    @return (int): the key.
+    """
+    return _sk("", f"\x00label\x00{label}")
+
+
 class HydraDBStore(AutoCommitStore):
     def __init__(
         self,
@@ -167,12 +220,42 @@ class HydraDBStore(AutoCommitStore):
         self._uri = uri
         self._has_auth = auth is not None
         self._database = database or "default"
+        self._queued: list[tuple[str, dict, frozenset[int], frozenset[int]]] = []
+        self._dirty: set[int] = set()
+        self._pending_nodes: set[tuple[str, int]] = set()
+        self._failure: BaseException | None = None
+        self._draining = asyncio.Lock()
 
     def _session(self):
         self._require_open()
         return self._driver.session(database=self._database)
 
-    async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
+    async def _run(
+        self, query: str, params: Mapping[str, Any] | None = None, *, reads: Iterable[int] | None = None
+    ) -> CypherResult:
+        """Run one statement, inside the write transaction once the queued writes it can see have run.
+
+        Only the transaction that queued the writes runs them, so another task reads what is committed.
+
+        @param query (str): the statement.
+        @param params (Mapping[str, Any] | None): the parameters.
+        @param reads (Iterable[int] | None): the only ids the statement reads, so it waits only for queued writes
+            to them, or None to wait for every queued write.
+        @return (CypherResult): the rows.
+        """
+        if _QUEUING.get() is self and (
+            self._draining.locked() or (self._queued and (reads is None or not self._dirty.isdisjoint(reads)))
+        ):
+            await self._drain()
+        return await self._exec(query, params)
+
+    async def _exec(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
+        """Run one statement now, bypassing the write queue.
+
+        @param query (str): the Cypher statement.
+        @param params (Mapping[str, Any] | None): its parameters.
+        @return (CypherResult): the rows.
+        """
         async with self._session() as session:
             try:
                 result = await session.run(query, dict(params or {}))
@@ -198,6 +281,90 @@ class HydraDBStore(AutoCommitStore):
             return StoreError(f"{err}{_OTHER_ENGINE_HINT}")
         return err
 
+    async def _write(
+        self,
+        query: str,
+        params: dict,
+        writes: Iterable[int],
+        needs: Iterable[int] = (),
+        marks: Iterable[int] = (),
+        *,
+        after_all: bool = False,
+    ) -> None:
+        """Run a write, or queue it inside a write transaction so it runs concurrently with the writes around it.
+
+        Every write waits for a WAL flush, and writes in flight together share one, so queued writes run in waves:
+        a write runs in the wave after the last one that writes an id it writes or needs, or needs an id it writes.
+
+        @param query (str): the statement.
+        @param params (dict): the parameters.
+        @param writes (Iterable[int]): the surrogate ids of the nodes or edges it writes.
+        @param needs (Iterable[int]): the surrogate ids of the nodes it reads, such as an edge's endpoints.
+        @param marks (Iterable[int]): further keys reads wait on, such as its label.
+        @param after_all (bool): run after every write queued before it, for a write that records that they are
+            done (evidence, a merge record, a retirement), so a failure never leaves it without them.
+        @return (None): nothing.
+        """
+        if _QUEUING.get() is not self:
+            await self._exec(query, params)
+            return
+        writes = frozenset(writes)
+        before = (w for _, _, w, _ in self._queued) if after_all else ()
+        self._queued.append((query, params, writes, frozenset(needs).union(*before)))
+        self._dirty.update(writes, marks)
+
+    async def _drain(self) -> None:
+        """Run the queued writes in waves, up to _PARALLEL writes at a time, one wave after another.
+
+        A failure is also kept for the transaction to raise, so it is never lost to a caller that drops it.
+
+        @return (None): nothing; raises the first error of the first wave that fails, skipping later waves.
+        """
+        async with self._draining:
+            queued, self._queued = self._queued, []
+            self._dirty.clear()
+            self._pending_nodes.clear()
+            waves: list[tuple[list[tuple[str, dict]], set[int], set[int]]] = []
+            for query, params, writes, needs in queued:
+                after = max(
+                    (i for i, (_, w, n) in enumerate(waves) if writes & (w | n) or needs & w),
+                    default=-1,
+                )
+                if after + 1 == len(waves):
+                    waves.append(([], set(), set()))
+                waves[after + 1][0].append((query, params))
+                waves[after + 1][1].update(writes)
+                waves[after + 1][2].update(needs)
+            for statements, _, _ in waves:
+                for batch in _batches(statements, _PARALLEL):
+                    results = await asyncio.gather(*(self._exec(q, p) for q, p in batch), return_exceptions=True)
+                    for res in results:
+                        if isinstance(res, BaseException):
+                            self._failure = self._failure or res
+                            raise res
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[HydraDBStore]:
+        """Run one write at a time on this store, running its queued writes before it ends, even when it fails.
+
+        @return (AsyncIterator[HydraDBStore]): this store, held until the write and its queued writes finish.
+        """
+        if _QUEUING.get() is self:
+            yield self
+            return
+        async with super().transaction() as tx:
+            token = _QUEUING.set(self)
+            try:
+                yield tx
+            finally:
+                try:
+                    await self._drain()
+                finally:
+                    _QUEUING.reset(token)
+                    failure, self._failure = self._failure, None
+            if failure is not None:
+                raise failure
+
     async def initialize(self) -> None:
         """Check the server is reachable and accepts the credentials with one cheap read; nothing is created.
 
@@ -211,11 +378,13 @@ class HydraDBStore(AutoCommitStore):
         await self._driver.close()
 
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
-        res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.doc AS doc", {"iid": _sk(ns, id)})
+        iid = _sk(ns, id)
+        res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.doc AS doc", {"iid": iid}, reads=[iid])
         return first_doc(res.rows)
 
     async def node_exists(self, ns: str, label: str, id: str) -> bool:
-        res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.sid AS sid", {"iid": _sk(ns, id)})
+        iid = _sk(ns, id)
+        res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.sid AS sid", {"iid": iid}, reads=[iid])
         return bool(res.rows)
 
     def check_doc_size(self, props: Mapping[str, Any]) -> None:
@@ -251,21 +420,87 @@ class HydraDBStore(AutoCommitStore):
             out.append(row)
             if keys := _unset(props):
                 cleared.setdefault(keys, []).append(row["id"])
-        for batch in _by_columns(out):
-            await self._run(
-                f"UNWIND $rows AS row MERGE (n {{id: row.id}}) SET n:{label}, {_sets('n', batch[0], ('id',))}",
-                {"rows": batch},
-            )
+        held = []
         for keys, iids in cleared.items():
-            for i in range(0, len(iids), _DELETE_BATCH):
-                params = {"iids": iids[i : i + _DELETE_BATCH]}
-                held = await self._run(
+            for batch in _batches(iids, _DELETE_BATCH):
+                params = {"iids": batch}
+                found = await self._run(
                     f"MATCH (n:{label}) WHERE n.id IN $iids AND ({' OR '.join(f'n.`{k}` IS NOT NULL' for k in keys)}) "
                     "RETURN n.sid AS sid",
                     params,
+                    reads=batch,
                 )
-                if held.rows:
-                    await self._run(f"MATCH (n:{label}) WHERE n.id IN $iids REMOVE {_removes('n', keys)}", params)
+                members = set(batch)
+                if found.rows or any(r["id"] in members and not r.keys().isdisjoint(keys) for r in out):
+                    held.append((keys, params))
+        index_rows = _key_rows(ns, rows) if label == L_ENTITY else []
+        await self._merge_rows(_KEY, index_rows)
+        await self._merge_rows(label, out, [r["id"] for r in index_rows])
+        for keys, params in held:
+            await self._run(f"MATCH (n:{label}) WHERE n.id IN $iids REMOVE {_removes('n', keys)}", params)
+
+    async def _merge_rows(self, label: str, rows: list[dict], needs: list[int] | None = None) -> None:
+        """Upsert node rows by surrogate id with one UNWIND statement per batch of rows sharing a column set.
+
+        @param label (str): the node label.
+        @param rows (list[dict]): the rows, each with its surrogate id and the columns to set.
+        @param needs (list[int] | None): ids that must be written first, such as the entities' key rows, so a
+            failed write never leaves an entity stored without them.
+        @return (None): nothing.
+        """
+        for batch in _by_columns(rows):
+            await self._write(
+                f"UNWIND $rows AS row MERGE (n {{id: row.id}}) SET n:{label}, {_sets('n', batch[0], ('id',))}",
+                {"rows": batch},
+                [r["id"] for r in batch],
+                needs or (),
+                [_label_key(label)],
+                after_all=label in (L_EVIDENCE, L_MERGE),
+            )
+            if _QUEUING.get() is self:
+                self._pending_nodes.update((label, r["id"]) for r in batch)
+
+    async def entities_matching(self, ns: str, keys: Iterable[str]) -> list[dict]:
+        """Read the entities sharing a match key with some keys, through the key index instead of a scan.
+
+        A key row whose entity is gone or no longer has that key, after an alias or external id was removed, is
+        deleted on the way, so the index never grows stale.
+
+        @param ns (str): namespace.
+        @param keys (Iterable[str]): the match keys, as resolution.match_keys derives them.
+        @return (list[dict]): the matching entities' properties.
+        """
+        wanted = {_sk(ns, k): k for k in keys}
+        hits: list[tuple[int, str, int]] = []
+        for batch in _batches(sorted(wanted), _SEEK_BATCH):
+            res = await self._run(
+                f"MATCH (k:{_KEY}) WHERE k.key IN $keys RETURN k.id AS id, k.key AS key, k.eid AS eid", {"keys": batch}
+            )
+            hits += [(r["id"], wanted[r["key"]], r["eid"]) for r in res.rows]
+        found: dict[int, dict] = {}
+        for batch in _batches(sorted({eid for _, _, eid in hits}), _SEEK_BATCH):
+            res = await self._run(
+                f"MATCH (n:{L_ENTITY}) WHERE n.id IN $iids AND {_same('n', 'ns', 'ns')} "
+                "RETURN n.id AS iid, n.doc AS doc",
+                {"iids": batch, "ns": ns},
+            )
+            found.update((r["iid"], json.loads(r["doc"])) for r in res.rows if r["doc"] is not None)
+        stale = sorted(rid for rid, key, eid in hits if eid not in found or key not in _keys_of(found[eid]))
+        for batch in _batches(stale, _SEEK_BATCH):
+            await self._write(f"MATCH (k:{_KEY}) WHERE k.id IN $ids DETACH DELETE k", {"ids": batch}, batch)
+        return list(found.values())
+
+    async def _drop_keys(self, label: str, iids: list[int]) -> None:
+        """Delete the key index rows of deleted entities, so the index only holds stored entities' keys.
+
+        @param label (str): the label of the deleted nodes; only entities have key rows.
+        @param iids (list[int]): the deleted nodes' surrogate ids.
+        @return (None): nothing.
+        """
+        if label != L_ENTITY:
+            return
+        for batch in _batches(iids, _SEEK_BATCH):
+            await self._run(f"MATCH (k:{_KEY}) WHERE k.eid IN $iids DETACH DELETE k", {"iids": batch})
 
     async def remove_node_label(self, ns: str, label: str, id: str, drop_label: str) -> None:
         await self._run(
@@ -294,6 +529,7 @@ class HydraDBStore(AutoCommitStore):
                 f"MATCH (n:{label}) WHERE {' AND '.join(where)} "
                 f"RETURN n.doc AS doc ORDER BY n.`{key}` SKIP $skip LIMIT $limit",
                 params,
+                reads=[_label_key(label)],
             )
             return docs(res.rows)
         params = {"ns": ns, "label": label, "skip": skip, "limit": limit}
@@ -318,16 +554,19 @@ class HydraDBStore(AutoCommitStore):
             f"MATCH ({pattern}) WHERE {' AND '.join(where)} "
             f"RETURN n.doc AS doc, n.`{ob}` AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
             params,
+            reads=params.get("iids", [_label_key(label)]),
         )
         return docs(res.rows)
 
     async def delete_node(self, ns: str, label: str, id: str) -> None:
         await self._run(f"MATCH (n:{label} {{id: $iid}}) DETACH DELETE n", {"iid": _sk(ns, id)})
+        await self._drop_keys(label, [_sk(ns, id)])
 
     async def delete_nodes(self, ns: str, label: str, ids: list[str]) -> None:
-        for batch in range(0, len(ids), _DELETE_BATCH):
-            iids = [_sk(ns, i) for i in ids[batch : batch + _DELETE_BATCH]]
+        for batch in _batches(ids, _DELETE_BATCH):
+            iids = [_sk(ns, i) for i in batch]
             await self._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", {"iids": iids})
+            await self._drop_keys(label, iids)
 
     async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
         params: dict[str, Any] = {"ns": ns, "batch": _DELETE_BATCH}
@@ -339,6 +578,7 @@ class HydraDBStore(AutoCommitStore):
             ids = [r["iid"] for r in res.rows]
             if ids:
                 await self._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", {"iids": ids})
+                await self._drop_keys(label, ids)
             deleted += len(ids)
             if len(ids) < _DELETE_BATCH:
                 return deleted
@@ -346,12 +586,21 @@ class HydraDBStore(AutoCommitStore):
     async def create_edge(
         self, ns: str, type: str, from_label: str, from_id: str, to_label: str, to_id: str, props: dict
     ) -> bool:
-        both = await self._run(
-            f"MATCH (a:{from_label} {{id: $f}}), (b:{to_label} {{id: $t}}) RETURN a.sid AS sid",
-            {"f": _sk(ns, from_id), "t": _sk(ns, to_id)},
-        )
-        if not both.rows:
-            return False
+        pending = self._pending_nodes
+        ends = {
+            k: iid
+            for k, label, iid in (("f", from_label, _sk(ns, from_id)), ("t", to_label, _sk(ns, to_id)))
+            if (label, iid) not in pending
+        }
+        if ends:
+            nodes = {"f": f"(a:{from_label} {{id: $f}})", "t": f"(b:{to_label} {{id: $t}})"}
+            found = await self._run(
+                f"MATCH {', '.join(nodes[k] for k in ends)} RETURN {'a' if 'f' in ends else 'b'}.sid AS sid",
+                ends,
+                reads=ends.values(),
+            )
+            if not found.rows:
+                return False
         await self.create_edges(ns, from_label, to_label, [(type, from_id, to_id, props)])
         return True
 
@@ -379,16 +628,20 @@ class HydraDBStore(AutoCommitStore):
             _guard_sizes(row)
             out.append(row)
         for batch in _by_columns(out):
-            await self._run(
+            await self._write(
                 f"UNWIND $rows AS row MATCH (a:{from_label} {{id: row.f}}), (b:{to_label} {{id: row.t}}) "
                 f"MERGE (a)-[r:{_EDGE} {{id: row.id}}]->(b) SET {_sets('r', batch[0], ('f', 't', 'id'))}",
                 {"rows": batch},
+                [*(r["id"] for r in batch), *(_sid_key(ns, r["sid"]) for r in batch if "sid" in r)],
+                [i for r in batch for i in (r["f"], r["t"])],
+                after_all=any(r.get("is_current") is False and r.get("invalidated_by") for r in batch),
             )
 
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
         res = await self._run(
             f"{_BY_SID} AND r.is_current = true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
             {"ns": ns, "sid": id},
+            reads=[_sid_key(ns, id)],
         )
         return edge_row(res.rows[0]) if res.rows else None
 
@@ -396,8 +649,35 @@ class HydraDBStore(AutoCommitStore):
         res = await self._run(
             f"{_BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
             {"ns": ns, "sid": id},
+            reads=[_sid_key(ns, id)],
         )
         return [edge_row(r) for r in res.rows]
+
+    async def edge_versions(
+        self, ns: str, from_label: str | None, to_label: str | None, ids: list[str]
+    ) -> list[dict] | None:
+        """Read every version of some edges by edge id, a point seek per id, run concurrently, when there are few.
+
+        More than _SEEK_BATCH ids cost more seeks than reading them by endpoint, so the caller reads them that way.
+
+        @param ns (str): namespace.
+        @param from_label (str | None): the source node label the edges must have, or None for any.
+        @param to_label (str | None): the destination node label the edges must have, or None for any.
+        @param ids (list[str]): the edge ids.
+        @return (list[dict] | None): the edge rows, grouped by id in the order given, or None for too many ids.
+        """
+        if len(ids) > _SEEK_BATCH:
+            return None
+        labels = {k: v for k, v in (("fl", from_label), ("tl", to_label)) if v is not None}
+        where = "".join(f" AND {_same('r', k, k)}" for k in labels)
+        query = f"{_BY_SID}{where} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et"
+        out: list[dict] = []
+        for batch in _batches(ids, _PARALLEL):
+            params = [{"ns": ns, "sid": i, **labels} for i in batch]
+            reads = (self._run(query, p, reads=[_sid_key(ns, p["sid"])]) for p in params)
+            for res in await asyncio.gather(*reads):
+                out += [edge_row(r) for r in res.rows]
+        return out
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
         merged = await merged_current_edge(self, ns, id, props)
@@ -504,6 +784,30 @@ class HydraDBStore(AutoCommitStore):
             {"iid": _sk(ns, parent_id), "ns": ns, "et": edge_type},
         )
         return docs(res.rows)
+
+    async def children_of(
+        self, ns: str, parent_label: str, parent_ids: list[str], edge_type: str, child_label: str
+    ) -> dict[str, list[dict]]:
+        """Read the child nodes of many parents along one edge type, a batch of parents per read.
+
+        @param ns (str): namespace.
+        @param parent_label (str): the parents' label.
+        @param parent_ids (list[str]): the parent ids.
+        @param edge_type (str): the edge type from parent to child.
+        @param child_label (str): the children's label.
+        @return (dict[str, list[dict]]): each parent's children's properties, by parent id, for parents with any.
+        """
+        out: dict[str, list[dict]] = {}
+        for batch in _batches(parent_ids, _SEEK_BATCH):
+            res = await self._run(
+                f"MATCH (p:{parent_label})-[r:{_EDGE}]->(c:{child_label}) WHERE p.id IN $iids "
+                f"AND {_same('r', 'ns', 'ns')} AND {_same('r', 'etype', 'et')} RETURN p.sid AS parent, c.doc AS doc",
+                {"iids": [_sk(ns, i) for i in batch], "ns": ns, "et": edge_type},
+            )
+            for row in res.rows:
+                if row["doc"] is not None:
+                    out.setdefault(row["parent"], []).append(json.loads(row["doc"]))
+        return out
 
     async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:
         await self._run(

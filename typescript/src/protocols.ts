@@ -148,6 +148,46 @@ export interface GraphPrimitives {
    * @param props (Props): the encoded properties to write.
    */
   checkDocSize?(props: Props): void;
+  /**
+   * Read the entities sharing a match key with some keys from a key index, for a store that keeps one.
+   *
+   * @param ns (string): the namespace.
+   * @param keys (Iterable<string>): the match keys, as matchKeys derives them.
+   * @return (Props[]): the matching entities' properties.
+   */
+  entitiesMatching?(ns: string, keys: Iterable<string>): Promise<Props[]>;
+  /**
+   * Read every version of some edges by edge id, for a store that seeks edges by id cheaply; null asks the caller to read them another way.
+   *
+   * @param ns (string): the namespace.
+   * @param fromLabel (string | null): the source node label the edges must have, or null for any.
+   * @param toLabel (string | null): the destination node label the edges must have, or null for any.
+   * @param ids (readonly string[]): the edge ids.
+   * @return (EdgeRow[] | null): the edge rows, grouped by id in the order given, or null.
+   */
+  edgeVersions?(
+    ns: string,
+    fromLabel: string | null,
+    toLabel: string | null,
+    ids: readonly string[],
+  ): Promise<EdgeRow[] | null>;
+  /**
+   * Read the child nodes of many parents along one edge type, for a store that reads them in batches.
+   *
+   * @param ns (string): the namespace.
+   * @param parentLabel (string): the parents' label.
+   * @param parentIds (readonly string[]): the parent ids.
+   * @param edgeType (string): the edge type from parent to child.
+   * @param childLabel (string): the children's label.
+   * @return (Map<string, Props[]>): each parent's children's properties, by parent id, for parents with any.
+   */
+  childrenOf?(
+    ns: string,
+    parentLabel: string,
+    parentIds: readonly string[],
+    edgeType: string,
+    childLabel: string,
+  ): Promise<Map<string, Props[]>>;
 }
 
 export interface GraphStore extends GraphPrimitives {

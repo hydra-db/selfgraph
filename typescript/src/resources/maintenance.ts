@@ -6,7 +6,7 @@ import { jsonIso, toIso } from "../internal/time.js";
 import * as m from "../maintenance.js";
 import type { DateTimeInput, DecayResult, DedupeGroup, DedupeResult, PruneResult, Relation } from "../models.js";
 import * as ops from "../ops.js";
-import { checkOptions, keysOf, parseTime, requireList, typeName } from "../validate.js";
+import { checkOptions, keysOf, parseTime, requireBool, requireList } from "../validate.js";
 import { Resource } from "./common.js";
 
 export interface DecayOptions {
@@ -20,6 +20,7 @@ export interface PruneOptions {
   older_than?: DateTimeInput | null;
   types?: readonly string[] | null;
   relation_types?: readonly string[] | null;
+  include_certified?: boolean;
   dry_run?: boolean;
 }
 
@@ -33,6 +34,7 @@ const PRUNE_KEYS = keysOf<PruneOptions>({
   older_than: true,
   types: true,
   relation_types: true,
+  include_certified: true,
   dry_run: true,
 });
 const DEDUPE_RELATIONS_KEYS = keysOf<DedupeRelationsOptions>({ dry_run: true });
@@ -41,16 +43,6 @@ const UNSCORED = `no items have a relevance score yet; ${DECAY_HINT}`;
 const SURVIVOR_RULE =
   "each group keeps its lowest relation id as the survivor and only the survivor's version history; " +
   "every version of each duplicate is deleted (versions_lost)";
-
-/**
- * Validate a flag is a real boolean, so a truthy string never turns a dry run into a delete.
- *
- * @param name (string): the argument name for the error message.
- * @param value (unknown): the value to check.
- */
-function requireFlag(name: string, value: unknown): asserts value is boolean {
-  if (typeof value !== "boolean") throw new ValidationError(`${name} must be a boolean, got ${typeName(value)}`);
-}
 
 /**
  * Reject a reference time more than one minute ahead of now, allowing for clock skew.
@@ -80,7 +72,7 @@ export class Maintenance extends Resource {
     m.requireNumber("half_life_days", halfLife, true);
     const now = parseTime(options.now, "now");
     const dryRun = options.dry_run ?? true;
-    requireFlag("dry_run", dryRun);
+    requireBool("dry_run", dryRun);
     const at = now ?? new Date();
     requireNotFuture("now", at, "decay scores items as of");
     const [relations, entities] = await this.graph.read(async (store, ns) => [
@@ -131,10 +123,10 @@ export class Maintenance extends Resource {
   /**
    * Remove entities and current relations that are below a relevance or older than a time.
    *
-   * Every given criterion must hold. An item never scored by decay has no relevance and never matches min_relevance. types narrows the entities to these entity types and relation_types the relations to these relation types; neither is a criterion on its own. Given only one of them, the other kind is not matched directly, so types alone removes no relation except those of a removed entity, and relation_types alone removes no entity. Removal goes through the normal deletes, so a removed entity takes its relations, evidence, preferences, and decisions with it; those cascaded relations are listed too. Only current relations are matched: a relation a contradiction invalidated stays as history unless its entity is removed, which deletes every version. Removal runs in batches of up to 1000 ids per transaction.
+   * Every given criterion must hold. An item never scored by decay has no relevance and never matches min_relevance. types narrows the entities to these entity types and relation_types the relations to these relation types; neither is a criterion on its own. Given only one of them, the other kind is not matched directly, so types alone removes no relation except those of a removed entity, and relation_types alone removes no entity. Removal goes through the normal deletes, so a removed entity takes its relations, evidence, preferences, and decisions with it; those cascaded relations are listed too. Only current relations are matched: a relation a contradiction invalidated stays as history unless its entity is removed, which deletes every version. Removal runs in batches of up to 1000 ids per transaction. A certified relation, and each entity it connects, is kept and listed in certified unless include_certified is set. merge_ids lists the live merge records a removed entity takes with it, whose unmerge is then lost.
    *
-   * @param options (PruneOptions): min_relevance, older_than (at most one minute ahead), types (entity types), relation_types, and dry_run (true by default).
-   * @return (PruneResult): the entity and relation ids removed, or that would be, and delete counts (no deleted block on a dry run); with min_relevance and nothing scored yet, a note says to run decay first.
+   * @param options (PruneOptions): min_relevance, older_than (at most one minute ahead), types (entity types), relation_types, include_certified (false by default), and dry_run (true by default).
+   * @return (PruneResult): the entity and relation ids removed, or that would be, the certified relations kept, the merge records lost, and delete counts (no deleted block on a dry run); with min_relevance and nothing scored yet, a note says to run decay first.
    */
   async prune(options: PruneOptions = {}): Promise<PruneResult> {
     checkOptions("maintenance.prune", options, PRUNE_KEYS);
@@ -146,8 +138,10 @@ export class Maintenance extends Resource {
     const relTypes = options.relation_types ?? null;
     if (types !== null) requireList("types", types);
     if (relTypes !== null) requireList("relation_types", relTypes);
+    const includeCertified = options.include_certified ?? false;
+    requireBool("include_certified", includeCertified);
     const dryRun = options.dry_run ?? true;
-    requireFlag("dry_run", dryRun);
+    requireBool("dry_run", dryRun);
     if (minRelevance === null && olderThan === null) {
       throw new ValidationError("prune needs min_relevance or older_than; types and relation_types only narrow them");
     }
@@ -165,25 +159,47 @@ export class Maintenance extends Resource {
       return olderThan === null || m.latest(stamps).getTime() < olderThan.getTime();
     };
 
-    const [relations, entities, ns] = await this.graph.read(
-      async (store, ns) => [await m.scanRelations(store, ns), await m.scanEntities(store, ns), ns] as const,
+    const [relations, entities, merges, ns] = await this.graph.read(
+      async (store, ns) =>
+        [
+          await m.scanRelations(store, ns),
+          await m.scanEntities(store, ns),
+          await m.scanLiveMerges(store, ns),
+          ns,
+        ] as const,
     );
-    const doomed = entities
-      .filter((e) => matches(e.relevance, [e.created_at, e.updated_at], e.type, entityTypes))
-      .map((e) => e.id)
-      .sort(comparePy);
+    const hit = new Set(
+      entities.filter((e) => matches(e.relevance, [e.created_at, e.updated_at], e.type, entityTypes)).map((e) => e.id),
+    );
+    const hitRels = new Set(
+      relations
+        .filter((r) => matches(r.relevance, [r.created_at, r.event_time], r.type, relationTypes))
+        .map((r) => r.id),
+    );
+    const certifiedRels = includeCertified ? [] : relations.filter((r) => r.certified_at !== null);
+    const kept = new Set(certifiedRels.map((r) => r.id));
+    const held = new Set(certifiedRels.flatMap((r) => [r.from_entity, r.to_entity]));
+    const doomed = [...hit].filter((eid) => !held.has(eid)).sort(comparePy);
     const gone = new Set(doomed);
     const cascaded = new Set(
       relations.filter((r) => gone.has(r.from_entity) || gone.has(r.to_entity)).map((r) => r.id),
     );
     const direct = relations
-      .filter((r) => !cascaded.has(r.id) && matches(r.relevance, [r.created_at, r.event_time], r.type, relationTypes))
+      .filter((r) => hitRels.has(r.id) && !cascaded.has(r.id) && !kept.has(r.id))
       .map((r) => r.id)
       .sort(comparePy);
     const relationIds = [...cascaded, ...direct].sort(comparePy);
+    const certified = certifiedRels
+      .filter((r) => hitRels.has(r.id) || hit.has(r.from_entity) || hit.has(r.to_entity))
+      .map((r) => r.id)
+      .sort(comparePy);
+    const mergeIds = merges
+      .filter((row) => gone.has(row.survivor_id as string) || gone.has(row.absorbed_id as string))
+      .map((row) => row.id as string);
     const note =
       minRelevance !== null && [...entities, ...relations].every((item) => item.relevance === null) ? UNSCORED : null;
-    if (dryRun) return { dry_run: dryRun, entity_ids: doomed, relation_ids: relationIds, note };
+    const plan = { dry_run: dryRun, entity_ids: doomed, relation_ids: relationIds, certified, merge_ids: mergeIds };
+    if (dryRun) return { ...plan, note };
     const deleted = { ...ops.NO_DELETES };
     const deletes: Array<[typeof ops.deleteEntities, string[]]> = [
       [ops.deleteEntities, doomed],
@@ -195,53 +211,55 @@ export class Maintenance extends Resource {
       }
     }
     log(`pruned ${doomed.length} entities and ${relationIds.length} relations in namespace '${ns}'`, "info");
-    return { dry_run: dryRun, entity_ids: doomed, relation_ids: relationIds, deleted, note };
+    return { ...plan, deleted, note };
   }
 
   /**
    * Collapse parallel current relations with the same endpoints and type but different ids into one.
    *
-   * The survivor of each group is the lowest id, whichever is newer, and only its version history is kept: every version of each duplicate is deleted, and the plan lists how many per duplicate in versions_lost (the result's note states the rule). Properties are unioned: the survivor wins a conflict, then each duplicate in id order, and every key a duplicate loses is reported in the group's conflicts. The survivor takes the earliest event_time of the group, the duplicates' evidence moves onto it (recounting its distinct sources), decisions that used a duplicate as a step are repointed to it, and the duplicates are then deleted. Relations a contradiction invalidated are never grouped.
+   * The survivor of each group is the lowest id, whichever is newer, and only its version history is kept: every version of each duplicate is deleted, and the plan lists how many per duplicate in versions_lost (the result's note states the rule). Properties are unioned: the survivor wins a conflict, then each duplicate in id order, and every key a duplicate loses is reported in the group's conflicts. The survivor takes the earliest event_time of the group, the duplicates' evidence moves onto it (recounting its distinct sources), decisions that used a duplicate as a step are repointed to it, and the duplicates are then deleted. Relations a contradiction invalidated are never grouped. A group holding a certified relation is listed in certified and left alone, since merging would change or delete what a person verified; uncertify it to merge.
    *
    * @param options (DedupeRelationsOptions): dry_run, true by default, lists the groups without merging them.
-   * @return (DedupeResult): each group's survivor, duplicates, conflicting keys, and versions lost per duplicate, the survivor rule, and delete counts (no deleted block on a dry run).
+   * @return (DedupeResult): each group's survivor, duplicates, conflicting keys, and versions lost per duplicate, the groups left alone as certified, the survivor rule, and delete counts (no deleted block on a dry run).
    */
   async dedupeRelations(options: DedupeRelationsOptions = {}): Promise<DedupeResult> {
     checkOptions("maintenance.dedupeRelations", options, DEDUPE_RELATIONS_KEYS);
     const dryRun = options.dry_run ?? true;
-    requireFlag("dry_run", dryRun);
+    requireBool("dry_run", dryRun);
     const [relations, ns] = await this.graph.read(async (store, ns) => [await m.scanRelations(store, ns), ns] as const);
     const groups = new Map<string, Relation[]>();
     for (const rel of relations) {
       const key = JSON.stringify([rel.from_entity, rel.type, rel.to_entity]);
       groups.set(key, [...(groups.get(key) ?? []), rel]);
     }
-    const plan: DedupeGroup[] = [...groups.values()]
+    const plan: DedupeGroup[] = [];
+    const held: DedupeGroup[] = [];
+    const ordered = [...groups.values()]
       .filter((rels) => rels.length > 1)
-      .map((rels) => {
-        const [survivor, ...duplicates] = rels.sort((a, b) => comparePy(a.id, b.id)) as [Relation, ...Relation[]];
-        return {
-          from_entity: survivor.from_entity,
-          type: survivor.type,
-          to_entity: survivor.to_entity,
-          survivor: survivor.id,
-          duplicates: duplicates.map((r) => r.id),
-          conflicts: m.foldProperties(survivor, duplicates)[1],
-          versions_lost: {} as Record<string, number>,
-        };
-      })
       .sort(
-        (a, b) =>
-          comparePy(a.from_entity, b.from_entity) || comparePy(a.type, b.type) || comparePy(a.to_entity, b.to_entity),
+        ([a], [b]) =>
+          comparePy(a!.from_entity, b!.from_entity) ||
+          comparePy(a!.type, b!.type) ||
+          comparePy(a!.to_entity, b!.to_entity),
       );
-    for (const group of plan) {
-      for (const rid of group.duplicates) {
-        const versions = await this.graph.read((store, n) => ops.listRelationVersions(store, n, rid, false));
-        group.versions_lost[rid] = versions.length;
+    for (const rels of ordered) {
+      const [survivor, ...duplicates] = rels.sort((a, b) => comparePy(a.id, b.id)) as [Relation, ...Relation[]];
+      const versionsLost: Record<string, number> = {};
+      for (const { id } of duplicates) {
+        versionsLost[id] = (await this.graph.read((store, n) => ops.listRelationVersions(store, n, id, false))).length;
       }
+      (rels.some((r) => r.certified_at !== null) ? held : plan).push({
+        from_entity: survivor.from_entity,
+        type: survivor.type,
+        to_entity: survivor.to_entity,
+        survivor: survivor.id,
+        duplicates: duplicates.map((r) => r.id),
+        conflicts: m.foldProperties(survivor, duplicates)[1],
+        versions_lost: versionsLost,
+      });
     }
     const note = plan.length ? SURVIVOR_RULE : null;
-    if (dryRun) return { dry_run: dryRun, groups: plan, note };
+    if (dryRun) return { dry_run: dryRun, groups: plan, certified: held, note };
     const deleted = { ...ops.NO_DELETES };
     for (const group of plan) {
       ops.addCounts(
@@ -251,6 +269,6 @@ export class Maintenance extends Resource {
     }
     const removed = plan.reduce((n, g) => n + g.duplicates.length, 0);
     log(`deduplicated ${plan.length} relation groups in namespace '${ns}', removing ${removed} duplicates`, "info");
-    return { dry_run: dryRun, groups: plan, deleted, note };
+    return { dry_run: dryRun, groups: plan, certified: held, deleted, note };
   }
 }

@@ -231,6 +231,16 @@ export function checkOptions(method: string, options: unknown, allowed: readonly
 }
 
 /**
+ * Validate a flag is a real boolean, so a truthy string never flips an option.
+ *
+ * @param name (string): the argument name for the error message.
+ * @param value (unknown): the value to check.
+ */
+export function requireBool(name: string, value: unknown): asserts value is boolean {
+  if (typeof value !== "boolean") throw new ValidationError(`${name} must be a boolean, got ${typeName(value)}`);
+}
+
+/**
  * Validate a value is an integer.
  *
  * @param field (string): the field name for the error message.

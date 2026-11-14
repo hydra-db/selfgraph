@@ -122,7 +122,7 @@ def test_server_metadata_tools_and_annotations(server):
     assert logging.getLogger("mcp").getEffectiveLevel() == logging.WARNING
     listed = run(server.list_tools())
     names = [t.name for t in listed]
-    assert len(names) == len(TOOL_NAMES) == 35
+    assert len(names) == len(TOOL_NAMES) == 38
     assert sorted(names) == sorted(TOOL_NAMES)
     tools = {t.name: t.annotations.model_dump(by_alias=True) for t in listed}
     for name in (
@@ -132,7 +132,6 @@ def test_server_metadata_tools_and_annotations(server):
         "entity_evidence",
         "run_cypher",
         "retrieve",
-        "coverage",
     ):
         assert tools[name]["readOnlyHint"] is True
     for name in ("delete_entity", "maintenance_prune", "maintenance_dedupe_relations"):
@@ -174,7 +173,7 @@ def test_call_tool_arguments_results_and_errors(server):
     ):
         run(server.call_tool("update_relation", {"id": "relation:x", "properties": {"a": 1}}))
     for tool, args, message in (
-        ("get_schema", {"format": "bogus"}, "invalid arguments: format: expected 'selfgraph' or 'neo4j'"),
+        ("get_schema", {"format": "bogus"}, "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'"),
         ("create_entity", {"name": "a"}, "invalid arguments: type: field required"),
         ("list_entities", {"limit": "x"}, "invalid arguments: limit: expected integer"),
     ):

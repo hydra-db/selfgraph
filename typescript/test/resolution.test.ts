@@ -18,6 +18,7 @@ import {
   ValidationError,
 } from "../src/index.js";
 import { nameSimilarity } from "../src/resolution.js";
+import { surrogateKey } from "../src/stores/hydradb.js";
 import { forEachStore, freshGraphs, SINGLE_EMPLOYER, type StoreSpec, storedEntity, worksAt } from "./helpers.js";
 
 const IBM = entityId("Company", "International Business Machines");
@@ -544,6 +545,44 @@ function suite(spec: StoreSpec) {
     expect([again.id, again.source_ids]).toEqual([first.id, ["s2"]]);
     expect(again.created_at.getTime()).toBeGreaterThan(first.created_at.getTime());
   });
+
+  it.runIf(spec.name === "hydradb")(
+    "finds alias and external id matches through the key index and drops stale keys",
+    async () => {
+      const first = open({ resolver: "default" });
+      const ns = first.namespace;
+      const robert = entityId("Person", "Robert Smith");
+      await seed(
+        first,
+        { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } },
+        { type: "Person", name: "Robert Smith", aliases: ["Bob Smith"] },
+      );
+      const keys = "MATCH (k:_SgEntityKey) WHERE k.eid IN $iids RETURN count(*) AS n";
+      const own = { iids: [surrogateKey(ns, robert)] } as never;
+      expect((await first.runCypher(keys, own)).rows).toEqual([{ n: 2 }]);
+
+      const g = new SelfGraph(spec.make(), { namespace: ns, resolver: "default" });
+      try {
+        const { merges } = await g.insert.facts({
+          entities: [
+            { type: "Person", name: "bob smith" },
+            { type: "Company", name: "IBM Corp", external_ids: { ticker: "IBM" } },
+          ],
+        });
+        expect(merges.map((m) => [m.survivor_id, m.reason]).sort()).toEqual([
+          [IBM, "external_id"],
+          [robert, "alias"],
+        ]);
+        await g.entities.update(robert, { remove_aliases: (await g.entities.get(robert))!.aliases });
+        expect((await g.insert.facts({ entities: [{ type: "Person", name: "Bob Smith" }] })).merges).toEqual([]);
+        expect((await g.runCypher(keys, own)).rows).toEqual([{ n: 1 }]);
+        await g.entities.delete(robert);
+        expect((await g.runCypher(keys, own)).rows).toEqual([{ n: 0 }]);
+      } finally {
+        await g.close();
+      }
+    },
+  );
 
   it("offers a custom resolver only type-compatible candidates and checks its decision", async () => {
     const seen: Record<string, string[]> = {};

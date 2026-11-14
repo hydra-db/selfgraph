@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { SelfGraph } from "./client.js";
 import { errorMessage, SelfGraphError, surfaceHint, ValidationError } from "./errors.js";
+import { toOssie } from "./export.js";
 import { Lazy } from "./internal/lazy.js";
 import { loadOptional } from "./internal/optional.js";
 import { PY_WORD_CLASS, PY_WS_CLASS, pyRepr } from "./internal/py.js";
@@ -25,6 +26,7 @@ import {
   BLANK,
   bindParams,
   blankLexicalTokens,
+  checkedCypher,
   checkSettings,
   currentRelation,
   type GraphSettings,
@@ -140,14 +142,53 @@ const READ_ONLY_MESSAGE =
   "name (backtick-quote it), and no unicode escape (pass such text as a parameter). Use the typed " +
   "resources or insert for writes.";
 
+export const INSTRUCTIONS =
+  "SelfGraph is a knowledge graph built from text. To answer from it: call check_readiness once to confirm the " +
+  "graph is reachable and holds data; call check_answerable with the question and its key terms; if the verdict " +
+  "is not_answerable, say the graph does not hold the answer instead of guessing, and if it is partial, say " +
+  "which terms are missing; then call retrieve and answer only from the facts and passages it returns. Treat " +
+  "context lines marked (via hub) as weak links, and prefer facts marked [certified].";
+
 export const TOOLS: Tool[] = [
+  tool({
+    name: "check_readiness",
+    description:
+      "Check the graph can answer before relying on it: whether the store is reachable and the namespace holds " +
+      "entities, the counts of entities, relations, preferences, decisions, and sources, and lint (orphan entities, " +
+      "relations with no evidence, decisions with a retired step, types the schema does not declare).",
+    input: {},
+    run: (g) => g.readiness(),
+  }),
+  tool({
+    name: "check_answerable",
+    description:
+      "Check whether the graph holds what a question asks about before retrieving or answering. terms are the key " +
+      "phrases of the question (names, types, attributes); pass them when you can, else they are read from the " +
+      "question. Each term is matched to entities, types, definitions, relation types, or property keys; a schema term " +
+      "with nothing stored for it is schema_only and counts as missing. verdict is answerable, partial (missing lists " +
+      "what the graph lacks), uncertain (matched entities are not connected within depth hops, or only through a hub), " +
+      "or not_answerable. A note means the check is lexical and embedding seeds may still find the missing terms, so " +
+      "try retrieve before concluding. as_of (ISO 8601) judges the graph as it stood then.",
+    input: {
+      question: str,
+      terms: z.array(z.string()).nullish(),
+      as_of: optStr,
+      depth: z.number().int().min(1).default(3),
+    },
+    run: (g, a) =>
+      g.checkAnswerable(a.question, { terms: a.terms ?? null, as_of: time(a.as_of, "as_of"), depth: a.depth }),
+  }),
   tool({
     name: "get_schema",
     description:
       "Return the schema inserts are checked against (entity and relation types), or null when none is set. " +
-      'format "neo4j" renders it as a Neo4j graph schema (node_types, relationship_types, patterns, constraints).',
-    input: { format: z.enum(["selfgraph", "neo4j"]).default("selfgraph") },
-    run: async (g, a) => (a.format === "neo4j" && g.schema !== null ? toNeo4jOntology(g.schema) : g.schema),
+      'format "neo4j" renders it as a Neo4j graph schema (node_types, relationship_types, patterns, constraints); ' +
+      '"ossie" as an Apache Ossie ontology (concepts and relationships).',
+    input: { format: z.enum(["selfgraph", "neo4j", "ossie"]).default("selfgraph") },
+    run: async (g, a) => {
+      if (g.schema === null || a.format === "selfgraph") return g.schema;
+      return a.format === "neo4j" ? toNeo4jOntology(g.schema) : toOssie(g.schema);
+    },
   }),
   tool({
     name: "insert_text",
@@ -160,7 +201,9 @@ export const TOOLS: Tool[] = [
       "resolution for this call. contradiction (off, warn, supersede, llm) overrides how a relation that breaks " +
       "a schema max_count is handled." +
       SCHEMA_ARGS +
-      " instructions and prompts override the extraction instructions and prompt templates for this call.",
+      " instructions and prompts override the extraction instructions and prompt templates for this call." +
+      " replace_source (needs source_id) treats the text as the new content of that source: relations only its" +
+      " older versions stated are retired, and source_diff lists the kept, added, and retired relation ids.",
     input: {
       text: str,
       source_id: optStr,
@@ -172,10 +215,12 @@ export const TOOLS: Tool[] = [
       schema_mode: schemaMode,
       instructions: optObj,
       prompts: optObj,
+      replace_source: z.boolean().default(false),
     },
     run: async (g, a) =>
       surfaced(
         await g.insert.text(a.text, {
+          replace_source: a.replace_source,
           source_id: a.source_id,
           event_time: time(a.event_time, "event_time"),
           metadata: a.metadata,
@@ -395,6 +440,20 @@ export const TOOLS: Tool[] = [
     run: (g, a) => g.relations.evidence(a.id, { limit: a.limit, cursor: a.cursor }),
   }),
   tool({
+    name: "certify_relation",
+    description:
+      "Mark a current relation as verified by someone (by). A certified relation is not retired by a supersede " +
+      "contradiction or a replaced source, and retrieval lists it first, marked [certified].",
+    input: { id: str, by: str },
+    run: (g, a) => g.relations.certify(a.id, { by: a.by }),
+  }),
+  tool({
+    name: "uncertify_relation",
+    description: "Remove the certification of a relation.",
+    input: { id: str },
+    run: (g, a) => g.relations.uncertify(a.id),
+  }),
+  tool({
     name: "delete_relation",
     description: "Delete a relationship, all of its versions, and any decision trace that uses it as a step.",
     input: { id: str },
@@ -570,11 +629,13 @@ export const TOOLS: Tool[] = [
     name: "run_cypher",
     description:
       "Run a read Cypher statement and return its rows; a keyword scan rejects writes but is a guard, not a sandbox. " +
-      "Not scoped to the namespace: it sees every namespace on the server, so filter on the ns property yourself.",
+      "Not scoped to the namespace: it sees every namespace on the server, so filter on the ns property yourself. " +
+      "When no rows come back, warnings name labels and relationship types the namespace never stored and name " +
+      "literals that differ from a stored entity name only by case or spacing.",
     input: { query: str, params: optObj },
     run: async (g, a) => {
       if (isBlockedQuery(a.query)) throw new ValidationError(READ_ONLY_MESSAGE);
-      return g.runCypher(a.query, bindParams(a.query, a.params));
+      return checkedCypher(g, a.query, bindParams(a.query, a.params));
     },
   }),
   tool({
@@ -582,7 +643,8 @@ export const TOOLS: Tool[] = [
     description:
       'Retrieve graph context for a query by keyword seeds and bounded BFS, DFS, or PageRank ("ppr") ranking. ' +
       "as_of (ISO 8601; no offset means UTC) reads the graph as it stood at that time. strategy and seeds (bm25, " +
-      "synonyms, embeddings) default to the server's level.",
+      "synonyms, embeddings) default to the server's level. hubs lists entities with 50 or more relations the walk " +
+      "reached; context lines through one are marked (via hub), as weak links. skip_hubs stops the walk at hubs.",
     input: {
       query: str,
       strategy: optStr,
@@ -592,9 +654,11 @@ export const TOOLS: Tool[] = [
       budget_tokens: z.number().int().min(1).default(RETRIEVE_DEFAULTS.budget_tokens),
       as_of: optStr,
       seeds: optStr,
+      skip_hubs: z.boolean().default(false),
     },
     run: (g, a) =>
       g.retrieve(a.query, {
+        skip_hubs: a.skip_hubs,
         strategy: a.strategy as Strategy | null | undefined,
         depth: a.depth,
         k: a.k,
@@ -603,14 +667,6 @@ export const TOOLS: Tool[] = [
         as_of: time(a.as_of, "as_of"),
         seeds: a.seeds as SeedTier | null | undefined,
       }),
-  }),
-  tool({
-    name: "coverage",
-    description:
-      "Report which words of a question the schema terms and stored entities can ground, with no LLM call. " +
-      "uncovered lists the words nothing grounds; check it before answering to see what the graph cannot speak to.",
-    input: { question: str },
-    run: (g, a) => g.coverage(a.question),
   }),
   tool({
     name: "maintenance_decay",
@@ -628,13 +684,16 @@ export const TOOLS: Tool[] = [
     description:
       "Remove entities and relations below min_relevance (set by maintenance_decay) and/or last touched " +
       "before older_than (ISO 8601); types narrows entities and relation_types relations (given only one, the other " +
-      "kind is not matched). Needs min_relevance or older_than. Dry run by default: returns the plan; pass dry_run " +
-      "false to delete, which cascades like delete_entity.",
+      "kind is not matched). Needs min_relevance or older_than. Certified relations and the entities they connect are " +
+      "kept (listed in certified) unless include_certified is true; merge_ids lists merge records whose unmerge a " +
+      "removal would lose. Dry run by default: returns the plan; pass dry_run false to delete, which cascades like " +
+      "delete_entity.",
     input: {
       min_relevance: z.number().nullish(),
       older_than: optStr,
       types: optList,
       relation_types: optList,
+      include_certified: z.boolean().default(false),
       dry_run: z.boolean().default(true),
     },
     run: async (g, a) =>
@@ -644,6 +703,7 @@ export const TOOLS: Tool[] = [
           older_than: time(a.older_than, "older_than"),
           types: a.types,
           relation_types: a.relation_types,
+          include_certified: a.include_certified,
           dry_run: a.dry_run,
         }),
       ),
@@ -721,14 +781,21 @@ type ToolAnnotations = { readOnlyHint: true } | { destructiveHint: boolean; idem
 const READ_ONLY = [
   "get_schema",
   "retrieve",
-  "coverage",
   "run_cypher",
   "entity_evidence",
   "entity_merges",
   "relation_evidence",
+  "check_readiness",
+  "check_answerable",
 ];
 const DESTRUCTIVE = ["maintenance_prune", "maintenance_dedupe_relations"];
-const IDEMPOTENT = ["insert_facts", "maintenance_prune", "maintenance_dedupe_relations"];
+const IDEMPOTENT = [
+  "insert_facts",
+  "maintenance_prune",
+  "maintenance_dedupe_relations",
+  "certify_relation",
+  "uncertify_relation",
+];
 
 /**
  * The MCP behavior hints for a tool: read-only, destructive, and idempotent.
@@ -784,7 +851,7 @@ async function respond(target: Tool | string, args: Record<string, unknown>) {
  */
 export async function buildServer(name = "selfgraph"): Promise<McpServerLike> {
   const { McpServer } = await loadOptional<{
-    McpServer: new (info: { name: string; version: string }) => McpServerLike;
+    McpServer: new (info: { name: string; version: string }, options?: { instructions?: string }) => McpServerLike;
   }>(
     "@modelcontextprotocol/sdk/server/mcp.js",
     "the MCP server needs '@modelcontextprotocol/sdk'; npm install @modelcontextprotocol/sdk",
@@ -795,7 +862,7 @@ export async function buildServer(name = "selfgraph"): Promise<McpServerLike> {
     "the MCP server needs '@modelcontextprotocol/sdk'",
     SelfGraphError,
   );
-  const server = new McpServer({ name, version });
+  const server = new McpServer({ name, version }, { instructions: INSTRUCTIONS });
   server.validateToolInput = async (_tool, args) => args;
   for (const t of TOOLS) {
     server.registerTool(

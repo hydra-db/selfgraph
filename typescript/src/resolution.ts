@@ -6,8 +6,9 @@ import * as ids from "./ids.js";
 import { dumps, loads } from "./internal/json.js";
 import { comparePy, cpLen, deepEqual, pyFloatRepr, pyRepr, pyStrip } from "./internal/py.js";
 import { fromIso, jsonIso, toIso } from "./internal/time.js";
-import { L_ENTITY, L_EVIDENCE, L_MERGE, L_MERGE_ENTRY, L_TRACE } from "./labels.js";
+import { L_ENTITY, L_EVIDENCE, L_MERGE, L_MERGE_ENTRY, L_SOURCE_VERSION, L_TRACE } from "./labels.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
+import { scanLiveMerges } from "./maintenance.js";
 import {
   type DecisionTrace,
   DecisionTraceInput,
@@ -242,6 +243,19 @@ function formsOf(name: string, aliases: readonly string[]): ReadonlySet<string> 
 }
 
 const overlaps = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => [...a].some((f) => b.has(f));
+
+/**
+ * The keys an entity is indexed under for the default resolver: its folded name and aliases, and its external ids. Two entities share a key exactly when the default resolver's alias or external id signal can fire between them.
+ *
+ * @param name (string): the name.
+ * @param aliases (readonly string[]): the aliases.
+ * @param externalIds (Record<string, string>): the external ids.
+ * @return (Set<string>): the keys.
+ */
+export function matchKeys(name: string, aliases: readonly string[], externalIds: Record<string, string>): Set<string> {
+  const forms = [...formsOf(name, aliases)].map((f) => `form:${f}`);
+  return new Set([...forms, ...Object.entries(externalIds).map(([k, v]) => `xid:${dumps([k, v])}`)]);
+}
 
 const noMatch = (): ResolutionDecision => ({ target_id: null, confidence: 0, reason: "no_match" });
 
@@ -678,7 +692,7 @@ function redirect(ent: ParsedEntityInput, target: Entity): ParsedEntityInput {
 }
 
 /**
- * Resolve each new entity without an explicit id against compatible stored and batch entities, and rewrite refs. A typed candidate is offered every stored entity of its compatible types, each type read once per insert in id-ordered pages. A candidate of the extraction fallback type (Thing) is also offered entities of other types, stored and from the same batch, whose name or alias matches its own, and is resolved after the others so a typed entity later in the batch can absorb it; of the stored entities of other types, only those are kept in memory.
+ * Resolve each new entity without an explicit id against compatible stored and batch entities, and rewrite refs. A typed candidate is offered every stored entity of its compatible types, each type read once per insert in id-ordered pages. A candidate of the extraction fallback type (Thing) is also offered entities of other types, stored and from the same batch, whose name or alias matches its own, and is resolved after the others so a typed entity later in the batch can absorb it; of the stored entities of other types, only those are kept in memory. When the store indexes match keys (entitiesMatching), the default resolver is offered only the stored entities sharing a key with a candidate, the only ones it can merge with, instead of every entity of the compatible types.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -701,7 +715,8 @@ export async function planResolution(
     const ename = ops.cleanText(ent.name);
     return { ent, eid: ent.id || ids.entityId(etype, ename), etype, ename };
   });
-  const stored = new Set((await ops.nodesById(runner, ns, L_ENTITY, ops.dedupList(keyed.map((k) => k.eid)))).keys());
+  const found = await ops.nodesById(runner, ns, L_ENTITY, ops.dedupList(keyed.map((k) => k.eid)));
+  const stored = new Set(found.keys());
   const candidateTypes = new Set(keyed.filter((k) => !k.ent.id && !stored.has(k.eid)).map((k) => k.etype));
   if (!candidateTypes.size) return { facts, merges: [], warnings: [] };
   const wanted = new Set<string | null>();
@@ -715,15 +730,27 @@ export async function planResolution(
     wanted.has(props.type as string) ||
     named.has(props.id as string) ||
     overlaps(formsOf(props.name as string, (props.aliases as string[] | null) ?? []), fallbackForms);
-  const pool = new Map<string, Entity>();
-  const scans = wanted.has(null) ? [null] : [...wanted].sort((a, b) => comparePy(String(a), String(b)));
-  for (const etype of scans) {
-    const equals = etype === null ? {} : { type: etype };
-    for await (const rows of ops.keyset((after, limit) =>
-      runner.matchNodes(ns, L_ENTITY, { equals, limit, id_gt: after }),
-    )) {
-      for (const ent of rows.filter(keep).map(decodeEntity)) pool.set(ent.id, ent);
+  async function* candidates(): AsyncGenerator<Props[]> {
+    if (
+      runner.entitiesMatching &&
+      resolver instanceof DefaultResolver &&
+      resolver.constructor === DefaultResolver &&
+      !resolver.fuzzy
+    ) {
+      const fresh = keyed.filter((k) => !k.ent.id && !stored.has(k.eid));
+      const keys = new Set(fresh.flatMap((k) => [...matchKeys(k.ent.name, k.ent.aliases, k.ent.external_ids)]));
+      yield [...found.values(), ...(await runner.entitiesMatching(ns, keys))];
+      return;
     }
+    const scans = wanted.has(null) ? [null] : [...wanted].sort((a, b) => comparePy(String(a), String(b)));
+    for (const etype of scans) {
+      const equals = etype === null ? {} : { type: etype };
+      yield* ops.keyset((after, limit) => runner.matchNodes(ns, L_ENTITY, { equals, limit, id_gt: after }));
+    }
+  }
+  const pool = new Map<string, Entity>();
+  for await (const rows of candidates()) {
+    for (const ent of rows.filter(keep).map(decodeEntity)) pool.set(ent.id, ent);
   }
 
   const within = resolver.within_batch ?? true;
@@ -1207,8 +1234,7 @@ async function forwardSiblings(
   moved: Moved,
   restored: Map<string, string>,
 ): Promise<void> {
-  const rows = await ops.scan(ops.nodeListing(runner, ns, L_MERGE, { equals: {} }));
-  const live = rows.filter((props) => props.id !== mergeId && (props.reverted_at ?? null) === null);
+  const live = (await scanLiveMerges(runner, ns)).filter((props) => props.id !== mergeId);
   const entries = await loadEntries(runner, ns, live);
   for (const props of live) {
     const own = entries.get(props.id as string) ?? [];
@@ -1226,8 +1252,11 @@ async function forwardSiblings(
  * The record is replayed exactly: the absorbed entity gets back the created_at of the merge and the survivor's
  * evidence from every source the merge was seen in (source_ids), which restores its source_count, a relation the merge
  * dropped as a self-loop is restored, and a relation the merge created on the survivor is removed with all its
- * versions, including one a contradiction retired after the merge, and its original is written back as the
- * current relation of the absorbed entity. An endpoint whose own merge is still live keeps pointing at that
+ * versions, and its original is written back as the current relation of the absorbed entity, or retired again when a
+ * replaced source retired its last version, so an unmerge never reasserts a withdrawn fact; one a contradiction retired
+ * comes back current, since the conflict came from the merged identity. A
+ * merge whose moved relation is certified is refused until it is uncertified, since the mark verified other endpoints.
+ * An endpoint whose own merge is still live keeps pointing at that
  * merge's survivor, and that merge is updated to undo from the new location, so unmerging every merge of an
  * insert, in any order, restores the relations it would have written without them. Restored relations are
  * written with contradiction checks off, so an unmerge never supersedes or warns about another relation, and a
@@ -1247,6 +1276,15 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
   const rec = decodeMerge(props, entries);
   if (rec.reverted_at !== null) {
     throw new ValidationError(`merge ${pyRepr(mergeId)} was already reverted at ${jsonIso(rec.reverted_at)}`);
+  }
+  const history = new Map<string, Relation[]>();
+  for (const rw of rec.rewrites) {
+    if (rw.kind !== "relation" || rw.existed || rw.dropped) continue;
+    const versions = await ops.listRelationVersions(runner, ns, rw.id, true);
+    history.set(rw.id, versions);
+    if (versions[0]?.is_current && versions[0].certified_at !== null) {
+      throw new ValidationError(`relation ${rw.id} is certified; uncertify it before unmerging ${pyRepr(mergeId)}`);
+    }
   }
   const at = new Date();
   const absorbedId = rec.absorbed_id;
@@ -1271,8 +1309,8 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
   for (const rw of rec.rewrites.filter((r) => r.kind === "relation")) {
     const original = parseOrThrow(RelationInput, rw.original, "relation");
     const rewritten = parseOrThrow(RelationInput, rw.rewritten, "relation");
-    const live = !rw.existed && !rw.dropped;
-    const [latest] = live ? await ops.listRelationVersions(runner, ns, rw.id, true) : [];
+    const [latest] = history.get(rw.id) ?? [];
+    history.delete(rw.id);
     let properties: JsonObject = { ...original.properties };
     let eventTime = original.event_time;
     let carried: Evidence[] = [];
@@ -1294,7 +1332,12 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
       evidence: [],
     };
     const existed = await ops.relationExists(runner, ns, ridOf(back));
-    const [rel] = await ops.upsertRelations(runner, ns, [[back, carried]], null, at, { contradiction: "off" });
+    let [rel] = await ops.upsertRelations(runner, ns, [[back, carried]], null, at, { contradiction: "off" });
+    const withdrawn = latest !== undefined && !latest.is_current && !existed;
+    if (withdrawn && (await runner.nodeExists(ns, L_SOURCE_VERSION, latest.invalidated_by!))) {
+      const edge = await runner.getCurrentEdge(ns, rel!.id);
+      [rel] = await ops.retireRelations(runner, ns, [[edge!, latest.invalidated_by!, latest.invalidated_at!]]);
+    }
     restored.set(rw.id, rel!.id);
     relations.push(rel!);
     moved.push([rw, { ...rw, id: rel!.id, rewritten: dumpRelation(back), existed, dropped: false }]);

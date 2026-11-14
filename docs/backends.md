@@ -98,7 +98,7 @@ before writing anything.
 
 | | Transactional (Neo4j, Memgraph) | Auto-commit (HydraDB, Kuzu, FalkorDB) |
 |---|---|---|
-| A failed batch | Rolls back as one unit. | Can leave earlier writes in place. |
+| A failed batch | Rolls back as one unit. | Can leave some of its writes in place. HydraDB runs writes that do not depend on each other concurrently, so they need not be the earlier ones. |
 | Writers in one process | Serialized per subject node. | One write at a time per graph object. |
 | Writers in separate processes | Each keeps its own version. A loser under heavy contention raises `TransientError` to retry. | Not serialized. Concurrent creates of one id can all report success with one write kept, and concurrent updates collapse to last-writer-wins. |
 
@@ -150,6 +150,11 @@ add it as a second label.
 - HydraDB runs a narrow openCypher subset. `RETURN` accepts only `alias.property`
   items and `count(*)`, so write `RETURN n.sid`, not `RETURN n`, and `count(*)`,
   not `count(n)`. Match edges by `RELATES` and `r.etype`, not by relation type.
+- HydraDB also stores `_SgEntityKey` nodes: an index of every entity's folded
+  name, aliases, and external ids, which entity resolution looks up instead of
+  reading every entity. They are not SelfGraph records, but carry the entity's
+  `ns`. An entity written with raw Cypher is not indexed, so resolution does
+  not see it.
 
 These list current `WORKS_AT` edges in the graph's namespace, one per backend
 family:

@@ -1,7 +1,20 @@
 import json
 
 import pytest
-from helpers import WORKS_AT_SPEC, FakeLLM, cli, fresh_graph, json_file, mcp_session, run, utc, works_at
+from helpers import (
+    HYDRADB,
+    WORKS_AT_SPEC,
+    FakeLLM,
+    cli,
+    fresh_graph,
+    json_file,
+    mcp_session,
+    new_graph,
+    run,
+    unique_ns,
+    utc,
+    works_at,
+)
 
 from selfgraph import (
     DefaultResolver,
@@ -424,6 +437,39 @@ def test_deleting_either_side_drops_merge_records_so_a_later_merge_starts_fresh(
     assert run(g.store.match_nodes(g.namespace, "EntityMergeEntry")) == []
     with pytest.raises(NotFoundError):
         run(g.entities.merges(ROBERT_ID))
+
+
+@pytest.mark.skipif(not HYDRADB, reason="the match key index is HydraDB's")
+def test_hydradb_key_index_finds_alias_and_external_id_matches_and_drops_stale_keys():
+    from selfgraph.stores.hydradb import _sk
+
+    ns = unique_ns("keys")
+    _seed(
+        new_graph(namespace=ns, resolver="default"),
+        IBM_SEED,
+        {"type": "Person", "name": "Robert Smith", "aliases": ["Bob Smith"]},
+    )
+    robert = entity_id("Person", "Robert Smith")
+    keys = "MATCH (k:_SgEntityKey) WHERE k.eid IN $iids RETURN count(*) AS n"
+    own = {"iids": [_sk(ns, robert)]}
+    assert run(new_graph(namespace=ns).run_cypher(keys, own)).rows == [{"n": 2}]
+
+    g = new_graph(namespace=ns, resolver="default")
+    facts = {
+        "entities": [
+            {"type": "Person", "name": "bob smith"},
+            {"type": "Company", "name": "IBM Corp", "external_ids": {"ticker": "IBM"}},
+        ]
+    }
+    merges = run(g.insert.facts(facts)).merges
+    assert sorted((m.survivor_id, m.reason) for m in merges) == [(IBM, "external_id"), (robert, "alias")]
+
+    run(g.entities.update(robert, remove_aliases=run(g.entities.get(robert)).aliases))
+    assert run(g.insert.facts({"entities": [{"type": "Person", "name": "Bob Smith"}]})).merges == []
+    assert run(g.run_cypher(keys, own)).rows == [{"n": 1}]
+
+    run(g.entities.delete(robert))
+    assert run(g.run_cypher(keys, own)).rows == [{"n": 0}]
 
 
 def test_custom_resolvers_see_compatible_candidates_and_must_return_a_complete_decision():

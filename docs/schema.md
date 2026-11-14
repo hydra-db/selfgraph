@@ -157,6 +157,9 @@ result full of `dropped_off_schema` warnings.
 | `dropped_off_schema` | In strict mode, `insert.text` dropped an extracted item that breaks the schema or references a dropped one. |
 | `entity_merged` | Entity resolution folded an entity into another. See [Entity resolution](resolution.md). |
 | `merge_self_loop` | A merge would have joined both ends of a relation, so the relation was dropped. Unmerging restores it. |
+| `certified_kept` | A [certified](trust.md#certification) relation stayed current where a contradiction or a replaced source would have retired it. |
+| `certified_dropped` | A write changed a certified relation, so its new revision is not certified. |
+| `fact_retired_by_source` | A [replaced source](inserting.md#replacing-a-source) no longer states a relation, so it was retired. |
 
 Cardinality is counted per insert call, over that batch's relations only. So:
 
@@ -203,7 +206,9 @@ await graph.relations.create("person:ann", "WORKS_AT", "company:globex", contrad
 `contradiction="llm"` needs no schema. After a write, each new relation is
 compared with its rivals, and the LLM is asked which rivals can no longer be
 true. Those are retired exactly as `supersede` retires a relation, with a
-`relation_superseded` warning and `invalidated_by` set to the new relation.
+`relation_superseded` warning and `invalidated_by` set to the new relation. A
+[certified](trust.md#certification) rival is never retired: it gets a
+`certified_kept` warning instead.
 
 ```python
 graph = SelfGraph(store, llm=llm, contradiction="llm")
@@ -344,6 +349,25 @@ Within the mapped subset above, a round trip is lossless. Outside it:
 
 Each direction names every loss in one warning on the `selfgraph` logger. The
 CLI and TypeScript print it on stderr.
+
+## Apache Ossie export
+
+`schema.to_ossie()` renders the schema as an
+[Apache Ossie](https://ossie.apache.org/) ontology document (spec 0.3.0.dev0). JSON is valid YAML, so the result can
+be saved as either. The CLI is `selfgraph --schema FILE schema export --to ossie`,
+and the MCP `get_schema` tool takes `format: "ossie"`.
+
+| SelfGraph | Ossie |
+|-----------|-------|
+| Entity type | An `EntityType` concept, with `extends: [parent]`. |
+| Property | A `ManyToOne` relationship to the built-in value type (`json` becomes `String`). |
+| Relation type | A relationship under each `from` type, one per `to` type (`Any` when none), named by the type, plus the `to` type when there are several. |
+| `from.max_count: 1` | `ManyToOne`, or `OneToOne` when `to.max_count` is 1 too. |
+| A relation between two entities of one type | The second role is named `other`, as in `{Person} knows {Person:other}`. |
+
+Export leaves out, with a warning on the `selfgraph` logger, a relation type with
+no `from` types and the properties of relation types; Ossie has no place for
+either. A schema with no entity types raises `ValidationError`.
 
 ## TypeScript
 

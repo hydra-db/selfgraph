@@ -14,8 +14,9 @@ import {
   preferenceEdgeType,
   R_HAS_CHUNK,
 } from "./labels.js";
+import { scanEntities, scanRelations } from "./maintenance.js";
 import type {
-  Coverage,
+  AnswerabilityReport,
   DateTimeInput,
   DecisionTrace,
   Entity,
@@ -24,18 +25,27 @@ import type {
   Relation,
   RetrievalResult,
   Subgraph,
+  TermCoverage,
 } from "./models.js";
 import * as ops from "./ops.js";
-import type { GraphPrimitives } from "./protocols.js";
+import type { GraphPrimitives, Props } from "./protocols.js";
+import type { ParsedSchema } from "./schema.js";
 import { decodeEntity } from "./serde.js";
-import { expandTokens, matchTerms, stem } from "./terms.js";
+import { expandTokens, groundedTerms, schemaForms, stem } from "./terms.js";
 import type { SeedTier } from "./tiers.js";
-import { checkOptions, keysOf, parseTime, requireInt, typeName } from "./validate.js";
+import { checkOptions, keysOf, parseTime, requireBool, requireInt, typeName } from "./validate.js";
 
 const STOPWORDS = new Set(
   (
     "a an and are as at be by did do does for from had has have how in is it its of on or that the their " +
     "them they to was were what when which who why will with"
+  ).split(" "),
+);
+
+const FILLER = new Set(
+  (
+    "about all any can could describe does explain find give i know list many me much my our please should show " +
+    "tell there we where whom whose would you your"
   ).split(" "),
 );
 
@@ -57,6 +67,8 @@ const PPR_TOLERANCE = 1e-6;
 const EMBED_BATCH = 64;
 const EMBED_CACHE = 50_000;
 const RRF_K = 60;
+export const HUB_DEGREE = 50;
+const MAX_MATCHES = 10;
 
 export const STRATEGIES = ["bfs", "dfs", "ppr"] as const;
 
@@ -75,15 +87,23 @@ export function fold(text: string): string {
 }
 
 /**
+ * Split text into casefolded Unicode letter and digit tokens in order, dropping stopwords.
+ *
+ * @param text (string): the text to tokenize.
+ * @return (string[]): the content tokens, repeats kept.
+ */
+export function tokenList(text: string): string[] {
+  return [...fold(text).matchAll(TOKEN)].map((m) => m[0]).filter((t) => !STOPWORDS.has(t));
+}
+
+/**
  * Split text into casefolded Unicode letter and digit tokens, dropping stopwords.
  *
  * @param text (string): the text to tokenize.
  * @return (Set<string>): the distinct content tokens.
  */
 export function tokens(text: string): Set<string> {
-  const out = new Set<string>();
-  for (const m of fold(text).matchAll(TOKEN)) if (!STOPWORDS.has(m[0])) out.add(m[0]);
-  return out;
+  return new Set(tokenList(text));
 }
 
 /**
@@ -549,6 +569,8 @@ const distanceIn = (dist: Map<string, number>): ((id: string) => number) => {
 /**
  * Walk the current-relation graph out from the seeds in BFS or DFS order over a per-hop prefetched adjacency cache.
  *
+ * A hub is an entity with at least HUB_DEGREE relations. With skipHubs, a hub reached from a seed is kept but not expanded, so the walk never passes through one.
+ *
  * @param store (GraphPrimitives): the graph reader.
  * @param ns (string): the namespace to traverse.
  * @param seedIds (string[]): entity ids to start from, best first.
@@ -557,7 +579,8 @@ const distanceIn = (dist: Map<string, number>): ((id: string) => number) => {
  * @param maxNodes (number): the maximum number of entities to collect.
  * @param prefetchLimit (number): the most entities whose adjacency to load up front; DFS needs more than it keeps.
  * @param asOf (Date | null): walk the relations valid at this time instead of the current ones.
- * @return ([Map<string, number>, Relation[]]): visited entity ids with distance, and the relations among them.
+ * @param skipHubs (boolean): do not expand hubs other than the seeds.
+ * @return ([Map<string, number>, Relation[], Set<string>]): visited entity ids with distance, the relations among them, and the visited hubs.
  */
 async function traverse(
   store: GraphPrimitives,
@@ -568,7 +591,8 @@ async function traverse(
   maxNodes: number,
   prefetchLimit: number,
   asOf: Date | null = null,
-): Promise<[Map<string, number>, Relation[]]> {
+  skipHubs = false,
+): Promise<[Map<string, number>, Relation[], Set<string>]> {
   const bfs = strategy === "bfs";
   const adjacency = await prefetch(store, ns, seedIds, depth, prefetchLimit, asOf);
   const start: Array<[string, number]> = seedIds.map((sid) => [sid, 0]);
@@ -590,27 +614,33 @@ async function traverse(
       const batch = [...new Set([node, ...pending])].slice(0, PAGE);
       for (const [n, rels] of await neighbors(store, ns, batch, asOf)) adjacency.set(n, rels);
     }
+    if (skipHubs && d > 0 && (adjacency.get(node)?.length ?? 0) >= HUB_DEGREE) continue;
     for (const rel of adjacency.get(node) ?? []) {
       relations.set(rel.id, rel);
       const other = otherEnd(rel, node);
       if ((dist.get(other) ?? depth + 1) > d + 1) frontier.push([other, d + 1]);
     }
   }
-  return [dist, within(relations.values(), dist)];
+  const hubs = new Set([...dist.keys()].filter((n) => (adjacency.get(n)?.length ?? 0) >= HUB_DEGREE));
+  return [dist, within(relations.values(), dist), hubs];
 }
 
 /**
  * Rank collected entities by personalized PageRank mass teleporting to the scored seeds, edges undirected and weighted by distinct source count.
  *
+ * A blocked entity takes mass but passes none on: its mass restarts at the seeds, as from a dead end.
+ *
  * @param seeds (Array<[Entity, number]>): seed entities with their scores.
  * @param nodes (Iterable<string>): the entity ids collected by traversal.
  * @param relations (Relation[]): the relations collected by traversal.
+ * @param blocked (ReadonlySet<string>): entities the walk may reach but not pass through, such as skipped hubs.
  * @return (Map<string, number>): each entity's rank by mass, 0 for the highest.
  */
 export function pprRank(
   seeds: Array<[Entity, number]>,
   nodes: Iterable<string>,
   relations: Relation[],
+  blocked: ReadonlySet<string> = new Set(),
 ): Map<string, number> {
   const nodeSet = new Set(nodes);
   const nodeList = [...nodeSet];
@@ -634,7 +664,7 @@ export function pprRank(
   for (let iteration = 0; iteration < PPR_MAX_ITERATIONS; iteration++) {
     const next = new Map<string, number>(nodeList.map((n) => [n, (1 - PPR_DAMPING) * (teleport.get(n) ?? 0)]));
     for (const [n, m] of mass) {
-      const out = edges.get(n) ?? new Map<string, number>();
+      const out = blocked.has(n) ? new Map<string, number>() : (edges.get(n) ?? new Map<string, number>());
       if (out.size) {
         let sum = 0;
         for (const w of out.values()) sum += w;
@@ -679,15 +709,25 @@ async function collectDecisions(
   asOf: Date | null = null,
 ): Promise<DecisionTrace[]> {
   if (!relationIds.size) return [];
-  const found: DecisionTrace[] = [];
   const tids = await ops.tracesTouchingRelations(store, ns, [...relationIds].sort(comparePy));
-  for (const tid of [...tids].sort(comparePy)) {
-    const trace = await ops.getTrace(store, ns, tid);
-    if (trace !== null && (asOf === null || epochMicros(ops.effectiveTime(trace)) <= epochMicros(asOf))) {
-      found.push(trace);
-    }
+  const traces = await ops.getTraces(store, ns, [...tids].sort(comparePy));
+  return traces.filter((t) => asOf === null || epochMicros(ops.effectiveTime(t)) <= epochMicros(asOf));
+}
+
+/**
+ * Report whether a source version can supply passages: it exists, took effect by asOf, and was not replaced by a newer version of its source by then.
+ *
+ * @param version (Props | undefined): the stored source version, or undefined when it is gone.
+ * @param asOf (Date | null): the point in time read, or null for now.
+ * @return (boolean): true when its chunks may be quoted.
+ */
+function quotable(version: Props | undefined, asOf: Date | null): boolean {
+  if (version === undefined) return false;
+  if (asOf !== null && epochMicros(fromIso(version.event_time ?? version.created_at)!) > epochMicros(asOf)) {
+    return false;
   }
-  return found;
+  const replaced = fromIso(version.replaced_at);
+  return replaced == null || (asOf !== null && epochMicros(replaced) > epochMicros(asOf));
 }
 
 async function collectPassages(
@@ -700,25 +740,19 @@ async function collectPassages(
 ): Promise<string[]> {
   const distOf = distanceIn(dist);
   const svDist = new Map<string, number>();
-  const storedAt = new Map<string, boolean>();
+  const usable = new Map<string, boolean>();
   for (const e of [...entities].sort((a, b) => distOf(a.id) - distOf(b.id))) {
     if (svDist.size >= MAX_PASSAGE_SOURCES) break;
     if (!e.source_count) continue;
     const fetch = ops.nodeListing(store, ns, L_EVIDENCE, { equals: { target_id: e.id } });
     for (let skip = 0; svDist.size < MAX_PASSAGE_SOURCES; ) {
       const rows = await fetch(skip, PAGE);
-      if (asOf !== null) {
-        const unseen = [...new Set(rows.map((r) => r.source_version as string).filter((sv) => !storedAt.has(sv)))];
-        const versions = await ops.nodesById(store, ns, L_SOURCE_VERSION, unseen);
-        for (const sv of unseen) {
-          const props = versions.get(sv);
-          const effective = fromIso(props?.event_time ?? props?.created_at);
-          storedAt.set(sv, effective != null && epochMicros(effective) <= epochMicros(asOf));
-        }
-      }
+      const unseen = [...new Set(rows.map((r) => r.source_version as string).filter((sv) => !usable.has(sv)))];
+      const versions = await ops.nodesById(store, ns, L_SOURCE_VERSION, unseen);
+      for (const sv of unseen) usable.set(sv, quotable(versions.get(sv), asOf));
       for (const row of rows) {
         const sv = row.source_version as string;
-        if (asOf !== null && !storedAt.get(sv)) continue;
+        if (!usable.get(sv)) continue;
         if (!svDist.has(sv)) svDist.set(sv, distOf(e.id));
         if (svDist.size >= MAX_PASSAGE_SOURCES) break;
       }
@@ -788,7 +822,8 @@ async function collectPreferences(
  * @param dist (Map<string, number>): entity id to hop distance from the seeds.
  * @param budgetTokens (number): the token budget; when even the first line does not fit, that line is cut to the budget, so a non-empty subgraph never yields an empty context.
  * @param countTokens ((text: string) => number): the token counter.
- * @return (string): the context text.
+ * @param hubs (ReadonlySet<string>): hub entity ids; a relation line through one is marked "(via hub)".
+ * @return (string): the context text. Certified relations come first among equally close ones and are marked "[certified]".
  */
 function assemble(
   passages: string[],
@@ -797,6 +832,7 @@ function assemble(
   dist: Map<string, number>,
   budgetTokens: number,
   countTokens: (text: string) => number,
+  hubs: ReadonlySet<string> = new Set(),
 ): string {
   const { entities, relations, preferences, decisions } = subgraph;
   const nameOf = (id: string): string => names.get(id) ?? id;
@@ -816,20 +852,22 @@ function assemble(
   for (const p of passages) if (!add(p, passageCap)) break;
 
   const distOf = distanceIn(dist);
-  const relRank = (r: Relation): [number, number, number] => {
+  const relRank = (r: Relation): [number, number, number, number] => {
     const a = distOf(r.from_entity);
     const b = distOf(r.to_entity);
-    return [Math.min(a, b), Math.max(a, b), -epochMicros(r.created_at)];
+    return [Math.min(a, b), Math.max(a, b), r.certified_at === null ? 1 : 0, -epochMicros(r.created_at)];
   };
   const ordered = [...relations].sort((x, y) => {
-    const [a0, a1, a2] = relRank(x);
-    const [b0, b1, b2] = relRank(y);
-    return a0 - b0 || a1 - b1 || a2 - b2;
+    const [a0, a1, a2, a3] = relRank(x);
+    const [b0, b1, b2, b3] = relRank(y);
+    return a0 - b0 || a1 - b1 || a2 - b2 || a3 - b3;
   });
   for (const r of ordered) {
     let line = `${nameOf(r.from_entity)} -[${r.type}]-> ${nameOf(r.to_entity)}`;
     const props = formatProps(r.properties);
     if (props) line += ` ${props}`;
+    if (r.certified_at !== null) line += " [certified]";
+    if (hubs.has(r.from_entity) || hubs.has(r.to_entity)) line += " (via hub)";
     if (!add(line, budgetTokens)) break;
   }
 
@@ -885,6 +923,7 @@ export interface RetrieveOptions {
   budget_tokens?: number;
   as_of?: DateTimeInput | null;
   seeds?: SeedTier | null;
+  skip_hubs?: boolean;
 }
 
 const RETRIEVE_KEYS = keysOf<RetrieveOptions>({
@@ -895,6 +934,7 @@ const RETRIEVE_KEYS = keysOf<RetrieveOptions>({
   budget_tokens: true,
   as_of: true,
   seeds: true,
+  skip_hubs: true,
 });
 
 /**
@@ -902,8 +942,10 @@ const RETRIEVE_KEYS = keysOf<RetrieveOptions>({
  *
  * @param graph (GraphAccess): the graph to read.
  * @param query (string): the natural-language query to seed from.
- * @param options (RetrieveOptions): the strategy and seeding tier (the graph's defaults when null), hop depth, seed count, entity cap, token budget, and as_of, the point in time to read the graph at (no offset means UTC; null for now).
- * @return (RetrievalResult): the seeds, the collected subgraph, and the assembled context.
+ * Entities with at least HUB_DEGREE relations reached by the walk are listed in hubs, and a context line through one that is not a seed is marked "(via hub)": a link through a hub is weak evidence of a real connection.
+ *
+ * @param options (RetrieveOptions): the strategy and seeding tier (the graph's defaults when null), hop depth, seed count, entity cap, token budget, and as_of, the point in time to read the graph at (no offset means UTC; null for now), and skip_hubs, to not walk through hubs other than the seeds.
+ * @return (RetrievalResult): the seeds, the collected subgraph, the assembled context, and the hubs reached.
  */
 export async function retrieve(
   graph: GraphAccess,
@@ -921,6 +963,8 @@ export async function retrieve(
   for (const key of ["depth", "k", "max_nodes", "budget_tokens"] as const) {
     if (options[key] !== undefined) requireInt(key, options[key]);
   }
+  const skipHubs = options.skip_hubs ?? false;
+  requireBool("skip_hubs", skipHubs);
   const asOf = parseTime(options.as_of, "as_of");
   const { depth, k, max_nodes: maxNodes, budget_tokens: budgetTokens } = { ...RETRIEVE_DEFAULTS, ...options };
   const strategy = (options.strategy ?? graph.tiers.strategy).toLowerCase();
@@ -937,7 +981,7 @@ export async function retrieve(
     if (value < least) throw new ValidationError(`${name} must be >= ${least}, got ${value}`);
   }
   return graph.read((store, ns) =>
-    run(graph, store, ns, query, { strategy, depth, k, maxNodes, budgetTokens, asOf, seeds }),
+    run(graph, store, ns, query, { strategy, depth, k, maxNodes, budgetTokens, asOf, seeds, skipHubs }),
   );
 }
 
@@ -949,6 +993,7 @@ interface RunOptions {
   budgetTokens: number;
   asOf: Date | null;
   seeds: SeedTier;
+  skipHubs: boolean;
 }
 
 /**
@@ -968,7 +1013,7 @@ async function run(
   query: string,
   opts: RunOptions,
 ): Promise<RetrievalResult> {
-  const { strategy, depth, k, maxNodes, budgetTokens, asOf, seeds } = opts;
+  const { strategy, depth, k, maxNodes, budgetTokens, asOf, seeds, skipHubs } = opts;
   const { countTokens } = await loadTokenizer();
   const queryTokens = tokens(query);
   const exact = shortTokens(query);
@@ -991,9 +1036,12 @@ async function run(
   const walk = strategy === "dfs" ? "dfs" : "bfs";
   const pool = Math.max(maxNodes, Math.min(MAX_POOL, maxNodes * POOL_FACTOR));
   const cap = strategy === "ppr" ? pool : maxNodes;
-  let [dist, relations] = await traverse(store, ns, seedIds, walk, depth, cap, walk === "bfs" ? cap : pool, asOf);
+  const prefetchLimit = walk === "bfs" ? cap : pool;
+  let [dist, relations, hubs] = await traverse(store, ns, seedIds, walk, depth, cap, prefetchLimit, asOf, skipHubs);
   if (strategy === "ppr") {
-    const ranked = pprRank(seedsScored, dist.keys(), relations);
+    const seedSet = new Set(seedIds);
+    const blocked = new Set(skipHubs ? [...hubs].filter((h) => !seedSet.has(h)) : []);
+    const ranked = pprRank(seedsScored, dist.keys(), relations, blocked);
     dist = new Map([...ranked].filter(([, rank]) => rank < maxNodes));
     relations = within(relations, dist);
   }
@@ -1034,7 +1082,10 @@ async function run(
   }
   if (asOf !== null) preferences = preferences.filter((p) => names.has(p.subject_entity) && names.has(p.value_entity));
   const subgraph = { entities, relations, preferences, decisions };
-  const context = assemble(passages, subgraph, names, dist, budgetTokens, countTokens);
+  hubs = new Set([...hubs].filter((h) => dist.has(h)));
+  const seedSet = new Set(seedIds);
+  const marked = new Set([...hubs].filter((h) => !seedSet.has(h)));
+  const context = assemble(passages, subgraph, names, dist, budgetTokens, countTokens, marked);
 
   return {
     query,
@@ -1043,45 +1094,225 @@ async function run(
     subgraph,
     context,
     tiers: { seeds: seeded, traversal: strategy },
+    hubs: [...hubs].sort(comparePy),
   };
 }
 
 /**
- * Report which content words of a question a schema term or a stored entity grounds.
+ * Split a question into terms: each longest run of its content tokens that spells a multi-word name or alias, and every other content token on its own, except filler words such as "where", "tell", and "me".
  *
- * Words compare ignoring case and a plain plural ending. The scan over entities stops once every word is covered.
- *
- * @param graph (GraphAccess): the graph to read.
- * @param question (string): the natural-language question.
- * @return (Coverage): the matched terms, the covered and uncovered words in sorted order, and the covered share.
+ * @param question (string): the question.
+ * @param names (Iterable<string>): the entity names, aliases, and schema term forms a run may spell, ignoring a plain plural ending.
+ * @return (string[]): the distinct terms, in question order.
  */
-export async function coverage(graph: GraphAccess, question: string): Promise<Coverage> {
-  if (typeof question !== "string") throw new ValidationError(`question must be a string, got ${typeName(question)}`);
-  if (!pyStrip(question)) throw new ValidationError("question cannot be empty");
-  return graph.read(async (store, ns) => {
-    const asked = tokens(question);
-    const terms = matchTerms(asked, graph.schema, tokens);
-    const covered = new Set(terms.flatMap((term) => term.tokens));
-    const stems = new Map<string, string[]>();
-    for (const token of asked) {
-      if (covered.has(token)) continue;
-      stems.set(stem(token), [...(stems.get(stem(token)) ?? []), token]);
+function questionTerms(question: string, names: Iterable<string>): string[] {
+  const words = tokenList(question).filter((w) => !FILLER.has(w));
+  const stems = words.map(stem);
+  const spelled = new Set<string>();
+  let longest = 1;
+  for (const name of names) {
+    const phrase = tokenList(name).map(stem);
+    if (phrase.length > 1) {
+      spelled.add(JSON.stringify(phrase));
+      longest = Math.max(longest, phrase.length);
     }
-    for await (const page of entityPages(store, ns, null, null)) {
-      if (!stems.size) break;
-      for (const entity of page) {
-        for (const token of tokens(entityText(entity))) {
-          for (const word of stems.get(stem(token)) ?? []) covered.add(word);
-          stems.delete(stem(token));
+  }
+  const terms: string[] = [];
+  for (let i = 0; i < words.length; ) {
+    let size = Math.min(longest, words.length - i);
+    while (size > 1 && !spelled.has(JSON.stringify(stems.slice(i, i + size)))) size--;
+    terms.push(words.slice(i, i + size).join(" "));
+    i += size;
+  }
+  return [...new Set(terms)];
+}
+
+/**
+ * Report whether every term token appears in a text as a token, ignoring a plain plural ending, or, when long enough, as a substring.
+ *
+ * @param words (string[]): the term's content tokens.
+ * @param text (string): the name, type, or key to match.
+ * @return (boolean): true when the text covers the term.
+ */
+function covers(words: string[], text: string): boolean {
+  const folded = fold(text);
+  const stems = new Set([...tokens(text)].map(stem));
+  return words.every((t) => stems.has(stem(t)) || grepScore(new Set([t]), folded) > 0);
+}
+
+/**
+ * Report whether a path of at most depth hops joins two entity sets without passing through a hub.
+ *
+ * @param start (Set<string>): the entities to walk from.
+ * @param goal (Set<string>): the entities to reach.
+ * @param adjacency (Map<string, Set<string>>): the undirected neighbours of each entity.
+ * @param depth (number): the most hops.
+ * @param hubs (ReadonlySet<string>): entities the path may end at but not pass through.
+ * @return (boolean): true when goal is reachable.
+ */
+function reaches(
+  start: Set<string>,
+  goal: Set<string>,
+  adjacency: Map<string, Set<string>>,
+  depth: number,
+  hubs: ReadonlySet<string>,
+): boolean {
+  for (const node of start) if (goal.has(node)) return true;
+  const seen = new Set(start);
+  let level = [...start];
+  for (let hop = 0; hop < depth; hop++) {
+    const following: string[] = [];
+    for (const node of level) {
+      if (hubs.has(node) && !start.has(node)) continue;
+      for (const other of adjacency.get(node) ?? []) {
+        if (goal.has(other)) return true;
+        if (!seen.has(other)) {
+          seen.add(other);
+          following.push(other);
         }
       }
     }
-    return {
-      question,
-      terms,
-      covered: [...covered].sort(comparePy),
-      uncovered: [...asked].filter((t) => !covered.has(t)).sort(comparePy),
-      ratio: asked.size ? covered.size / asked.size : 0,
-    };
-  });
+    level = following;
+  }
+  return false;
+}
+
+/**
+ * Judge whether a graph holds what a question asks about, by lexical matching only.
+ *
+ * Each term is matched in turn against entity names and aliases, entity types, definitions, relation types, and property and preference keys; the first kind with a match covers it. Schema terms match by name, alias, and synonym, and a match through a certified one is marked certified. Entities matched by different terms must be joined by a path of at most depth hops; a pair joined only through a hub (HUB_DEGREE or more relations) is listed in hub_only. The verdict is not_answerable when no term is covered, partial when some are missing, uncertain when all are covered but not connected or only through a hub, and answerable otherwise.
+ *
+ * @param question (string): the question.
+ * @param terms (string[] | null): the terms to check, or null to take them from the question.
+ * @param entities (Entity[]): the entities to match.
+ * @param relations (Relation[]): the relations to match and walk.
+ * @param keys (Iterable<string>): the property and preference keys to match.
+ * @param schema (ParsedSchema | null): its entity types, definitions, and relation types match too.
+ * @param depth (number): the most hops between matched entities.
+ * @return (AnswerabilityReport): the coverage of each term, the connectivity, and the verdict.
+ */
+export function answerability(
+  question: string,
+  terms: string[] | null,
+  entities: Entity[],
+  relations: Relation[],
+  keys: Iterable<string>,
+  schema: ParsedSchema | null,
+  depth: number,
+): AnswerabilityReport {
+  const found = schemaForms(schema);
+  const asked =
+    terms ??
+    questionTerms(question, [
+      ...entities.flatMap((e) => [e.name, ...e.aliases]),
+      ...Object.values(found).flatMap((named) => [...named.keys()]),
+    ]);
+  const held = groundedTerms(
+    schema,
+    entities.map((e) => e.type),
+    relations.map((r) => r.type),
+  );
+  const isHeld = (kind: TermCoverage["status"], term: string): boolean =>
+    !(kind in held) || held[kind as keyof typeof held].has(term);
+  const own = (names: Iterable<string>) => new Map([...names].map((n) => [n, [n, false] as const]));
+  const kinds: Array<[TermCoverage["status"], Map<string, readonly [string, boolean]>]> = [
+    ["type", new Map([...own(entities.map((e) => e.type)), ...found.type])],
+    ["definition", found.definition],
+    ["relation", new Map([...own(relations.map((r) => r.type)), ...found.relation])],
+    ["property", own(keys)],
+  ];
+  const coverage: TermCoverage[] = [];
+  const linked = new Map<string, Set<string>>();
+  for (const term of asked) {
+    const words = tokenList(term);
+    let matched = words.length
+      ? entities.filter((e) => [e.name, ...e.aliases].some((n) => covers(words, n))).map((e) => e.id)
+      : [];
+    let status: TermCoverage["status"] = "entity";
+    let certified = false;
+    if (matched.length) {
+      linked.set(term, new Set(matched));
+    } else {
+      status = "missing";
+      let declared: Array<readonly [string, boolean]> = [];
+      for (const [kind, named] of kinds) {
+        const hits = words.length ? [...named].filter(([form]) => covers(words, form)).map(([, hit]) => hit) : [];
+        const live = hits.filter(([t]) => isHeld(kind, t));
+        if (live.length) {
+          status = kind;
+          matched = live.map(([t]) => t);
+          certified = live.some(([, c]) => c);
+          break;
+        }
+        if (!declared.length) declared = hits;
+      }
+      if (status === "missing" && declared.length) {
+        status = "schema_only";
+        matched = declared.map(([t]) => t);
+        certified = declared.some(([, c]) => c);
+      }
+    }
+    coverage.push({ term, status, matches: [...new Set(matched)].sort(comparePy).slice(0, MAX_MATCHES), certified });
+  }
+  const adjacency = new Map<string, Set<string>>();
+  const degree = new Map<string, number>();
+  const link = (a: string, b: string) => adjacency.set(a, (adjacency.get(a) ?? new Set<string>()).add(b));
+  for (const r of relations) {
+    link(r.from_entity, r.to_entity);
+    link(r.to_entity, r.from_entity);
+    for (const eid of [r.from_entity, r.to_entity]) degree.set(eid, (degree.get(eid) ?? 0) + 1);
+  }
+  const hubs = new Set([...degree].filter(([, n]) => n >= HUB_DEGREE).map(([eid]) => eid));
+  const named = [...linked.keys()];
+  const pairs = named.flatMap((a, i) => named.slice(i + 1).map((b) => [a, b] as const));
+  const none = new Set<string>();
+  const joined = pairs.filter(([a, b]) => reaches(linked.get(a)!, linked.get(b)!, adjacency, depth, none));
+  const hubOnly = joined
+    .filter(([a, b]) => !reaches(linked.get(a)!, linked.get(b)!, adjacency, depth, hubs))
+    .map(([a, b]) => [a, b]);
+  const missing = coverage.filter((c) => c.status === "schema_only" || c.status === "missing").map((c) => c.term);
+  const connected = joined.length === pairs.length;
+  let verdict: AnswerabilityReport["verdict"] = "answerable";
+  if (missing.length === coverage.length) verdict = "not_answerable";
+  else if (missing.length) verdict = "partial";
+  else if (!connected || hubOnly.length) verdict = "uncertain";
+  return { question, verdict, terms: coverage, missing, connected, hub_only: hubOnly, note: null };
+}
+
+/**
+ * Read the namespace and judge whether it holds what a question asks about; see answerability.
+ *
+ * @param store (GraphPrimitives): the graph reader.
+ * @param ns (string): the namespace.
+ * @param schema (ParsedSchema | null): the graph's schema.
+ * @param question (string): the question.
+ * @param terms (string[] | null): the terms to check, or null to take them from the question.
+ * @param asOf (Date | null): judge the graph as it stood at this time, or null for now.
+ * @param depth (number): the most hops between matched entities.
+ * @return (AnswerabilityReport): the coverage of each term, the connectivity, and the verdict.
+ */
+export async function checkAnswerable(
+  store: GraphPrimitives,
+  ns: string,
+  schema: ParsedSchema | null,
+  question: string,
+  terms: string[] | null,
+  asOf: Date | null,
+  depth: number,
+): Promise<AnswerabilityReport> {
+  let entities = await scanEntities(store, ns);
+  let relations: Relation[];
+  let preferences: Preference[];
+  if (asOf === null) {
+    relations = await scanRelations(store, ns);
+    preferences = await ops.scan((skip, limit) => ops.listPreferences(store, ns, { skip, limit }));
+  } else {
+    relations = await ops.relationsAsOf(store, ns, asOf, {});
+    preferences = await ops.preferencesAsOf(store, ns, asOf);
+    const visible = await visibleAt(store, ns, entities, asOf, preferences);
+    entities = entities.filter((e) => visible.has(e.id));
+  }
+  const keys = [...entities, ...relations].flatMap((item) => Object.keys(item.properties));
+  keys.push(...preferences.map((p) => p.key));
+  return answerability(question, terms, entities, relations, keys, schema, depth);
 }

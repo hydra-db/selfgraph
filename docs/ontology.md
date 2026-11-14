@@ -38,33 +38,25 @@ words. It never changes what is stored.
 Definitions and mappings are stored and returned. SelfGraph does not execute an
 expression or connect to a mapped table.
 
-## Coverage
+## Grounding a question
 
-`coverage` reports which words of a question the graph can ground. Use it to
-tell an agent what the graph cannot answer before it tries.
+[`check_answerable`](trust.md#check_answerable) matches a question against these
+terms before an agent answers:
 
 ```python
-cov = await graph.coverage("What is the staff size of the firm Acme by ad spend?")
-cov.terms      # Company (matched "firm"), headcount (matched "staff size")
-cov.covered    # ["acme", "firm", "size", "staff"]
-cov.uncovered  # ["ad", "spend"]
-cov.ratio      # 0.67
+await graph.insert.facts({"entities": [{"name": "Acme", "type": "Company"}]})
+report = await graph.check_answerable("What is the staff size of the firm Acme by ad spend?")
+report.terms    # staff size -> headcount (definition), firm -> Company (type, certified), acme -> company:acme
+report.missing  # ["ad", "spend"]
+report.verdict  # "partial"
 ```
 
-A content word is covered when:
-
-- a schema term names it, by name, alias, or synonym, or
-- a stored entity's name, type, aliases, or text properties hold it.
-
-Words compare ignoring case and a plain plural ending, so `customers` matches
-`customer`. A multi-word form such as `staff size` matches when every word is in
-the question. Stopwords are ignored. Each matched term lists the form that
-matched and whether it is `certified`.
-
-From the CLI, run `selfgraph coverage QUESTION`. The MCP tool is `coverage`.
-
-**Cost.** Coverage reads entities in pages and stops once every word is covered.
-A question with an uncovered word reads the whole graph.
+Types, definitions, and relation types match by name, alias, and synonym,
+ignoring case and a plain plural ending, so `employers` matches `Company`
+through the synonym `employer`. A multi-word form such as `staff size` is one
+term. A match through a certified term is marked `certified`. A term counts
+only when the graph holds something of it, here the company Acme; a term only
+the schema names is `schema_only` and counts as missing.
 
 Schema synonyms also widen [retrieval seeding](retrieval.md#seeding-tiers).
 

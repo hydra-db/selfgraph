@@ -56,9 +56,18 @@ server logs only warnings and errors from the MCP SDK on stderr.
 types before it writes. `--instructions` and `--prompts` steer `insert_text`
 extraction.
 
+## Instructions
+
+The server sends clients one instructions block: call `check_readiness` once,
+call `check_answerable` with the question and its key terms, say the graph does
+not hold the answer on `not_answerable` (or which terms are missing on
+`partial`), then call `retrieve` and answer only from what it returns, treating
+`(via hub)` lines as weak links and preferring `[certified]` facts. See
+[Answering safely](trust.md).
+
 ## Tools
 
-Both servers register the same 35 tools. Arguments keep the library's names.
+Both servers register the same 38 tools. Arguments keep the library's names.
 Optional ones are in brackets.
 
 `list_*`, the evidence tools, and `entity_merges` also take `[limit]` (1 to 1000,
@@ -66,8 +75,10 @@ default 50) and `[cursor]`.
 
 | Tool | Arguments |
 |------|-----------|
-| `get_schema` | `[format]` (`selfgraph` or `neo4j`) |
-| `insert_text` | `text`, `[source_id]`, `[event_time]`, `[metadata]`, `[resolver]`, `[contradiction]`, `[schema]`, `[schema_mode]`, `[instructions]`, `[prompts]` |
+| `check_readiness` | none ([readiness](trust.md#readiness)) |
+| `check_answerable` | `question`, `[terms]`, `[as_of]`, `[depth]` ([check_answerable](trust.md#check_answerable)) |
+| `get_schema` | `[format]` (`selfgraph`, `neo4j`, or `ossie`) |
+| `insert_text` | `text`, `[source_id]`, `[event_time]`, `[metadata]`, `[resolver]`, `[contradiction]`, `[schema]`, `[schema_mode]`, `[instructions]`, `[prompts]`, `[replace_source]` |
 | `insert_facts` | `facts` (an object with `entities`, `relations`, `preferences`, `decisions`), `[source_id]`, `[event_time]`, `[resolver]`, `[contradiction]`, `[schema]`, `[schema_mode]` |
 | `create_entity` | `name`, `type`, `[id]`, `[aliases]`, `[external_ids]`, `[properties]` |
 | `update_entity` | `id`, `[name]`, `[type]`, `[aliases]`, `[external_ids]`, `[properties]`, `[remove_aliases]`, `[remove_properties]` |
@@ -77,7 +88,8 @@ default 50) and `[cursor]`.
 | `create_relation` | `from_entity`, `type`, `to_entity`, `[id]`, `[properties]`, `[event_time]`, `[contradiction]`, `[evidence]` |
 | `update_relation` | `id`, `[set_properties]`, `[remove_properties]`, `[event_time]`, `[evidence]` |
 | `list_relations` | `[from_entity]`, `[type]`, `[to_entity]`, `[include_invalidated]` |
-| `get_relation`, `delete_relation`, `relation_evidence` | `id` |
+| `get_relation`, `delete_relation`, `relation_evidence`, `uncertify_relation` | `id` |
+| `certify_relation` | `id`, `by` |
 | `relation_versions`, `preference_versions` | `id`, `[newest_first]` (default true) |
 | `create_preference` | `subject_entity`, `key`, `value_entity`, `[stance]`, `[id]`, `[about_entity]`, `[strength]`, `[properties]`, `[event_time]` |
 | `update_preference` | `id`, `[strength]`, `[properties]`, `[remove_properties]`, `[event_time]`, `[clear]` |
@@ -87,20 +99,19 @@ default 50) and `[cursor]`.
 | `update_decision` | `id`, `[title]`, `[steps]`, `[actor_entity]`, `[summary]`, `[rationale]`, `[outcome_entity]`, `[alternative_entities]`, `[status]`, `[event_time]`, `[clear]` |
 | `list_decisions` | `[actor_entity]`, `[status]` |
 | `get_decision`, `delete_decision` | `id` |
-| `retrieve` | `query`, `[strategy]`, `[depth]`, `[k]`, `[max_nodes]`, `[budget_tokens]`, `[as_of]`, `[seeds]` |
-| `coverage` | `question` |
+| `retrieve` | `query`, `[strategy]`, `[depth]`, `[k]`, `[max_nodes]`, `[budget_tokens]`, `[as_of]`, `[seeds]`, `[skip_hubs]` |
 | `run_cypher` | `query`, `[params]` |
 | `maintenance_decay` | `[half_life_days]`, `[now]`, `[dry_run]` |
-| `maintenance_prune` | `[min_relevance]`, `[older_than]`, `[types]`, `[relation_types]`, `[dry_run]` |
+| `maintenance_prune` | `[min_relevance]`, `[older_than]`, `[types]`, `[relation_types]`, `[include_certified]`, `[dry_run]` |
 | `maintenance_dedupe_relations` | `[dry_run]` |
 
 ### Annotations
 
 | Annotation | Tools |
 |------------|-------|
-| `readOnlyHint` | `get_*`, `list_*`, `*_versions`, `entity_evidence`, `relation_evidence`, `entity_merges`, `retrieve`, `coverage`, `run_cypher` |
+| `readOnlyHint` | `check_*`, `get_*`, `list_*`, `*_versions`, `entity_evidence`, `relation_evidence`, `entity_merges`, `retrieve`, `run_cypher` |
 | `destructiveHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, and `maintenance_dedupe_relations`. |
-| `idempotentHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, `maintenance_dedupe_relations`, and `insert_facts`. |
+| `idempotentHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, `maintenance_dedupe_relations`, `insert_facts`, `certify_relation`, and `uncertify_relation`. |
 
 ### Argument rules
 
@@ -160,7 +171,9 @@ A keyword guard, not a sandbox, rejects:
 It is not scoped to the namespace, so filter on the `ns` property. Every `$name`
 the query references must be in `params`, else it fails with
 `missing parameter $name`. Unused params are dropped. Results look as described
-in [Raw Cypher](backends.md#raw-cypher).
+in [Raw Cypher](backends.md#raw-cypher). A query that returns no rows, or that
+the backend rejects, comes with [notes](trust.md#cypher-notes) in `warnings` or
+in the error.
 
 ## Embedding
 

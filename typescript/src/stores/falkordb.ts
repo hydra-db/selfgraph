@@ -155,7 +155,7 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
       const v = Math.trunc(Number(res.stats?.[js] ?? 0));
       if (v) counters[py] = v;
     }
-    return { columns, rows, counters };
+    return { columns, rows, counters, warnings: [] };
   }
 
   /** Create the graph key up front so concurrent first writes do not race on its creation. */
