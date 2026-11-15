@@ -2799,7 +2799,8 @@ export async function replaceSource(
     [...(await nodesById(runner, ns, L_SOURCE_VERSION, others))].filter(([, row]) => row.replaced_by).map(([sv]) => sv),
   );
   const active = (r: Props): boolean =>
-    r.source_id === sourceId ? r.source_version === version : !replaced.has(r.source_version as string);
+    r.source_version === `${r.source_id}:manual` ||
+    (r.source_id === sourceId ? r.source_version === version : !replaced.has(r.source_version as string));
   const retired: string[] = [];
   const retirements: Array<readonly [EdgeRow, string, Date]> = [];
   const warnings: InsertWarning[] = [];

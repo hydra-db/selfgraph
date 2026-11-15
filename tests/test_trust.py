@@ -224,6 +224,29 @@ def test_replace_source_retires_what_only_older_versions_stated():
     assert again.source_diff.retired == [] and again.source_diff.kept == sorted([knows, reads])
 
 
+def test_replace_source_keeps_manual_evidence_from_the_same_source():
+    g = fresh_graph("replace-manual", extractor=LineExtractor())
+    run(g.insert.facts({"entities": [{"type": "Thing", "name": name} for name in ("ann", "acme")]}))
+    rel = run(g.relations.create("thing:ann", "WORKS_AT", "thing:acme", evidence=[{"source_id": "hr"}]))
+    result = run(g.insert.text("ann KNOWS bob", source_id="hr", replace_source=True))
+    assert result.source_diff.retired == [] and result.warnings == []
+    assert run(g.relations.get(rel.id)).is_current
+    assert "ann -[WORKS_AT]-> acme" in run(g.retrieve("ann acme")).context
+
+
+def test_replace_source_keeps_added_manual_support_without_quoting_replaced_text():
+    g = fresh_graph("replace-manual-mixed", extractor=LineExtractor())
+    first = run(g.insert.text("ann WORKS_AT acme", source_id="hr", event_time=utc(2024)))
+    rel = first.relations[0]
+    run(g.relations.update(rel.id, evidence=[{"source_id": "hr"}]))
+    result = run(g.insert.text("ann KNOWS bob", source_id="hr", event_time=utc(2025), replace_source=True))
+    assert result.source_diff.retired == [] and result.warnings == []
+    assert run(g.relations.get(rel.id)).is_current
+    now = run(g.retrieve("ann acme"))
+    assert "ann -[WORKS_AT]-> acme" in now.context and "ann WORKS_AT acme" not in now.context
+    assert "ann WORKS_AT acme" in run(g.retrieve("ann acme", as_of=utc(2024, 6))).context
+
+
 def test_replace_source_keeps_certified_facts_and_needs_a_source_id():
     g = fresh_graph("replace-cert", extractor=LineExtractor())
     rel = run(g.insert.text("ann WORKS_AT acme", source_id="hr")).relations[0]

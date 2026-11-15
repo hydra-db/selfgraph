@@ -2644,6 +2644,8 @@ async def replace_source(
     }
 
     def active(r: dict) -> bool:
+        if r["source_version"] == f"{r['source_id']}:manual":
+            return True
         return r["source_version"] == version if r["source_id"] == source_id else r["source_version"] not in replaced
 
     retired: list[str] = []

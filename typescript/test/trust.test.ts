@@ -191,6 +191,36 @@ function suite(spec: StoreSpec): void {
     expect(again.source_diff).toEqual({ kept: [knows, reads].sort(), added: [], retired: [] });
   });
 
+  it("keeps manual evidence from the same replaced source", async () => {
+    const g = open({ extractor: lineExtractor });
+    await g.insert.facts({ entities: ["ann", "acme"].map((name) => ({ type: "Thing", name })) });
+    const rel = await g.relations.create("thing:ann", "WORKS_AT", "thing:acme", { evidence: [{ source_id: "hr" }] });
+    const result = await g.insert.text("ann KNOWS bob", { source_id: "hr", replace_source: true });
+    expect(result.source_diff!.retired).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect((await g.relations.get(rel.id))!.is_current).toBe(true);
+    expect((await g.retrieve("ann acme")).context).toContain("ann -[WORKS_AT]-> acme");
+  });
+
+  it("keeps added manual support without quoting replaced text", async () => {
+    const g = open({ extractor: lineExtractor });
+    const first = await g.insert.text("ann WORKS_AT acme", { source_id: "hr", event_time: utc(2024) });
+    const rel = first.relations[0]!;
+    await g.relations.update(rel.id, { evidence: [{ source_id: "hr" }] });
+    const result = await g.insert.text("ann KNOWS bob", {
+      source_id: "hr",
+      event_time: utc(2025),
+      replace_source: true,
+    });
+    expect(result.source_diff!.retired).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect((await g.relations.get(rel.id))!.is_current).toBe(true);
+    const now = await g.retrieve("ann acme");
+    expect(now.context).toContain("ann -[WORKS_AT]-> acme");
+    expect(now.context).not.toContain("ann WORKS_AT acme");
+    expect((await g.retrieve("ann acme", { as_of: utc(2024, 6) })).context).toContain("ann WORKS_AT acme");
+  });
+
   it("keeps certified facts on a replaced source and needs a source id", async () => {
     const g = open({ extractor: lineExtractor });
     const rel = (await g.insert.text("ann WORKS_AT acme", { source_id: "hr" })).relations[0]!;
