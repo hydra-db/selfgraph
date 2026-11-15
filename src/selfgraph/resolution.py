@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 import re
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -415,6 +416,50 @@ class LLMResolver:
             if answer.same:
                 return ResolutionDecision(target_id=ent.id, confidence=similarity, reason="llm")
         return _no_match()
+
+    async def ask_ahead(
+        self, runner: Any, ns: str, facts: Extraction, schema: Schema | None, created_at: datetime
+    ) -> LLMResolver:
+        """Ask the LLM every question resolving some facts needs before the write, and return a resolver that answers
+        from those answers alone, so the write transaction never waits on the LLM and a retried write never asks again.
+
+        A question the write asks that was not asked here, because the graph changed in between, is answered "not the
+        same entity", which keeps the lexical decision.
+
+        @param runner (Any): a graph reader, outside any write transaction.
+        @param ns (str): namespace.
+        @param facts (Extraction): the validated facts the write will resolve.
+        @param schema (Schema | None): the active schema.
+        @param created_at (datetime): the insert time.
+        @return (LLMResolver): a copy of this resolver that answers from the recorded answers.
+        """
+        asked: dict[str, Any] = {}
+        await plan_resolution(runner, ns, facts, self._with(_Answers(self._llm, asked)), schema, created_at)
+        return self._with(_Answers(None, asked))
+
+    def _with(self, client: Any) -> LLMResolver:
+        twin = copy.copy(self)
+        twin._llm = client
+        return twin
+
+
+class _Answers:
+    def __init__(self, llm: Any, asked: dict[str, Any]) -> None:
+        self._llm = llm
+        self._asked = asked
+
+    async def generate(self, *, system: str, user: str, output: type[_SameEntity]) -> Any:
+        """Ask the LLM and keep its answer, or, with no LLM, answer from the kept ones and "not the same" otherwise.
+
+        @param system (str): the system prompt.
+        @param user (str): the question.
+        @param output (type[_SameEntity]): the answer model.
+        @return (Any): the answer.
+        """
+        if self._llm is None:
+            return self._asked.get(user) or output(same=False)
+        self._asked[user] = await self._llm.generate(system=system, user=user, output=output)
+        return self._asked[user]
 
 
 def _question(candidate: EntityInput, ent: Entity) -> str:

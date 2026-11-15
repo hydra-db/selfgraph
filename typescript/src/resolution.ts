@@ -453,6 +453,52 @@ export class LLMResolver implements EntityResolver {
     }
     return noMatch();
   }
+
+  /**
+   * Ask the LLM every question resolving some facts needs before the write, and return a resolver that answers from those answers alone, so the write transaction never waits on the LLM and a retried write never asks again.
+   *
+   * A question the write asks that was not asked here, because the graph changed in between, is answered "not the same entity", which keeps the lexical decision.
+   *
+   * @param runner (Runner): a graph reader, outside any write transaction.
+   * @param ns (string): the namespace.
+   * @param facts (ParsedExtraction): the validated facts the write will resolve.
+   * @param schema (ParsedSchema | null): the active schema.
+   * @param createdAt (Date): the insert time.
+   * @return (LLMResolver): a copy of this resolver that answers from the recorded answers.
+   */
+  async askAhead(
+    runner: Runner,
+    ns: string,
+    facts: ParsedExtraction,
+    schema: ParsedSchema | null,
+    createdAt: Date,
+  ): Promise<LLMResolver> {
+    const asked = new Map<string, unknown>();
+    await planResolution(runner, ns, facts, this.withClient(answers(this.llm, asked)), schema, createdAt);
+    return this.withClient(answers(null, asked));
+  }
+
+  private withClient(client: LLMClient): LLMResolver {
+    return Object.assign(Object.create(LLMResolver.prototype) as LLMResolver, this, { llm: client });
+  }
+}
+
+/**
+ * An LLM client that asks the LLM and keeps each answer by question, or, with no LLM, answers from the kept ones and "not the same" otherwise.
+ *
+ * @param llm (LLMClient | null): the LLM to ask, or null to answer only from the kept answers.
+ * @param asked (Map<string, unknown>): the answers by question, filled while asking.
+ * @return (LLMClient): the client.
+ */
+function answers(llm: LLMClient | null, asked: Map<string, unknown>): LLMClient {
+  return {
+    async generate<T>(args: { system: string; user: string; output: z.ZodType<T> }): Promise<T> {
+      if (llm === null) return asked.has(args.user) ? (asked.get(args.user) as T) : args.output.parse({ same: false });
+      const answer = await llm.generate(args);
+      asked.set(args.user, answer);
+      return answer;
+    },
+  };
 }
 
 /**

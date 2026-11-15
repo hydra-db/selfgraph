@@ -1538,7 +1538,7 @@ async function writeRelationVersion(
   return decodeRelation(props, ends);
 }
 
-const revisionOf = (e: EdgeRow): number => Math.trunc(Number(e.props.revision));
+export const revisionOf = (e: EdgeRow): number => Math.trunc(Number(e.props.revision));
 
 /**
  * Keep an edge version by id when it has a higher revision than the one kept so far.

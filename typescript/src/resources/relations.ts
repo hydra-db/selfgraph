@@ -1,4 +1,4 @@
-import { judgeContradictions } from "../contradiction.js";
+import { judgeWritten } from "../contradiction.js";
 import { NotFoundError } from "../errors.js";
 import { pyStrip } from "../internal/py.js";
 import type {
@@ -110,10 +110,9 @@ export class Relations extends Resource {
         this.graph.schemaCheck,
         { ...conflicts, ...(strict && { contradiction: "strict" }), warnings },
       );
-      if (judged && llm !== null)
-        warnings.push(...(await judgeContradictions(tx, ns, llm, [created], conflicts.caps, created.created_at)));
       return created;
     });
+    if (judged && llm !== null) warnings.push(...(await judgeWritten(this.graph, llm, [rel], conflicts.caps)));
     warnSchema(warnings);
     return rel;
   }

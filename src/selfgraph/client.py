@@ -12,7 +12,7 @@ from . import _ops, tiers
 from ._export import obsidian_vault
 from ._maintenance import inspect, scan_entities, scan_relations
 from ._serde import aware, now
-from .contradiction import judge_contradictions
+from .contradiction import apply_verdicts, ask_judge
 from .errors import CLOSED_MESSAGE, LLM_HINT, StoreError, TransientError, ValidationError
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
@@ -30,6 +30,7 @@ from .models import (
     JsonValue,
     LLMConfig,
     Readiness,
+    Relation,
     RetrievalResult,
     SourceDiff,
     as_input,
@@ -39,6 +40,7 @@ from .protocols import Embedder, Extractor, GraphStore, LLMClient
 from .provenance import record_source
 from .resolution import (
     EntityResolver,
+    LLMResolver,
     ResolverMode,
     as_resolver,
     merge_warnings,
@@ -498,16 +500,30 @@ class SelfGraph:
         async def create(tx: Any) -> Any:
             found.clear()
             check = self._schema_check
-            rel = await _ops.create_relation(
+            return await _ops.create_relation(
                 tx, self.namespace, **fields, schema_check=check, contradiction=mode, caps=caps, warnings=found
             )
-            if judged and self._llm is not None:
-                found.extend(await judge_contradictions(tx, self.namespace, self._llm, [rel], caps, rel.created_at))
-            return rel
 
         rel = await self._in_tx(create)
+        if judged and self._llm is not None:
+            found.extend(await self._judge([rel], caps))
         log_schema_warnings(found)
         return rel
+
+    async def _judge(self, written: list[Relation], caps: dict[str, Any]) -> list[InsertWarning]:
+        """Ask the LLM judge about relations a committed write stored, then retire what it chose in a short write.
+
+        The LLM is asked outside any transaction, so no lock is held while it answers and a retried write never asks
+        again; the write that retires reads each chosen rival again under its lock (see apply_verdicts).
+
+        @param written (list[Relation]): the relations the write stored.
+        @param caps (dict[str, Any]): the schema's max_count limits by relation type.
+        @return (list[InsertWarning]): the judge's relation_superseded and certified_kept warnings.
+        """
+        chosen = await ask_judge(await self._reader(), self.namespace, self._llm, written, caps)  # type: ignore[arg-type]
+        if not chosen:
+            return []
+        return await self._in_tx(lambda tx: apply_verdicts(tx, self.namespace, chosen, now()))
 
     def _build_extractor(
         self,
@@ -568,14 +584,25 @@ class SelfGraph:
         if extraction is not None:
             used = {"extraction": extraction, **used}
 
-        async def _apply(tx: Any) -> InsertResult:
+        async def _prepare(runner: Any) -> tuple[Extraction, list[InsertWarning], list[InsertWarning]]:
             _ops._require_datetime("event_time", default_event_time)
-            canonical = await _ops.validate_facts(tx, ns, facts, rewrite=lambda o: canonicalize_types(o, active_schema))
+            canonical = await _ops.validate_facts(
+                runner, ns, facts, rewrite=lambda o: canonicalize_types(o, active_schema)
+            )
             dropped: list[InsertWarning] = []
             if extracted and mode == "strict":
-                canonical, dropped = await drop_off_schema(tx, ns, canonical, active_schema)
+                canonical, dropped = await drop_off_schema(runner, ns, canonical, active_schema)
             max_count = mode == "strict" and conflicts != "off"
-            checked = await enforce_schema(tx, ns, canonical, active_schema, mode, max_count=max_count)
+            checked = await enforce_schema(runner, ns, canonical, active_schema, mode, max_count=max_count)
+            return canonical, dropped, checked
+
+        if isinstance(active_resolver, LLMResolver):
+            reader = await self._reader()
+            ahead, _, _ = await _prepare(reader)
+            active_resolver = await active_resolver.ask_ahead(reader, ns, ahead, active_schema, created_at)
+
+        async def _apply(tx: Any) -> InsertResult:
+            canonical, dropped, checked = await _prepare(tx)
             found: list[InsertWarning] = []
             resolution = None
             if active_resolver is not None:
@@ -620,9 +647,6 @@ class SelfGraph:
                 caps=caps,
                 warnings=found,
             )
-            if judged and self._llm is not None:
-                fresh = [r for r in relations if r.created_at == created_at]
-                found.extend(await judge_contradictions(tx, ns, self._llm, fresh, caps, created_at))
 
             diff = None
             if replace_source and source_id is not None and source_version is not None:
@@ -694,4 +718,8 @@ class SelfGraph:
                 source_diff=diff,
             )
 
-        return await self._in_tx(_apply)
+        result = await self._in_tx(_apply)
+        if judged and self._llm is not None:
+            notes = await self._judge([r for r in result.relations if r.created_at == created_at], caps)
+            result.warnings += [w.model_copy(update={"source_id": source_id}) for w in notes]
+        return result

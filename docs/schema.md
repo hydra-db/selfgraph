@@ -233,6 +233,15 @@ What bounds the cost:
 - Only relations this write created or changed are judged, so re-inserting the
   same facts asks nothing.
 - At most 20 rivals are listed per call, lowest id first.
+- The LLM is asked after the write commits, outside any transaction, so a
+  retried write never asks again.
+
+No lock is held while the LLM answers, so other writes are not blocked. The
+retirement is a second, short write. It reads each rival again under its source
+entity's lock, and leaves alone a rival that changed or was deleted since the
+LLM was asked. A rival certified in the meantime stays current with a
+`certified_kept` warning. Until that write commits, a read can see the new
+relation and its rival both current.
 
 The LLM can decide differently on a rerun. Use `max_count` where the rule is
 known, and keep `llm` for what a schema cannot state.

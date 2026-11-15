@@ -1,7 +1,10 @@
+import asyncio
+import contextvars
+
 import pytest
 from helpers import ANN_ACME_GLOBEX, cli, fresh_graph, mcp_session, run, store_settings, utc, works_at
 
-from selfgraph import Schema, ValidationError, ids
+from selfgraph import Schema, TransientError, ValidationError, ids
 from selfgraph.runtime import build_graph
 
 ACME = ids.relation_id("person:ann", "WORKS_AT", "company:acme")
@@ -30,6 +33,20 @@ class Judge:
     async def generate(self, *, system, user, output):
         self.prompts.append(user)
         return output(retired=self.retire)
+
+
+class WritingLLM:
+    def __init__(self, answer):
+        self.answer = answer
+        self.prompts = []
+        self.write = None
+
+    async def generate(self, *, system, user, output):
+        self.prompts.append(user)
+        if self.write is not None:
+            other_client = contextvars.Context().run(asyncio.ensure_future, self.write())
+            await asyncio.wait_for(other_client, timeout=5)
+        return output(**self.answer)
 
 
 class Embedder:
@@ -261,3 +278,53 @@ def test_cli_mcp_and_settings_carry_the_level(capsys):
     with mcp_session("tier", level="light") as srv:
         run(srv.create_entity("Acme", "Company"))
         assert run(srv.retrieve("Acme"))["tiers"] == {"seeds": "bm25", "traversal": "bfs"}
+
+
+def test_llm_judge_answers_outside_the_write_and_rechecks_what_it_chose():
+    judge = WritingLLM({"retired": [1]})
+    g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
+    judge.write = lambda: g.relations.certify(ACME, by="hr")
+    res = run(g.insert.facts({"relations": [works_at("globex", 2022)]}))
+    assert len(judge.prompts) == 1 and [w.code for w in res.warnings] == ["certified_kept"]
+    assert {r.id for r in run(g.relations.list(from_entity="person:ann")).items} == {ACME, GLOBEX}
+
+
+def test_llm_resolver_answers_before_the_write_and_never_asks_inside_it():
+    llm = WritingLLM({"same": True})
+    g = fresh_graph("tier", llm=llm, resolver="llm")
+    run(g.entities.create("Katherine Jones", "Person"))
+    llm.write = lambda: g.entities.create("Unrelated", "Thing")
+    res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Kathy Jones"}]}))
+    assert [(m.absorbed_id, m.survivor_id) for m in res.merges] == [("person:kathy-jones", "person:katherine-jones")]
+    assert len(llm.prompts) == 1 and run(g.entities.get("thing:unrelated")) is not None
+
+
+def test_a_retried_write_does_not_ask_the_llm_resolver_again():
+    llm = WritingLLM({"same": True})
+    g = fresh_graph("tier", llm=llm, resolver="llm")
+    run(g.entities.create("Katherine Jones", "Person"))
+    upsert, failed = g.store.upsert_nodes, []
+
+    async def conflict_once(*args, **kwargs):
+        if not failed:
+            failed.append(True)
+            raise TransientError("transaction conflict")
+        return await upsert(*args, **kwargs)
+
+    g.store.upsert_nodes = conflict_once
+    try:
+        res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Kathy Jones"}]}))
+    finally:
+        g.store.upsert_nodes = upsert
+    assert failed and len(llm.prompts) == 1 and len(res.merges) == 1
+
+
+def test_llm_resolver_keeps_the_lexical_decision_when_the_target_changed_after_asking():
+    llm = WritingLLM({"same": True})
+    g = fresh_graph("tier", llm=llm, resolver="llm")
+    run(g.entities.create("Katherine Jones", "Person"))
+    llm.write = lambda: g.entities.update("person:katherine-jones", aliases=["KJ"])
+    res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Kathy Jones"}]}))
+    assert res.merges == [] and len(llm.prompts) == 1
+    assert run(g.entities.get("person:kathy-jones")) is not None
