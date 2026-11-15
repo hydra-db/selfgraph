@@ -3,7 +3,15 @@ import { homedir } from "node:os";
 import { join, sep } from "node:path";
 
 import type { SelfGraph } from "./client.js";
-import { NotFoundError, STORE_KUZU_HINT, StoreError, settingHint, surfaceHint, ValidationError } from "./errors.js";
+import {
+  maskUri,
+  NotFoundError,
+  STORE_KUZU_HINT,
+  StoreError,
+  settingHint,
+  surfaceHint,
+  ValidationError,
+} from "./errors.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { casefold } from "./internal/casefold.js";
 import { log } from "./internal/log.js";
@@ -417,7 +425,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : "";
   if (scheme && !FALKOR_SCHEMES.includes(scheme)) {
     throw new ValidationError(
-      `invalid FalkorDB address ${pyRepr(uri)}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
+      `invalid FalkorDB address ${pyRepr(maskUri(uri))}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
     );
   }
   let url: URL | null;
@@ -428,7 +436,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   }
   if (url === null || url.port === "0") {
     throw new ValidationError(
-      `invalid FalkorDB address ${pyRepr(uri)}: expected host:port with a port from 1 to 65535`,
+      `invalid FalkorDB address ${pyRepr(maskUri(uri))}: expected host:port with a port from 1 to 65535`,
     );
   }
   return { url, tls: scheme === "rediss" || scheme === "falkors" };

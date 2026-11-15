@@ -100,6 +100,16 @@ export function errorMessage(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
 }
 
+/**
+ * Hide the user and password of a URI so an error message can show it.
+ *
+ * @param uri (string): the URI, such as redis://user:pass@host:6379.
+ * @return (string): the URI with its userinfo replaced by ***, such as redis://***@host:6379.
+ */
+export function maskUri(uri: string): string {
+  return uri.replace(/^((?:[^:/?#]+:\/\/)?).*@/, "$1***@");
+}
+
 const CONNECT_CODES: Readonly<Record<string, string>> = {
   ECONNREFUSED: "connection refused",
   ECONNRESET: "connection reset",

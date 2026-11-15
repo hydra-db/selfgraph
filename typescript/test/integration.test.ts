@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadTokenizer } from "../src/chunking.js";
-import { surfaceHint } from "../src/errors.js";
+import { maskUri, surfaceHint } from "../src/errors.js";
 import type { GraphPrimitives, GraphStore, JsonObject, Strategy } from "../src/index.js";
 import {
   ConflictError,
@@ -20,7 +20,7 @@ import {
   ValidationError,
 } from "../src/index.js";
 import { childEdgeId, LABELS } from "../src/labels.js";
-import { boltError, parseAuth, queryError } from "../src/stores/bolt.js";
+import { boltError, openDriver, parseAuth, queryError } from "../src/stores/bolt.js";
 import { uniqueLabels } from "../src/stores/cypher.js";
 import { kuzuError } from "../src/stores/kuzu.js";
 import { forEachStore, freshGraphs, KUZU_SPEC, type StoreSpec, uniqueNs } from "./helpers.js";
@@ -606,6 +606,30 @@ describe("store setup errors", () => {
     const down = err("ServiceUnavailable", "Failed to connect to server");
     expect(boltError(down, "bolt://h:1", null)?.message).toMatch(/^could not connect to bolt:\/\/h:1: /);
     expect(boltError(err("Neo.ClientError.Statement.SyntaxError", "bad"), "bolt://h:1", null)).toBeNull();
+  });
+
+  it("hides URI credentials in store errors", () => {
+    expect(maskUri("redis://u:secret@host:1")).toBe("redis://***@host:1");
+    expect(maskUri("redis://u:p@ss@host:1/db")).toBe("redis://***@host:1/db");
+    expect(maskUri("u:secret@host:1")).toBe("***@host:1");
+    expect(maskUri("bolt://host:7687")).toBe("bolt://host:7687");
+    for (const uri of ["redis://u:secret@host:99999", "http://u:secret@host:1", "u:secret@host:99999"]) {
+      expect(() => SelfGraph.connect({ store: "falkordb", uri })).toThrow(/^(?!.*secret).*\*\*\*@host/);
+    }
+    expect(() => openDriver("http://u:secret@host:1", null, {})).toThrow(
+      "'http://***@host:1' is not a Bolt URI; use bolt://host:port",
+    );
+    expect(() => openDriver("bolt://u:secret@", null, {})).toThrow(
+      /^cannot open a Bolt driver for 'bolt:\/\/\*\*\*@': /,
+    );
+    const down = err("ServiceUnavailable", "Failed to connect to server");
+    expect(boltError(down, "bolt://u:secret@h:1", null)?.message).toMatch(
+      /^could not connect to bolt:\/\/\*\*\*@h:1: /,
+    );
+    const denied = err("Neo.ClientError.Security.Unauthorized", "invalid credentials");
+    expect(boltError(denied, "bolt://u:secret@h:1", null)?.message).toBe(
+      "authentication failed for bolt://***@h:1: check the token/password",
+    );
   });
 
   it("validates addresses, trims syntax errors, and names a missing HydraDB token or another engine", async () => {

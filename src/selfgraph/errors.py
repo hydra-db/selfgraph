@@ -92,10 +92,20 @@ _CONNECT_CODES = {
     "ETIMEDOUT": "connection timed out",
 }
 _DANGLING = re.compile(r":[\s.]*$")
+_USERINFO = re.compile(r"^((?:[^:/?#]+://)?).*@")
 _DRIVER_BOILERPLATE = re.compile(
     r"(?:Connection Failed\. )?Please ensure that your database is listening on the correct host and port[^.]*\. "
     r"Note that the default encryption setting has changed in Neo4j 4\.0\.(?: See the docs for more information\.)?\s*"
 )
+
+
+def mask_uri(uri: str) -> str:
+    """Hide the user and password of a URI so an error message can show it.
+
+    @param uri (str): the URI, such as redis://user:pass@host:6379.
+    @return (str): the URI with its userinfo replaced by ***, such as redis://***@host:6379.
+    """
+    return _USERINFO.sub(r"\1***@", uri)
 
 
 def surface_hint(message: str) -> str:

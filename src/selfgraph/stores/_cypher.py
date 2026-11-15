@@ -8,7 +8,7 @@ from typing import Any
 
 from neo4j.graph import Node, Path, Relationship
 
-from ..errors import STORE_CLOSED_MESSAGE, StoreError, TransientError, ValidationError, error_reason
+from ..errors import STORE_CLOSED_MESSAGE, StoreError, TransientError, ValidationError, error_reason, mask_uri
 from ..ids import quote_label, quote_reltype
 from ..models import CypherResult, JsonValue
 
@@ -78,13 +78,14 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
         raise StoreError("the 'neo4j' Bolt driver is required; pip install neo4j") from exc
     scheme, sep, _ = uri.partition("://")
     if sep and scheme.lower() not in _BOLT_SCHEMES:
-        raise StoreError(f"{uri!r} is not a Bolt URI; use bolt://host:port")
+        raise StoreError(f"{mask_uri(uri)!r} is not a Bolt URI; use bolt://host:port")
     kwargs.setdefault("connection_timeout", BOLT_CONNECT_TIMEOUT)
     kwargs.setdefault("connection_acquisition_timeout", BOLT_CONNECT_TIMEOUT)
     try:
         return AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
     except Exception as exc:  # noqa: BLE001
-        raise StoreError(f"cannot open a Bolt driver for {uri!r}: {exc}") from exc
+        safe = mask_uri(uri)
+        raise StoreError(f"cannot open a Bolt driver for {safe!r}: {str(exc).replace(uri, safe)}") from exc
 
 
 def bolt_failure(exc: BaseException) -> str | None:
@@ -113,11 +114,11 @@ def bolt_error(exc: BaseException, uri: str, database: str | None) -> StoreError
     """
     failure = bolt_failure(exc)
     if failure == "auth":
-        return StoreError(f"authentication failed for {uri}: check the token/password")
+        return StoreError(f"authentication failed for {mask_uri(uri)}: check the token/password")
     if failure == "database":
         return StoreError(f"database {database!r} not found" if database else "database not found")
     if failure == "unreachable":
-        return StoreError(f"could not connect to {uri}: {error_reason(exc)}")
+        return StoreError(f"could not connect to {mask_uri(uri)}: {error_reason(exc)}")
     return None
 
 

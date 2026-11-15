@@ -195,4 +195,6 @@ Store failures raise `StoreError`. Common setup mistakes get a plain message:
 | Another process has the Kuzu database open | the Kuzu lock error, ending `Kuzu allows one process at a time` |
 | Kuzu cannot reserve memory for another database | the Kuzu mmap error, ending `pass a smaller max_db_size` |
 
+A URI in these messages shows `***` in place of its user and password, as in `redis://***@host:6379`.
+
 More connection messages are in [Errors](errors.md#connections).

@@ -7,7 +7,7 @@ from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 
 from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph
 from selfgraph._serde import LABELS
-from selfgraph.errors import StoreError, TransientError, ValidationError, surface_hint
+from selfgraph.errors import StoreError, TransientError, ValidationError, mask_uri, surface_hint
 from selfgraph.models import CypherResult
 from selfgraph.runtime import (
     GraphSettings,
@@ -20,7 +20,7 @@ from selfgraph.runtime import (
     to_jsonable,
 )
 from selfgraph.stores import cypher
-from selfgraph.stores._cypher import bolt_auth, bolt_error, parse_auth, query_error
+from selfgraph.stores._cypher import bolt_auth, bolt_driver, bolt_error, parse_auth, query_error
 from selfgraph.stores.cypher import CypherStore
 from selfgraph.stores.hydradb import HydraDBStore
 from selfgraph.stores.kuzu import _kuzu_error
@@ -194,6 +194,27 @@ def test_store_errors_are_plain_and_actionable():
     assert str(authed._error(unauthorized)).startswith("authentication failed for bolt://127.0.0.1:1")
     run(store.close())
     run(authed.close())
+
+
+def test_store_errors_hide_uri_credentials():
+    assert mask_uri("redis://u:secret@host:1") == "redis://***@host:1"
+    assert mask_uri("redis://u:p@ss@host:1/db") == "redis://***@host:1/db"
+    assert mask_uri("u:secret@host:1") == "***@host:1"
+    assert mask_uri("bolt://host:7687") == "bolt://host:7687"
+    for uri in ("redis://u:secret@host:99999", "http://u:secret@host:1", "u:secret@host:99999"):
+        with pytest.raises(ValidationError) as caught:
+            build_graph(GraphSettings(store="falkordb", uri=uri))
+        assert "secret" not in str(caught.value) and "***@host" in str(caught.value)
+    for uri in ("bolt://u:secret@host:7687", "http://u:secret@host:1"):
+        with pytest.raises(StoreError) as caught:
+            bolt_driver(uri, None)
+        assert "secret" not in str(caught.value)
+    down = DriverError("", "Couldn't connect to h:1")
+    assert str(bolt_error(down, "bolt://u:secret@h:1", None)).startswith("could not connect to bolt://***@h:1:")
+    denied = DriverError("Neo.ClientError.Security.Unauthorized", "invalid credentials")
+    assert str(bolt_error(denied, "bolt://u:secret@h:1", None)) == (
+        "authentication failed for bolt://***@h:1: check the token/password"
+    )
 
 
 def test_bolt_initialize_skips_existing_constraints():

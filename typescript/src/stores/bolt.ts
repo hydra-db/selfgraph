@@ -17,7 +17,7 @@ import neo4j, {
   type Result,
 } from "neo4j-driver";
 
-import { errorMessage, errorReason, StoreError, TransientError, ValidationError } from "../errors.js";
+import { errorMessage, errorReason, maskUri, StoreError, TransientError, ValidationError } from "../errors.js";
 import { isPlainObject, pyRepr } from "../internal/py.js";
 import type { CypherResult, JsonValue } from "../models.js";
 import { type CounterName, graphProperties, WRITE_COUNTER_NAMES } from "./cypherPrimitives.js";
@@ -91,13 +91,13 @@ export function boltFailure(exc: unknown): "auth" | "database" | "unreachable" |
 export function boltError(exc: unknown, uri: string, database: string | null): StoreError | null {
   const failure = boltFailure(exc);
   if (failure === "auth") {
-    return new StoreError(`authentication failed for ${uri}: check the token/password`, { cause: exc });
+    return new StoreError(`authentication failed for ${maskUri(uri)}: check the token/password`, { cause: exc });
   }
   if (failure === "database") {
     return new StoreError(database ? `database ${pyRepr(database)} not found` : "database not found", { cause: exc });
   }
   if (failure === "unreachable") {
-    return new StoreError(`could not connect to ${uri}: ${errorReason(exc)}`, { cause: exc });
+    return new StoreError(`could not connect to ${maskUri(uri)}: ${errorReason(exc)}`, { cause: exc });
   }
   return null;
 }
@@ -172,7 +172,7 @@ export function parseAuth(auth: unknown, defaultUser = "neo4j"): [string, string
 export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver {
   const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : null;
   if (scheme !== null && !BOLT_SCHEMES.includes(scheme)) {
-    throw new StoreError(`${pyRepr(uri)} is not a Bolt URI; use bolt://host:port`);
+    throw new StoreError(`${pyRepr(maskUri(uri))} is not a Bolt URI; use bolt://host:port`);
   }
   const pair = isPlainObject(auth) && typeof auth.scheme === "string" ? null : parseAuth(auth);
   const token = pair === null ? (auth as AuthToken | undefined) || undefined : neo4j.auth.basic(pair[0], pair[1]);
@@ -183,7 +183,10 @@ export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver 
       ...config,
     });
   } catch (exc) {
-    throw new StoreError(`cannot open a Bolt driver for ${pyRepr(uri)}: ${errorMessage(exc)}`, { cause: exc });
+    const safe = maskUri(uri);
+    throw new StoreError(`cannot open a Bolt driver for ${pyRepr(safe)}: ${errorMessage(exc).replaceAll(uri, safe)}`, {
+      cause: exc,
+    });
   }
 }
 
