@@ -2670,6 +2670,7 @@ async def replace_source(
         history = _loads(row.get("replacements_json"), [])
         if row["id"] == version and row.get("replaced_by") is not None:
             history[-1]["until"] = known_at
+            history[-1]["valid_until"] = to_iso(at)
             marks.append(
                 (row["id"], {**row, "replaced_at": None, "replaced_by": None, "replacements_json": _dumps(history)})
             )
