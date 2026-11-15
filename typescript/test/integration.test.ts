@@ -612,9 +612,17 @@ describe("store setup errors", () => {
     expect(maskUri("redis://u:secret@host:1")).toBe("redis://***@host:1");
     expect(maskUri("redis://u:p@ss@host:1/db")).toBe("redis://***@host:1/db");
     expect(maskUri("u:secret@host:1")).toBe("***@host:1");
+    for (const broken of ["\n", "\r", " "]) {
+      expect(maskUri(`redis://u:sec${broken}ret@host:1`)).toBe("redis://***@host:1");
+    }
     expect(maskUri("bolt://host:7687")).toBe("bolt://host:7687");
-    for (const uri of ["redis://u:secret@host:99999", "http://u:secret@host:1", "u:secret@host:99999"]) {
-      expect(() => SelfGraph.connect({ store: "falkordb", uri })).toThrow(/^(?!.*secret).*\*\*\*@host/);
+    for (const uri of [
+      "redis://u:secret@host:99999",
+      "http://u:secret@host:1",
+      "u:secret@host:99999",
+      "redis://u:secret\n@host:99999",
+    ]) {
+      expect(() => SelfGraph.connect({ store: "falkordb", uri })).toThrow(/^(?![\s\S]*secret)[\s\S]*\*\*\*@host/);
     }
     expect(() => openDriver("http://u:secret@host:1", null, {})).toThrow(
       "'http://***@host:1' is not a Bolt URI; use bolt://host:port",

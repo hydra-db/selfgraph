@@ -107,7 +107,7 @@ export function errorMessage(exc: unknown): string {
  * @return (string): the URI with its userinfo replaced by ***, such as redis://***@host:6379.
  */
 export function maskUri(uri: string): string {
-  return uri.replace(/^((?:[^:/?#]+:\/\/)?).*@/, "$1***@");
+  return uri.replace(/^((?:[^:/?#]+:\/\/)?)[\s\S]*@/, "$1***@");
 }
 
 const CONNECT_CODES: Readonly<Record<string, string>> = {

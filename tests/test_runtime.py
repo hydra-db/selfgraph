@@ -200,8 +200,15 @@ def test_store_errors_hide_uri_credentials():
     assert mask_uri("redis://u:secret@host:1") == "redis://***@host:1"
     assert mask_uri("redis://u:p@ss@host:1/db") == "redis://***@host:1/db"
     assert mask_uri("u:secret@host:1") == "***@host:1"
+    for broken in ("\n", "\r", " "):
+        assert mask_uri(f"redis://u:sec{broken}ret@host:1") == "redis://***@host:1"
     assert mask_uri("bolt://host:7687") == "bolt://host:7687"
-    for uri in ("redis://u:secret@host:99999", "http://u:secret@host:1", "u:secret@host:99999"):
+    for uri in (
+        "redis://u:secret@host:99999",
+        "http://u:secret@host:1",
+        "u:secret@host:99999",
+        "redis://u:secret\n@host:99999",
+    ):
         with pytest.raises(ValidationError) as caught:
             build_graph(GraphSettings(store="falkordb", uri=uri))
         assert "secret" not in str(caught.value) and "***@host" in str(caught.value)

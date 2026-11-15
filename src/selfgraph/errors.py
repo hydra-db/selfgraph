@@ -92,7 +92,7 @@ _CONNECT_CODES = {
     "ETIMEDOUT": "connection timed out",
 }
 _DANGLING = re.compile(r":[\s.]*$")
-_USERINFO = re.compile(r"^((?:[^:/?#]+://)?).*@")
+_USERINFO = re.compile(r"^((?:[^:/?#]+://)?)[\s\S]*@")
 _DRIVER_BOILERPLATE = re.compile(
     r"(?:Connection Failed\. )?Please ensure that your database is listening on the correct host and port[^.]*\. "
     r"Note that the default encryption setting has changed in Neo4j 4\.0\.(?: See the docs for more information\.)?\s*"
