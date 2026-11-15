@@ -2831,6 +2831,7 @@ export async function replaceSource(
     const history = loads<Array<Record<string, string | null>>>(row.replacements_json, []);
     if (row.id === version && replacedBy !== null) {
       history.at(-1)!.until = knownAt;
+      history.at(-1)!.valid_until = toIso(at);
       marks.push([
         row.id as string,
         { ...row, replaced_at: null, replaced_by: null, replacements_json: dumps(history) },
