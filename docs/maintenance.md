@@ -95,6 +95,12 @@ The `PruneResult` lists `entity_ids` and `relation_ids`, including relations
 removed with an endpoint. Once applied, it adds `deleted` counts, and one line is
 logged at INFO on the `selfgraph` logger.
 
+An applied prune checks its plan again in each write transaction, under the
+entities' locks. An item that a concurrent write changed so it no longer
+matches, or that was certified since the scan, is kept and listed in
+`certified`. The applied result lists what was actually removed, including a
+relation created since the scan that went with a pruned endpoint.
+
 With `min_relevance` and nothing scored yet, the plan is empty and its `note`
 says `no items have a relevance score yet; run maintenance.decay(dry_run=False) first`.
 The CLI and MCP word it `run maintenance decay --apply first` and show it only in
@@ -123,7 +129,9 @@ are created with explicit ids. Each group collapses into its lowest id:
 Relations a contradiction invalidated are never grouped. A group holding a
 [certified](trust.md#certification) relation is listed in `certified` and left
 alone, since merging would change or delete what a person verified. Uncertify
-it to merge the group.
+it to merge the group. An applied dedupe reads each group again under its
+source entity's lock, so a group certified after the scan is also left alone
+and listed in `certified`.
 
 The `DedupeResult` lists each group's `survivor`, `duplicates`, `conflicts`,
 and `versions_lost` (each duplicate's version count, all deleted). It also has a

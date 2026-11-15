@@ -4,7 +4,15 @@ import { log } from "../internal/log.js";
 import { comparePy } from "../internal/py.js";
 import { jsonIso, toIso } from "../internal/time.js";
 import * as m from "../maintenance.js";
-import type { DateTimeInput, DecayResult, DedupeGroup, DedupeResult, PruneResult, Relation } from "../models.js";
+import type {
+  DateTimeInput,
+  DecayResult,
+  DedupeGroup,
+  DedupeResult,
+  Entity,
+  PruneResult,
+  Relation,
+} from "../models.js";
 import * as ops from "../ops.js";
 import { checkOptions, keysOf, parseTime, requireBool, requireList } from "../validate.js";
 import { Resource } from "./common.js";
@@ -168,14 +176,10 @@ export class Maintenance extends Resource {
           ns,
         ] as const,
     );
-    const hit = new Set(
-      entities.filter((e) => matches(e.relevance, [e.created_at, e.updated_at], e.type, entityTypes)).map((e) => e.id),
-    );
-    const hitRels = new Set(
-      relations
-        .filter((r) => matches(r.relevance, [r.created_at, r.event_time], r.type, relationTypes))
-        .map((r) => r.id),
-    );
+    const entityMatches = (e: Entity) => matches(e.relevance, [e.created_at, e.updated_at], e.type, entityTypes);
+    const relationMatches = (r: Relation) => matches(r.relevance, [r.created_at, r.event_time], r.type, relationTypes);
+    const hit = new Set(entities.filter(entityMatches).map((e) => e.id));
+    const hitRels = new Set(relations.filter(relationMatches).map((r) => r.id));
     const certifiedRels = includeCertified ? [] : relations.filter((r) => r.certified_at !== null);
     const kept = new Set(certifiedRels.map((r) => r.id));
     const held = new Set(certifiedRels.flatMap((r) => [r.from_entity, r.to_entity]));
@@ -193,25 +197,49 @@ export class Maintenance extends Resource {
       .filter((r) => hitRels.has(r.id) || hit.has(r.from_entity) || hit.has(r.to_entity))
       .map((r) => r.id)
       .sort(comparePy);
-    const mergeIds = merges
-      .filter((row) => gone.has(row.survivor_id as string) || gone.has(row.absorbed_id as string))
-      .map((row) => row.id as string);
+    const mergesOf = (removed: ReadonlySet<string>) =>
+      merges
+        .filter((row) => removed.has(row.survivor_id as string) || removed.has(row.absorbed_id as string))
+        .map((row) => row.id as string);
     const note =
       minRelevance !== null && [...entities, ...relations].every((item) => item.relevance === null) ? UNSCORED : null;
-    const plan = { dry_run: dryRun, entity_ids: doomed, relation_ids: relationIds, certified, merge_ids: mergeIds };
+    const plan = {
+      dry_run: dryRun,
+      entity_ids: doomed,
+      relation_ids: relationIds,
+      certified,
+      merge_ids: mergesOf(gone),
+    };
     if (dryRun) return { ...plan, note };
     const deleted = { ...ops.NO_DELETES };
-    const deletes: Array<[typeof ops.deleteEntities, string[]]> = [
-      [ops.deleteEntities, doomed],
-      [ops.deleteRelations, direct],
-    ];
-    for (const [op, oids] of deletes) {
-      for (const batch of ops.batches(oids)) {
-        ops.addCounts(deleted, await this.graph.write((tx, n) => op(tx, n, batch)));
-      }
+    const removed: string[] = [];
+    const taken = new Set<string>();
+    const keptNow = new Set(certified);
+    for (const batch of ops.batches(doomed)) {
+      const done = await this.graph.write((tx, n) => m.pruneEntities(tx, n, batch, entityMatches, includeCertified));
+      ops.addCounts(deleted, done.counts);
+      removed.push(...done.entity_ids);
+      for (const rid of done.relation_ids) taken.add(rid);
+      for (const rid of done.certified) keptNow.add(rid);
     }
-    log(`pruned ${doomed.length} entities and ${relationIds.length} relations in namespace '${ns}'`, "info");
-    return { ...plan, deleted, note };
+    for (const batch of ops.batches(direct)) {
+      const done = await this.graph.write((tx, n) => m.pruneRelations(tx, n, batch, relationMatches, includeCertified));
+      ops.addCounts(deleted, done.counts);
+      for (const rid of done.relation_ids) taken.add(rid);
+      for (const rid of done.certified) keptNow.add(rid);
+    }
+    const result = {
+      dry_run: dryRun,
+      entity_ids: removed.sort(comparePy),
+      relation_ids: [...taken].sort(comparePy),
+      certified: [...keptNow].sort(comparePy),
+      merge_ids: mergesOf(new Set(removed)),
+    };
+    log(
+      `pruned ${result.entity_ids.length} entities and ${result.relation_ids.length} relations in namespace '${ns}'`,
+      "info",
+    );
+    return { ...result, deleted, note };
   }
 
   /**
@@ -258,17 +286,22 @@ export class Maintenance extends Resource {
         versions_lost: versionsLost,
       });
     }
-    const note = plan.length ? SURVIVOR_RULE : null;
-    if (dryRun) return { dry_run: dryRun, groups: plan, certified: held, note };
+    if (dryRun) return { dry_run: dryRun, groups: plan, certified: held, note: plan.length ? SURVIVOR_RULE : null };
     const deleted = { ...ops.NO_DELETES };
+    const merged: DedupeGroup[] = [];
     for (const group of plan) {
-      ops.addCounts(
-        deleted,
-        await this.graph.write((tx, n) => m.mergeRelations(tx, n, group.survivor, group.duplicates)),
+      const [counts, nowCertified] = await this.graph.write((tx, n) =>
+        m.mergeRelations(tx, n, group.survivor, group.duplicates),
       );
+      ops.addCounts(deleted, counts);
+      (nowCertified ? held : merged).push(group);
     }
-    const removed = plan.reduce((n, g) => n + g.duplicates.length, 0);
-    log(`deduplicated ${plan.length} relation groups in namespace '${ns}', removing ${removed} duplicates`, "info");
-    return { dry_run: dryRun, groups: plan, certified: held, deleted, note };
+    held.sort(
+      (a, b) =>
+        comparePy(a.from_entity, b.from_entity) || comparePy(a.type, b.type) || comparePy(a.to_entity, b.to_entity),
+    );
+    const removed = merged.reduce((n, g) => n + g.duplicates.length, 0);
+    log(`deduplicated ${merged.length} relation groups in namespace '${ns}', removing ${removed} duplicates`, "info");
+    return { dry_run: dryRun, groups: merged, certified: held, deleted, note: merged.length ? SURVIVOR_RULE : null };
   }
 }

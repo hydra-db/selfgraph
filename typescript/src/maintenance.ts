@@ -2,7 +2,7 @@ import { ValidationError } from "./errors.js";
 import { normalizeRelType } from "./ids.js";
 import { comparePy, deepEqual, pyRepr } from "./internal/py.js";
 import { epochMicros, toIso } from "./internal/time.js";
-import { L_ENTITY, L_EVIDENCE, L_MERGE, L_SOURCE } from "./labels.js";
+import { EDGE_TYPES, L_ENTITY, L_EVIDENCE, L_MERGE, L_SOURCE } from "./labels.js";
 import type {
   DecisionTrace,
   DeleteResult,
@@ -217,31 +217,36 @@ function earliest(timestamps: ReadonlyArray<Date | null>): Date | null {
 /**
  * Fold duplicate parallel relations into a survivor: merge properties, event time, and evidence, then delete.
  *
- * Properties are unioned with the survivor winning a conflict, then each duplicate in id order (see foldProperties). The survivor takes the earliest event_time of the group. Evidence is rewritten onto the survivor, which recounts its distinct sources. Every decision step that used any duplicate moves to the survivor before a duplicate is deleted, and deleting a duplicate never deletes a decision, so none is lost.
+ * Properties are unioned with the survivor winning a conflict, then each duplicate in id order (see foldProperties). The survivor takes the earliest event_time of the group. Evidence is rewritten onto the survivor, which recounts its distinct sources. Every decision step that used any duplicate moves to the survivor before a duplicate is deleted, and deleting a duplicate never deletes a decision, so none is lost. The group is read again under its source entity's lock, and left alone when any of it is now certified.
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
  * @param survivor (string): the relation id that is kept.
  * @param duplicates (readonly string[]): the relation ids folded into it.
- * @return (DeleteResult): the delete counts of the removed duplicates.
+ * @return ([DeleteResult, boolean]): the delete counts of the removed duplicates, and whether the group was left alone because a relation in it is certified.
  */
 export async function mergeRelations(
   runner: GraphPrimitives,
   ns: string,
   survivor: string,
   duplicates: readonly string[],
-): Promise<DeleteResult> {
+): Promise<[DeleteResult, boolean]> {
   const counts = { ...ops.NO_DELETES };
+  const before = await ops.getRelationCurrent(runner, ns, survivor);
+  if (before === null) return [counts, false];
+  await runner.lockNode(ns, L_ENTITY, before.from_entity);
   const current = await ops.getRelationCurrent(runner, ns, survivor);
-  if (current === null) return counts;
-  const evidence: Evidence[] = [];
+  if (current === null) return [counts, false];
   const found: Relation[] = [];
   for (const rid of duplicates) {
     const rel = await ops.getRelationCurrent(runner, ns, rid);
-    if (rel === null) continue;
-    const rows = await ops.scan(ops.nodeListing(runner, ns, L_EVIDENCE, { equals: { target_id: rid } }));
+    if (rel !== null) found.push(rel);
+  }
+  if ([current, ...found].some((rel) => rel.certified_at !== null)) return [counts, true];
+  const evidence: Evidence[] = [];
+  for (const rel of found) {
+    const rows = await ops.scan(ops.nodeListing(runner, ns, L_EVIDENCE, { equals: { target_id: rel.id } }));
     evidence.push(...rows.map(decodeEvidence));
-    found.push(rel);
   }
   const [merged] = foldProperties(current, found);
   const first = earliest([current.event_time, ...found.map((rel) => rel.event_time)]);
@@ -258,7 +263,113 @@ export async function mergeRelations(
     counts.deleted_relation_versions += await runner.deleteEdges(ns, rid);
     await ops.deleteEvidence(runner, ns, rid);
   }
-  return counts;
+  return [counts, false];
+}
+
+export interface PruneBatch {
+  counts: DeleteResult;
+  entity_ids: string[];
+  relation_ids: string[];
+  certified: string[];
+}
+
+/**
+ * Read the current relations that start or end at some entities.
+ *
+ * @param runner (GraphPrimitives): the graph runner.
+ * @param ns (string): the namespace.
+ * @param eids (readonly string[]): the entity ids.
+ * @return (Map<string, Relation>): the current relations by id.
+ */
+async function currentTouching(
+  runner: GraphPrimitives,
+  ns: string,
+  eids: readonly string[],
+): Promise<Map<string, Relation>> {
+  const found = new Map<string, Relation>();
+  for (const side of ["from_in", "to_in"] as const) {
+    const filter = { from_label: L_ENTITY, to_label: L_ENTITY, current_only: true };
+    for (const edge of await ops.edgesAt(runner, ns, filter, side, eids)) {
+      if (!EDGE_TYPES.has(edge.type)) found.set(edge.props.id as string, ops.relationOf(edge));
+    }
+  }
+  return found;
+}
+
+/**
+ * Delete the entities a prune planned, after checking the plan again under their locks.
+ *
+ * Each entity is read again with the current relations that touch it, and those relations' source entities are locked too, so a concurrent certify or edit either lands before the check or waits for the delete. An entity that no longer matches, or that a certified relation now connects (unless includeCertified), is kept. The relations listed are the current ones the deleted entities took with them, including any created since the scan.
+ *
+ * @param runner (GraphPrimitives): the graph runner.
+ * @param ns (string): the namespace.
+ * @param eids (readonly string[]): the planned entity ids.
+ * @param stillMatches ((e: Entity) => boolean): the prune criteria, applied to the entity as stored now.
+ * @param includeCertified (boolean): also delete entities a certified relation connects.
+ * @return (PruneBatch): the delete counts, the entities and relations deleted, and the certified relations kept.
+ */
+export async function pruneEntities(
+  runner: GraphPrimitives,
+  ns: string,
+  eids: readonly string[],
+  stillMatches: (e: Entity) => boolean,
+  includeCertified: boolean,
+): Promise<PruneBatch> {
+  for (const eid of eids) await runner.lockNode(ns, L_ENTITY, eid);
+  const planned = new Set(eids);
+  const sources = new Set([...(await currentTouching(runner, ns, eids)).values()].map((r) => r.from_entity));
+  for (const source of [...sources].filter((s) => !planned.has(s)).sort(comparePy)) {
+    await runner.lockNode(ns, L_ENTITY, source);
+  }
+  const live: string[] = [];
+  for (const [eid, props] of await ops.nodesById(runner, ns, L_ENTITY, [...eids])) {
+    if (stillMatches(decodeEntity(props))) live.push(eid);
+  }
+  const touching = await currentTouching(runner, ns, live);
+  const certified = includeCertified ? [] : [...touching.values()].filter((r) => r.certified_at !== null);
+  const held = new Set(certified.flatMap((r) => [r.from_entity, r.to_entity]));
+  const doomed = live.filter((eid) => !held.has(eid)).sort(comparePy);
+  const gone = new Set(doomed);
+  const taken = [...touching.values()]
+    .filter((r) => gone.has(r.from_entity) || gone.has(r.to_entity))
+    .map((r) => r.id)
+    .sort(comparePy);
+  const counts = await ops.deleteEntities(runner, ns, doomed);
+  return { counts, entity_ids: doomed, relation_ids: taken, certified: certified.map((r) => r.id).sort(comparePy) };
+}
+
+/**
+ * Delete the relations a prune planned, after reading each again under its source entity's lock.
+ *
+ * A relation that is gone, no longer current, no longer matches, or is now certified (unless includeCertified) is kept.
+ *
+ * @param runner (GraphPrimitives): the graph runner.
+ * @param ns (string): the namespace.
+ * @param rids (readonly string[]): the planned relation ids.
+ * @param stillMatches ((r: Relation) => boolean): the prune criteria, applied to the relation as stored now.
+ * @param includeCertified (boolean): also delete certified relations.
+ * @return (PruneBatch): the delete counts, the relations deleted, and the certified relations kept.
+ */
+export async function pruneRelations(
+  runner: GraphPrimitives,
+  ns: string,
+  rids: readonly string[],
+  stillMatches: (r: Relation) => boolean,
+  includeCertified: boolean,
+): Promise<PruneBatch> {
+  const doomed: string[] = [];
+  const certified: string[] = [];
+  for (const rid of rids) {
+    const before = await ops.getRelationCurrent(runner, ns, rid);
+    if (before === null) continue;
+    await runner.lockNode(ns, L_ENTITY, before.from_entity);
+    const rel = await ops.getRelationCurrent(runner, ns, rid);
+    if (rel === null || !stillMatches(rel)) continue;
+    if (rel.certified_at !== null && !includeCertified) certified.push(rid);
+    else doomed.push(rid);
+  }
+  const counts = await ops.deleteRelations(runner, ns, doomed);
+  return { counts, entity_ids: [], relation_ids: doomed, certified };
 }
 
 /**

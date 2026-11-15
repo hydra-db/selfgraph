@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from functools import partial
-from typing import Any
+from typing import Any, NamedTuple
 
 from . import _ops
 from ._serde import (
@@ -167,6 +167,96 @@ async def write_relation_relevance(
     return len(rows)
 
 
+class PruneBatch(NamedTuple):
+    counts: dict[str, int]
+    entity_ids: list[str]
+    relation_ids: list[str]
+    certified: list[str]
+
+
+async def _current_touching(runner: Any, ns: str, eids: list[str]) -> dict[str, Relation]:
+    """Read the current relations that start or end at some entities.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param eids (list[str]): the entity ids.
+    @return (dict[str, Relation]): the current relations by id.
+    """
+    found: dict[str, Relation] = {}
+    for side in ("from_in", "to_in"):
+        for edge in await _ops._edges_into(runner, ns, L_ENTITY, L_ENTITY, side, eids, current_only=True):
+            if _ops._is_relation_type(edge["type"]):
+                found[edge["props"]["id"]] = _ops._relation_of(edge)
+    return found
+
+
+async def prune_entities(
+    runner: Any, ns: str, eids: list[str], still_matches: Callable[[Entity], bool], include_certified: bool
+) -> PruneBatch:
+    """Delete the entities a prune planned, after checking the plan again under their locks.
+
+    Each entity is read again with the current relations that touch it, and those relations' source entities are
+    locked too, so a concurrent certify or edit either lands before the check or waits for the delete. An entity
+    that no longer matches, or that a certified relation now connects (unless include_certified), is kept. The
+    relations listed are the current ones the deleted entities took with them, including any created since the scan.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param eids (list[str]): the planned entity ids.
+    @param still_matches (Callable[[Entity], bool]): the prune criteria, applied to the entity as stored now.
+    @param include_certified (bool): also delete entities a certified relation connects.
+    @return (PruneBatch): the delete counts, the entities and relations deleted, and the certified relations kept.
+    """
+    for eid in eids:
+        await runner.lock_node(ns, L_ENTITY, eid)
+    touching = await _current_touching(runner, ns, eids)
+    for source in sorted({r.from_entity for r in touching.values()} - set(eids)):
+        await runner.lock_node(ns, L_ENTITY, source)
+    stored = await _ops._nodes_by_id(runner, ns, L_ENTITY, list(eids))
+    live = [eid for eid, props in stored.items() if still_matches(decode_entity(props))]
+    touching = await _current_touching(runner, ns, live)
+    certified = [] if include_certified else [r for r in touching.values() if r.certified_at is not None]
+    held = {eid for r in certified for eid in (r.from_entity, r.to_entity)}
+    doomed = sorted(eid for eid in live if eid not in held)
+    gone = set(doomed)
+    taken = sorted(rid for rid, r in touching.items() if r.from_entity in gone or r.to_entity in gone)
+    counts = await _ops.delete_entities(runner, ns, doomed)
+    return PruneBatch(counts, doomed, taken, sorted(r.id for r in certified))
+
+
+async def prune_relations(
+    runner: Any, ns: str, rids: list[str], still_matches: Callable[[Relation], bool], include_certified: bool
+) -> PruneBatch:
+    """Delete the relations a prune planned, after reading each again under its source entity's lock.
+
+    A relation that is gone, no longer current, no longer matches, or is now certified (unless include_certified)
+    is kept.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param rids (list[str]): the planned relation ids.
+    @param still_matches (Callable[[Relation], bool]): the prune criteria, applied to the relation as stored now.
+    @param include_certified (bool): also delete certified relations.
+    @return (PruneBatch): the delete counts, the relations deleted, and the certified relations kept.
+    """
+    doomed: list[str] = []
+    certified: list[str] = []
+    for rid in rids:
+        rel = await _ops.get_relation_current(runner, ns, rid)
+        if rel is None:
+            continue
+        await runner.lock_node(ns, L_ENTITY, rel.from_entity)
+        rel = await _ops.get_relation_current(runner, ns, rid)
+        if rel is None or not still_matches(rel):
+            continue
+        if rel.certified_at is not None and not include_certified:
+            certified.append(rid)
+            continue
+        doomed.append(rid)
+    counts = await _ops.delete_relations(runner, ns, doomed)
+    return PruneBatch(counts, [], doomed, certified)
+
+
 def add_counts(total: dict[str, int], counts: dict[str, int]) -> None:
     """Add one delete's counts into a running total.
 
@@ -197,33 +287,37 @@ def fold_properties(survivor: Relation, duplicates: list[Relation]) -> tuple[dic
     return merged, {rid: sorted(keys) for rid, keys in conflicts.items()}
 
 
-async def merge_relations(runner: Any, ns: str, survivor: str, duplicates: list[str]) -> dict[str, int]:
+async def merge_relations(runner: Any, ns: str, survivor: str, duplicates: list[str]) -> tuple[dict[str, int], bool]:
     """Fold duplicate parallel relations into a survivor: merge properties, event time, and evidence, then delete.
 
     Properties are unioned with the survivor winning a conflict, then each duplicate in id order (see
     fold_properties). The survivor takes the earliest event_time of the group. Evidence is rewritten onto the
     survivor, which recounts its distinct sources. Every decision step that used any duplicate moves to the
     survivor before a duplicate is deleted, and deleting a duplicate never deletes a decision, so none is lost.
+    The group is read again under its source entity's lock, and left alone when any of it is now certified.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param survivor (str): the relation id that is kept.
     @param duplicates (list[str]): the relation ids folded into it.
-    @return (dict[str, int]): the DeleteResult counts of the removed duplicates.
+    @return (tuple[dict[str, int], bool]): the DeleteResult counts of the removed duplicates, and whether the group
+        was left alone because a relation in it is certified.
     """
     counts = dict(_ops._NO_DELETES)
     current = await _ops.get_relation_current(runner, ns, survivor)
     if current is None:
-        return counts
+        return counts, False
+    await runner.lock_node(ns, L_ENTITY, current.from_entity)
+    current = await _ops.get_relation_current(runner, ns, survivor)
+    if current is None:
+        return counts, False
+    found = [rel for rid in duplicates if (rel := await _ops.get_relation_current(runner, ns, rid)) is not None]
+    if any(rel.certified_at is not None for rel in (current, *found)):
+        return counts, True
     evidence = []
-    found = []
-    for rid in duplicates:
-        rel = await _ops.get_relation_current(runner, ns, rid)
-        if rel is None:
-            continue
-        rows = await _ops._paged(partial(runner.match_nodes, ns, L_EVIDENCE, equals={"target_id": rid}))
+    for rel in found:
+        rows = await _ops._paged(partial(runner.match_nodes, ns, L_EVIDENCE, equals={"target_id": rel.id}))
         evidence.extend(decode_evidence(row) for row in rows)
-        found.append(rel)
     merged, _ = fold_properties(current, found)
     first = min((aware(r.event_time) for r in (current, *found) if r.event_time is not None), default=None)
     same_time = to_iso(first) == to_iso(current.event_time)
@@ -242,7 +336,7 @@ async def merge_relations(runner: Any, ns: str, survivor: str, duplicates: list[
     for rid in found:
         counts["deleted_relation_versions"] += await runner.delete_edges(ns, rid)
         await _ops._delete_evidence(runner, ns, rid)
-    return counts
+    return counts, False
 
 
 def lint(

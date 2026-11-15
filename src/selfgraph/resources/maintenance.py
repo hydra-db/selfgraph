@@ -9,7 +9,7 @@ from .._serde import aware, json_iso, to_iso
 from .._serde import now as _now
 from ..errors import DECAY_HINT, ValidationError
 from ..ids import normalize_rel_type
-from ..models import DecayResult, DedupeGroup, DedupeResult, DeleteResult, PruneResult, Relation
+from ..models import DecayResult, DedupeGroup, DedupeResult, DeleteResult, Entity, PruneResult, Relation
 from ._common import Resource
 
 __all__ = ["Maintenance"]
@@ -151,40 +151,60 @@ class Maintenance(Resource):
                 return False
             return cutoff is None or _m.epoch_ms(_m.latest(stamps)) < _m.epoch_ms(cutoff)
 
+        def entity_matches(e: Entity) -> bool:
+            return matches(e.relevance, (e.created_at, e.updated_at), e.type, entity_types)
+
+        def relation_matches(r: Relation) -> bool:
+            return matches(r.relevance, (r.created_at, r.event_time), r.type, rel_types)
+
         ns = self._c.namespace
         reader = await self._c._reader()
         relations = await _m.scan_relations(reader, ns)
         entities = await _m.scan_entities(reader, ns)
-        hit = {e.id for e in entities if matches(e.relevance, (e.created_at, e.updated_at), e.type, entity_types)}
-        hit_rels = {r.id for r in relations if matches(r.relevance, (r.created_at, r.event_time), r.type, rel_types)}
+        hit = {e.id for e in entities if entity_matches(e)}
+        hit_rels = {r.id for r in relations if relation_matches(r)}
         certified = [] if include_certified else [r for r in relations if r.certified_at is not None]
         kept = {r.id for r in certified}
         doomed = sorted(hit - {eid for r in certified for eid in (r.from_entity, r.to_entity)})
         gone = set(doomed)
         cascaded = {r.id for r in relations if r.from_entity in gone or r.to_entity in gone}
         direct = sorted(r.id for r in relations if r.id in hit_rels and r.id not in cascaded and r.id not in kept)
+        merges = await _m.scan_live_merges(reader, ns)
         result = PruneResult(
             dry_run=dry_run,
             entity_ids=doomed,
             relation_ids=sorted(cascaded | set(direct)),
             certified=sorted(r.id for r in certified if r.id in hit_rels or r.from_entity in hit or r.to_entity in hit),
-            merge_ids=[
-                m["id"] for m in await _m.scan_live_merges(reader, ns) if gone & {m["survivor_id"], m["absorbed_id"]}
-            ],
+            merge_ids=[m["id"] for m in merges if gone & {m["survivor_id"], m["absorbed_id"]}],
         )
         if min_relevance is not None and all(item.relevance is None for item in (*entities, *relations)):
             result.note = _UNSCORED
         if dry_run:
             return result
         counts = dict(_ops._NO_DELETES)
-        for op, ids in ((_ops.delete_entities, doomed), (_ops.delete_relations, direct)):
+        removed: list[str] = []
+        taken: set[str] = set()
+        kept_now = set(result.certified)
+        for op, ids, still in (
+            (_m.prune_entities, doomed, entity_matches),
+            (_m.prune_relations, direct, relation_matches),
+        ):
             for batch in _ops._batches(ids):
-                _m.add_counts(counts, await self._c._write(op, batch))
+                done = await self._c._write(op, batch, still, include_certified)
+                _m.add_counts(counts, done.counts)
+                removed += done.entity_ids
+                taken.update(done.relation_ids)
+                kept_now.update(done.certified)
+        gone = set(removed)
+        result.entity_ids = sorted(removed)
+        result.relation_ids = sorted(taken)
+        result.certified = sorted(kept_now)
+        result.merge_ids = [m["id"] for m in merges if gone & {m["survivor_id"], m["absorbed_id"]}]
         result.deleted = DeleteResult(**counts)
         _log.info(
             "pruned %d entities and %d relations in namespace %r (min_relevance=%s, older_than=%s, types=%s, "
             "relation_types=%s)",
-            len(doomed),
+            len(result.entity_ids),
             len(result.relation_ids),
             ns,
             min_relevance,
@@ -243,13 +263,19 @@ class Maintenance(Resource):
         if dry_run:
             return result
         counts = dict(_ops._NO_DELETES)
+        merged = []
         for group in plan:
-            _m.add_counts(counts, await self._c._write(_m.merge_relations, group.survivor, group.duplicates))
+            done, now_certified = await self._c._write(_m.merge_relations, group.survivor, group.duplicates)
+            _m.add_counts(counts, done)
+            (held if now_certified else merged).append(group)
+        result.groups = merged
+        result.certified = sorted(held, key=lambda g: (g.from_entity, g.type, g.to_entity))
+        result.note = _SURVIVOR_RULE if merged else None
         result.deleted = DeleteResult(**counts)
         _log.info(
             "deduplicated %d relation groups in namespace %r, removing %d duplicates",
-            len(plan),
+            len(merged),
             ns,
-            sum(len(g.duplicates) for g in plan),
+            sum(len(g.duplicates) for g in merged),
         )
         return result

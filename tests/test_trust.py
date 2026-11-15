@@ -26,6 +26,7 @@ from selfgraph import (
     SelfGraph,
     StoreError,
     ValidationError,
+    _maintenance,
 )
 from selfgraph._export import obsidian_vault
 from selfgraph.retrieval import HUB_DEGREE, _ppr_rank, answerability
@@ -454,6 +455,63 @@ def test_prune_keeps_certified_facts_and_lists_the_merges_it_would_lose():
     every = run(g.maintenance.prune(older_than=soon, include_certified=True))
     assert every.entity_ids == ["thing:acme", "thing:ann"] and every.relation_ids == [rid]
     assert (every.certified, every.merge_ids) == ([], [merged.merges[0].id])
+
+
+def _after_scan(monkeypatch, name, write):
+    """Run a write right after a maintenance scan reads the graph, as a concurrent client would.
+
+    @param monkeypatch (pytest.MonkeyPatch): the fixture that swaps the scan.
+    @param name (str): the _maintenance scan to wrap, such as "scan_entities".
+    @param write (Callable[[], Awaitable[Any]]): the write to run once the scan has read.
+    @return (None): nothing.
+    """
+    scan = getattr(_maintenance, name)
+
+    async def wrapped(runner, ns):
+        out = await scan(runner, ns)
+        monkeypatch.setattr(_maintenance, name, scan)
+        await write()
+        return out
+
+    monkeypatch.setattr(_maintenance, name, wrapped)
+
+
+def test_prune_keeps_a_fact_certified_after_its_scan(monkeypatch):
+    g = fresh_graph("prune-race-cert")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))
+    rid = run(g.relations.create("person:ann", "WORKS_AT", "company:acme")).id
+    _after_scan(monkeypatch, "scan_entities", lambda: g.relations.certify(rid, by="hr"))
+    done = run(g.maintenance.prune(older_than=datetime.now(timezone.utc) + timedelta(seconds=30), dry_run=False))
+    assert (done.entity_ids, done.relation_ids, done.certified) == (["company:globex"], [], [rid])
+    assert run(g.relations.get(rid)).certified_by == "hr"
+
+
+def test_prune_lists_a_relation_created_after_its_scan(monkeypatch):
+    g = fresh_graph("prune-race-new")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))
+    late = []
+
+    async def relate():
+        late.append((await g.relations.create("person:ann", "KNOWS", "company:globex")).id)
+
+    _after_scan(monkeypatch, "scan_entities", relate)
+    done = run(g.maintenance.prune(older_than=datetime.now(timezone.utc) + timedelta(seconds=30), dry_run=False))
+    assert done.entity_ids == ["company:acme", "company:globex", "person:ann"] and done.relation_ids == late
+    assert done.deleted.deleted_relation_versions == 1 and run(g.relations.list()).items == []
+
+
+def test_dedupe_leaves_a_group_certified_after_its_scan_alone(monkeypatch):
+    g = fresh_graph("dedupe-race-cert")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))
+    for rid in ("relation:a", "relation:b"):
+        run(g.relations.create("person:ann", "WORKS_AT", "company:acme", id=rid))
+    _after_scan(monkeypatch, "scan_relations", lambda: g.relations.certify("relation:b", by="hr"))
+    done = run(g.maintenance.dedupe_relations(dry_run=False))
+    assert done.groups == [] and [(c.survivor, c.duplicates) for c in done.certified] == [
+        ("relation:a", ["relation:b"])
+    ]
+    assert done.note is None and done.deleted.deleted_relation_versions == 0
+    assert {r.id for r in run(g.relations.list()).items} == {"relation:a", "relation:b"}
 
 
 def test_lint_keeps_a_merge_survivor_off_the_orphan_list():
