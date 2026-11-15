@@ -714,12 +714,27 @@ def _quotable(version: dict | None, as_of: AsOf | None) -> bool:
     ):
         return False
     if as_of is None or as_of.known is None:
+        if as_of is not None:
+            history = _loads(version.get("replacements_json"), [])
+            if history:
+                return not any(
+                    from_iso(r["at"]) <= as_of.valid
+                    and (
+                        r.get("until") is None
+                        or (r.get("valid_until") is not None and from_iso(r["valid_until"]) > as_of.valid)
+                    )
+                    for r in history
+                )
         replaced = from_iso(version.get("replaced_at"))
         return replaced is None or (as_of is not None and replaced > as_of.valid)
     return not any(
         from_iso(r["at"]) <= as_of.valid
         and from_iso(r["known_at"]) <= as_of.known
-        and not (r["until"] and from_iso(r["until"]) <= as_of.known)
+        and (
+            r.get("until") is None
+            or from_iso(r["until"]) > as_of.known
+            or (r.get("valid_until") is not None and from_iso(r["valid_until"]) > as_of.valid)
+        )
         for r in _loads(version.get("replacements_json"), [])
     )
 
