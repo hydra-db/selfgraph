@@ -730,23 +730,30 @@ async function collectDecisions(
  */
 function quotable(version: Props | undefined, asOf: ops.AsOf | null): boolean {
   if (version === undefined) return false;
-  if (
-    asOf !== null &&
-    (epochMicros(fromIso(version.event_time ?? version.created_at)!) > epochMicros(asOf.valid) ||
-      !ops.knownBy(fromIso(version.created_at), asOf.known))
-  ) {
-    return false;
-  }
   if (asOf === null || asOf.known === null) {
+    if (asOf !== null) {
+      const history = loads<Array<Record<string, string | null>>>(version.replacements_json, []);
+      if (history.length) {
+        const valid = epochMicros(asOf.valid);
+        return !history.some(
+          (r) =>
+            epochMicros(fromIso(r.at)!) <= valid &&
+            (r.until == null || (r.valid_until != null && epochMicros(fromIso(r.valid_until)!) > valid)),
+      );
+      }
+      
     const replaced = fromIso(version.replaced_at);
     return replaced == null || (asOf !== null && epochMicros(replaced) > epochMicros(asOf.valid));
   }
   const known = epochMicros(asOf.known);
+    const valid = epochMicros(asOf.valid);
   return !loads<Array<Record<string, string | null>>>(version.replacements_json, []).some(
     (r) =>
-      epochMicros(fromIso(r.at)!) <= epochMicros(asOf.valid) &&
+      epochMicros(fromIso(r.at)!) <= valid &&
       epochMicros(fromIso(r.known_at)!) <= known &&
-      !(r.until && epochMicros(fromIso(r.until)!) <= known),
+      (r.until == null ||
+       epochMicros(fromIso(r.until)!) > known ||
+       (r.valid_until != null && epochMicros(fromIso(r.valid_until)!) > valid)),
   );
 }
 
