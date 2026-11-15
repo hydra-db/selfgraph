@@ -483,6 +483,24 @@ function suite(spec: StoreSpec): void {
     expect(await quoted(await instant())).toEqual([berlin]);
   });
 
+  it("restored source stays replaced before its restore", async () => {
+    const g = open();
+    await g.insert.facts({ entities: PEOPLE });
+    const berlin = "Ann works at Acme in Berlin.";
+    const paris = "Ann works at Acme in Paris.";
+    await g.insert.text(berlin, { source_id: "note", event_time: at(2020) });
+    await g.insert.text(paris, { source_id: "note", event_time: at(2021), replace_source: true });
+    const before = await instant();
+    await g.insert.text(berlin, { source_id: "note", replace_source: true });
+    const passages = async (options: object) => (await g.retrieve("Ann Acme Berlin Paris", options)).context;
+    expect((await passages({ as_of: at(2022) })).includes(berlin)).toBe(false);
+    expect((await passages({ as_of: at(2022) })).includes(paris)).toBe(true);
+    expect((await passages({ as_of: at(2022), known_at: before })).includes(berlin)).toBe(false);
+    expect((await passages({ as_of: at(2022), known_at: await instant() })).includes(berlin)).toBe(false);
+    expect((await passages({ as_of: new Date(Date.UTC(2020, 5, 1)) })).includes(berlin)).toBe(true);
+    expect((await passages({ as_of: at(2099) })).includes(berlin)).toBe(true);
+  });
+  
   it("known_at shows the certification in force then", async () => {
     const g = open();
     await g.insert.facts({ entities: PEOPLE });
