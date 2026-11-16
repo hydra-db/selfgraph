@@ -473,6 +473,20 @@ export function conformanceStore(name: string, kuzuPath: string): GraphStore {
   return STORE_SPECS.find((s) => s.name === name)!.make();
 }
 
+const JOINED = { from_entity: "company:acme", type: "JOINED", to_entity: "person:jane-doe" };
+const LIKES = { subject_entity: "person:jane-doe", key: "employer", value_entity: "company:acme" };
+const FACTS_TYPE_CASES: unknown[] = [
+  { relations: [{ ...JOINED, event_time: "2021" }] },
+  { relations: [{ ...JOINED, event_time: 2021 }] },
+  { relations: [{ ...JOINED, event_time: true }] },
+  { relations: [{ ...JOINED, evidence: [{ source_id: "s", confidence: "0.5" }] }] },
+  { preferences: [{ ...LIKES, strength: "0.9" }] },
+  { preferences: [{ ...LIKES, strength: false }] },
+  { preferences: [{ ...LIKES, event_time: "20210304T" }] },
+  { decisions: [{ title: "t", event_time: 1700000000 }] },
+  { decisions: [{ title: "t", event_time: "soon", steps: [] }] },
+];
+
 const USES_SPEC = {
   entities: [{ name: "Person" }, { name: "Tool" }],
   relations: [{ type: "USES", from: { types: ["Person"], max_count: 2 } }],
@@ -582,6 +596,17 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     if (!(exc instanceof ValidationError)) throw exc;
     out.facts_none = exc.message;
   }
+  const factsTypes: string[] = [];
+  for (const facts of FACTS_TYPE_CASES) {
+    try {
+      await graph.insert.facts(facts as never);
+      factsTypes.push("accepted");
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      factsTypes.push(exc.message);
+    }
+  }
+  out.facts_types = factsTypes;
   try {
     await graph.entities.create("Unsafe", "Thing", { properties: { n: 2 ** 53 } } as never);
     out.unsafe_integer = "accepted";

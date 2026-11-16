@@ -433,6 +433,20 @@ FACTS = {
     ],
 }
 
+_JOINED = {"from_entity": "company:acme", "type": "JOINED", "to_entity": "person:jane-doe"}
+_LIKES = {"subject_entity": "person:jane-doe", "key": "employer", "value_entity": "company:acme"}
+FACTS_TYPE_CASES = [
+    {"relations": [{**_JOINED, "event_time": "2021"}]},
+    {"relations": [{**_JOINED, "event_time": 2021}]},
+    {"relations": [{**_JOINED, "event_time": True}]},
+    {"relations": [{**_JOINED, "evidence": [{"source_id": "s", "confidence": "0.5"}]}]},
+    {"preferences": [{**_LIKES, "strength": "0.9"}]},
+    {"preferences": [{**_LIKES, "strength": False}]},
+    {"preferences": [{**_LIKES, "event_time": "20210304T"}]},
+    {"decisions": [{"title": "t", "event_time": 1700000000}]},
+    {"decisions": [{"title": "t", "event_time": "soon", "steps": []}]},
+]
+
 USES_SPEC = {
     "entities": [{"name": "Person"}, {"name": "Tool"}],
     "relations": [{"type": "USES", "from": {"types": ["Person"], "max_count": 2}}],
@@ -587,6 +601,13 @@ async def write(graph):
         out["facts_none"] = "accepted"
     except ValidationError as exc:
         out["facts_none"] = str(exc)
+    out["facts_types"] = []
+    for facts in FACTS_TYPE_CASES:
+        try:
+            await graph.insert.facts(facts)
+            out["facts_types"].append("accepted")
+        except ValidationError as exc:
+            out["facts_types"].append(str(exc))
     try:
         await graph.entities.create("Unsafe", "Thing", properties={"n": 2**53})
         out["unsafe_integer"] = "accepted"
