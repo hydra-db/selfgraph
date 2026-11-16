@@ -148,6 +148,9 @@ class SyncSelfGraph:
     def check_answerable(self, *args: Any, **kwargs: Any):
         return self._run(self._async.check_answerable(*args, **kwargs))
 
+    def diff(self, *args: Any, **kwargs: Any):
+        return self._run(self._async.diff(*args, **kwargs))
+
     def readiness(self):
         return self._run(self._async.readiness())
 

@@ -814,6 +814,22 @@ class AnswerabilityReport(BaseModel):
     note: str | None = None
 
 
+class Change(BaseModel):
+    kind: Literal["entity", "relation", "preference", "decision", "merge", "source"]
+    action: Literal["created", "updated", "retired", "certified", "uncertified", "merged", "unmerged"]
+    id: str
+    at: datetime
+    summary: str
+
+
+class DiffResult(BaseModel):
+    since: datetime | None = None
+    until: datetime | None = None
+    total: int = 0
+    counts: dict[str, int] = Field(default_factory=dict)
+    changes: list[Change] = Field(default_factory=list)
+
+
 class LintIssue(BaseModel):
     code: Literal["orphan_entity", "unsupported_fact", "stale_decision_step", "type_off_schema"]
     count: int

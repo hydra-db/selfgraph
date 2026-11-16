@@ -13,6 +13,7 @@ from ._export import obsidian_vault
 from ._maintenance import inspect, scan_entities, scan_relations
 from ._serde import L_TRACE, aware, now
 from .contradiction import judge_contradictions
+from .diff import _KINDS, build_diff
 from .errors import CLOSED_MESSAGE, LLM_HINT, StoreError, TransientError, ValidationError
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
@@ -24,6 +25,7 @@ from .models import (
     CypherResult,
     DecisionTrace,
     DecisionTraceInput,
+    DiffResult,
     Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
@@ -421,6 +423,47 @@ class SelfGraph:
         if report.missing and self._seeds == "embeddings":
             report.note = _LEXICAL_NOTE
         return report
+
+    async def diff(
+        self,
+        *,
+        since: datetime | str | None = None,
+        until: datetime | str | None = None,
+        kinds: list[str] | None = None,
+        limit: int | None = None,
+    ) -> DiffResult:
+        """Read the change log of the namespace: every write between two times, oldest first.
+
+        A change is one write: an entity or decision created or later updated, a relation or preference version
+        written, a relation retired with what retired it, a certification started or ended, an entity merge
+        recorded or undone, or a source version recorded. Changes are kept forever, so the log shows even what
+        was later deleted. The window is half open: a change exactly at since is left out, so re-reading from the
+        last change's time never repeats it, and one at until is included. Counts per kind cover the whole window;
+        limit keeps only the newest changes, after the counts were taken.
+
+        @param since (datetime | str | None): leave out changes at or before this time (naive means UTC), or None.
+        @param until (datetime | str | None): leave out changes after this time (naive means UTC), or None for now.
+        @param kinds (list[str] | None): which kinds to include: entity, relation, preference, decision, merge, or
+            source, or None for all of them.
+        @param limit (int | None): the most changes to return, keeping the newest, or None for all.
+        @return (DiffResult): the window, the total, the counts per kind, and the changes oldest first.
+        """
+        since = _ops.parse_time(since, "since")
+        until = _ops.parse_time(until, "until")
+        if kinds is not None:
+            _ops._require_list("kinds", kinds)
+            if not kinds or not all(isinstance(k, str) and k in _KINDS for k in kinds):
+                raise ValidationError(
+                    "kinds must be non-empty strings from entity, relation, preference, decision, merge, source"
+                )
+            kinds = list(dict.fromkeys(kinds))
+        if limit is not None:
+            _ops._require_int("limit", limit)
+            if limit < 1:
+                raise ValidationError(f"limit must be >= 1, got {limit}")
+        await self._ensure_ready()
+        reader = await self._reader()
+        return await build_diff(reader, self.namespace, since=since, until=until, kinds=kinds, limit=limit)
 
     async def readiness(self) -> Readiness:
         """Report whether the graph can answer: the store is reachable and the namespace holds entities, with counts
