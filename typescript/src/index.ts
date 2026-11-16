@@ -7,7 +7,13 @@ export {
   setTokenizer,
   type Tokenizer,
 } from "./chunking.js";
-export { buildGraph, type CheckAnswerableOptions, SelfGraph, type SelfGraphOptions } from "./client.js";
+export {
+  buildGraph,
+  type CheckAnswerableOptions,
+  type DiffOptions,
+  SelfGraph,
+  type SelfGraphOptions,
+} from "./client.js";
 export {
   ConflictError,
   ExtractionError,
@@ -30,6 +36,7 @@ export { buildLlmClient, type LLMArg } from "./llm/index.js";
 export {
   type AnswerabilityReport,
   type Certification,
+  type Change,
   type CypherResult,
   type CypherRow,
   DateTimeInput,
@@ -40,6 +47,7 @@ export {
   type DedupeGroup,
   type DedupeResult,
   type DeleteResult,
+  type DiffResult,
   type Entity,
   EntityInput,
   type Evidence,

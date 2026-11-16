@@ -12,6 +12,7 @@ import {
 } from "@commander-js/extra-typings";
 
 import { SelfGraph } from "./client.js";
+import { DIFF_KINDS } from "./diff.js";
 import { NotFoundError, PromptTemplateError, SelfGraphError, surfaceHint, ValidationError } from "./errors.js";
 import { toOssie } from "./export.js";
 import { setLogger } from "./internal/log.js";
@@ -769,6 +770,27 @@ export function buildParser(): Command<[], GlobalOptions> {
     .command("readiness")
     .description("check the store is reachable and the namespace holds data, with counts and lint")
     .action((_o, cmd) => emit(cmd, (g) => g.readiness()));
+  program
+    .command("diff")
+    .description("read the change log: every write between two times, oldest first")
+    .option("--since <iso>", `leave out changes at or before this time (${ISO})`, timeArg("since"))
+    .option("--until <iso>", `leave out changes after this time (${ISO})`, timeArg("until"))
+    .option("--kind <kind>", "only this kind (repeatable)", collect, [])
+    .option("--limit <n>", "keep only the newest N changes", intArg("--limit"))
+    .action((o, cmd) =>
+      emit(cmd, (g) => {
+        for (const k of o.kind) {
+          if (!DIFF_KINDS.some((d) => d === k))
+            throw new ValidationError(`--kind must be one of ${DIFF_KINDS.join(", ")}`);
+        }
+        return g.diff({
+          since: o.since,
+          until: o.until,
+          kinds: o.kind.length ? o.kind : null,
+          limit: o.limit,
+        });
+      }),
+    );
   program
     .command("check-answerable <question...>")
     .description("judge whether the graph holds what a question asks about; words join into one")

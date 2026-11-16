@@ -537,6 +537,22 @@ export interface LintIssue {
   sample: string[];
 }
 
+export interface Change {
+  kind: "entity" | "relation" | "preference" | "decision" | "merge" | "source";
+  action: "created" | "updated" | "retired" | "certified" | "uncertified" | "merged" | "unmerged";
+  id: string;
+  at: Date;
+  summary: string;
+}
+
+export interface DiffResult {
+  since: Date | null;
+  until: Date | null;
+  total: number;
+  counts: Record<string, number>;
+  changes: Change[];
+}
+
 export interface Readiness {
   ready: boolean;
   store: string;

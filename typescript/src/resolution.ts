@@ -1085,7 +1085,7 @@ async function loadEntries(runner: Runner, ns: string, records: readonly Props[]
  * @param entries (readonly Props[]): its EntityMergeEntry rows.
  * @return (MergeRecord): the record.
  */
-function decodeMerge(props: Props, entries: readonly Props[] = []): MergeRecord {
+export function decodeMerge(props: Props, entries: readonly Props[] = []): MergeRecord {
   const listed: Record<string, unknown[]> = { source: [], rewrite: [] };
   for (const row of [...entries].sort((a, b) => Number(a.seq) - Number(b.seq))) {
     listed[row.kind as string]!.push(loads<unknown>(row.value_json, null));
