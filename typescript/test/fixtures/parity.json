@@ -7536,6 +7536,159 @@
      ]
     ]
    },
+   "reinstated": {
+    "mode": "supersede",
+    "existing": [
+     {
+      "id": "relation:acme",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:acme",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-01T00:00:00Z",
+      "is_current": false,
+      "source_count": 0,
+      "invalidated_at": "2024-01-04T00:00:00Z",
+      "invalidated_by": "relation:globex",
+      "invalidated_known_at": "2024-01-04T00:00:00Z",
+      "relevance": null,
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null,
+      "certifications": []
+     },
+     {
+      "id": "relation:globex",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "WORKS_AT",
+      "to_entity": "company:globex",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-04T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "invalidated_known_at": null,
+      "relevance": null,
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null,
+      "certifications": []
+     },
+     {
+      "id": "relation:c",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "MEMBER_OF",
+      "to_entity": "club:c",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-03T00:00:00Z",
+      "is_current": false,
+      "source_count": 0,
+      "invalidated_at": "2024-01-05T00:00:00Z",
+      "invalidated_by": "relation:e",
+      "invalidated_known_at": "2024-01-05T00:00:00Z",
+      "relevance": null,
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null,
+      "certifications": []
+     },
+     {
+      "id": "relation:d",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "MEMBER_OF",
+      "to_entity": "club:d",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-04T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "invalidated_known_at": null,
+      "relevance": null,
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null,
+      "certifications": []
+     },
+     {
+      "id": "relation:e",
+      "revision": 1,
+      "from_entity": "person:ann",
+      "type": "MEMBER_OF",
+      "to_entity": "club:e",
+      "properties": {},
+      "event_time": null,
+      "created_at": "2024-01-05T00:00:00Z",
+      "is_current": true,
+      "source_count": 0,
+      "invalidated_at": null,
+      "invalidated_by": null,
+      "invalidated_known_at": null,
+      "relevance": null,
+      "relevance_at": null,
+      "certified_at": null,
+      "certified_by": null,
+      "certifications": []
+     }
+    ],
+    "admits": [
+     [
+      "relation:globex",
+      "WORKS_AT",
+      "person:ann",
+      "company:globex",
+      "2023-12-31T00:00:00+00:00"
+     ],
+     [
+      "relation:d",
+      "MEMBER_OF",
+      "person:ann",
+      "club:d",
+      "2024-01-01T00:00:00+00:00"
+     ]
+    ],
+    "results": [
+     [
+      {
+       "relation:acme": null,
+       "relation:globex": [
+        "relation:acme",
+        "2024-01-01T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "contradiction_out_of_order",
+        "relation relation:globex is older than current WORKS_AT relation relation:acme at from entity person:ann, so relation:acme stays current"
+       ]
+      ]
+     ],
+     [
+      {
+       "relation:c": null,
+       "relation:d": [
+        "relation:e",
+        "2024-01-05T00:00:00+00:00"
+       ]
+      },
+      [
+       [
+        "contradiction_out_of_order",
+        "relation relation:d is older than current MEMBER_OF relation relation:c at from entity person:ann, so relation:c stays current"
+       ]
+      ]
+     ]
+    ]
+   },
    "batch": {
     "mode": "warn",
     "existing": [],

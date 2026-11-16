@@ -664,6 +664,28 @@ CONTRADICTION_CASES = {
         ],
         [admit("relation:a", "WORKS_AT", "person:ann", "company:a", day(0))],
     ),
+    "reinstated": (
+        "supersede",
+        [
+            version(1, day(0), invalidated=day(3), by="relation:globex", known=day(3), rid="relation:acme"),
+            version(1, day(3), rid="relation:globex", ends=("person:ann", "WORKS_AT", "company:globex")),
+            version(
+                1,
+                day(2),
+                invalidated=day(4),
+                by="relation:e",
+                known=day(4),
+                rid="relation:c",
+                ends=("person:ann", "MEMBER_OF", "club:c"),
+            ),
+            version(1, day(3), rid="relation:d", ends=("person:ann", "MEMBER_OF", "club:d")),
+            version(1, day(4), rid="relation:e", ends=("person:ann", "MEMBER_OF", "club:e")),
+        ],
+        [
+            admit("relation:globex", "WORKS_AT", "person:ann", "company:globex", day(-1)),
+            admit("relation:d", "MEMBER_OF", "person:ann", "club:d", day(0)),
+        ],
+    ),
     "batch": (
         "warn",
         [],
@@ -684,13 +706,14 @@ def contradiction_cases():
         "cases": {},
     }
     for name, (mode, existing, admits) in CONTRADICTION_CASES.items():
-        tracker = Contradictions(caps, mode, existing)
+        current, history = ([v for v in existing if v.is_current is keep] for keep in (True, False))
+        tracker = Contradictions(caps, mode, current, history)
         results = []
         for rid, rtype, frm, to, effective in admits:
             at = _serde.from_iso(effective)
             warnings = tracker.admit(rid, rtype, frm, to, (at, 1, at))
             ended, settled = tracker.settle()
-            retired = {old: [by, _serde.to_iso(when)] for old, (by, when) in ended.items()}
+            retired = {old: end and [end[0], _serde.to_iso(end[1])] for old, end in ended.items()}
             results.append([retired, [[w.code, w.message] for w in [*warnings, *settled]]])
         out["cases"][name] = {
             "mode": mode,
