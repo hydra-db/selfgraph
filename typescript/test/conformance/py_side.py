@@ -440,8 +440,12 @@ async def write(graph):
 async def supersede(graph):
     """Supersede relations capped at both endpoints, with facts arriving out of order across batches.
 
+    Two facts then move to an earlier time, one restated by an insert and one through relations.update, so each
+    stops displacing the relation it retired.
+
     @param graph (SelfGraph): a graph with a two-sided max_count schema and contradiction="supersede".
-    @return (dict): each relation's versions, newest first, and the warning codes of each insert.
+    @return (dict): each relation's versions, newest first, and the warning codes of each insert, before and after
+        the moves.
     """
     people = [{"type": "Person", "name": n} for n in ("Ann", "Bob")]
     companies = [{"type": "Company", "name": n} for n in ("Acme", "Globex", "Initech")]
@@ -464,18 +468,31 @@ async def supersede(graph):
     for batch in batches:
         result = await graph.insert.facts({"relations": batch})
         out["warnings"].append([w.code for w in result.warnings])
-    out["versions"] = {}
-    for person, company in (("ann", "acme"), ("ann", "globex"), ("ann", "initech"), ("bob", "acme")):
-        rid = ids.relation_id(f"person:{person}", "WORKS_AT", f"company:{company}")
-        out["versions"][rid] = [
-            [
-                v.revision,
-                v.is_current,
-                v.invalidated_by,
-                _serde.json_iso(v.invalidated_at) if v.invalidated_at else None,
+
+    async def versions():
+        rows = {}
+        for person, company in (("ann", "acme"), ("ann", "globex"), ("ann", "initech"), ("bob", "acme")):
+            rid = ids.relation_id(f"person:{person}", "WORKS_AT", f"company:{company}")
+            rows[rid] = [
+                [
+                    v.revision,
+                    v.is_current,
+                    v.invalidated_by,
+                    _serde.json_iso(v.invalidated_at) if v.invalidated_at else None,
+                ]
+                for v in await graph.relations.versions(rid)
             ]
-            for v in await graph.relations.versions(rid)
-        ]
+        return rows
+
+    out["versions"] = await versions()
+    restated = await graph.insert.facts({"relations": [link("ann", "initech", 2023)]})
+    globex = ids.relation_id("person:ann", "WORKS_AT", "company:globex")
+    updated = await graph.relations.update(globex, event_time=datetime(2021, 1, 1, tzinfo=timezone.utc))
+    out["moved"] = {
+        "warnings": [w.code for w in restated.warnings],
+        "updated": [updated.revision, updated.is_current, updated.invalidated_by],
+        "versions": await versions(),
+    }
     return out
 
 

@@ -544,8 +544,11 @@ export const SUPERSEDE_SCHEMA: Schema = {
 /**
  * Supersede relations capped at both endpoints, with facts arriving out of order across batches.
  *
+ * Two facts then move to an earlier time, one restated by an insert and one through relations.update, so each stops
+ * displacing the relation it retired.
+ *
  * @param graph (SelfGraph): a graph with a two-sided max_count schema and contradiction "supersede".
- * @return (Promise<Record<string, unknown>>): each relation's versions, newest first, and the warning codes of each insert.
+ * @return (Promise<Record<string, unknown>>): each relation's versions, newest first, and the warning codes of each insert, before and after the moves.
  */
 export async function supersede(graph: SelfGraph): Promise<Record<string, unknown>> {
   await graph.insert.facts({
@@ -570,20 +573,32 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
     const result = await graph.insert.facts({ relations });
     warnings.push(result.warnings.map((w) => w.code));
   }
-  const versions: Record<string, unknown> = {};
-  for (const [person, company] of [
-    ["ann", "acme"],
-    ["ann", "globex"],
-    ["ann", "initech"],
-    ["bob", "acme"],
-  ]) {
-    const rid = ids.relationId(`person:${person}`, "WORKS_AT", `company:${company}`);
-    versions[rid] = (await graph.relations.versions(rid)).map((v) => [
-      v.revision,
-      v.is_current,
-      v.invalidated_by,
-      v.invalidated_at ? jsonIso(v.invalidated_at) : null,
-    ]);
-  }
-  return { warnings, versions };
+  const versions = async (): Promise<Record<string, unknown>> => {
+    const rows: Record<string, unknown> = {};
+    for (const [person, company] of [
+      ["ann", "acme"],
+      ["ann", "globex"],
+      ["ann", "initech"],
+      ["bob", "acme"],
+    ]) {
+      const rid = ids.relationId(`person:${person}`, "WORKS_AT", `company:${company}`);
+      rows[rid] = (await graph.relations.versions(rid)).map((v) => [
+        v.revision,
+        v.is_current,
+        v.invalidated_by,
+        v.invalidated_at ? jsonIso(v.invalidated_at) : null,
+      ]);
+    }
+    return rows;
+  };
+  const before = await versions();
+  const restated = await graph.insert.facts({ relations: [link("ann", "initech", 2023)] });
+  const globex = ids.relationId("person:ann", "WORKS_AT", "company:globex");
+  const updated = await graph.relations.update(globex, { event_time: new Date(Date.UTC(2021, 0, 1)) });
+  const moved = {
+    warnings: restated.warnings.map((w) => w.code),
+    updated: [updated.revision, updated.is_current, updated.invalidated_by],
+    versions: await versions(),
+  };
+  return { warnings, versions: before, moved };
 }
