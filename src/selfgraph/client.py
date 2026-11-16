@@ -539,6 +539,33 @@ class SelfGraph:
         log_schema_warnings(found)
         return rel
 
+    async def _update_relation(self, rid: str, **fields: Any) -> Any:
+        """Update one relation, settling its endpoints again when the graph's mode supersedes, and log the warnings.
+
+        @param rid (str): the relation id.
+        @param fields (Any): the update_relation keyword arguments.
+        @return (Relation): the new version.
+        """
+        mode, caps = self._contradiction_for(None, self._schema)
+        found: list[InsertWarning] = []
+
+        async def update(tx: Any) -> Any:
+            found.clear()
+            return await _ops.update_relation(
+                tx,
+                self.namespace,
+                rid,
+                **fields,
+                schema_check=self._schema_check,
+                contradiction="supersede" if mode in ("supersede", "llm") else "off",
+                caps=caps,
+                warnings=found,
+            )
+
+        rel = await self._in_tx(update)
+        log_schema_warnings(found)
+        return rel
+
     def _build_extractor(
         self,
         call_instructions: ExtractionInstructions | None,

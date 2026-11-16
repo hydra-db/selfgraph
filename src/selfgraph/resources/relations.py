@@ -130,23 +130,25 @@ class Relations(Resource):
         write at a time per graph object, so concurrent updates in one process all apply;
         writers in separate processes are not serialized there and can lose updates.
 
+        Under contradiction "supersede" a new event_time settles the relation's max_count endpoints again, as an
+        insert would: a relation it retired and no longer displaces becomes current again, and the updated relation
+        is returned retired when it is now the older fact. Warnings go to the selfgraph logger.
+
         @param id (str): the relation id.
         @param set_properties (Mapping[str, JsonValue] | None): properties to set.
         @param remove_properties (Iterable[str]): property keys to drop.
         @param event_time (datetime | str | None): the new valid time.
         @param evidence (Iterable[EvidenceInput] | None): evidence records to add; existing evidence is kept.
-        @return (Relation): the new current version.
+        @return (Relation): the new version, current unless supersede retired it.
         """
         check_options("relations.update", extra, ("set_properties", "remove_properties", "event_time", "evidence"))
         _ops._validate_own_id("relation", id)
-        return await self._c._write(
-            _ops.update_relation,
+        return await self._c._update_relation(
             id,
             set_properties=set_properties,
             remove_properties=remove_properties,
             event_time=event_time,
             evidence=None if evidence is None else _ops.evidence_from_inputs(evidence),
-            schema_check=self._c._schema_check,
         )
 
     async def evidence(self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page[Evidence]:

@@ -2510,8 +2510,15 @@ async def update_relation(
     event_time: datetime | None,
     evidence: list[Evidence] | None,
     schema_check: SchemaCheck | None = None,
+    contradiction: str = "off",
+    caps: Mapping[str, RelationCap] | None = None,
+    warnings: list[InsertWarning] | None = None,
 ) -> Relation:
     """Create a new version of a relation with changed properties.
+
+    In supersede mode a new event_time moves the relation in the time order of its constrained endpoints, so they are
+    settled again as on insert (see Contradictions.settle): a relation it retired and no longer displaces becomes
+    current again, and the updated relation is written already invalidated when it is now the older one.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -2522,7 +2529,12 @@ async def update_relation(
     @param evidence (list[Evidence] | None): evidence to merge.
     @param schema_check (SchemaCheck | None): checks the resulting relation against the schema before the write, given
         the stored version too so only violations the update introduces count.
-    @return (Relation): the new current version; raises ValidationError for a relation a contradiction invalidated.
+    @param contradiction (str): "supersede" settles the endpoints again when event_time changes; any other mode
+        leaves them as they are, since an update adds no relation.
+    @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits by relation type.
+    @param warnings (list[InsertWarning] | None): receives the contradiction warnings.
+    @return (Relation): the new version, current unless supersede mode retired it; raises ValidationError for a
+        relation a contradiction invalidated.
     """
     _require_json_mapping("set_properties", set_properties)
     _require_list("remove_properties", remove_properties)
@@ -2570,9 +2582,28 @@ async def update_relation(
         is_current=True,
         source_count=sources,
     )
+    moved = contradiction == "supersede" and to_iso(new_event_time) != to_iso(current.event_time)
+    ends = (current.type, current.from_entity, current.to_entity)
+    tracker, existing = await _contradiction_check(runner, ns, contradiction if moved else "off", caps, [ends])
+    resettled = []
+    if tracker is not None:
+        edge = {"props": props, "from_id": current.from_entity, "to_id": current.to_entity, "type": current.type}
+        tracker.admit(rid, *ends, _rank(_relation_of(edge)))
+        ended, settled = await _settle(runner, ns, caps, tracker, existing)
+        if warnings is not None:
+            warnings.extend(settled)
+        resettled = [_resettled(ns, existing[old], end, created_at) for old, end in ended.items() if old != rid]
+        if rid in ended:
+            props = _resettled(ns, edge, ended[rid], created_at)["props"]
+    for write in [props, *(edge["props"] for edge in resettled)]:
+        await _precheck_write(runner, write)
     rel = await _write_relation_version(
         runner, ns, current.from_entity, current.type, current.to_entity, props, retire=True
     )
+    if resettled:
+        await runner.create_edges(
+            ns, L_ENTITY, L_ENTITY, [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in resettled]
+        )
     await _write_evidence(runner, ns, records, created_at)
     return rel
 
