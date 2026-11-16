@@ -110,6 +110,20 @@ function suite(spec: StoreSpec): void {
     expect(kind("entity")).toContainEqual(["created", robert, "Person Robert Smith"]);
   });
 
+  it("keeps certification events from older versions after a relation update", async () => {
+    const g = await factsGraph();
+    const rel = await g.relations.get(AB_FACTS.relations[0]!.id);
+    await g.relations.certify(rel!.id, { by: "qa" });
+    await g.relations.update(rel!.id, { set_properties: { weight: 2 } });
+    const out = await g.diff();
+    const certified = out.changes.filter((c) => c.kind === "relation").map((c) => [c.action, c.id]);
+    expect(certified).toEqual([
+      ["created", rel!.id],
+      ["certified", rel!.id],
+      ["updated", rel!.id],
+    ]);
+  });
+
   it("filters by kind and keeps counts over the whole window when limited", async () => {
     const g = await factsGraph();
     await g.preferences.create("t:a", "tool", "t:b");

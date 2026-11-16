@@ -70,14 +70,13 @@ def test_window_is_half_open():
     assert empty.total == 0 and empty.counts == {} and empty.changes == []
 
 
-def test_entity_update_is_a_separate_change():
+def test_entity_update_is_not_a_change():
     g = fresh_graph("diff")
     run(g.entities.create("Ann", "Person"))
-    created = instant()
     run(g.entities.update("person:ann", name="Ann Q Doe"))
     out = run(g.diff())
-    entity = [(c.action, c.at > created) for c in out.changes if c.id == "person:ann"]
-    assert entity == [("created", False), ("updated", True)]
+    entity = [(c.action, c.summary) for c in out.changes if c.id == "person:ann"]
+    assert entity == [("created", "Person Ann Q Doe")]
 
 
 def test_relation_revision_and_retirement_by_supersede():
@@ -116,6 +115,16 @@ def test_certify_and_uncertify_are_changes():
     out = run(g.diff())
     actions = [c.action for c in out.changes if c.kind == "relation"]
     assert actions == ["created", "certified", "uncertified"]
+
+
+def test_certification_survives_a_relation_update():
+    g = facts_graph()
+    rel = run(g.relations.get(AB_FACTS["relations"][0]["id"]))
+    run(g.relations.certify(rel.id, by="qa"))
+    run(g.relations.update(rel.id, set_properties={"weight": 2}))
+    out = run(g.diff())
+    certified = [(c.action, c.id) for c in out.changes if c.kind == "relation"]
+    assert certified == [("created", rel.id), ("certified", rel.id), ("updated", rel.id)]
 
 
 def test_preference_versions_are_created_then_updated():

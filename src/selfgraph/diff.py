@@ -35,12 +35,6 @@ def change_events(
 ) -> list[Change]:
     """Derive the change log from decoded graph objects, oldest to newest writes in no particular order.
 
-    Every kind of write is one change: an entity created or later updated, a relation or preference version
-    written (created for revision 1, updated for a later revision), a relation retired with what retired it, a
-    certification started or ended on a current relation, a decision created or later updated, an entity merge
-    recorded and when it was undone, and a source version recorded. Nothing is deleted from the log, so a
-    change survives its object being deleted.
-
     @param entities (list[Any]): the entities.
     @param relations (list[Any]): every stored relation version, current or not.
     @param preferences (list[Any]): every stored preference version, current or not.
@@ -53,8 +47,6 @@ def change_events(
     for e in entities:
         summary = f"{e.type} {e.name}"
         events.append(Change(kind="entity", action="created", id=e.id, at=e.created_at, summary=summary))
-        if e.updated_at > e.created_at:
-            events.append(Change(kind="entity", action="updated", id=e.id, at=e.updated_at, summary=summary))
     for r in relations:
         summary = f"{r.type} {r.from_entity} -> {r.to_entity}"
         action = "created" if r.revision == 1 else "updated"
@@ -69,12 +61,11 @@ def change_events(
                     summary=f"{summary} (by {r.invalidated_by})",
                 )
             )
-        if r.is_current:
-            for c in r.certifications:
-                marked = f"{summary} (by {c.by})"
-                events.append(Change(kind="relation", action="certified", id=r.id, at=c.at, summary=marked))
-                if c.until is not None:
-                    events.append(Change(kind="relation", action="uncertified", id=r.id, at=c.until, summary=marked))
+        for c in r.certifications:
+            marked = f"{summary} (by {c.by})"
+            events.append(Change(kind="relation", action="certified", id=r.id, at=c.at, summary=marked))
+            if c.until is not None:
+                events.append(Change(kind="relation", action="uncertified", id=r.id, at=c.until, summary=marked))
     for p in preferences:
         summary = f"{p.stance} {p.key}: {p.subject_entity} -> {p.value_entity}"
         action = "created" if p.revision == 1 else "updated"
@@ -120,9 +111,6 @@ async def build_diff(
     limit: int | None,
 ) -> DiffResult:
     """Read the change log of a namespace between two times.
-
-    Every change in the window is returned oldest first, with counts per kind over the whole window; limit keeps
-    only the newest changes, after the counts were taken.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.

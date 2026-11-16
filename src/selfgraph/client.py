@@ -434,13 +434,6 @@ class SelfGraph:
     ) -> DiffResult:
         """Read the change log of the namespace: every write between two times, oldest first.
 
-        A change is one write: an entity or decision created or later updated, a relation or preference version
-        written, a relation retired with what retired it, a certification started or ended, an entity merge
-        recorded or undone, or a source version recorded. Changes are kept forever, so the log shows even what
-        was later deleted. The window is half open: a change exactly at since is left out, so re-reading from the
-        last change's time never repeats it, and one at until is included. Counts per kind cover the whole window;
-        limit keeps only the newest changes, after the counts were taken.
-
         @param since (datetime | str | None): leave out changes at or before this time (naive means UTC), or None.
         @param until (datetime | str | None): leave out changes after this time (naive means UTC), or None for now.
         @param kinds (list[str] | None): which kinds to include: entity, relation, preference, decision, merge, or

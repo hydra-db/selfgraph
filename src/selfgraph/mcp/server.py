@@ -779,9 +779,10 @@ async def diff(
     limit: PositiveInt | None = None,
 ) -> dict[str, Any]:
     """Read the change log of the namespace: every write between two times, oldest first.
-    A change is one write: an entity or decision created or later updated, a relation or preference version
-    written, a relation retired with what retired it, a certification started or ended, an entity merge recorded
-    or undone, or a source version recorded; deleted objects stay in the log. since (ISO 8601; no offset means
+    A change is one write: an entity created, a decision created or later updated, a relation or preference
+    version written, a relation retired with what retired it, a certification started or ended on a relation
+    version, an entity merge recorded or undone, or a source version recorded. The log is read back from the
+    stored records, so deleting an object also drops its writes from the log. since (ISO 8601; no offset means
     UTC) leaves out changes at or before it, so re-reading from the last change's time never repeats one; until
     leaves out changes after it (inclusive). counts per kind cover the whole window; limit keeps the newest."""
     g = await _graph_handle()

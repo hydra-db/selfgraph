@@ -26,12 +26,6 @@ function inWindow(at: Date, since: Date | null, until: Date | null): boolean {
 /**
  * Derive the change log from decoded graph objects, oldest to newest writes in no particular order.
  *
- * Every kind of write is one change: an entity created or later updated, a relation or preference version
- * written (created for revision 1, updated for a later revision), a relation retired with what retired it, a
- * certification started or ended on a current relation, a decision created or later updated, an entity merge
- * recorded and when it was undone, and a source version recorded. Nothing is deleted from the log, so a
- * change survives its object being deleted.
- *
  * @param entities (Entity[]): the entities.
  * @param relations (Relation[]): every stored relation version, current or not.
  * @param preferences (Preference[]): every stored preference version, current or not.
@@ -52,9 +46,6 @@ export function changeEvents(
   for (const e of entities) {
     const summary = `${e.type} ${e.name}`;
     events.push({ kind: "entity", action: "created", id: e.id, at: e.created_at, summary });
-    if (epochMicros(e.updated_at) > epochMicros(e.created_at)) {
-      events.push({ kind: "entity", action: "updated", id: e.id, at: e.updated_at, summary });
-    }
   }
   for (const r of relations) {
     const summary = `${r.type} ${r.from_entity} -> ${r.to_entity}`;
@@ -74,13 +65,11 @@ export function changeEvents(
         summary: `${summary} (by ${r.invalidated_by})`,
       });
     }
-    if (r.is_current) {
-      for (const c of r.certifications) {
-        const marked = `${summary} (by ${c.by})`;
-        events.push({ kind: "relation", action: "certified", id: r.id, at: c.at, summary: marked });
-        if (c.until !== null) {
-          events.push({ kind: "relation", action: "uncertified", id: r.id, at: c.until, summary: marked });
-        }
+    for (const c of r.certifications) {
+      const marked = `${summary} (by ${c.by})`;
+      events.push({ kind: "relation", action: "certified", id: r.id, at: c.at, summary: marked });
+      if (c.until !== null) {
+        events.push({ kind: "relation", action: "uncertified", id: r.id, at: c.until, summary: marked });
       }
     }
   }
@@ -128,9 +117,6 @@ export function changeEvents(
 
 /**
  * Read the change log of a namespace between two times.
- *
- * Every change in the window is returned oldest first, with counts per kind over the whole window; limit keeps
- * only the newest changes, after the counts were taken.
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.

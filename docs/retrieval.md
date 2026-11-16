@@ -139,7 +139,7 @@ A change is one write. `kind` and `action` say what happened:
 
 | Kind | Actions |
 |------|---------|
-| `entity` | `created` when first stored, `updated` on a later write. |
+| `entity` | `created` when first stored. Per-field entity edits are not changes. |
 | `relation` | `created` or `updated` per version write, `retired` by a supersede or schema conflict, `certified` and `uncertified` per certification. A retirement's summary names what retired it. |
 | `preference` | `created` or `updated` per version write. |
 | `decision` | `created` or `updated`. |
@@ -150,8 +150,10 @@ The window is half open: a change exactly at `since` is left out, so re-reading
 from the last change's time never repeats it, and one at `until` is included.
 Times take a datetime or ISO 8601 text (no offset means UTC; CLI `--since`,
 `--until`). Counts per kind cover the whole window, even when `kinds` filters
-the list or `limit` keeps only the newest `limit` changes. Changes are kept
-forever, so the log shows even what was later deleted.
+the list or `limit` keeps only the newest `limit` changes. The log is read back
+from the stored records, so deleting an object also drops its writes from the
+log. Certifications are read from every relation version, so a certification
+survives a later version of its relation.
 
 `selfgraph diff` prints the same result, and the `diff` [MCP tool](mcp.md#tools)
 exposes it to agents. For the point-in-time reads behind a change, see
