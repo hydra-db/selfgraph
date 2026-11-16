@@ -2633,12 +2633,17 @@ async function lockCurrent<T>(
 /**
  * Create a new version of a relation with changed properties; an unchanged update is a no-op.
  *
+ * In supersede mode a new event_time moves the relation in the time order of its constrained endpoints, so they are
+ * settled again as on insert (see Contradictions.settle): a relation it retired and no longer displaces becomes
+ * current again, and the updated relation is written already invalidated when it is now the older one.
+ *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rid (string): the relation id.
  * @param args (UpdateRelationArgs): the properties to set and remove, a new valid time, and evidence to add.
  * @param schemaCheck (SchemaCheck | undefined): checks the resulting relation against the schema before the write, given the stored version too so only violations the update introduces count.
- * @return (Relation): the current version; throws ValidationError for a relation a contradiction invalidated.
+ * @param options (ContradictionOptions): "supersede" settles the endpoints again when event_time changes, against the max_count limits, and the warnings go to its list; any other mode leaves them as they are, since an update adds no relation.
+ * @return (Relation): the new version, current unless supersede mode retired it; throws ValidationError for a relation a contradiction invalidated.
  */
 export async function updateRelation(
   runner: Runner,
@@ -2646,6 +2651,7 @@ export async function updateRelation(
   rid: string,
   args: UpdateRelationArgs,
   schemaCheck?: SchemaCheck,
+  options: ContradictionOptions = {},
 ): Promise<Relation> {
   requireJsonMapping("set_properties", args.set_properties);
   requireList("remove_properties", args.remove_properties);
@@ -2696,7 +2702,34 @@ export async function updateRelation(
     is_current: true,
     source_count: sources,
   });
-  const rel = await writeRelationVersion(runner, ns, current, props, true);
+  const moved = options.contradiction === "supersede" && toIso(newEventTime) !== toIso(current.event_time);
+  const [tracker, existing] = await contradictionCheck(runner, ns, moved ? options : {}, [
+    [type, from_entity, to_entity],
+  ]);
+  let resettled: EdgeRow[] = [];
+  let written = props;
+  if (tracker !== null) {
+    const edge = { props, from_id: from_entity, to_id: to_entity, type };
+    const version = relationOf(edge);
+    tracker.admit(rid, type, from_entity, to_entity, rankOf(version), effectiveTime(version));
+    const [ended, settled] = await settleWrite(runner, ns, options.caps, tracker, existing);
+    options.warnings?.push(...settled);
+    resettled = [...ended]
+      .filter(([old]) => old !== rid)
+      .map(([old, end]) => resettledEdge(ns, existing.get(old)!, end, createdAt));
+    const own = ended.get(rid);
+    if (own !== undefined) written = resettledEdge(ns, edge, own, createdAt).props;
+  }
+  for (const write of [written, ...resettled.map((e) => e.props)]) precheckWrite(runner, write);
+  const rel = await writeRelationVersion(runner, ns, current, written, true);
+  if (resettled.length) {
+    await runner.createEdges(
+      ns,
+      L_ENTITY,
+      L_ENTITY,
+      resettled.map((e) => [e.type, e.from_id, e.to_id, e.props]),
+    );
+  }
   await writeEvidence(runner, ns, records, createdAt);
   return rel;
 }

@@ -160,6 +160,10 @@ export class Relations extends Resource {
   /**
    * Create a new version of a relation with merged properties; an unchanged update is a no-op.
    *
+   * Under contradiction "supersede" a new event_time settles the relation's max_count endpoints again, as an insert
+   * would: a relation it retired and no longer displaces becomes current again, and the updated relation is returned
+   * retired when it is now the older fact. Warnings go to the selfgraph logger.
+   *
    * @param id (string): the relation id.
    * @param options (RelationUpdateOptions): properties to set and remove, a new valid time, and evidence records to add.
    * @return (Relation): the current version.
@@ -169,8 +173,11 @@ export class Relations extends Resource {
     ops.validateOwnId("relation", id);
     const eventTime = parseTime(options.event_time, "event_time");
     const evidence = options.evidence == null ? null : parseEvidence(options.evidence);
-    return this.graph.write((tx, ns) =>
-      ops.updateRelation(
+    const { contradiction, caps } = this.graph.contradictionFor(null, this.graph.schema);
+    const warnings: InsertWarning[] = [];
+    const rel = await this.graph.write((tx, ns) => {
+      warnings.length = 0;
+      return ops.updateRelation(
         tx,
         ns,
         id,
@@ -181,8 +188,11 @@ export class Relations extends Resource {
           evidence,
         },
         this.graph.schemaCheck,
-      ),
-    );
+        { contradiction, caps, warnings },
+      );
+    });
+    warnSchema(warnings);
+    return rel;
   }
 
   /**
