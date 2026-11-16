@@ -299,6 +299,21 @@ def test_known_at_shows_the_certification_in_force_then():
     assert held(instant()) == (None, [("alice", False), ("bob", False)])
 
 
+def test_update_ends_the_open_certification_with_an_end_time():
+    g = graph()
+    rel = run(g.relations.create("person:ann", "WORKS_AT", "company:acme"))
+    run(g.relations.certify(rel.id, by="alice"))
+    updated = instant()
+    run(g.relations.update(rel.id, set_properties={"role": "senior"}))
+    [new, old] = run(g.relations.versions(rel.id))
+    assert new.certifications == [] and new.certified_at is None
+    assert [(c.by, c.until is None) for c in old.certifications] == [("alice", False)]
+    assert old.certifications[0].until >= updated
+    assert old.certified_at is None
+    run(g.relations.uncertify(rel.id))
+    assert [(c.by, c.until is None) for c in new.certifications] == []
+
+
 def test_known_at_counts_only_the_sources_recorded_by_then():
     g = graph()
     run(g.insert.facts({"relations": [works_at("acme")]}, source_id="one"))

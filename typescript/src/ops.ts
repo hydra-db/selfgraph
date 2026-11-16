@@ -2667,6 +2667,9 @@ async function lockCurrent<T>(
 /**
  * Create a new version of a relation with changed properties; an unchanged update is a no-op.
  *
+ * The mark belongs to the version: a later revision starts uncertified, and an open certification on the superseded
+ * version ends at the update, with the end time kept on the old version.
+ *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rid (string): the relation id.
@@ -2718,6 +2721,20 @@ export async function updateRelation(
     }
     await writeEvidence(runner, ns, records, createdAt);
     return current;
+  }
+
+  const held = current.certifications.find((c) => c.until === null) ?? null;
+  if (held !== null) {
+    const history = current.certifications.map((c) => ({
+      by: c.by,
+      at: toIso(c.at),
+      until: toIso(c === held ? createdAt : c.until),
+    }));
+    await runner.updateCurrentEdge(ns, rid, {
+      certified_at: null,
+      certified_by: null,
+      certifications_json: dumps(history),
+    });
   }
 
   const props = encodeRelationProps({

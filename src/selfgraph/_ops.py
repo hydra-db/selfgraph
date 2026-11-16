@@ -2528,6 +2528,9 @@ async def update_relation(
 ) -> Relation:
     """Create a new version of a relation with changed properties.
 
+    The mark belongs to the version: a later revision starts uncertified, and an open certification on the
+    superseded version ends at the update, with the end time kept on the old version.
+
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param rid (str): relation id.
@@ -2574,6 +2577,16 @@ async def update_relation(
             current.source_count = sources
         await _write_evidence(runner, ns, records, created_at)
         return current
+
+    held = next((c for c in current.certifications if c.until is None), None)
+    if held is not None:
+        history = [
+            {"by": c.by, "at": to_iso(c.at), "until": to_iso(created_at if c is held else c.until)}
+            for c in current.certifications
+        ]
+        await runner.update_current_edge(
+            ns, rid, {"certified_at": None, "certified_by": None, "certifications_json": _dumps(history)}
+        )
 
     props = encode_relation_props(
         ns=ns,

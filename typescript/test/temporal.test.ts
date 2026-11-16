@@ -545,6 +545,23 @@ function suite(spec: StoreSpec): void {
     ]);
   });
 
+  it("update ends the open certification with an end time", async () => {
+    const g = open();
+    await g.insert.facts({ entities: PEOPLE });
+    const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme");
+    await g.relations.certify(rel.id, { by: "alice" });
+    const updated = await instant();
+    await g.relations.update(rel.id, { set_properties: { role: "senior" } });
+    const [current, old] = await g.relations.versions(rel.id);
+    expect(current!.certifications).toEqual([]);
+    expect(current!.certified_at).toBeNull();
+    expect(old!.certifications.map((c) => [c.by, c.until === null])).toEqual([["alice", false]]);
+    expect(old!.certifications[0]!.until!.getTime()).toBeGreaterThanOrEqual(updated.getTime());
+    expect(old!.certified_at).toBeNull();
+    await g.relations.uncertify(rel.id);
+    expect((await g.relations.get(rel.id))!.certifications).toEqual([]);
+  });
+
   it("known_at counts only the sources recorded by then", async () => {
     const g = open();
     await g.insert.facts({ entities: PEOPLE });
