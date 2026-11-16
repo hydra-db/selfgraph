@@ -1739,6 +1739,8 @@ export class Contradictions {
   private readonly order = new Map<string, number>();
   private readonly dirty = new Map<string, number>();
   private readonly certified = new Set<string>();
+  private readonly ends = new Map<string, readonly [string, string, string]>();
+  private readonly read = new Set<string>();
 
   /**
    * Track the current relations at every endpoint a schema max_count constrains.
@@ -1754,7 +1756,25 @@ export class Contradictions {
     current: Iterable<Relation>,
     history: Iterable<Relation> = [],
   ) {
+    this.learn([], current, history);
+  }
+
+  /**
+   * Take in the relations read at more constrained endpoints, leaving the ones already tracked as they are.
+   *
+   * @param ends (Iterable<readonly [string, string, string]>): (normalized type, source id, destination id) whose constrained endpoints were read in full.
+   * @param current (Iterable<Relation>): the stored current relations read there.
+   * @param history (Iterable<Relation>): the newest version of each relation a contradiction retired there.
+   */
+  learn(
+    ends: Iterable<readonly [string, string, string]>,
+    current: Iterable<Relation>,
+    history: Iterable<Relation>,
+  ): void {
+    for (const end of ends) for (const [slot] of this.slots(...end)) this.read.add(JSON.stringify(slot));
     for (const rel of history) {
+      if (this.ends.has(rel.id) || this.where.has(rel.id)) continue;
+      this.ends.set(rel.id, [rel.type, rel.from_entity, rel.to_entity]);
       this.times.set(rel.id, effectiveTime(rel));
       if (rel.invalidated_by !== null && rel.invalidated_at !== null) {
         this.ended.set(rel.id, [rel.invalidated_by, rel.invalidated_at]);
@@ -1765,6 +1785,7 @@ export class Contradictions {
       }
     }
     for (const rel of current) {
+      if (this.ends.has(rel.id) || this.where.has(rel.id)) continue;
       if (rel.certified_at !== null) this.certified.add(rel.id);
       for (const [slot] of this.slots(rel.type, rel.from_entity, rel.to_entity)) {
         this.seat(slot, rel.id, rankOf(rel), effectiveTime(rel));
