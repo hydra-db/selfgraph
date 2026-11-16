@@ -475,3 +475,122 @@ def test_undated_restatement_keeps_event_time_and_supersede_order():
     assert [r.id for r in run(g.relations.list()).items] == [GLOBEX]
     as_of = {r.id for r in run(g.retrieve("Ann", as_of=utc(2023))).subgraph.relations}
     assert as_of == {GLOBEX}
+
+
+BOTH_ENDS_SPEC = {
+    "entities": [{"name": "Person"}, {"name": "Company"}],
+    "relations": [
+        {
+            "type": "WORKS_AT",
+            "from": {"types": ["Person"], "max_count": 1},
+            "to": {"types": ["Company"], "max_count": 1},
+        }
+    ],
+}
+
+
+def backdate(g, how, rel):
+    if how == "insert":
+        return [w.code for w in insert(g, rel).warnings]
+    rid = ids.relation_id(rel["from_entity"], rel["type"], rel["to_entity"])
+    return run(g.relations.update(rid, event_time=rel["event_time"]))
+
+
+def valid_at(g, *when):
+    return {r.id for r in run(g.retrieve("Ann", as_of=utc(*when))).subgraph.relations}
+
+
+@pytest.mark.parametrize("how", ["insert", "update"])
+def test_moving_the_superseding_fact_earlier_reinstates_the_relation_it_retired(how):
+    g = graph(contradiction="supersede")
+    insert(g, works_at("acme", 2020))
+    insert(g, works_at("globex", 2022))
+    before = run(g.relations.get(GLOBEX)).created_at
+    moved = backdate(g, how, works_at("globex", 2019))
+    if how == "insert":
+        assert moved == ["contradiction_out_of_order"]
+    else:
+        assert (moved.id, moved.is_current, moved.invalidated_by) == (GLOBEX, False, ACME)
+    acme, old = run(g.relations.versions(ACME))
+    globex = run(g.relations.versions(GLOBEX))[0]
+    assert (acme.is_current, acme.revision, acme.event_time, acme.invalidated_by) == (True, 2, utc(2020), None)
+    assert (old.is_current, old.invalidated_by, old.invalidated_at) == (False, GLOBEX, utc(2022))
+    assert (globex.is_current, globex.invalidated_by, globex.invalidated_at) == (False, ACME, utc(2020))
+    assert [r.id for r in run(g.relations.list()).items] == [ACME]
+    assert (valid_at(g, 2019, 6), valid_at(g, 2021), valid_at(g, 2023)) == ({GLOBEX}, {ACME}, {ACME})
+    held = run(g.retrieve("Ann", as_of=utc(2023), known_at=before)).subgraph.relations
+    assert [r.id for r in held] == [GLOBEX]
+
+
+def test_updating_the_superseding_fact_to_a_later_time_moves_the_retirement_it_caused():
+    g = graph(contradiction="supersede")
+    insert(g, works_at("acme", 2020))
+    insert(g, works_at("globex", 2022))
+    assert run(g.relations.update(GLOBEX, event_time=utc(2025))).is_current
+    acme = run(g.relations.versions(ACME))[0]
+    assert (acme.is_current, acme.invalidated_by, acme.invalidated_at) == (False, GLOBEX, utc(2025))
+    assert valid_at(g, 2026) == {GLOBEX}
+
+
+def test_updating_event_time_leaves_the_endpoint_alone_outside_supersede_mode():
+    g = graph()
+    insert(g, works_at("acme", 2020))
+    insert(g, works_at("globex", 2022))
+    assert run(g.relations.update(GLOBEX, event_time=utc(2019))).is_current
+    assert sorted(r.id for r in run(g.relations.list()).items) == sorted([ACME, GLOBEX])
+
+
+@pytest.mark.parametrize("how", ["insert", "update"])
+def test_a_fact_moved_into_the_middle_of_history_reinstates_only_the_newest(how):
+    initech = ids.relation_id("person:ann", "WORKS_AT", "company:initech")
+    g = graph(contradiction="supersede")
+    for rel in (works_at("acme", 2019), works_at("initech", 2020), works_at("globex", 2022)):
+        insert(g, rel)
+    backdate(g, how, {**works_at("globex"), "event_time": utc(2019, 7)})
+    acme, mid, globex = (run(g.relations.versions(rid))[0] for rid in (ACME, initech, GLOBEX))
+    assert (acme.invalidated_by, acme.invalidated_at) == (GLOBEX, utc(2019, 7))
+    assert (globex.invalidated_by, globex.invalidated_at) == (initech, utc(2020))
+    assert (mid.is_current, mid.invalidated_by) == (True, None)
+    assert (valid_at(g, 2019, 3), valid_at(g, 2019, 9), valid_at(g, 2021)) == ({ACME}, {GLOBEX}, {initech})
+
+
+@pytest.mark.parametrize("how", ["insert", "update"])
+def test_reinstating_counts_newer_facts_against_a_max_count_above_one(how):
+    spec = {**SPEC, "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"], "max_count": 2}}]}
+    initech = ids.relation_id("person:ann", "WORKS_AT", "company:initech")
+    g = fresh_graph("contra", schema=spec, contradiction="supersede")
+    run(g.insert.facts({"entities": PEOPLE}))
+    for rel in (works_at("acme", 2019), works_at("initech", 2020), works_at("globex", 2021)):
+        insert(g, rel)
+    assert run(g.relations.versions(ACME))[0].invalidated_by == GLOBEX
+    backdate(g, how, works_at("initech", 2018))
+    moved = run(g.relations.versions(initech))[0]
+    assert (moved.invalidated_by, moved.invalidated_at) == (GLOBEX, utc(2021))
+    assert sorted(r.id for r in run(g.relations.list()).items) == sorted([ACME, GLOBEX])
+
+
+@pytest.mark.parametrize("how", ["insert", "update"])
+@pytest.mark.parametrize("successor", [False, True], ids=["free", "displaced-at-the-other-end"])
+def test_a_relation_capped_at_both_ends_is_reinstated_only_when_neither_end_displaces_it(how, successor):
+    def link(person, company, year):
+        return works_at(company, year, person=person)
+
+    ann_acme, bob_acme, ann_globex = (
+        ids.relation_id(f"person:{p}", "WORKS_AT", f"company:{c}")
+        for p, c in (("ann", "acme"), ("bob", "acme"), ("ann", "globex"))
+    )
+    g = fresh_graph("contra", schema=BOTH_ENDS_SPEC, contradiction="supersede")
+    run(g.insert.facts({"entities": PEOPLE}))
+    insert(g, link("ann", "acme", 2020))
+    insert(g, link("ann", "globex", 2022))
+    if successor:
+        insert(g, link("bob", "acme", 2024))
+    backdate(g, how, link("ann", "globex", 2018))
+    held, moved = (run(g.relations.versions(rid))[0] for rid in (ann_acme, ann_globex))
+    assert (moved.invalidated_by, moved.invalidated_at) == (ann_acme, utc(2020))
+    if successor:
+        assert (held.is_current, held.invalidated_by, held.invalidated_at) == (False, bob_acme, utc(2024))
+        assert run(g.relations.get(bob_acme)).is_current
+    else:
+        assert (held.is_current, held.invalidated_by) == (True, None)
+    assert (valid_at(g, 2019), valid_at(g, 2023)) == ({ann_globex}, {ann_acme})
