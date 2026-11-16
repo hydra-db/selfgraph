@@ -1037,11 +1037,37 @@ function suite(spec: StoreSpec) {
     });
   }
 
-  it.runIf(spec.name === "hydradb")("rejects a document over HydraDB's 32 KB string limit before writing", async () => {
-    await expect(graph.entities.create("Huge", "Thing", { properties: { blob: "x".repeat(40_000) } })).rejects.toThrow(
-      /32000 bytes/,
-    );
-    expect(await graph.entities.get("thing:huge")).toBeNull();
+  it("stores and reads back a 40 KB property on an entity and a relation", async () => {
+    const blob = "x".repeat(40_000);
+    const other = await graph.entities.create("Target", "Thing");
+    const huge = await graph.entities.create("Huge", "Thing", { properties: { blob } });
+    const rel = await graph.relations.create(huge.id, "LINKS", other.id, { properties: { blob } });
+    expect((await graph.entities.get(huge.id))?.properties.blob).toBe(blob);
+    expect((await graph.relations.get(rel.id))?.properties.blob).toBe(blob);
+  });
+
+  it.runIf(!spec.transactional)("leaves the current relation version intact when relations.update fails", async () => {
+    const src = await graph.entities.create("UpdateSrc", "Thing");
+    const dst = await graph.entities.create("UpdateDst", "Thing");
+    const rel = await graph.relations.create(src.id, "LINKS", dst.id, { properties: { step: 1 } });
+    if (spec.name === "hydradb") {
+      const oversize = "x".repeat(2 * 1024 * 1024 + 1024);
+      await expect(graph.relations.update(rel.id, { set_properties: { blob: oversize } })).rejects.toBeInstanceOf(
+        StoreError,
+      );
+    } else {
+      const real = graph.store.createEdge.bind(graph.store);
+      graph.store.createEdge = () => Promise.reject(new StoreError("write failed"));
+      try {
+        await expect(graph.relations.update(rel.id, { set_properties: { step: 2 } })).rejects.toBeInstanceOf(
+          StoreError,
+        );
+      } finally {
+        graph.store.createEdge = real;
+      }
+    }
+    expect((await graph.relations.versions(rel.id)).map((v) => [v.revision, v.is_current])).toEqual([[1, true]]);
+    expect((await graph.relations.get(rel.id))?.revision).toBe(1);
   });
 }
 

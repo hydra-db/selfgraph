@@ -1059,8 +1059,6 @@ async def upsert_entities(
         current[eid] = decode_entity(props)
         out.append(current[eid])
 
-    for props in writes.values():
-        await _precheck_write(runner, props)
     for eid, props in writes.items():
         if eid in stored and props["type"] != stored[eid].type:
             await runner.remove_node_label(ns, L_ENTITY, eid, stored[eid].type)
@@ -1221,7 +1219,6 @@ async def update_entity(
         relevance=existing.relevance,
         relevance_at=existing.relevance_at,
     )
-    await _precheck_write(runner, props)
     if new_type != existing.type:
         await runner.remove_node_label(ns, L_ENTITY, eid, existing.type)
     await runner.upsert_node(ns, L_ENTITY, eid, props, extra_label=new_type)
@@ -1548,6 +1545,21 @@ async def _typed_edge_versions(runner: Any, ns: str, eid: str, keep: Callable[[s
     return [e for e in await runner.list_edge_versions(ns, eid) if keep(e["type"])]
 
 
+async def _current_relation_edge(runner: Any, ns: str, rid: str) -> dict | None:
+    """Fetch the current edge row of a relation by id.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param rid (str): relation id.
+    @return (dict | None): the current edge row, or None.
+    """
+    _ids._require_str("relation id", rid)
+    edge = await runner.get_current_edge(ns, rid)
+    if edge is None or not _is_relation_type(edge["type"]):
+        return None
+    return edge
+
+
 async def get_relation_current(runner: Any, ns: str, rid: str) -> Relation | None:
     """Fetch the current version of a relation by id.
 
@@ -1556,11 +1568,8 @@ async def get_relation_current(runner: Any, ns: str, rid: str) -> Relation | Non
     @param rid (str): relation id.
     @return (Relation | None): the current version, or None.
     """
-    _ids._require_str("relation id", rid)
-    edge = await runner.get_current_edge(ns, rid)
-    if edge is None or not _is_relation_type(edge["type"]):
-        return None
-    return _relation_of(edge)
+    edge = await _current_relation_edge(runner, ns, rid)
+    return None if edge is None else _relation_of(edge)
 
 
 async def relation_exists(runner: Any, ns: str, rid: str) -> bool:
@@ -1589,9 +1598,9 @@ async def list_relation_versions(runner: Any, ns: str, rid: str, *, newest_first
 
 
 async def _write_relation_version(
-    runner: Any, ns: str, from_id: str, rtype: str, to_id: str, props: dict, *, retire: bool
+    runner: Any, ns: str, from_id: str, rtype: str, to_id: str, props: dict, *, retire: dict | None = None
 ) -> Relation:
-    """Write a relation version as the current one, retiring the previous current version when there is one.
+    """Write a relation version as the current one, retiring the previous current version afterwards when given.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -1599,17 +1608,16 @@ async def _write_relation_version(
     @param rtype (str): relation type.
     @param to_id (str): destination entity id.
     @param props (dict): the encoded version.
-    @param retire (bool): True when an existing current version must be flipped first.
+    @param retire (dict | None): encoded properties of the current version to flip after the new one is written.
     @return (Relation): the written version.
     """
-    if retire:
-        await _precheck_write(runner, props)
-        await runner.update_current_edge(ns, props["id"], {"is_current": False})
     _reject_reserved_rel_type(rtype, rtype)
     if not await runner.create_edge(ns, rtype, L_ENTITY, from_id, L_ENTITY, to_id, props):
         hint = "create the entities first, then reference them by id ('type:name')"
         await _require_endpoints(runner, ns, from_id, to_id, hint)
         raise ValidationError(f"relation endpoints not found (from={from_id!r}, to={to_id!r}); {hint}")
+    if retire is not None:
+        await runner.create_edges(ns, L_ENTITY, L_ENTITY, [(rtype, from_id, to_id, {**retire, "is_current": False})])
     return decode_relation(props, from_entity=from_id, to_entity=to_id, type=rtype)
 
 
@@ -1696,22 +1704,6 @@ async def _lock_current(
     if current is None:
         raise TransientError(f"{kind} {oid!r} was changed concurrently; retry")
     return current
-
-
-async def _precheck_write(runner: Any, props: Mapping[str, Any]) -> None:
-    """Ask the store whether an encoded write fits its limits before any prior state is mutated.
-
-    This keeps a multi-step write (retire-then-add a version, or ensure-profile-then-add an edge) atomic on
-    auto-commit backends: a store size limit is checked up front, so the first write never commits ahead of a
-    second write that would fail.
-
-    @param runner (Any): graph runner.
-    @param props (Mapping[str, Any]): the encoded properties about to be written.
-    @return (None): nothing; raises when the store would reject the write.
-    """
-    check = getattr(runner, "check_doc_size", None)
-    if check is not None:
-        check(props)
 
 
 async def _current_relations(runner: Any, ns: str, keyed: list[tuple[str, RelationInput]]) -> dict[str, dict]:
@@ -2183,8 +2175,6 @@ async def retire_relations(
     gone: dict[str, dict] = {}
     for edge, by, at in retirements:
         gone.setdefault(edge["props"]["id"], _retired(edge, by, at, known))
-    for edge in gone.values():
-        await _precheck_write(runner, edge["props"])
     rows = [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in gone.values()]
     if rows:
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
@@ -2265,8 +2255,6 @@ async def resettle_endpoints(
         if (by, to_iso(when)) != (edge["props"].get("invalidated_by"), edge["props"].get("invalidated_at")):
             gone = _retired(edge, by, when, at)
             rows.append((gone["type"], gone["from_id"], gone["to_id"], gone["props"]))
-    for row in rows:
-        await _precheck_write(runner, row[3])
     if rows:
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
     return restored
@@ -2293,8 +2281,6 @@ async def repoint_retired(runner: Any, ns: str, deleted: Iterable[dict], survivo
         for rid, edge in sorted(found.items())
         if rid not in ids and not edge["props"]["is_current"] and edge["props"].get("invalidated_by") in ids
     ]
-    for row in rows:
-        await _precheck_write(runner, row[3])
     if rows:
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
 
@@ -2432,8 +2418,6 @@ async def upsert_relations(
         (writes if key in writes else retires)[key] = gone["props"]
         current[old] = gone
 
-    for props in [*writes.values(), *retires.values()]:
-        await _precheck_write(runner, props)
     for batch in (writes, retires):
         rows = []
         for (rid, _), props in batch.items():
@@ -2538,9 +2522,7 @@ async def create_relation(
         retires = [_retired(existing[old], by, at, created_at) for old, (by, at) in ended.items() if old != rid]
         if rid in ended:
             props = _retired(edge, *ended[rid], created_at)["props"]
-    for write in [props, *(edge["props"] for edge in retires)]:
-        await _precheck_write(runner, write)
-    rel = await _write_relation_version(runner, ns, from_entity, rtype, to_entity, props, retire=False)
+    rel = await _write_relation_version(runner, ns, from_entity, rtype, to_entity, props)
     if retires:
         await runner.create_edges(
             ns, L_ENTITY, L_ENTITY, [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in retires]
@@ -2597,9 +2579,10 @@ async def update_relation(
     }
     require_changes({k: v for k, v in given.items() if v is not None})
     event_time = parse_time(event_time, "event_time")
-    current = await _lock_current(
-        runner, ns, rid, "relation", get_relation_current, _is_relation_type, lambda rel: (L_ENTITY, rel.from_entity)
+    current_edge = await _lock_current(
+        runner, ns, rid, "relation", _current_relation_edge, _is_relation_type, lambda edge: (L_ENTITY, edge["from_id"])
     )
+    current = _relation_of(current_edge)
     new_props = _merge_props(current.properties, set_properties, remove_properties)
     if schema_check is not None:
         subject = RelationInput(
@@ -2634,7 +2617,7 @@ async def update_relation(
         source_count=sources,
     )
     rel = await _write_relation_version(
-        runner, ns, current.from_entity, current.type, current.to_entity, props, retire=True
+        runner, ns, current.from_entity, current.type, current.to_entity, props, retire=current_edge["props"]
     )
     await _write_evidence(runner, ns, records, created_at)
     if contradiction == "supersede" and to_iso(new_event_time) != to_iso(current.event_time):
@@ -2932,7 +2915,6 @@ async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: d
         "certified_by": by,
         "certifications_json": _dumps(history),
     }
-    await _precheck_write(runner, props)
     await runner.create_edges(ns, L_ENTITY, L_ENTITY, [(edge["type"], edge["from_id"], edge["to_id"], props)])
     return _relation_of({**edge, "props": props})
 
@@ -3059,7 +3041,6 @@ async def _write_preference_version(
     @return (Preference): the written version.
     """
     if retire:
-        await _precheck_write(runner, props)
         await runner.update_current_edge(ns, props["id"], {"is_current": False})
     await runner.create_edge(ns, preference_edge_type(stance), L_PROFILE, profile_id, L_ENTITY, value_entity, props)
     return decode_preference(props, value_entity=value_entity, profile_id=profile_id, stance=stance)
@@ -3215,7 +3196,6 @@ async def create_preference(
         created_at=now(),
         is_current=True,
     )
-    await _precheck_write(runner, props)
     profile_id = await _ensure_profile(runner, ns, subject_entity, now())
     await runner.lock_node(ns, L_PROFILE, profile_id)
     if await preference_exists(runner, ns, pid):
@@ -3558,7 +3538,6 @@ async def upsert_trace(
         created_at=made_at,
         updated_at=created_at,
     )
-    await _precheck_write(runner, props)
     if existing is not None:
         await _delete_steps(runner, ns, tid)
         for rtype in (R_MADE_DECISION, R_RESULTED_IN, R_CONSIDERED):

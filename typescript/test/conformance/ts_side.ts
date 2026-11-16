@@ -888,6 +888,15 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     });
   }
   out.repeated_merges = repeatedMerges;
+  const largeGraph = new SelfGraph(graph.store, { namespace: `${graph.namespace}_large` });
+  const blob = "x".repeat(40_000);
+  const largeA = await largeGraph.entities.create("LargeA", "Thing", { properties: { blob } });
+  const largeB = await largeGraph.entities.create("LargeB", "Thing");
+  const largeRel = await largeGraph.relations.create(largeA.id, "LINKS", largeB.id, { properties: { blob } });
+  out.large_blob_lengths = [
+    ((await largeGraph.entities.get(largeA.id))!.properties.blob as string).length,
+    ((await largeGraph.relations.get(largeRel.id))!.properties.blob as string).length,
+  ];
   const reciprocal = new SelfGraph(graph.store, { namespace: `${graph.namespace}_reciprocal`, resolver: "default" });
   await reciprocal.entities.create("Robert", "Person", { aliases: ["Bob"] });
   for (const [source, target] of [

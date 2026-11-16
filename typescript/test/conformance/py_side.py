@@ -872,6 +872,15 @@ async def write(graph):
         out["repeated_merges"][mode] = to_jsonable(
             {"absorbed": record.absorbed, "merged": merged, "restored": restored.entity, "survivor": restored.survivor}
         )
+    large_graph = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_large")
+    blob = "x" * 40_000
+    large_a = await large_graph.entities.create("LargeA", "Thing", properties={"blob": blob})
+    large_b = await large_graph.entities.create("LargeB", "Thing")
+    large_rel = await large_graph.relations.create(large_a.id, "LINKS", large_b.id, properties={"blob": blob})
+    out["large_blob_lengths"] = [
+        len((await large_graph.entities.get(large_a.id)).properties["blob"]),
+        len((await large_graph.relations.get(large_rel.id)).properties["blob"]),
+    ]
     reciprocal = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_reciprocal", resolver="default")
     await reciprocal.entities.create("Robert", "Person", aliases=["Bob"])
     for source, target in (

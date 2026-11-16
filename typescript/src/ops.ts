@@ -665,8 +665,6 @@ export async function deleteEvidence(runner: Runner, ns: string, targetId: strin
   await runner.deleteNodesBy(ns, L_EVIDENCE, { target_id: targetId });
 }
 
-export const precheckWrite = (runner: Runner, props: Props): void => runner.checkDocSize?.(props);
-
 async function entityKnown(runner: Runner, ns: string, eid: unknown, known: Set<string>): Promise<boolean> {
   if (typeof eid !== "string") throw new ValidationError(`entity reference must be a string id, got ${typeName(eid)}`);
   if (hasControl(eid)) throw new ValidationError("entity reference cannot contain control or surrogate characters");
@@ -958,7 +956,6 @@ export async function upsertEntities(
     out.push(current.get(eid)!);
   }
 
-  for (const props of writes.values()) precheckWrite(runner, props);
   for (const [eid, props] of writes) {
     const before = stored.get(eid);
     if (before !== undefined && props.type !== before.type)
@@ -1118,7 +1115,6 @@ export async function updateEntity(
     relevance: existing.relevance,
     relevance_at: existing.relevance_at,
   });
-  precheckWrite(runner, props);
   if (type !== existing.type) await runner.removeNodeLabel(ns, L_ENTITY, eid, existing.type);
   await runner.upsertNode(ns, L_ENTITY, eid, props, { extra_label: type });
   return decodeEntity(props);
@@ -1519,10 +1515,15 @@ async function typedEdgeVersions(
   return (await runner.listEdgeVersions(ns, eid)).filter((e) => keep(e.type));
 }
 
-export async function getRelationCurrent(runner: Runner, ns: string, rid: string): Promise<Relation | null> {
+async function currentRelationEdge(runner: Runner, ns: string, rid: string): Promise<EdgeRow | null> {
   requireStr("relation id", rid);
   const edge = await runner.getCurrentEdge(ns, rid);
-  return edge === null || !isRelationType(edge.type) ? null : relationOf(edge);
+  return edge === null || !isRelationType(edge.type) ? null : edge;
+}
+
+export async function getRelationCurrent(runner: Runner, ns: string, rid: string): Promise<Relation | null> {
+  const edge = await currentRelationEdge(runner, ns, rid);
+  return edge === null ? null : relationOf(edge);
 }
 
 export async function relationExists(runner: Runner, ns: string, rid: string): Promise<boolean> {
@@ -1542,13 +1543,13 @@ export async function listRelationVersions(
 }
 
 /**
- * Write a relation version as the current one, retiring the previous current version when there is one.
+ * Write a relation version as the current one, retiring the previous current version afterwards when given.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param ends (RelationEnds): the endpoints and type.
  * @param props (Props): the encoded version.
- * @param retire (boolean): true when an existing current version must be flipped first.
+ * @param retire (Props | null): encoded properties of the current version to flip after the new one is written.
  * @return (Relation): the written version.
  */
 async function writeRelationVersion(
@@ -1556,12 +1557,8 @@ async function writeRelationVersion(
   ns: string,
   ends: RelationEnds,
   props: Props,
-  retire: boolean,
+  retire: Props | null = null,
 ): Promise<Relation> {
-  if (retire) {
-    precheckWrite(runner, props);
-    await runner.updateCurrentEdge(ns, idOf(props), { is_current: false });
-  }
   rejectReservedRelType(ends.type, ends.type);
   if (!(await runner.createEdge(ns, ends.type, L_ENTITY, ends.from_entity, L_ENTITY, ends.to_entity, props))) {
     const hint = "create the entities first, then reference them by id ('type:name')";
@@ -1569,6 +1566,11 @@ async function writeRelationVersion(
     throw new ValidationError(
       `relation endpoints not found (from=${pyRepr(ends.from_entity)}, to=${pyRepr(ends.to_entity)}); ${hint}`,
     );
+  }
+  if (retire !== null) {
+    await runner.createEdges(ns, L_ENTITY, L_ENTITY, [
+      [ends.type, ends.from_entity, ends.to_entity, { ...retire, is_current: false }],
+    ]);
   }
   return decodeRelation(props, ends);
 }
@@ -2245,7 +2247,6 @@ export async function retireRelations(
   for (const [edge, by, at] of retirements) {
     if (!gone.has(idOf(edge.props))) gone.set(idOf(edge.props), retiredEdge(edge, by, at, known));
   }
-  for (const edge of gone.values()) precheckWrite(runner, edge.props);
   const rows: EdgeWrite[] = [...gone.values()].map((e) => [e.type, e.from_id, e.to_id, e.props]);
   if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
   return [...gone.values()].map(relationOf);
@@ -2338,7 +2339,6 @@ export async function resettleEndpoints(
     const gone = retiredEdge(edge, by, when, at);
     rows.push([gone.type, gone.from_id, gone.to_id, gone.props]);
   }
-  for (const row of rows) precheckWrite(runner, row[3]);
   if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
   return restored;
 }
@@ -2373,7 +2373,6 @@ export async function repointRetired(
     .map(([, e]) => e)
     .filter((e) => !gone.has(idOf(e.props)) && !e.props.is_current && gone.has(e.props.invalidated_by as string))
     .map((e) => [e.type, e.from_id, e.to_id, { ...e.props, invalidated_by: survivor }]);
-  for (const row of rows) precheckWrite(runner, row[3]);
   if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
 }
 
@@ -2521,7 +2520,6 @@ export async function upsertRelations(
     current.set(old, gone);
   }
 
-  for (const [, props] of [...writes.values(), ...retires.values()]) precheckWrite(runner, props);
   for (const batch of [writes, retires]) {
     const rows: EdgeWrite[] = [...batch.values()].map(([rid, props]) => {
       const edge = current.get(rid)!;
@@ -2637,8 +2635,7 @@ export async function createRelation(
     const own = ended.get(rid);
     if (own !== undefined) written = retiredEdge(edge, ...own, createdAt).props;
   }
-  for (const write of [written, ...retires.map((e) => e.props)]) precheckWrite(runner, write);
-  const rel = await writeRelationVersion(runner, ns, ends, written, false);
+  const rel = await writeRelationVersion(runner, ns, ends, written);
   if (retires.length) {
     await runner.createEdges(
       ns,
@@ -2679,7 +2676,7 @@ export interface UpdateRelationArgs {
  * @param id (string): the relation or preference id.
  * @param kind ("relation" | "preference"): the object kind, for the errors.
  * @param get ((runner: Runner, ns: string, id: string) => Promise<T | null>): reads the current version, or null.
- * @param newest ((runner: Runner, ns: string, id: string) => Promise<T | null>): reads the highest revision, current or not, or null.
+ * @param newest ((runner: Runner, ns: string, id: string) => Promise<Partial<Relation> | null>): reads the highest revision, current or not, or null.
  * @param lockOn ((current: T) => [string, string]): maps the current version to the (label, id) node to lock.
  * @return (T): the current version, under the lock.
  */
@@ -2689,7 +2686,7 @@ async function lockCurrent<T>(
   id: string,
   kind: "relation" | "preference",
   get: (runner: Runner, ns: string, id: string) => Promise<T | null>,
-  newest: (runner: Runner, ns: string, id: string) => Promise<T | null>,
+  newest: (runner: Runner, ns: string, id: string) => Promise<Partial<Relation> | null>,
   lockOn: (current: T) => [string, string],
 ): Promise<T> {
   const before = await get(runner, ns, id);
@@ -2737,10 +2734,11 @@ export async function updateRelation(
     event_time: args.event_time ?? undefined,
     evidence: args.evidence ?? undefined,
   });
-  const current = await lockCurrent(runner, ns, rid, "relation", getRelationCurrent, newestRelation, (rel) => [
+  const currentEdge = await lockCurrent(runner, ns, rid, "relation", currentRelationEdge, newestRelation, (edge) => [
     L_ENTITY,
-    rel.from_entity,
+    edge.from_id,
   ]);
+  const current = relationOf(currentEdge);
   const newProps = mergeProps(current.properties, args.set_properties, args.remove_properties);
   const { from_entity, type, to_entity } = current;
   await schemaCheck?.(
@@ -2777,7 +2775,7 @@ export async function updateRelation(
     is_current: true,
     source_count: sources,
   });
-  const rel = await writeRelationVersion(runner, ns, current, props, true);
+  const rel = await writeRelationVersion(runner, ns, current, props, currentEdge.props);
   await writeEvidence(runner, ns, records, createdAt);
   if (options.contradiction === "supersede" && toIso(newEventTime) !== toIso(current.event_time)) {
     const edge = { type: rel.type, from_id: rel.from_entity, to_id: rel.to_entity, props };
@@ -3069,7 +3067,6 @@ export async function certifyRelation(
     certified_by: by,
     certifications_json: dumps(history),
   };
-  precheckWrite(runner, props);
   await runner.createEdges(ns, L_ENTITY, L_ENTITY, [[edge.type, edge.from_id, edge.to_id, props]]);
   return relationOf({ ...edge, props });
 }
@@ -3253,7 +3250,6 @@ async function writePreferenceVersion(
   retire: boolean,
 ): Promise<Preference> {
   if (retire) {
-    precheckWrite(runner, props);
     await runner.updateCurrentEdge(ns, idOf(props), { is_current: false });
   }
   await runner.createEdge(
@@ -3397,7 +3393,6 @@ export async function createPreference(runner: Runner, ns: string, given: Create
     created_at: new Date(),
     is_current: true,
   });
-  precheckWrite(runner, props);
   const profileId = await ensureProfile(runner, ns, args.subject_entity, new Date());
   await runner.lockNode(ns, L_PROFILE, profileId);
   if (await preferenceExists(runner, ns, pid)) throw new ConflictError("Preference", pid);
@@ -3757,7 +3752,6 @@ export async function upsertTrace(runner: Runner, ns: string, given: UpsertTrace
     created_at: existing !== null ? existing.created_at : args.created_at,
     updated_at: args.created_at,
   });
-  precheckWrite(runner, props);
   if (existing !== null) await clearTraceStructure(runner, ns, tid);
   await runner.upsertNode(ns, L_TRACE, tid, props);
   await writeTraceStructure(runner, ns, {

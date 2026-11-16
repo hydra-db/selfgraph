@@ -4,7 +4,7 @@ import { blake2b } from "@noble/hashes/blake2.js";
 import type { Driver, Session } from "neo4j-driver";
 
 import { errorMessage, OTHER_ENGINE_HINT, StoreError, TOKEN_HINT } from "../errors.js";
-import { comparePy, pyJsonDumps, pyRepr, pyStr, utf8 } from "../internal/py.js";
+import { comparePy, pyJsonDumps, pyStr, utf8 } from "../internal/py.js";
 import { L_ENTITY, L_EVIDENCE, L_MERGE } from "../labels.js";
 import type { CypherResult } from "../models.js";
 import { batches } from "../ops.js";
@@ -50,7 +50,6 @@ const HANDSHAKE_RETRIES = 50;
 const HANDSHAKE_JITTER_MS = 25;
 
 const jitter = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, Math.random() * HANDSHAKE_JITTER_MS));
-const MAX_STRING_BYTES = 32000;
 const WRITE_BATCH = 1000;
 const DELETE_BATCH = 1024;
 const TRANSIENT_MARKERS = ["snapshot", "epoch", "transient", "serializ", "conflict", "lock"];
@@ -60,27 +59,6 @@ const OTHER_ENGINE_MARKERS = [
   "neo.clienterror.database.databasenotfound",
   "memgraph",
 ];
-
-/**
- * Reject a write whose stored strings exceed the engine's per-string size limit.
- *
- * @param row (Props): the column names and values about to be written.
- */
-function guardSizes(row: Props): void {
-  for (const [key, value] of Object.entries(row)) {
-    if (typeof value !== "string") continue;
-    const size = utf8(value).length;
-    if (size <= MAX_STRING_BYTES) continue;
-    const field =
-      key === "doc"
-        ? "the serialized node or edge document (HydraDB stores each node or edge as one JSON document, " +
-          "so its properties share this budget)"
-        : `the string column ${pyRepr(key)}`;
-    throw new StoreError(
-      `HydraDB rejects ${field} at ${size} bytes; the engine limit is ${MAX_STRING_BYTES} bytes per stored string`,
-    );
-  }
-}
 
 function isSplitHandshake(exc: unknown): boolean {
   return exc instanceof RangeError && errorCode(exc) === "ERR_OUT_OF_RANGE" && /handshake/i.test(exc.stack ?? "");
@@ -527,15 +505,6 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     return res.rows.length > 0;
   }
 
-  /**
-   * Reject an encoded write whose serialized document exceeds the engine's per-string limit, before any write.
-   *
-   * @param props (Props): the encoded node or edge properties about to be written.
-   */
-  checkDocSize(props: Props): void {
-    guardSizes({ doc: docOf(props), ...scalars(props) });
-  }
-
   async upsertNode(
     ns: string,
     label: string,
@@ -566,7 +535,6 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
         doc: docOf(props),
         ...scalars(props),
       };
-      guardSizes(row);
       const keys = unset(props);
       if (keys.length) {
         const group = JSON.stringify(keys);
@@ -842,7 +810,6 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       };
       if (sid != null) row.sid = sid;
       Object.assign(row, scalars(props));
-      guardSizes(row);
       return row;
     });
     for (const batch of byColumns(out)) {
@@ -923,7 +890,6 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       assignments.push(`r.\`${requireIdentifier(k)}\` = $s_${k}`);
       params[`s_${k}`] = v;
     }
-    guardSizes(params);
     await this._run(`${BY_SID} AND r.is_current = true SET ${assignments.join(", ")}`, params);
     const keys = unset(merged);
     if (keys.length) await this._run(`${BY_SID} AND r.is_current = true REMOVE ${removes("r", keys)}`, { ns, sid: id });

@@ -1016,7 +1016,7 @@ async function rewriteRefs(
 }
 
 /**
- * The merge record node, without its sources and rewrites, which live in EntityMergeEntry rows. A record repeats every time an insert merges the same pair again, so its sources and rewrites grow without bound; kept inline they would outgrow a store's per-document limit (32000 bytes on HydraDB).
+ * The merge record node, without its sources and rewrites, which live in EntityMergeEntry rows. A record repeats every time an insert merges the same pair again, so its sources and rewrites grow without bound; kept inline they would outgrow a store's per-document limit.
  *
  * @param ns (string): the namespace.
  * @param rec (MergeRecord): the record.
@@ -1139,7 +1139,6 @@ async function writeMerges(
     const have = new Map(rows.map((row) => [row.id as string, row.value_json]));
     for (const [id, row] of entryRows(ns, rec)) if (have.get(id) !== row.value_json) entries.push([id, row]);
   }
-  for (const [, props] of [...nodes, ...entries]) ops.precheckWrite(runner, props);
   if (entries.length) await runner.upsertNodes(ns, L_MERGE_ENTRY, entries);
   await runner.upsertNodes(ns, L_MERGE, nodes);
 }

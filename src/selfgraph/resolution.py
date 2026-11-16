@@ -891,7 +891,7 @@ def _encode_merge(ns: str, rec: MergeRecord) -> dict[str, Any]:
     """The merge record node, without its sources and rewrites, which live in EntityMergeEntry rows.
 
     A record repeats every time an insert merges the same pair again, so its sources and rewrites grow without bound;
-    kept inline they would outgrow a store's per-document limit (32000 bytes on HydraDB).
+    kept inline they would outgrow a store's per-document limit.
 
     @param ns (str): namespace.
     @param rec (MergeRecord): the record.
@@ -996,8 +996,6 @@ async def _write_merges(
         nodes.append((rec.id, _encode_merge(ns, rec)))
         have = {row["id"]: row.get("value_json") for row in rows}
         entries += [(eid, row) for eid, row in _entry_rows(ns, rec).items() if have.get(eid) != row["value_json"]]
-    for _, props in [*nodes, *entries]:
-        await _ops._precheck_write(runner, props)
     if entries:
         await runner.upsert_nodes(ns, L_MERGE_ENTRY, entries)
     await runner.upsert_nodes(ns, L_MERGE, nodes)

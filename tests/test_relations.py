@@ -1,7 +1,7 @@
 import pytest
-from helpers import create_entities, new_graph, run, utc
+from helpers import FALKORDB, HYDRADB, RAW_CYPHER, create_entities, new_graph, run, utc
 
-from selfgraph import ConflictError, NotFoundError
+from selfgraph import ConflictError, NotFoundError, StoreError
 
 
 def seed(g):
@@ -123,3 +123,38 @@ def test_whole_number_floats_are_stored_and_read_as_ints_like_typescript():
     run(g.insert.facts(facts))
     assert type(run(g.entities.get("person:bo")).properties["age"]) is int
     assert type(run(g.preferences.list("person:ann")).items[0].properties["n"]) is int
+
+
+def test_40kb_entity_and_relation_properties_round_trip():
+    g = new_graph()
+    create_entities(g, "Person:Ann")
+    blob = "x" * 40_000
+    huge = run(g.entities.create("Huge", "Thing", properties={"blob": blob}))
+    huge_rel = run(g.relations.create("person:ann", "OWNS", huge.id, properties={"blob": blob}))
+    assert run(g.entities.get(huge.id)).properties["blob"] == blob
+    assert run(g.relations.get(huge_rel.id)).properties["blob"] == blob
+
+
+@pytest.mark.skipif(RAW_CYPHER and not FALKORDB, reason="transactional stores roll back failed updates")
+def test_failed_relation_update_leaves_current_version_unretired():
+    g = new_graph()
+    create_entities(g, "Person:Ann", "Company:Acme")
+    rel = run(g.relations.create("person:ann", "WORKS_AT", "company:acme", properties={"step": 1}))
+    if HYDRADB:
+        oversize = "x" * (2 * 1024 * 1024 + 1024)
+        with pytest.raises(StoreError):
+            run(g.relations.update(rel.id, set_properties={"blob": oversize}))
+    else:
+        real = g.store.create_edge
+
+        async def fail_create_edge(*_args, **_kwargs):
+            raise StoreError("write failed")
+
+        g.store.create_edge = fail_create_edge
+        try:
+            with pytest.raises(StoreError):
+                run(g.relations.update(rel.id, set_properties={"step": 2}))
+        finally:
+            g.store.create_edge = real
+    assert [(v.revision, v.is_current) for v in run(g.relations.versions(rel.id))] == [(1, True)]
+    assert run(g.relations.get(rel.id)).revision == 1

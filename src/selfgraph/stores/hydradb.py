@@ -34,7 +34,6 @@ _SEEK_BATCH = 256
 _PARALLEL = 32
 _QUEUING: ContextVar[HydraDBStore | None] = ContextVar("selfgraph_hydradb_queuing", default=None)
 _SCALARS = (str, int, float, bool)
-_MAX_STRING_BYTES = 32000
 _WRITE_BATCH = 1000
 _DELETE_BATCH = 1024
 _TRANSIENT_MARKERS = ("snapshot", "epoch", "transient", "serializ", "conflict", "lock")
@@ -46,29 +45,6 @@ _NO_TOKEN = f"HydraDB needs a token: {TOKEN_HINT}"
 
 def _transient(lowered: str) -> bool:
     return any(k in lowered for k in _TRANSIENT_MARKERS)
-
-
-def _guard_sizes(row: Mapping[str, Any]) -> None:
-    """Reject a write whose stored strings exceed the engine's per-string size limit.
-
-    @param row (Mapping[str, Any]): the column names and values about to be written.
-    @return (None): nothing; raises when a stored string is too large.
-    """
-    for key, value in row.items():
-        if not isinstance(value, str):
-            continue
-        size = len(value.encode("utf-8"))
-        if size > _MAX_STRING_BYTES:
-            field = (
-                "the serialized node or edge document (HydraDB stores each node or edge as one JSON document, "
-                "so its properties share this budget)"
-                if key == "doc"
-                else f"the string column {key!r}"
-            )
-            raise StoreError(
-                f"HydraDB rejects {field} at {size} bytes; the engine limit is "
-                f"{_MAX_STRING_BYTES} bytes per stored string"
-            )
 
 
 def _sk(ns: str, sid: str) -> int:
@@ -388,14 +364,6 @@ class HydraDBStore(AutoCommitStore):
         res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.sid AS sid", {"iid": iid}, reads=[iid])
         return bool(res.rows)
 
-    def check_doc_size(self, props: Mapping[str, Any]) -> None:
-        """Reject an encoded write whose serialized document exceeds the engine's per-string limit, before any write.
-
-        @param props (Mapping[str, Any]): the encoded node or edge properties about to be written.
-        @return (None): nothing; raises StoreError when the document is too large.
-        """
-        _guard_sizes({"doc": _doc(props), **_scalars(dict(props))})
-
     async def upsert_node(self, ns: str, label: str, id: str, props: dict, *, extra_label: str | None = None) -> None:
         await self.upsert_nodes(ns, label, [(id, props)], extra_label=extra_label)
 
@@ -419,7 +387,6 @@ class HydraDBStore(AutoCommitStore):
                 "doc": _doc(props),
                 **_scalars(props),
             }
-            _guard_sizes(row)
             out.append(row)
             if keys := _unset(props):
                 cleared.setdefault(keys, []).append(row["id"])
@@ -646,7 +613,6 @@ class HydraDBStore(AutoCommitStore):
             if sid is not None:
                 row["sid"] = sid
             row.update(_scalars(props))
-            _guard_sizes(row)
             out.append(row)
         for batch in _by_columns(out):
             await self._write(
@@ -711,7 +677,6 @@ class HydraDBStore(AutoCommitStore):
         for k, v in _scalars(merged).items():
             sets.append(f"r.`{require_identifier(k)}` = $s_{k}")
             params[f"s_{k}"] = v
-        _guard_sizes(params)
         await self._run(
             f"{_BY_SID} AND r.is_current = true SET {', '.join(sets)}",
             params,

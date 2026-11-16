@@ -132,7 +132,6 @@ async def write_entity_relevance(runner: Any, ns: str, scores: dict[str, float],
         e = decode_entity(props)
         fields = e.model_dump(exclude={"relevance", "relevance_at"})
         encoded = encode_entity_props(ns=ns, **fields, relevance=scores[eid], relevance_at=at)
-        await _ops._precheck_write(runner, encoded)
         by_type.setdefault(e.type, []).append((eid, encoded))
     for etype, rows in by_type.items():
         await runner.upsert_nodes(ns, L_ENTITY, rows, extra_label=etype)
@@ -160,8 +159,6 @@ async def write_relation_relevance(
         for rid, edge in found.items()
         if edge["props"]["is_current"]
     ]
-    for *_, props in rows:
-        await _ops._precheck_write(runner, props)
     if rows:
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
     return len(rows)
