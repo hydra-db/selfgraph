@@ -206,7 +206,7 @@ def test_server_metadata_tools_and_annotations(server):
     assert logging.getLogger("mcp").getEffectiveLevel() == logging.WARNING
     listed = run(server.list_tools())
     names = [t.name for t in listed]
-    assert len(names) == len(TOOL_NAMES) == 38
+    assert len(names) == len(TOOL_NAMES) == 39
     assert sorted(names) == sorted(TOOL_NAMES)
     tools = {t.name: t.annotations.model_dump(by_alias=True) for t in listed}
     for name in (
@@ -216,6 +216,7 @@ def test_server_metadata_tools_and_annotations(server):
         "entity_evidence",
         "run_cypher",
         "retrieve",
+        "diff",
     ):
         assert tools[name]["readOnlyHint"] is True
     for name in ("delete_entity", "maintenance_prune", "maintenance_dedupe_relations"):

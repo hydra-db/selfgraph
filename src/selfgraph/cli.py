@@ -467,6 +467,18 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--context-only", action="store_true", help="print only the context text, not the JSON result")
     rt.set_defaults(func=_retrieve)
 
+    df = sub.add_parser("diff", help="read the change log: every write between two times, oldest first")
+    df.add_argument("--since", type=_time("since"), help=f"leave out changes at or before this time ({_ISO})")
+    df.add_argument("--until", type=_time("until"), help=f"leave out changes after this time ({_ISO})")
+    df.add_argument(
+        "--kind",
+        action="append",
+        choices=("entity", "relation", "preference", "decision", "merge", "source"),
+        help="only this kind (repeatable)",
+    )
+    df.add_argument("--limit", type=int, help="keep only the newest N changes")
+    df.set_defaults(func=lambda g, a: g.diff(since=a.since, until=a.until, kinds=a.kind, limit=a.limit))
+
     mt = sub.add_parser("maintenance", help="decay (score relevance), prune, or deduplicate relations")
     mta = mt.add_subparsers(dest="action", required=True)
     md = mta.add_parser(
