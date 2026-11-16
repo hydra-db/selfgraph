@@ -67,7 +67,7 @@ not hold the answer on `not_answerable` (or which terms are missing on
 
 ## Tools
 
-Both servers register the same 38 tools. Arguments keep the library's names.
+Both servers register the same 39 tools. Arguments keep the library's names.
 Optional ones are in brackets.
 
 `list_*`, the evidence tools, and `entity_merges` also take `[limit]` (1 to 1000,
@@ -100,6 +100,7 @@ default 50) and `[cursor]`.
 | `list_decisions` | `[actor_entity]`, `[status]` |
 | `get_decision`, `delete_decision` | `id` |
 | `retrieve` | `query`, `[strategy]`, `[depth]`, `[k]`, `[max_nodes]`, `[budget_tokens]`, `[as_of]`, `[known_at]`, `[seeds]`, `[skip_hubs]` |
+| `diff` | `[since]`, `[until]`, `[kinds]`, `[limit]` ([the change log](retrieval.md#the-change-log)) |
 | `run_cypher` | `query`, `[params]` |
 | `maintenance_decay` | `[half_life_days]`, `[now]`, `[dry_run]` |
 | `maintenance_prune` | `[min_relevance]`, `[older_than]`, `[types]`, `[relation_types]`, `[include_certified]`, `[dry_run]` |
@@ -109,7 +110,7 @@ default 50) and `[cursor]`.
 
 | Annotation | Tools |
 |------------|-------|
-| `readOnlyHint` | `check_*`, `get_*`, `list_*`, `*_versions`, `entity_evidence`, `relation_evidence`, `entity_merges`, `retrieve`, `run_cypher` |
+| `readOnlyHint` | `check_*`, `get_*`, `list_*`, `*_versions`, `entity_evidence`, `relation_evidence`, `entity_merges`, `retrieve`, `diff`, `run_cypher` |
 | `destructiveHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, and `maintenance_dedupe_relations`. |
 | `idempotentHint` | Set on every other tool. True on `delete_*`, `maintenance_prune`, `maintenance_dedupe_relations`, `insert_facts`, `certify_relation`, and `uncertify_relation`. |
 

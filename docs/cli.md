@@ -74,6 +74,7 @@ settings from the environment are ignored silently.
 | `export obsidian DIR` | Writes the namespace into `DIR` as an Obsidian vault, overwriting notes of the same name ([Export to Obsidian](retrieval.md#export-to-obsidian)). |
 | `query` | Runs one raw Cypher statement in the backend's own dialect. See [`query`](#query). |
 | `retrieve` | Retrieves context for a query. See [`retrieve`](#retrieve). |
+| `diff` | Reads the change log of the namespace. See [`diff`](#diff). |
 | `insert text` | Extracts from text, or `-` for stdin, with the configured LLM, else spaCy or the regex fallback ([inserting](inserting.md#from-text)). `--metadata` takes a JSON object or `KEY=VALUE` pairs, repeatable and merged in order. `--replace-source` makes the text [replace](inserting.md#replacing-a-source) the earlier versions of `--source-id`. |
 | `insert facts` | Inserts facts from a JSON file, or `-` for stdin. |
 | `entity` | `create`, `get`, `list`, `evidence`, `merges`, `unmerge`, `update`, `delete`. |
@@ -106,6 +107,19 @@ Unquoted words join into one query, so `retrieve who works at Acme` works. See
 | `--known-at` | | Read only what the graph held at this time. See [As the graph knew it](retrieval.md#as-the-graph-knew-it). |
 | `--skip-hubs` | | Do not walk through [hubs](trust.md#hubs). |
 | `--context-only` | | Print just the context text instead of the JSON result. |
+
+### `diff`
+
+Reads the change log: every write between two times, oldest first, with counts
+per kind. See [The change log](retrieval.md#the-change-log). `--kind` is
+repeatable; counts cover the whole window even when `--kind` filters the list.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--since` | | Leave out changes at or before this time. |
+| `--until` | now | Leave out changes after this time. |
+| `--kind` | all | One of `entity`, `relation`, `preference`, `decision`, `merge`, `source`. |
+| `--limit` | all | Keep only the newest N changes. |
 
 ### `query`
 

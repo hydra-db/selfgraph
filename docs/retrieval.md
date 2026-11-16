@@ -124,6 +124,39 @@ With `known_at`, the `as_of` rules apply only to what was written by then:
 undone: a delete, a merge or unmerge, a decay score, a decision update, or an
 entity's changed properties read as they are now.
 
+## The change log
+
+`diff` reads what changed in the namespace between two times, oldest first:
+
+```python
+out = await graph.diff(since="2026-11-01", kinds=["entity", "relation"], limit=50)
+for change in out.changes:
+    print(change.at, change.kind, change.action, change.id, change.summary)
+print(out.counts)  # {"entity": 3, "relation": 2} over the whole window
+```
+
+A change is one write. `kind` and `action` say what happened:
+
+| Kind | Actions |
+|------|---------|
+| `entity` | `created` when first stored, `updated` on a later write. |
+| `relation` | `created` or `updated` per version write, `retired` by a supersede or schema conflict, `certified` and `uncertified` per certification. A retirement's summary names what retired it. |
+| `preference` | `created` or `updated` per version write. |
+| `decision` | `created` or `updated`. |
+| `merge` | `merged` when an insert absorbed a duplicate, `unmerged` when undone. |
+| `source` | `created` once per source version stored. |
+
+The window is half open: a change exactly at `since` is left out, so re-reading
+from the last change's time never repeats it, and one at `until` is included.
+Times take a datetime or ISO 8601 text (no offset means UTC; CLI `--since`,
+`--until`). Counts per kind cover the whole window, even when `kinds` filters
+the list or `limit` keeps only the newest `limit` changes. Changes are kept
+forever, so the log shows even what was later deleted.
+
+`selfgraph diff` prints the same result, and the `diff` [MCP tool](mcp.md#tools)
+exposes it to agents. For the point-in-time reads behind a change, see
+[as of](#as-of-a-point-in-time).
+
 ## How it works
 
 1. **Seed.** The query is split into Unicode words, NFC-normalized and

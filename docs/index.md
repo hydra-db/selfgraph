@@ -18,7 +18,7 @@ Relations and preferences keep their version history.
 | [Ontology](ontology.md) | Terms, synonyms, definitions, grounding a question, and drafts from table metadata. |
 | [Entity resolution](resolution.md) | Merging duplicate entities on insert, and undoing a merge. |
 | [Resources](resources.md) | Typed CRUD over entities, relations, preferences, and decisions. |
-| [Retrieval](retrieval.md) | `retrieve`, how it seeds and traverses, raw Cypher, and Obsidian export. |
+| [Retrieval](retrieval.md) | `retrieve`, how it seeds and traverses, the change log, raw Cypher, and Obsidian export. |
 | [Answering safely](trust.md) | Readiness, answerability, hubs, and certified facts, for agents. |
 | [Maintenance](maintenance.md) | Relevance decay, pruning, and merging duplicate relations. |
 | [Backends](backends.md) | The built-in stores and how to add your own. |
