@@ -21,7 +21,7 @@ const BYPASSES = [
 const READS = ["MATCH (n) RETURN n.set AS x;", "RETURN 1; MATCH (n) RETURN n"];
 
 const TOOL_NAMES = `certify_relation check_answerable check_readiness create_decision create_entity create_preference
-  create_relation delete_decision delete_entity delete_preference delete_relation entity_evidence entity_merges
+  create_relation delete_decision delete_entity delete_preference delete_relation diff entity_evidence entity_merges
   get_decision get_entity get_preference get_relation get_schema insert_facts insert_text list_decisions
   list_entities list_preferences list_relations maintenance_decay maintenance_dedupe_relations maintenance_prune
   preference_versions relation_evidence relation_versions retrieve run_cypher uncertify_relation unmerge_entity

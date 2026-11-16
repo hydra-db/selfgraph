@@ -840,10 +840,21 @@ async def dump(graph, ns):
         tier: await termed.retrieve("which employers hired staff members named Hopper", seeds=tier, depth=0)
         for tier in ("bm25", "synonyms")
     }
+    full = await graph.diff()
+    first = full.changes[0].at if full.changes else None
+    last = full.changes[-1].at if full.changes else None
+    diff = {
+        "full": to_jsonable(full),
+        "since_first": to_jsonable(await graph.diff(since=first)),
+        "until_last": to_jsonable(await graph.diff(until=last)),
+        "relations_only": to_jsonable(await graph.diff(kinds=["relation"])),
+        "limited": to_jsonable(await graph.diff(limit=3)),
+    }
     pruned = await termed.maintenance.prune(older_than=datetime.now(timezone.utc), types=["User", "DATABASE"])
     return to_jsonable(
         {
             "answerable": answerable,
+            "diff": diff,
             "prune_types": pruned,
             "known_at_sources": {
                 "seeds": [s.id for s in historical.seeds],

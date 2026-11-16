@@ -798,9 +798,20 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     const r = await termed.retrieve("which employers hired staff members named Hopper", { seeds: tier, depth: 0 });
     seeded[tier] = { seeds: r.seeds, tiers: r.tiers };
   }
+  const full = await graph.diff();
+  const first = full.changes.length ? full.changes[0].at : null;
+  const last = full.changes.length ? full.changes[full.changes.length - 1].at : null;
+  const diff = {
+    full: toJsonable(full),
+    since_first: toJsonable(await graph.diff({ since: first })),
+    until_last: toJsonable(await graph.diff({ until: last })),
+    relations_only: toJsonable(await graph.diff({ kinds: ["relation"] })),
+    limited: toJsonable(await graph.diff({ limit: 3 })),
+  };
   const pruned = await termed.maintenance.prune({ older_than: new Date(), types: ["User", "DATABASE"] });
   return toJsonable({
     answerable,
+    diff,
     prune_types: pruned,
     known_at_sources: {
       seeds: historical.seeds.map((s) => s.id),
