@@ -11,6 +11,7 @@ from pydantic import (
     Field,
     JsonValue,
     SerializerFunctionWrapHandler,
+    StrictFloat,
     field_validator,
     model_serializer,
     model_validator,
@@ -628,7 +629,7 @@ class EvidenceInput(InputModel):
     quote: str | None = None
     start_offset: int | None = None
     end_offset: int | None = None
-    confidence: float | None = None
+    confidence: StrictFloat | None = None
 
     _clean_source_id = _check(_require_no_control, "evidence source_id", "source_id")
 
@@ -682,7 +683,7 @@ class PreferenceInput(InputModel):
     key: str
     value_entity: str
     about_entity: str | None = None
-    strength: float | None = None
+    strength: StrictFloat | None = None
     properties: dict[str, JsonValue] = Field(default_factory=dict)
     event_time: FactsTime = None
 
