@@ -319,12 +319,18 @@ describe("contradiction and as-of rules match Python", () => {
         }
       >,
     )) {
-      const tracker = new Contradictions(caps, c.mode, c.existing.map(dates) as unknown as Relation[]);
+      const existing = c.existing.map(dates) as unknown as Relation[];
+      const tracker = new Contradictions(
+        caps,
+        c.mode,
+        existing.filter((v) => v.is_current),
+        existing.filter((v) => !v.is_current),
+      );
       const got = c.admits.map(([rid, rtype, from, to, iso]) => {
         const at = parseIso(iso);
         const warnings = tracker.admit(rid, rtype, from, to, [epochMicros(at), 1, epochMicros(at)], at);
         const [ended, settled] = tracker.settle();
-        const retired = Object.fromEntries([...ended].map(([old, [by, when]]) => [old, [by, toIso(when)]]));
+        const retired = Object.fromEntries([...ended].map(([old, end]) => [old, end && [end[0], toIso(end[1])]]));
         return [retired, [...warnings, ...settled].map((w) => [w.code, w.message])];
       });
       expect(got, name).toEqual(c.results);

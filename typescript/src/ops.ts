@@ -1834,6 +1834,45 @@ export class Contradictions {
     this.where.delete(rid);
   }
 
+  private facts(key: string): Map<string, Rank> {
+    return new Map([...(this.past.get(key) ?? []), ...(this.groups.get(key) ?? [])]);
+  }
+
+  /**
+   * List the retired relations that a fact at an endpoint this write touched no longer displaces.
+   *
+   * @return (string[]): the ids of relations retired by a fact at a touched endpoint that now have fewer than max_count newer facts there.
+   */
+  private freed(): string[] {
+    const freed = new Set<string>();
+    for (const [key, limit] of this.dirty) {
+      const facts = this.facts(key);
+      for (const rid of this.past.get(key)?.keys() ?? []) {
+        const ended = this.ended.get(rid);
+        if (ended !== undefined && facts.has(ended[0]) && this.newer(facts, rid).length < limit) freed.add(rid);
+      }
+    }
+    return [...freed];
+  }
+
+  private known(rid: string): boolean {
+    return this.slots(...this.ends.get(rid)!).every(([slot]) => {
+      const key = JSON.stringify(slot);
+      return this.dirty.has(key) || this.read.has(key);
+    });
+  }
+
+  /**
+   * List the relations settle may reinstate that sit at a constrained endpoint this write has not read.
+   *
+   * @return (Array<readonly [string, string, string]>): (normalized type, source id, destination id) of each, to read and learn before settle; settle leaves a relation whose endpoints it does not know as it is.
+   */
+  unread(): Array<readonly [string, string, string]> {
+    return this.freed()
+      .filter((rid) => !this.known(rid))
+      .map((rid) => this.ends.get(rid)!);
+  }
+
   /**
    * Record a relation becoming current at every constrained endpoint.
    *
@@ -1904,17 +1943,43 @@ export class Contradictions {
    * written by this write after that fact was current, else "relation_superseded". A relation retired by an
    * earlier write whose invalidating fact is no longer the max_count-th newer one, because this write added a fact
    * in between, is returned with its corrected invalidation and no warning; the caller writes that as a new
-   * revision of it.
+   * revision of it. A relation retired by an earlier write that no longer has max_count newer facts at any of its
+   * endpoints, because this write moved the fact that retired it to an earlier time, is returned with null and no
+   * warning; the caller writes it as a new current revision.
    *
-   * @return ([Map<string, [string, Date]>, InsertWarning[]]): each retired relation id with the id that invalidated it and when, and the warnings.
+   * @return ([Map<string, [string, Date] | null>, InsertWarning[]]): each retired relation id with the id that invalidated it and when, or null for a relation that is current again, and the warnings.
    */
-  settle(): [Map<string, [string, Date]>, InsertWarning[]] {
-    const retired = new Map<string, [string, Date]>();
+  settle(): [Map<string, [string, Date] | null>, InsertWarning[]] {
+    const retired = new Map<string, [string, Date] | null>();
     const why = new Map<string, [string, number, string]>();
     const slots: Array<InsertWarning | string> = [];
+    for (const rid of this.freed()) {
+      if (!this.known(rid)) continue;
+      const seats = this.slots(...this.ends.get(rid)!);
+      const later: Array<[Rank, string]> = [];
+      for (const [slot, limit] of seats) {
+        const newer = this.newer(this.facts(JSON.stringify(slot)), rid);
+        if (newer.length >= limit) later.push(newer[limit - 1]!);
+      }
+      if (later.length) {
+        const by = later.sort(compareRanked)[0]![1];
+        const at = this.times.get(by)!;
+        const ended = this.ended.get(rid)!;
+        if (by !== ended[0] || at.getTime() !== ended[1].getTime()) {
+          retired.set(rid, [by, at]);
+          this.ended.set(rid, [by, at]);
+        }
+        continue;
+      }
+      for (const [slot] of seats) {
+        this.seat(slot, rid, this.past.get(JSON.stringify(slot))!.get(rid)!, this.times.get(rid)!);
+      }
+      this.ended.delete(rid);
+      retired.set(rid, null);
+    }
     for (const [key, limit] of this.dirty) {
       const group = this.groups.get(key) ?? new Map<string, Rank>();
-      const facts = new Map([...(this.past.get(key) ?? []), ...group]);
+      const facts = this.facts(key);
       const ranked = [...group.keys()].sort((a, b) => compareRanked([group.get(b)!, b], [group.get(a)!, a]));
       const [canonical, side, endpoint] = JSON.parse(key) as [string, string, string];
       for (const old of ranked) {
@@ -2079,6 +2144,35 @@ function retiredEdge(edge: EdgeRow, by: string, at: Date, known: Date): EdgeRow 
   return { ...edge, props };
 }
 
+/**
+ * Make a retired relation current again, as a new revision, once the fact that retired it no longer displaces it.
+ *
+ * The new revision names the retired version's effective time as its event_time, so it stays where it was in time
+ * order and reads as valid from then on.
+ *
+ * @param ns (string): the namespace.
+ * @param edge (EdgeRow): the edge row of the retired version.
+ * @param known (Date): when the reinstatement is written, for reads with known_at.
+ * @return (EdgeRow): the edge row of the new current revision.
+ */
+function reinstatedEdge(ns: string, edge: EdgeRow, known: Date): EdgeRow {
+  const prev = relationOf(edge);
+  const props = encodeRelationProps({
+    ns,
+    id: prev.id,
+    revision: prev.revision + 1,
+    properties: prev.properties,
+    event_time: effectiveTime(prev),
+    created_at: known,
+    is_current: true,
+    source_count: prev.source_count,
+  });
+  return { ...edge, props };
+}
+
+const resettledEdge = (ns: string, edge: EdgeRow, end: [string, Date] | null, known: Date): EdgeRow =>
+  end === null ? reinstatedEdge(ns, edge, known) : retiredEdge(edge, ...end, known);
+
 export interface ContradictionOptions {
   contradiction?: string;
   caps?: ReadonlyMap<string, RelationCap> | null;
@@ -2110,6 +2204,36 @@ async function contradictionCheck(
     [...history.values()].map(relationOf),
   );
   return [tracker, new Map([...history, ...existing])];
+}
+
+/**
+ * Settle the endpoints a write touched, first reading the other endpoints of any relation it may reinstate.
+ *
+ * A relation capped at both ends can only be made current again when neither end displaces it, so the end the write
+ * did not touch is read before the tracker decides.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the max_count limits.
+ * @param tracker (Contradictions | null): the write's tracker, or null when the check is off.
+ * @param found (Map<string, EdgeRow>): each relation's newest edge row by id, extended with the rows read here.
+ * @return ([Map<string, [string, Date] | null>, InsertWarning[]]): what Contradictions.settle returns.
+ */
+async function settleWrite(
+  runner: Runner,
+  ns: string,
+  caps: ReadonlyMap<string, RelationCap> | null | undefined,
+  tracker: Contradictions | null,
+  found: Map<string, EdgeRow>,
+): Promise<[Map<string, [string, Date] | null>, InsertWarning[]]> {
+  if (tracker === null || !caps?.size) return [new Map(), []];
+  const ends = tracker.unread();
+  if (ends.length) {
+    const [current, history] = await constrainedCurrent(runner, ns, caps, ends);
+    for (const [rid, edge] of [...history, ...current]) if (!found.has(rid)) found.set(rid, edge);
+    tracker.learn(ends, [...current.values()].map(relationOf), [...history.values()].map(relationOf));
+  }
+  return tracker.settle();
 }
 
 /**
@@ -2322,12 +2446,12 @@ export async function upsertRelations(
     current.set(rid, edge);
     out.push([rid, props.revision as number, relationOf(edge)]);
   }
-  const [ended, settled] = tracker?.settle() ?? [new Map<string, [string, Date]>(), []];
+  const [ended, settled] = await settleWrite(runner, ns, options.caps, tracker, existing);
   options.warnings?.push(...settled);
-  for (const [old, [by, at]] of ended) {
-    const gone = retiredEdge(current.get(old) ?? existing.get(old)!, by, at, createdAt);
+  for (const [old, end] of ended) {
+    const gone = resettledEdge(ns, current.get(old) ?? existing.get(old)!, end, createdAt);
     const key = JSON.stringify([old, gone.props.revision]);
-    (writes.has(key) ? writes : retires).set(key, [old, gone.props]);
+    (writes.has(key) || end === null ? writes : retires).set(key, [old, gone.props]);
     current.set(old, gone);
   }
 
@@ -2427,13 +2551,13 @@ export async function createRelation(
     const edge = { props, from_id: args.from_entity, to_id: args.to_entity, type: rtype };
     const version = relationOf(edge);
     const found = tracker.admit(rid, rtype, args.from_entity, args.to_entity, rankOf(version), effectiveTime(version));
-    const [ended, settled] = tracker.settle();
+    const [ended, settled] = await settleWrite(runner, ns, options.caps, tracker, existing);
     options.warnings?.push(...found, ...settled);
     retires = [...ended]
       .filter(([old]) => old !== rid)
-      .map(([old, [by, at]]) => retiredEdge(existing.get(old)!, by, at, createdAt));
+      .map(([old, end]) => resettledEdge(ns, existing.get(old)!, end, createdAt));
     const own = ended.get(rid);
-    if (own !== undefined) written = retiredEdge(edge, ...own, createdAt).props;
+    if (own !== undefined) written = resettledEdge(ns, edge, own, createdAt).props;
   }
   for (const write of [written, ...retires.map((e) => e.props)]) precheckWrite(runner, write);
   const rel = await writeRelationVersion(runner, ns, ends, written, false);
