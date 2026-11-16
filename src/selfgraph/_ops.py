@@ -1841,6 +1841,35 @@ class Contradictions:
         for key in self._where.pop(rid, {}):
             self._past.setdefault(key, {})[rid] = self._groups[key].pop(rid)
 
+    def _facts(self, key: tuple[str, str, str]) -> dict[str, tuple]:
+        return {**self._past.get(key, {}), **self._groups.get(key, {})}
+
+    def _freed(self) -> list[str]:
+        """List the retired relations that a fact at an endpoint this write touched no longer displaces.
+
+        @return (list[str]): the ids of relations retired by a fact at a touched endpoint that now have fewer than
+            max_count newer facts there.
+        """
+        freed: dict[str, None] = {}
+        for key, limit in self._dirty.items():
+            facts = self._facts(key)
+            for rid in self._past.get(key, {}):
+                ended = self._ended.get(rid)
+                if ended is not None and ended[0] in facts and len(self._newer(facts, rid)) < limit:
+                    freed[rid] = None
+        return list(freed)
+
+    def _known(self, rid: str) -> bool:
+        return all(key in self._dirty or key in self._read for key, _ in self._slots(*self._ends[rid]))
+
+    def unread(self) -> list[tuple[str, str, str]]:
+        """List the relations settle may reinstate that sit at a constrained endpoint this write has not read.
+
+        @return (list[tuple[str, str, str]]): (normalized type, source id, destination id) of each, to read and learn
+            before settle; settle leaves a relation whose endpoints it does not know as it is.
+        """
+        return [self._ends[rid] for rid in self._freed() if not self._known(rid)]
+
     def admit(
         self, rid: str, rtype: str, from_entity: str, to_entity: str, rank: tuple, *, certified: bool = False
     ) -> list[InsertWarning]:
@@ -2038,6 +2067,22 @@ async def _contradiction_check(
     if contradiction == "off" or not caps:
         return None, {}
     found: dict[str, dict] = {}
+    await _read_constrained(runner, ns, caps, ends, found)
+    return Contradictions(caps, contradiction, *_current_and_retired(found)), found
+
+
+async def _read_constrained(
+    runner: Any, ns: str, caps: Mapping[str, RelationCap], ends: Iterable[tuple[str, str, str]], found: dict[str, dict]
+) -> None:
+    """Read the relations at every endpoint a max_count constrains, keeping the newest version of each.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param caps (Mapping[str, RelationCap]): the max_count limits.
+    @param ends (Iterable[tuple[str, str, str]]): (normalized type, source id, destination id) to read around.
+    @param found (dict[str, dict]): receives each relation's newest edge row by id, in read order.
+    @return (None): nothing.
+    """
     seen: set[tuple[str, str, str]] = set()
     for rtype, from_entity, to_entity in ends:
         cap = caps.get(rtype)
@@ -2051,11 +2096,43 @@ async def _contradiction_check(
                 fetch = partial(runner.match_edges, ns, from_label=L_ENTITY, to_label=L_ENTITY, type=stored)
                 for edge in await _paged(partial(fetch, **anchor), page=_BATCH):
                     _keep_newest(found, edge)
+
+
+def _current_and_retired(found: Mapping[str, dict]) -> tuple[list[Relation], list[Relation]]:
+    """Split the newest edge rows into the current relations and the ones a contradiction retired.
+
+    @param found (Mapping[str, dict]): each relation's newest edge row by id.
+    @return (tuple[list[Relation], list[Relation]]): the current relations, then the retired ones.
+    """
     current = [_relation_of(e) for e in found.values() if e["props"]["is_current"]]
-    history = [
+    retired = [
         _relation_of(e) for e in found.values() if not e["props"]["is_current"] and e["props"].get("invalidated_at")
     ]
-    return Contradictions(caps, contradiction, current, history), found
+    return current, retired
+
+
+async def _settle(
+    runner: Any, ns: str, caps: Mapping[str, RelationCap] | None, tracker: Contradictions | None, found: dict[str, dict]
+) -> tuple[dict[str, tuple[str, datetime] | None], list[InsertWarning]]:
+    """Settle the endpoints a write touched, first reading the other endpoints of any relation it may reinstate.
+
+    A relation capped at both ends can only be made current again when neither end displaces it, so the end the
+    write did not touch is read before the tracker decides.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param caps (Mapping[str, RelationCap] | None): the max_count limits.
+    @param tracker (Contradictions | None): the write's tracker, or None when the check is off.
+    @param found (dict[str, dict]): each relation's newest edge row by id, extended with the rows read here.
+    @return (tuple[dict[str, tuple[str, datetime] | None], list[InsertWarning]]): what Contradictions.settle returns.
+    """
+    if tracker is None or not caps:
+        return {}, []
+    ends = tracker.unread()
+    if ends:
+        await _read_constrained(runner, ns, caps, ends, found)
+        tracker.learn(ends, *_current_and_retired(found))
+    return tracker.settle()
 
 
 async def rival_relations(
