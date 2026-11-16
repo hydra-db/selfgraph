@@ -1778,13 +1778,37 @@ class Contradictions:
         self._where: dict[str, dict[tuple[str, str, str], None]] = {}
         self._order: dict[str, int] = {}
         self._dirty: dict[tuple[str, str, str], int] = {}
-        self._certified = {rel.id for rel in current if rel.certified_at is not None}
+        self._ends: dict[str, tuple[str, str, str]] = {}
+        self._read: set[tuple[str, str, str]] = set()
+        self._certified: set[str] = set()
+        self.learn((), current, history)
+
+    def learn(
+        self, ends: Iterable[tuple[str, str, str]], current: Iterable[Relation], history: Iterable[Relation]
+    ) -> None:
+        """Take in the relations read at more constrained endpoints, leaving the ones already tracked as they are.
+
+        @param ends (Iterable[tuple[str, str, str]]): (normalized type, source id, destination id) whose constrained
+            endpoints were read in full.
+        @param current (Iterable[Relation]): the stored current relations read there.
+        @param history (Iterable[Relation]): the newest version of each relation a contradiction retired there.
+        @return (None): nothing.
+        """
+        for end in ends:
+            self._read.update(key for key, _ in self._slots(*end))
         for rel in history:
+            if rel.id in self._ends or rel.id in self._where:
+                continue
+            self._ends[rel.id] = (rel.type, rel.from_entity, rel.to_entity)
             if rel.invalidated_by is not None and rel.invalidated_at is not None:
                 self._ended[rel.id] = (rel.invalidated_by, rel.invalidated_at)
             for key, _ in self._slots(rel.type, rel.from_entity, rel.to_entity):
                 self._past.setdefault(key, {})[rel.id] = _rank(rel)
         for rel in current:
+            if rel.id in self._ends or rel.id in self._where:
+                continue
+            if rel.certified_at is not None:
+                self._certified.add(rel.id)
             for key, _ in self._slots(rel.type, rel.from_entity, rel.to_entity):
                 self._seat(key, rel.id, _rank(rel))
 
