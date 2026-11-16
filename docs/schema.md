@@ -266,6 +266,15 @@ that copies its content and carries the corrected `invalidated_by` and `invalida
 [`known_at`](retrieval.md#as-the-graph-knew-it) read from before that write still sees the
 earlier retirement.
 
+A fact can also move to an earlier time: an insert restates it with an earlier `event_time`, or
+`relations.update` gives it one. A relation it retired becomes current again when fewer than
+`max_count` newer facts remain at every endpoint that constrains that relation. The relation takes
+a new current revision that copies its content and names the retired version's effective time as
+its `event_time`. The retired version stays in `versions`, so a
+[`known_at`](retrieval.md#as-the-graph-knew-it) read from before that write still sees the
+retirement. A relation another endpoint still displaces stays retired, with `invalidated_by` and
+`invalidated_at` corrected to that endpoint's fact.
+
 A relation constrained at both endpoints ends at the earliest time either endpoint displaces it,
 whichever order the facts arrive in.
 
@@ -277,6 +286,10 @@ whichever order the facts arrive in.
   retired relation gets a `relation_superseded` warning.
 - Each endpoint is settled once per insert, so a batch warns once per retired
   relation.
+- `relations.update` with a new `event_time` settles the relation's endpoints the same
+  way under `supersede` and `llm`. When the updated relation is now the older fact it
+  is returned retired, with a `contradiction_out_of_order` warning on the `selfgraph`
+  logger. The other modes leave the endpoint as it is, since an update adds no relation.
 
 ### Reading and reasserting a retired relation
 
