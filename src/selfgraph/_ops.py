@@ -1930,17 +1930,36 @@ class Contradictions:
         "contradiction_out_of_order" when it was written by this write after that fact was current, else
         "relation_superseded". A relation retired by an earlier write whose invalidating fact is no longer the
         max_count-th newer one, because this write added a fact in between, is returned with its corrected
-        invalidation and no warning; the caller writes that as a new revision of it.
+        invalidation and no warning; the caller writes that as a new revision of it. A relation retired by an
+        earlier write that no longer has max_count newer facts at any of its endpoints, because this write moved the
+        fact that retired it to an earlier time, is returned with None and no warning; the caller writes it as a new
+        current revision.
 
-        @return (tuple[dict[str, tuple[str, datetime]], list[InsertWarning]]): each retired relation id with the
-            id that invalidated it and when, and the warnings.
+        @return (tuple[dict[str, tuple[str, datetime] | None], list[InsertWarning]]): each retired relation id with
+            the id that invalidated it and when, or None for a relation that is current again, and the warnings.
         """
-        retired: dict[str, tuple[str, datetime]] = {}
+        retired: dict[str, tuple[str, datetime] | None] = {}
         why: dict[str, tuple[tuple[str, str, str], int, str]] = {}
         slots: list[InsertWarning | str] = []
+        for rid in self._freed():
+            if not self._known(rid):
+                continue
+            seats = self._slots(*self._ends[rid])
+            later = [
+                newer[limit - 1] for key, limit in seats if len(newer := self._newer(self._facts(key), rid)) >= limit
+            ]
+            if later:
+                (at, _, _), by = min(later)
+                if (by, at) != self._ended[rid]:
+                    retired[rid] = self._ended[rid] = (by, at)
+                continue
+            for key, _ in seats:
+                self._seat(key, rid, self._past[key][rid])
+            del self._ended[rid]
+            retired[rid] = None
         for key, limit in self._dirty.items():
             group = self._groups.get(key, {})
-            facts = {**self._past.get(key, {}), **group}
+            facts = self._facts(key)
             ranked = sorted(group, key=lambda o: (group[o], o), reverse=True)
             canonical, side, endpoint = key
             for old in ranked:
@@ -2045,6 +2064,35 @@ def _retired(edge: dict, by: str, at: datetime, known: datetime) -> dict:
     if not edge["props"]["is_current"]:
         props.update(revision=int(edge["props"]["revision"]) + 1, created_at=to_iso(known))
     return {**edge, "props": props}
+
+
+def _reinstated(ns: str, edge: dict, known: datetime) -> dict:
+    """Make a retired relation current again, as a new revision, once the fact that retired it no longer displaces it.
+
+    The new revision names the retired version's effective time as its event_time, so it stays where it was in time
+    order and reads as valid from then on.
+
+    @param ns (str): namespace.
+    @param edge (dict): the edge row of the retired version.
+    @param known (datetime): when the reinstatement is written, for reads with known_at.
+    @return (dict): the edge row of the new current revision.
+    """
+    prev = _relation_of(edge)
+    props = encode_relation_props(
+        ns=ns,
+        id=prev.id,
+        revision=prev.revision + 1,
+        properties=prev.properties,
+        event_time=effective_time(prev),
+        created_at=known,
+        is_current=True,
+        source_count=prev.source_count,
+    )
+    return {**edge, "props": props}
+
+
+def _resettled(ns: str, edge: dict, end: tuple[str, datetime] | None, known: datetime) -> dict:
+    return _reinstated(ns, edge, known) if end is None else _retired(edge, *end, known)
 
 
 async def _contradiction_check(
@@ -2323,13 +2371,13 @@ async def upsert_relations(
             writes[(rid, props["revision"])] = props
         current[rid] = edge
         out.append((rid, props["revision"], _relation_of(edge)))
-    ended, found = tracker.settle() if tracker is not None else ({}, [])
+    ended, found = await _settle(runner, ns, caps, tracker, existing)
     if warnings is not None:
         warnings.extend(found)
-    for old, (by, at) in ended.items():
-        gone = _retired(current.get(old) or existing[old], by, at, created_at)
+    for old, end in ended.items():
+        gone = _resettled(ns, current.get(old) or existing[old], end, created_at)
         key = (old, gone["props"]["revision"])
-        (writes if key in writes else retires)[key] = gone["props"]
+        (writes if key in writes or end is None else retires)[key] = gone["props"]
         current[old] = gone
 
     for props in [*writes.values(), *retires.values()]:
@@ -2427,12 +2475,12 @@ async def create_relation(
     if tracker is not None:
         edge = {"props": props, "from_id": from_entity, "to_id": to_entity, "type": rtype}
         found = tracker.admit(rid, rtype, from_entity, to_entity, _rank(_relation_of(edge)))
-        ended, settled = tracker.settle()
+        ended, settled = await _settle(runner, ns, caps, tracker, existing)
         if warnings is not None:
             warnings.extend([*found, *settled])
-        retires = [_retired(existing[old], by, at, created_at) for old, (by, at) in ended.items() if old != rid]
+        retires = [_resettled(ns, existing[old], end, created_at) for old, end in ended.items() if old != rid]
         if rid in ended:
-            props = _retired(edge, *ended[rid], created_at)["props"]
+            props = _resettled(ns, edge, ended[rid], created_at)["props"]
     for write in [props, *(edge["props"] for edge in retires)]:
         await _precheck_write(runner, write)
     rel = await _write_relation_version(runner, ns, from_entity, rtype, to_entity, props, retire=False)
