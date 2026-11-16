@@ -605,7 +605,7 @@ class SelfGraph:
             if extracted and mode == "strict":
                 canonical, dropped = await drop_off_schema(tx, ns, canonical, active_schema)
             max_count = mode == "strict" and conflicts != "off"
-            checked = await enforce_schema(tx, ns, canonical, active_schema, mode, max_count=max_count)
+            checked = await enforce_schema(tx, ns, canonical, active_schema, mode, max_count=max_count, upsert=True)
             found: list[InsertWarning] = []
             resolution = None
             if active_resolver is not None:

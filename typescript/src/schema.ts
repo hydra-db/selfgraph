@@ -5,6 +5,7 @@ import { canonicalId, entityId, normalizeRelType, normalizeText, relationId, slu
 import { casefold } from "./internal/casefold.js";
 import { log } from "./internal/log.js";
 import { pyRepr } from "./internal/py.js";
+import { L_ENTITY } from "./labels.js";
 import {
   asInput,
   type InsertWarning,
@@ -14,8 +15,18 @@ import {
   optString,
   type ParsedExtraction,
 } from "./models.js";
-import { cleanText, getEntity, type RelationCap } from "./ops.js";
+import {
+  cleanText,
+  currentRelations,
+  dedupList,
+  getEntity,
+  mergeProps,
+  nodesById,
+  type RelationCap,
+  relationOf,
+} from "./ops.js";
 import type { GraphPrimitives } from "./protocols.js";
+import { decodeEntity } from "./serde.js";
 import { parseTime } from "./validate.js";
 
 const PropertyTypeSchema = z.enum(["string", "integer", "float", "boolean", "datetime", "json"]);
@@ -470,7 +481,7 @@ function checkProperties(
 ): InsertWarning[] {
   const warnings: InsertWarning[] = [];
   for (const spec of specs) {
-    if (spec.required && !(spec.name in properties)) {
+    if (spec.required && (!Object.hasOwn(properties, spec.name) || properties[spec.name] == null)) {
       warnings.push(
         insertWarning("missing_required_property", `${kind} ${ref} is missing required property ${pyRepr(spec.name)}`),
       );
@@ -589,6 +600,63 @@ export function validateAgainstSchema(
 }
 
 /**
+ * Resolve the entity types and entity and relation properties an upsert of facts would store.
+ *
+ * @param runner (GraphPrimitives): the graph runner.
+ * @param ns (string): the namespace.
+ * @param facts (T): the facts being upserted, with canonical types.
+ * @param schema (ParsedSchema): the active schema.
+ * @return (Promise<T>): a copy whose entities and relations carry their post-upsert types and properties.
+ */
+async function mergedFacts<T extends SchemaSubject>(
+  runner: GraphPrimitives,
+  ns: string,
+  facts: T,
+  schema: ParsedSchema,
+): Promise<T> {
+  const schemaTypes = new Set(schema.entities.map((t) => t.name));
+  const entityKeys = facts.entities.map((ent) => {
+    const etype = cleanText(ent.type);
+    const ename = cleanText(ent.name);
+    return { eid: ent.id || entityId(etype, ename), etype, ent };
+  });
+  const eids = dedupList(entityKeys.map((item) => item.eid));
+  const entityState = new Map<string, [string, JsonObject]>();
+  for (const [eid, props] of await nodesById(runner, ns, L_ENTITY, eids)) {
+    const stored = decodeEntity(props);
+    entityState.set(eid, [stored.type, stored.properties]);
+  }
+  for (const { eid, etype, ent } of entityKeys) {
+    const prev = entityState.get(eid);
+    if (prev === undefined) {
+      entityState.set(eid, [etype, mergeProps(null, ent.properties)]);
+    } else {
+      const [prevType, prevProps] = prev;
+      entityState.set(eid, [schemaTypes.has(etype) ? etype : prevType, mergeProps(prevProps, ent.properties)]);
+    }
+  }
+  const entities = entityKeys.map(({ eid, ent }) => {
+    const [type, properties] = entityState.get(eid)!;
+    return { ...ent, type, properties };
+  });
+
+  const relKeys = facts.relations.map(
+    (rel) => [rel.id || relationId(rel.from_entity, normalizeRelType(rel.type), rel.to_entity), rel] as const,
+  );
+  const relProps = new Map<string, JsonObject>();
+  for (const [rid, edge] of await currentRelations(runner, ns, relKeys)) {
+    relProps.set(rid, relationOf(edge).properties);
+  }
+  const relations = relKeys.map(([rid, rel]) => {
+    const properties = mergeProps(relProps.get(rid) ?? null, rel.properties);
+    relProps.set(rid, properties);
+    return { ...rel, properties };
+  });
+
+  return { ...facts, entities, relations };
+}
+
+/**
  * Check a pending write against the schema, looking up stored endpoint types, and apply the schema mode.
  *
  * @param runner (GraphPrimitives): the graph runner.
@@ -599,6 +667,7 @@ export function validateAgainstSchema(
  * @param cardinality (boolean): whether to count relations per endpoint against min_count and max_count.
  * @param maxCount (boolean): whether to report counts above max_count, which a contradiction check reports instead.
  * @param before (SchemaSubject | null): the stored state an update replaces, or null for a new write; only the warnings the update introduces then count, in both warn and strict mode.
+ * @param upsert (boolean): whether to merge facts onto stored entities and relations before checking.
  * @return (InsertWarning[]): the warnings, empty when off or clean.
  */
 export async function enforceSchema(
@@ -610,13 +679,15 @@ export async function enforceSchema(
   cardinality = true,
   maxCount = true,
   before: SchemaSubject | null = null,
+  upsert = false,
 ): Promise<InsertWarning[]> {
   if (schema === null || mode === "off") return [];
+  const target = upsert ? await mergedFacts(runner, ns, facts, schema) : facts;
   const check = async (subject: SchemaSubject): Promise<InsertWarning[]> => {
     const graphTypes = await storedTypes(runner, ns, subject);
     return validateAgainstSchema(subject, schema, { graphTypes, cardinality, maxCount });
   };
-  let warnings = await check(facts);
+  let warnings = await check(target);
   if (before !== null && warnings.length) {
     const known = new Set((await check(before)).map((w) => JSON.stringify([w.code, w.message])));
     warnings = warnings.filter((w) => !known.has(JSON.stringify([w.code, w.message])));
@@ -664,6 +735,7 @@ export async function dropOffSchema(
   schema: ParsedSchema | null,
 ): Promise<[ParsedExtraction, InsertWarning[]]> {
   if (schema === null) return [facts, []];
+  const merged = await mergedFacts(runner, ns, facts, schema);
   const warnings: InsertWarning[] = [];
   const dropped = new Set<string>();
   const keep = (kind: string, id: string, reasons: string[]): boolean => {
@@ -677,18 +749,24 @@ export async function dropOffSchema(
     [...new Set(refs)].filter((ref) => ref !== null && dropped.has(ref)).map((ref) => `${ref} was dropped`);
   const messages = (found: InsertWarning[]): string[] => found.map((w) => w.message);
 
-  const entities = facts.entities.filter((ent) =>
-    keep(
-      "entity",
-      entityRef(ent),
-      messages(validateAgainstSchema({ entities: [ent], relations: [] }, schema, { cardinality: false })),
-    ),
-  );
-  const byId = new Map(entities.map((ent) => [entityRef(ent), ent]));
+  const entities: ParsedExtraction["entities"] = [];
+  const byId = new Map<string, ParsedExtraction["entities"][number]>();
+  facts.entities.forEach((ent, i) => {
+    const checkEnt = merged.entities[i]!;
+    const eid = entityRef(ent);
+    const reasons = messages(
+      validateAgainstSchema({ entities: [checkEnt], relations: [] }, schema, { cardinality: false }),
+    );
+    if (keep("entity", eid, reasons)) {
+      entities.push(ent);
+      byId.set(eid, checkEnt);
+    }
+  });
   const graphTypes = await storedTypes(runner, ns, facts);
-  const relations = facts.relations.filter((rel) => {
+  const relations = facts.relations.filter((rel, i) => {
+    const checkRel = merged.relations[i]!;
     const ends = [rel.from_entity, rel.to_entity].flatMap((e) => byId.get(e) ?? []);
-    const found = validateAgainstSchema({ entities: ends, relations: [rel] }, schema, {
+    const found = validateAgainstSchema({ entities: ends, relations: [checkRel] }, schema, {
       graphTypes,
       cardinality: false,
     });

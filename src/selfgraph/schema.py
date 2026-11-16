@@ -5,6 +5,7 @@ from typing import Any, ClassVar, Literal, get_args
 from pydantic import Field, model_validator
 
 from . import _ops
+from ._serde import L_ENTITY, decode_entity
 from .errors import ValidationError
 from .ids import _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
 from .models import Extraction, InputModel, InsertWarning, TopInputModel, as_input
@@ -529,7 +530,7 @@ def _check_properties(
     """
     warnings: list[InsertWarning] = []
     for spec in specs:
-        if spec.required and spec.name not in properties:
+        if spec.required and properties.get(spec.name) is None:
             warnings.append(
                 InsertWarning(
                     code="missing_required_property",
@@ -638,6 +639,58 @@ def validate_against_schema(
     return warnings
 
 
+async def _merged_facts(runner: Any, ns: str, facts: Extraction, schema: Schema) -> Extraction:
+    """Resolve the entity types and entity and relation properties an upsert of facts would store.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param facts (Extraction): the facts being upserted, with canonical types.
+    @param schema (Schema): the active schema.
+    @return (Extraction): a copy whose entities and relations carry their post-upsert types and properties.
+    """
+    schema_types = {t.name for t in schema.entities}
+    entity_keys = []
+    for ent in facts.entities:
+        etype = _ops._clean_text(ent.type)
+        ename = _ops._clean_text(ent.name)
+        entity_keys.append((ent.id or entity_id(etype, ename), etype, ent))
+    eids = _ops._dedup_list(eid for eid, _, _ in entity_keys)
+    stored_entities = {
+        eid: decode_entity(p) for eid, p in (await _ops._nodes_by_id(runner, ns, L_ENTITY, eids)).items()
+    }
+    entity_state: dict[str, tuple[str, dict[str, Any]]] = {
+        eid: (stored.type, stored.properties) for eid, stored in stored_entities.items()
+    }
+    for eid, etype, ent in entity_keys:
+        prev = entity_state.get(eid)
+        if prev is None:
+            entity_state[eid] = (etype, _ops._merge_props(None, ent.properties))
+        else:
+            prev_type, prev_props = prev
+            next_type = etype if etype in schema_types else prev_type
+            entity_state[eid] = (next_type, _ops._merge_props(prev_props, ent.properties))
+    entities = [
+        ent.model_copy(update={"type": entity_state[eid][0], "properties": entity_state[eid][1]})
+        for eid, _, ent in entity_keys
+    ]
+
+    rel_keys = [
+        (rel.id or relation_id(rel.from_entity, normalize_rel_type(rel.type), rel.to_entity), rel)
+        for rel in facts.relations
+    ]
+    stored_relations = await _ops._current_relations(runner, ns, rel_keys)
+    rel_props: dict[str, dict[str, Any]] = {
+        rid: _ops._relation_of(edge).properties for rid, edge in stored_relations.items()
+    }
+    relations = []
+    for rid, rel in rel_keys:
+        merged_props = _ops._merge_props(rel_props.get(rid), rel.properties)
+        rel_props[rid] = merged_props
+        relations.append(rel.model_copy(update={"properties": merged_props}))
+
+    return facts.model_copy(update={"entities": entities, "relations": relations})
+
+
 async def enforce_schema(
     runner: Any,
     ns: str,
@@ -648,11 +701,13 @@ async def enforce_schema(
     cardinality: bool = True,
     max_count: bool = True,
     before: Extraction | None = None,
+    upsert: bool = False,
 ) -> list[InsertWarning]:
     """Check a pending write against the schema, looking up stored endpoint types, and apply the schema mode.
 
     With before, the stored state an update starts from, only the warnings the update introduces count: a
-    violation the stored state already had neither raises in strict mode nor is reported in warn mode.
+    violation the stored state already had neither raises in strict mode nor is reported in warn mode. With
+    upsert, entities and relations are checked after merging their properties with what is already stored.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -662,10 +717,13 @@ async def enforce_schema(
     @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
     @param max_count (bool): whether to report counts above max_count, which a contradiction check reports instead.
     @param before (Extraction | None): the stored state an update replaces, or None for a new write.
+    @param upsert (bool): whether to merge facts onto stored entities and relations before checking.
     @return (list[InsertWarning]): the warnings, empty when off or clean.
     """
     if schema is None or mode == "off":
         return []
+    if upsert:
+        facts = await _merged_facts(runner, ns, facts, schema)
 
     async def check(subject: Extraction) -> list[InsertWarning]:
         return validate_against_schema(
@@ -719,6 +777,7 @@ async def drop_off_schema(
     """
     if schema is None:
         return facts, []
+    merged = await _merged_facts(runner, ns, facts, schema)
     warnings: list[InsertWarning] = []
     dropped: set[str] = set()
 
@@ -732,22 +791,22 @@ async def drop_off_schema(
     def lost(refs: Iterable[str | None]) -> list[str]:
         return [f"{ref} was dropped" for ref in dict.fromkeys(refs) if ref in dropped]
 
-    entities = [
-        ent
-        for ent in facts.entities
-        if keep(
-            "entity",
-            ent.id or entity_id(ent.type, ent.name),
-            [w.message for w in validate_against_schema(Extraction(entities=[ent]), schema, cardinality=False)],
-        )
-    ]
-    by_id = {ent.id or entity_id(ent.type, ent.name): ent for ent in entities}
+    entities = []
+    by_id = {}
+    for ent, check_ent in zip(facts.entities, merged.entities, strict=True):
+        eid = ent.id or entity_id(ent.type, ent.name)
+        reasons = [
+            w.message for w in validate_against_schema(Extraction(entities=[check_ent]), schema, cardinality=False)
+        ]
+        if keep("entity", eid, reasons):
+            entities.append(ent)
+            by_id[eid] = check_ent
     graph_types = await _stored_types(runner, ns, facts)
     relations = []
-    for rel in facts.relations:
+    for rel, check_rel in zip(facts.relations, merged.relations, strict=True):
         ends = [by_id[e] for e in (rel.from_entity, rel.to_entity) if e in by_id]
         found = validate_against_schema(
-            Extraction(entities=ends, relations=[rel]), schema, graph_types=graph_types, cardinality=False
+            Extraction(entities=ends, relations=[check_rel]), schema, graph_types=graph_types, cardinality=False
         )
         rid = rel.id or relation_id(rel.from_entity, rel.type, rel.to_entity)
         if keep("relation", rid, lost([rel.from_entity, rel.to_entity]) or [w.message for w in found]):

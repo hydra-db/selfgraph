@@ -118,6 +118,9 @@ use the graph-level schema and mode.
 
 How checks are applied:
 
+- An insert checks each entity and relation after merging its properties with
+  what is already stored (and earlier entries in the same batch), so restating
+  or extending a stored item does not require repeating its required properties.
 - An `update` is checked on the state it would produce. Only violations it
   introduces count. A violation the stored record already had, say from before
   the schema was set, neither raises nor is logged again.
@@ -151,7 +154,7 @@ result full of `dropped_off_schema` warnings.
 | Code | Raised when |
 |------|-------------|
 | `unknown_entity_type` | An entity's type is not in the schema, and the schema lists at least one entity type. |
-| `missing_required_property` | A required property is absent. |
+| `missing_required_property` | A required property is absent or `None` (`null`). |
 | `property_type_mismatch` | A property value does not match its declared type. |
 | `unknown_relation_type` | A relation's type is not in the schema, and the schema lists at least one relation type. |
 | `endpoint_type_violation` | A relation endpoint is not one of the allowed types. |

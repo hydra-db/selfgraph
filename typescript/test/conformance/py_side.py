@@ -111,6 +111,10 @@ SCHEMA_CASES = [
             {"from_entity": "company:stored", "type": "KNOWS", "to_entity": "manager:z"},
         ],
     },
+    {
+        "entities": [{"id": "person:n", "type": "Person", "name": "N", "properties": {"age": None}}],
+        "relations": [],
+    },
 ]
 
 GRAPH_TYPES = {"company:stored": "Company", "org:o": "org"}
@@ -403,6 +407,33 @@ async def write(graph):
         out["unsafe_integer"] = "accepted"
     except ValidationError as exc:
         out["unsafe_integer"] = str(exc)
+    restate_schema = {
+        "entities": [
+            {"name": "Thing", "properties": [{"name": "k", "type": "string", "required": True}]},
+            {"name": "Company"},
+        ],
+        "relations": [{"type": "TOUCHES", "from": {"types": ["Thing"]}, "to": {"types": ["Company"]}}],
+    }
+    out["schema_restate"] = to_jsonable(
+        (
+            await graph.insert.facts(
+                {"entities": [{"type": "Thing", "name": "Temp Thing", "properties": {"extra": "ok"}}]},
+                schema=restate_schema,
+                schema_mode="strict",
+            )
+        )
+        .entities[0]
+        .properties
+    )
+    try:
+        await graph.insert.facts(
+            {"entities": [{"type": "Thing", "name": "Temp Thing", "properties": {"k": None}}]},
+            schema=restate_schema,
+            schema_mode="strict",
+        )
+        out["schema_null_required"] = "accepted"
+    except ValidationError as exc:
+        out["schema_null_required"] = str(exc)
     out["ent_delete"] = to_jsonable(await graph.entities.delete("thing:temp-thing"))
     out["rel_delete"] = to_jsonable(await graph.relations.delete(ids.relation_id(ZOE, "KNOWS", "person:jane-doe")))
     out["repeated_merges"] = {}

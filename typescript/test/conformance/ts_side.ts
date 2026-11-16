@@ -143,6 +143,10 @@ const SCHEMA_CASES = [
       { from_entity: "company:stored", type: "KNOWS", to_entity: "manager:z" },
     ],
   },
+  {
+    entities: [{ id: "person:n", type: "Person", name: "N", properties: { age: null } }],
+    relations: [],
+  },
 ];
 
 const GRAPH_TYPES = new Map([
@@ -379,6 +383,28 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   } catch (exc) {
     if (!(exc instanceof ValidationError)) throw exc;
     out.unsafe_integer = exc.message;
+  }
+  const restateSchema: Schema = {
+    entities: [{ name: "Thing", properties: [{ name: "k", type: "string", required: true }] }, { name: "Company" }],
+    relations: [{ type: "TOUCHES", from: { types: ["Thing"] }, to: { types: ["Company"] } }],
+  };
+  out.schema_restate = toJsonable(
+    (
+      await graph.insert.facts(
+        { entities: [{ type: "Thing", name: "Temp Thing", properties: { extra: "ok" } }] },
+        { schema: restateSchema, schema_mode: "strict" },
+      )
+    ).entities[0]?.properties,
+  );
+  try {
+    await graph.insert.facts(
+      { entities: [{ type: "Thing", name: "Temp Thing", properties: { k: null } }] },
+      { schema: restateSchema, schema_mode: "strict" },
+    );
+    out.schema_null_required = "accepted";
+  } catch (exc) {
+    if (!(exc instanceof ValidationError)) throw exc;
+    out.schema_null_required = exc.message;
   }
   out.ent_delete = toJsonable(await graph.entities.delete("thing:temp-thing"));
   out.rel_delete = toJsonable(await graph.relations.delete(ids.relationId(ZOE, "KNOWS", "person:jane-doe")));

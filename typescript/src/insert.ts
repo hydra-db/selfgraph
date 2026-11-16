@@ -234,7 +234,7 @@ export class Insert {
       let dropped: InsertWarning[] = [];
       if (extracted && mode === "strict") [canonical, dropped] = await dropOffSchema(tx, ns, canonical, activeSchema);
       const maxCount = mode === "strict" && conflicts !== "off";
-      const checked = await enforceSchema(tx, ns, canonical, activeSchema, mode, true, maxCount);
+      const checked = await enforceSchema(tx, ns, canonical, activeSchema, mode, true, maxCount, null, true);
       const found: InsertWarning[] = [];
       const resolution =
         activeResolver === null

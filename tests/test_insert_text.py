@@ -298,6 +298,20 @@ def test_strict_text_insert_drops_off_schema_extractions_but_facts_insert_raises
     with pytest.raises(ValidationError, match="unknown type 'Team'"):
         run(g.insert.facts({"entities": [{"type": "Team", "name": "Core"}]}))
 
+    aged_schema = {
+        "entities": [
+            {"name": "Person", "properties": [{"name": "age", "type": "integer", "required": True}]},
+            {"name": "Company"},
+        ],
+        "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"]}, "to": {"types": ["Company"]}}],
+    }
+    g_aged = fresh_graph("strict-text-merged", llm=FakeLLM(_full_responses()), schema=aged_schema, schema_mode="strict")
+    run(g_aged.insert.facts({"entities": [{"type": "Person", "name": "Soham", "properties": {"age": 28}}]}))
+    res_aged = run(g_aged.insert.text("Soham works at HydraDB. The team selected it.", source_id="m-aged"))
+    assert {e.id for e in res_aged.entities} == {"person:soham", "company:hydradb"}
+    assert [r.type for r in res_aged.relations] == ["WORKS_AT"]
+    assert run(g_aged.entities.get("person:soham")).properties == {"age": 28}
+
 
 def test_llm_relations_cite_their_chunk_and_progress_is_logged(caplog):
     text = " ".join(["Soham prefers HydraDB and works there every day."] * 400)

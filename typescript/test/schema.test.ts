@@ -497,6 +497,117 @@ describe("schema through the client", () => {
     await expect(graph.insert.facts({ entities: [{ type: "Team", name: "Core" }] })).rejects.toThrow(
       "unknown type 'Team'",
     );
+
+    const agedSchema: Schema = {
+      entities: [
+        { name: "Person", properties: [{ name: "age", type: "integer", required: true }] },
+        { name: "Company" },
+      ],
+      relations: [{ type: "WORKS_AT", from: { types: ["Person"] }, to: { types: ["Company"] } }],
+    };
+    const agedGraph = open({ llm, schema: agedSchema, schema_mode: "strict" });
+    await agedGraph.insert.facts({ entities: [{ type: "Person", name: "Soham", properties: { age: 28 } }] });
+    const agedRes = await agedGraph.insert.text("Soham works at HydraDB. The team selected it.");
+    expect(agedRes.entities.map((e) => e.id).sort()).toEqual(["company:hydradb", "person:soham"]);
+    expect(agedRes.relations.map((r) => r.type)).toEqual(["WORKS_AT"]);
+    expect((await agedGraph.entities.get("person:soham"))?.properties).toEqual({ age: 28 });
+  });
+
+  it("checks merged properties on insert and treats null as missing for required specs", async () => {
+    const spec: Schema = {
+      entities: [
+        { name: "Person", properties: [{ name: "age", type: "integer", required: true }] },
+        { name: "Company", properties: [{ name: "note", type: "string" }] },
+      ],
+      relations: [
+        {
+          type: "WORKS_AT",
+          from: { types: ["Person"] },
+          to: { types: ["Company"] },
+          properties: [{ name: "since", type: "integer", required: true }],
+        },
+      ],
+    };
+    const parsed = Schema.parse(spec);
+    expect(
+      validateAgainstSchema(
+        Extraction.parse({ entities: [{ type: "Person", name: "Jane", properties: { age: null } }] }),
+        parsed,
+      ).map((w) => w.code),
+    ).toEqual(["missing_required_property"]);
+    expect(
+      validateAgainstSchema(
+        Extraction.parse({ entities: [{ type: "Company", name: "Acme", properties: { note: null } }] }),
+        parsed,
+      ),
+    ).toEqual([]);
+
+    const strict = open({ schema: spec, schema_mode: "strict" });
+    await expect(
+      strict.insert.facts({ entities: [{ type: "Person", name: "Ghost", properties: { age: null } }] }),
+    ).rejects.toThrow(/^entity person:ghost is missing required property 'age'$/);
+    expect(await strict.entities.get("person:ghost")).toBeNull();
+
+    const seeded = await strict.insert.facts({
+      entities: [
+        { type: "Person", name: "Jane", properties: { city: "NYC" } },
+        { type: "Person", name: "Jane", properties: { age: 30 } },
+        { type: "Company", name: "Acme" },
+      ],
+      relations: [
+        {
+          from_entity: "person:jane",
+          type: "WORKS_AT",
+          to_entity: "company:acme",
+          properties: { since: 2020 },
+        },
+      ],
+    });
+    expect(seeded.warnings).toEqual([]);
+
+    const extended = await strict.insert.facts({
+      entities: [{ type: "Person", name: "Jane", properties: { city: "SF" } }],
+      relations: [
+        {
+          from_entity: "person:jane",
+          type: "WORKS_AT",
+          to_entity: "company:acme",
+          properties: { role: "CTO" },
+        },
+      ],
+    });
+    expect(extended.warnings).toEqual([]);
+    expect((await strict.entities.get("person:jane"))?.properties).toEqual({ age: 30, city: "SF" });
+    const [rel] = (await strict.relations.list({ from_entity: "person:jane" })).items;
+    expect(rel?.properties).toEqual({ since: 2020, role: "CTO" });
+
+    const warn = open({ namespace: strict.namespace, schema: spec, schema_mode: "warn" });
+    expect(
+      (
+        await warn.insert.facts({
+          entities: [{ type: "Person", name: "Jane" }],
+          relations: [{ from_entity: "person:jane", type: "WORKS_AT", to_entity: "company:acme" }],
+        })
+      ).warnings,
+    ).toEqual([]);
+
+    await expect(
+      strict.insert.facts({ entities: [{ type: "Person", name: "Jane", properties: { age: null } }] }),
+    ).rejects.toThrow(/^entity person:jane is missing required property 'age'$/);
+    await expect(
+      strict.insert.facts({
+        relations: [
+          {
+            from_entity: "person:jane",
+            type: "WORKS_AT",
+            to_entity: "company:acme",
+            properties: { since: null },
+          },
+        ],
+      }),
+    ).rejects.toThrow("missing required property 'since'");
+    expect((await strict.entities.get("person:jane"))?.properties).toEqual({ age: 30, city: "SF" });
+    expect((await strict.relations.get(rel!.id))?.properties).toEqual({ since: 2020, role: "CTO" });
   });
 });
 

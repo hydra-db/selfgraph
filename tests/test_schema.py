@@ -426,6 +426,106 @@ def test_an_update_fails_or_warns_only_for_violations_it_introduces(caplog):
     ]
 
 
+def test_insert_checks_merged_properties_and_treats_none_as_missing_for_required_specs():
+    spec = {
+        "entities": [
+            {"name": "Person", "properties": [{"name": "age", "type": "integer", "required": True}]},
+            {"name": "Company", "properties": [{"name": "note", "type": "string"}]},
+        ],
+        "relations": [
+            {
+                "type": "WORKS_AT",
+                "from": {"types": ["Person"]},
+                "to": {"types": ["Company"]},
+                "properties": [{"name": "since", "type": "integer", "required": True}],
+            }
+        ],
+    }
+    assert [
+        w.code for w in warnings(spec, {"entities": [{"type": "Person", "name": "Jane", "properties": {"age": None}}]})
+    ] == ["missing_required_property"]
+    assert warnings(spec, {"entities": [{"type": "Company", "name": "Acme", "properties": {"note": None}}]}) == []
+
+    strict = fresh_graph("schema-upsert-strict", schema=spec, schema_mode="strict")
+    with pytest.raises(ValidationError, match=r"^entity person:ghost is missing required property 'age'$"):
+        run(strict.insert.facts({"entities": [{"type": "Person", "name": "Ghost", "properties": {"age": None}}]}))
+    assert run(strict.entities.get("person:ghost")) is None
+
+    seeded = run(
+        strict.insert.facts(
+            {
+                "entities": [
+                    {"type": "Person", "name": "Jane", "properties": {"city": "NYC"}},
+                    {"type": "Person", "name": "Jane", "properties": {"age": 30}},
+                    {"type": "Company", "name": "Acme"},
+                ],
+                "relations": [
+                    {
+                        "from_entity": "person:jane",
+                        "type": "WORKS_AT",
+                        "to_entity": "company:acme",
+                        "properties": {"since": 2020},
+                    }
+                ],
+            }
+        )
+    )
+    assert seeded.warnings == []
+
+    extended = run(
+        strict.insert.facts(
+            {
+                "entities": [{"type": "Person", "name": "Jane", "properties": {"city": "SF"}}],
+                "relations": [
+                    {
+                        "from_entity": "person:jane",
+                        "type": "WORKS_AT",
+                        "to_entity": "company:acme",
+                        "properties": {"role": "CTO"},
+                    }
+                ],
+            }
+        )
+    )
+    assert extended.warnings == []
+    assert run(strict.entities.get("person:jane")).properties == {"age": 30, "city": "SF"}
+    rel = run(strict.relations.list(from_entity="person:jane")).items[0]
+    assert rel.properties == {"since": 2020, "role": "CTO"}
+
+    warn = new_graph(namespace=strict.namespace, schema=spec, schema_mode="warn")
+    assert (
+        run(
+            warn.insert.facts(
+                {
+                    "entities": [{"type": "Person", "name": "Jane"}],
+                    "relations": [{"from_entity": "person:jane", "type": "WORKS_AT", "to_entity": "company:acme"}],
+                }
+            )
+        ).warnings
+        == []
+    )
+
+    with pytest.raises(ValidationError, match=r"^entity person:jane is missing required property 'age'$"):
+        run(strict.insert.facts({"entities": [{"type": "Person", "name": "Jane", "properties": {"age": None}}]}))
+    with pytest.raises(ValidationError, match="missing required property 'since'"):
+        run(
+            strict.insert.facts(
+                {
+                    "relations": [
+                        {
+                            "from_entity": "person:jane",
+                            "type": "WORKS_AT",
+                            "to_entity": "company:acme",
+                            "properties": {"since": None},
+                        }
+                    ]
+                }
+            )
+        )
+    assert run(strict.entities.get("person:jane")).properties == {"age": 30, "city": "SF"}
+    assert run(strict.relations.get(rel.id)).properties == {"since": 2020, "role": "CTO"}
+
+
 def test_strict_mode_needs_a_schema(tmp_path, capsys):
     g = new_graph()
     for call in (
