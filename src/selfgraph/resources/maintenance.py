@@ -11,7 +11,7 @@ from .._serde import now as _now
 from ..errors import DECAY_HINT, ValidationError
 from ..ids import normalize_rel_type
 from ..models import DecayResult, DedupeGroup, DedupeResult, DeleteResult, PruneResult, Relation
-from ..schema import canonical_entity_type
+from ..schema import canonical_entity_type, canonical_relation_type
 from ._common import Resource
 
 __all__ = ["Maintenance"]
@@ -146,7 +146,11 @@ class Maintenance(Resource):
         narrowed = types is not None or relation_types is not None
         type_key = partial(_ops.entity_type_key, canonical=partial(canonical_entity_type, schema=self._c.schema))
         entity_types = {type_key(t) for t in types or ()} if narrowed else None
-        rel_types = {normalize_rel_type(t) for t in relation_types or ()} if narrowed else None
+        rel_types = (
+            {normalize_rel_type(canonical_relation_type(t, self._c.schema)) for t in relation_types or ()}
+            if narrowed
+            else None
+        )
 
         def matches(relevance: float | None, stamps: tuple, kind: str, allowed: set[str] | None) -> bool:
             if allowed is not None and kind not in allowed:

@@ -6,7 +6,7 @@ import { jsonIso, toIso } from "../internal/time.js";
 import * as m from "../maintenance.js";
 import type { DateTimeInput, DecayResult, DedupeGroup, DedupeResult, PruneResult, Relation } from "../models.js";
 import * as ops from "../ops.js";
-import { canonicalEntityType } from "../schema.js";
+import { canonicalEntityType, canonicalRelationType } from "../schema.js";
 import { checkOptions, keysOf, parseTime, requireBool, requireList } from "../validate.js";
 import { Resource } from "./common.js";
 
@@ -150,7 +150,9 @@ export class Maintenance extends Resource {
     const schema = this.graph.schema;
     const typeKey = (etype: string): string => ops.entityTypeKey(etype, (type) => canonicalEntityType(type, schema));
     const entityTypes = narrowed ? new Set((types ?? []).map(typeKey)) : null;
-    const relationTypes = narrowed ? new Set((relTypes ?? []).map(normalizeRelType)) : null;
+    const relationTypes = narrowed
+      ? new Set((relTypes ?? []).map((type) => normalizeRelType(canonicalRelationType(type, schema))))
+      : null;
     const matches = (
       relevance: number | null,
       stamps: Array<Date | null>,

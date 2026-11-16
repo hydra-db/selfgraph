@@ -138,6 +138,24 @@ function suite(spec: StoreSpec) {
     expect(await g.entities.get("person:keep")).toBeNull();
   });
 
+  it("matches relation type aliases when pruning", async () => {
+    const g = open({
+      schema: {
+        entities: [{ name: "Person" }, { name: "Company" }],
+        relations: [{ type: "WORKS_AT", aliases: ["employed_by"] }],
+      },
+    });
+    const person = await g.entities.create("Alice", "Person");
+    const company = await g.entities.create("Acme", "Company");
+    const relation = await g.relations.create(person.id, "employed_by", company.id);
+    await g.maintenance.decay({ now: later(0), half_life_days: 1e-9, dry_run: false });
+
+    const byAlias = await g.maintenance.prune({ min_relevance: 1, relation_types: ["employed_by"] });
+    const byCanonical = await g.maintenance.prune({ min_relevance: 1, relation_types: ["WORKS_AT"] });
+    expect(byAlias.relation_ids).toEqual([relation.id]);
+    expect(byCanonical.relation_ids).toEqual([relation.id]);
+  });
+
   it("dedupes duplicate relations into the lowest id, unioning properties and reporting losses", async () => {
     const g = open();
     await g.entities.create("A", "T", { id: "t:a" });

@@ -394,7 +394,14 @@ export const FACTS = {
       type: "Person",
       name: "Jane Doe",
       aliases: ["JD", "J. Doe"],
-      properties: { title: "CTO", score: 1.5, tags: ["a", "é"], meta: { x: null, ok: true } },
+      properties: {
+        title: "CTO",
+        score: 1.5,
+        weight: 2.0,
+        ratios: [1.0, 0.5, -0.0, 1e-7],
+        tags: ["a", "é"],
+        meta: { x: null, ok: true, level: 3.0 },
+      },
     },
     { type: "Company", name: "Acme, Inc.", external_ids: { crunchbase: "acme-inc" } },
     { type: "Database", name: "HydraDB" },
@@ -408,7 +415,7 @@ export const FACTS = {
       from_entity: "person:jane-doe",
       type: "works at",
       to_entity: "company:acme",
-      properties: { since: 2020, note: "x" },
+      properties: { since: 2020, note: "x", weight: 2.0 },
     },
     {
       from_entity: "company:acme",
@@ -606,6 +613,25 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   }
   out.ent_delete = toJsonable(await graph.entities.delete("thing:temp-thing"));
   out.rel_delete = toJsonable(await graph.relations.delete(ids.relationId(ZOE, "KNOWS", "person:jane-doe")));
+  const pruneGraph = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}:prune`,
+    schema: {
+      entities: [{ name: "Person" }, { name: "Company" }],
+      relations: [{ type: "WORKS_AT", aliases: ["employed_by"] }],
+    },
+  });
+  await pruneGraph.initialize();
+  const person = await pruneGraph.entities.create("Alice", "Person");
+  const company = await pruneGraph.entities.create("Acme", "Company");
+  const relation = await pruneGraph.relations.create(person.id, "employed_by", company.id);
+  await pruneGraph.maintenance.decay({ now: new Date(), half_life_days: 1e-9, dry_run: false });
+  const byAlias = await pruneGraph.maintenance.prune({ min_relevance: 1.0, relation_types: ["employed_by"] });
+  const byCanonical = await pruneGraph.maintenance.prune({ min_relevance: 1.0, relation_types: ["WORKS_AT"] });
+  out.prune_relation_alias = {
+    relation_id: relation.id,
+    alias: byAlias.relation_ids,
+    canonical: byCanonical.relation_ids,
+  };
   await graph.insert.facts(
     { entities: [{ type: "Person", name: "Mergia Robert", aliases: ["Mergia Bob"] }] },
     { source_id: "merge-seed" },
@@ -827,6 +853,14 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     decisions,
     raw_steps: (await store.matchNodes(ns, "DecisionStep")).sort((a, b) => comparePy(a.id as string, b.id as string)),
     raw_entities: rawEntities,
+    filters:
+      store instanceof KuzuStore
+        ? {
+            aliases_equals: await store.matchNodes(ns, "Entity", { equals: { aliases: ["JD", "J. Doe"] } }),
+            aliases_any_of: await store.matchNodes(ns, "Entity", { any_of: { aliases: [["JD", "J. Doe"]] } }),
+            empty_any_of: await store.matchNodes(ns, "Entity", { any_of: { aliases: [] } }),
+          }
+        : {},
     evidence,
     raw_evidence: rawEvidence,
     source_versions: sourceVersions,

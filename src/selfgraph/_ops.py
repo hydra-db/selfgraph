@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterable, Mapping
 from datetime import datetime
 from functools import partial
@@ -360,8 +361,28 @@ def _require_mapping(name: str, value: Any, *, safe_ints: bool = True) -> None:
     _ids._require_clean_json(name, value, safe_ints=safe_ints)
 
 
-def _require_json_mapping(name: str, value: Any, *, safe_ints: bool = True) -> None:
-    """Validate an optional mapping has string keys and JSON-serializable values, up front.
+def _whole_floats_as_ints(value: Any) -> Any:
+    """Turn each whole float within the safe integer range, other than -0.0, into an int, as TypeScript stores it.
+
+    @param value (Any): a JSON-like value, searched through mappings, lists, and tuples.
+    @return (Any): the value with those floats as ints.
+    """
+    if isinstance(value, float):
+        whole = (
+            value.is_integer()
+            and abs(value) <= _ids.MAX_SAFE_INTEGER
+            and not (value == 0 and math.copysign(1, value) < 0)
+        )
+        return int(value) if whole else value
+    if isinstance(value, Mapping):
+        return {k: _whole_floats_as_ints(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_whole_floats_as_ints(v) for v in value]
+    return value
+
+
+def _require_json_mapping(name: str, value: Any, *, safe_ints: bool = True) -> dict[str, Any] | None:
+    """Validate an optional mapping has string keys and JSON-serializable values, up front, and return it to store.
 
     Callers that supersede a version before encoding must reject a non-serializable value here,
     before the supersede write, or a mid-write encode failure leaves no current version.
@@ -369,14 +390,16 @@ def _require_json_mapping(name: str, value: Any, *, safe_ints: bool = True) -> N
     @param name (str): the field name for the error message.
     @param value (Any): the value to check, or None.
     @param safe_ints (bool): reject integers outside +/-(2**53 - 1); stored values must round-trip in TypeScript.
-    @return (None): nothing; raises ValidationError when not a JSON string-keyed mapping or a key is blank.
+    @return (dict[str, Any] | None): the mapping with whole-number floats as ints, as TypeScript stores them, or
+        None for None; raises ValidationError when not a JSON string-keyed mapping or a key is blank.
     """
     if value is None:
-        return
+        return None
     _require_mapping(name, value, safe_ints=safe_ints)
     if any(not key.strip() for key in value):
         raise ValidationError(f"{name} keys cannot be empty or whitespace")
     _dumps(dict(value))
+    return _whole_floats_as_ints(value)
 
 
 def _canon_props(props: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -882,7 +905,7 @@ async def validate_facts(
     for item in (*facts.entities, *facts.relations, *facts.preferences):
         if item.properties is None:
             raise ValidationError("properties must be a mapping, got NoneType")
-        _require_json_mapping("properties", item.properties)
+        item.properties = _require_json_mapping("properties", item.properties)
     for ent in facts.entities:
         _require_str_mapping("external_ids", ent.external_ids)
         _require_list("entity aliases", ent.aliases)
@@ -1085,8 +1108,7 @@ async def create_entity(
         _require_list("aliases", aliases)
     if external_ids is not None:
         _require_str_mapping("external_ids", external_ids)
-    _require_json_mapping("properties", properties)
-    properties = _merge_props(None, properties)
+    properties = _merge_props(None, _require_json_mapping("properties", properties))
     if schema_check is not None:
         subject = EntityInput(id=eid if id else None, type=type, name=name, properties=properties)
         await schema_check(runner, Extraction(entities=[subject]))
@@ -1148,7 +1170,7 @@ async def update_entity(
         if key in fields:
             _require_list(key, fields[key])
     if "properties" in fields:
-        _require_json_mapping("properties", fields["properties"])
+        fields["properties"] = _require_json_mapping("properties", fields["properties"])
     if "external_ids" in fields:
         _require_str_mapping("external_ids", fields["external_ids"])
     if "type" in fields:
@@ -2434,8 +2456,7 @@ async def create_relation(
     _require_text("relation type", type)
     _require_text("relation to_entity", to_entity)
     from_entity, to_entity = _ids._canonical_id(from_entity), _ids._canonical_id(to_entity)
-    _require_json_mapping("properties", properties)
-    properties = _merge_props(None, properties)
+    properties = _merge_props(None, _require_json_mapping("properties", properties))
     event_time = parse_time(event_time, "event_time")
     rtype = _ids.normalize_rel_type(type)
     _validate_own_id("relation", id)
@@ -2518,7 +2539,7 @@ async def update_relation(
         the stored version too so only violations the update introduces count.
     @return (Relation): the new current version; raises ValidationError for a relation a contradiction invalidated.
     """
-    _require_json_mapping("set_properties", set_properties)
+    set_properties = _require_json_mapping("set_properties", set_properties)
     _require_list("remove_properties", remove_properties)
     given = {
         "set_properties": set_properties,
@@ -3122,8 +3143,7 @@ async def create_preference(
     _require_text("preference value_entity", value_entity)
     subject_entity, value_entity, about_entity = map(_ids._canonical_id, (subject_entity, value_entity, about_entity))
     key = _ids.normalize_text(key)
-    _require_json_mapping("properties", properties)
-    properties = _merge_props(None, properties)
+    properties = _merge_props(None, _require_json_mapping("properties", properties))
     event_time = parse_time(event_time, "event_time")
     _validate_own_id("preference", id)
     pid = id or _ids.preference_id(subject_entity, stance, key, value_entity)
@@ -3173,7 +3193,7 @@ async def update_preference(
     @return (Preference): the new current version.
     """
     _validate_strength(strength)
-    _require_json_mapping("properties", properties)
+    properties = _require_json_mapping("properties", properties)
     _require_list("remove_properties", remove_properties)
     event_time = parse_time(event_time, "event_time")
     cleared = _require_clear(

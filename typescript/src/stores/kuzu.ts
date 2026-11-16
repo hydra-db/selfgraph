@@ -86,8 +86,8 @@ interface KuzuModule {
   Connection: new (db: KuzuDatabase) => KuzuConnection;
 }
 
-const DATABASES = new Map<string, KuzuDatabase>();
-const OPEN_STORES = new Map<string, number>();
+const DATABASES = new Map<string | symbol, KuzuDatabase>();
+const OPEN_STORES = new Map<string | symbol, number>();
 const MAX_SKIP = 10_000_000;
 const RECONNECT_EVERY = 500;
 const NOW = "RETURN current_timestamp() AS now";
@@ -170,7 +170,7 @@ function intLiteral(n: number): number {
  */
 function whereDocEquals(alias: string, equals: Props | null | undefined, where: string[], params: Props): void {
   sortedEntries(equals).forEach(([key, value], i) => {
-    where.push(`json_extract(${alias}.doc, $k${i}) = $v${i}`);
+    where.push(`json_extract(${alias}.doc, $k${i}) = json($v${i})`);
     params[`k${i}`] = requireIdentifier(key);
     params[`v${i}`] = jv(value);
   });
@@ -191,13 +191,16 @@ function whereDocAnyOf(
   params: Props,
 ): void {
   sortedEntries(anyOf).forEach(([key, values], i) => {
+    requireIdentifier(key);
     const list = values as unknown[];
-    if (key === "id") {
+    if (list.length === 0) {
+      where.push("false");
+    } else if (key === "id") {
       where.push(`n.pk IN $in${i}`);
       params[`in${i}`] = list.map((v) => pk(ns, v as string));
     } else {
-      where.push(`CAST(json_extract(n.doc, $ik${i}) AS STRING) IN $in${i}`);
-      params[`ik${i}`] = requireIdentifier(key);
+      where.push(`CAST(json_extract(n.doc, $ik${i}) AS STRING) IN list_transform($in${i}, x -> json(x))`);
+      params[`ik${i}`] = key;
       params[`in${i}`] = list.map(jv);
     }
   });
@@ -206,6 +209,7 @@ function whereDocAnyOf(
 export class KuzuStore extends AutoCommitStore implements GraphStore {
   readonly queryLabels: readonly string[] = ["N", "R"];
   private readonly path: string;
+  private readonly cacheKey: string | symbol;
   private readonly conn = new Lazy<KuzuConnection>(async () => {
     const mod = await loadOptional<KuzuModule & { default?: KuzuModule }>(
       "kuzu",
@@ -213,7 +217,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
       StoreError,
     );
     const kuzu = mod.default ?? mod;
-    let db = DATABASES.get(this.path);
+    let db = DATABASES.get(this.cacheKey);
     if (db === undefined) {
       mkdirSync(dirname(this.path), { recursive: true });
       const o = this.options;
@@ -228,9 +232,9 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
       } catch (exc) {
         throw kuzuError(exc, `could not open Kuzu database ${pyRepr(this.path)}`);
       }
-      DATABASES.set(this.path, db);
+      DATABASES.set(this.cacheKey, db);
     }
-    OPEN_STORES.set(this.path, (OPEN_STORES.get(this.path) ?? 0) + 1);
+    OPEN_STORES.set(this.cacheKey, (OPEN_STORES.get(this.cacheKey) ?? 0) + 1);
     this.connect = () => new kuzu.Connection(db);
     return this.connect();
   });
@@ -256,6 +260,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
       throw new ValidationError(`max_db_size must be a positive integer of bytes, got ${pyRepr(size)}`);
     }
     this.path = databasePath(path);
+    this.cacheKey = this.path === "" || this.path === ":memory:" ? Symbol() : this.path;
   }
 
   private async exec(query: string, params?: Record<string, unknown> | null, raw = false): Promise<CypherResult> {
@@ -337,7 +342,10 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
    * @param path (string): the database path.
    */
   static async closeDatabase(path: string): Promise<void> {
-    const key = databasePath(path);
+    await KuzuStore.closeCachedDatabase(databasePath(path));
+  }
+
+  private static async closeCachedDatabase(key: string | symbol): Promise<void> {
     const db = DATABASES.get(key);
     DATABASES.delete(key);
     await db?.close?.();
@@ -349,11 +357,11 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     await this.conn.release(async (conn) => {
       await this.queue;
       await conn.close?.();
-      const open = (OPEN_STORES.get(this.path) ?? 1) - 1;
-      if (open > 0) OPEN_STORES.set(this.path, open);
+      const open = (OPEN_STORES.get(this.cacheKey) ?? 1) - 1;
+      if (open > 0) OPEN_STORES.set(this.cacheKey, open);
       else {
-        OPEN_STORES.delete(this.path);
-        await KuzuStore.closeDatabase(this.path);
+        OPEN_STORES.delete(this.cacheKey);
+        await KuzuStore.closeCachedDatabase(this.cacheKey);
       }
     });
   }

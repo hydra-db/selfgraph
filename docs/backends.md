@@ -54,6 +54,8 @@ cluster-only option that a standalone server rejects.
 
 - It expands a leading `~` and creates the file's folder if needed.
 - With no path, it opens `selfgraph_kuzu` in the current directory.
+- An empty path or `:memory:` opens a separate in-memory database for each store.
+  Stores opened on the same file path share that file's database instead.
 - Each open Kuzu database reserves 8 TB of virtual memory by default, so a
   process holding many can run out of address space. Pass `max_db_size` (a
   positive integer of bytes), as in `KuzuStore("graph.kuzu", max_db_size=1 << 30)`,

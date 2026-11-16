@@ -5,7 +5,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from selfgraph import EvidenceInput, Extraction, Schema, SelfGraph, ValidationError, _serde, ids
+from selfgraph import EvidenceInput, Extraction, KuzuStore, Schema, SelfGraph, ValidationError, _serde, ids
 from selfgraph._ops import parse_time
 from selfgraph.cli import _kv
 from selfgraph.retrieval import _tokens
@@ -373,7 +373,14 @@ FACTS = {
             "type": "Person",
             "name": "Jane Doe",
             "aliases": ["JD", "J. Doe"],
-            "properties": {"title": "CTO", "score": 1.5, "tags": ["a", "é"], "meta": {"x": None, "ok": True}},
+            "properties": {
+                "title": "CTO",
+                "score": 1.5,
+                "weight": 2.0,
+                "ratios": [1.0, 0.5, -0.0, 1e-07],
+                "tags": ["a", "é"],
+                "meta": {"x": None, "ok": True, "level": 3.0},
+            },
         },
         {"type": "Company", "name": "Acme, Inc.", "external_ids": {"crunchbase": "acme-inc"}},
         {"type": "Database", "name": "HydraDB"},
@@ -387,7 +394,7 @@ FACTS = {
             "from_entity": "person:jane-doe",
             "type": "works at",
             "to_entity": "company:acme",
-            "properties": {"since": 2020, "note": "x"},
+            "properties": {"since": 2020, "note": "x", "weight": 2.0},
         },
         {
             "from_entity": "company:acme",
@@ -614,6 +621,26 @@ async def write(graph):
         out["schema_null_required"] = str(exc)
     out["ent_delete"] = to_jsonable(await graph.entities.delete("thing:temp-thing"))
     out["rel_delete"] = to_jsonable(await graph.relations.delete(ids.relation_id(ZOE, "KNOWS", "person:jane-doe")))
+    prune_graph = SelfGraph(
+        store=graph.store,
+        namespace=f"{graph.namespace}:prune",
+        schema={
+            "entities": [{"name": "Person"}, {"name": "Company"}],
+            "relations": [{"type": "WORKS_AT", "aliases": ["employed_by"]}],
+        },
+    )
+    await prune_graph.initialize()
+    person = await prune_graph.entities.create("Alice", "Person")
+    company = await prune_graph.entities.create("Acme", "Company")
+    relation = await prune_graph.relations.create(person.id, "employed_by", company.id)
+    await prune_graph.maintenance.decay(now=datetime.now(timezone.utc), half_life_days=1e-9, dry_run=False)
+    by_alias = await prune_graph.maintenance.prune(min_relevance=1.0, relation_types=["employed_by"])
+    by_canonical = await prune_graph.maintenance.prune(min_relevance=1.0, relation_types=["WORKS_AT"])
+    out["prune_relation_alias"] = {
+        "relation_id": relation.id,
+        "alias": by_alias.relation_ids,
+        "canonical": by_canonical.relation_ids,
+    }
     await graph.insert.facts(
         {"entities": [{"type": "Person", "name": "Mergia Robert", "aliases": ["Mergia Bob"]}]}, source_id="merge-seed"
     )
@@ -816,6 +843,13 @@ async def dump(graph, ns):
     sources = await store.match_nodes(ns, "Source")
     decisions = [d async for d in graph.decisions.iterate()]
     raw_entities = {e.id: await store.get_node(ns, "Entity", e.id) for e in entities}
+    filters = {}
+    if isinstance(store, KuzuStore):
+        filters = {
+            "aliases_equals": await store.match_nodes(ns, "Entity", equals={"aliases": ["JD", "J. Doe"]}),
+            "aliases_any_of": await store.match_nodes(ns, "Entity", any_of={"aliases": [["JD", "J. Doe"]]}),
+            "empty_any_of": await store.match_nodes(ns, "Entity", any_of={"aliases": []}),
+        }
     evidence = {e.id: await all_evidence(graph.entities.evidence, e.id) for e in entities}
     evidence.update({rid: await all_evidence(graph.relations.evidence, rid) for rid in relations})
     raw_evidence = await store.match_nodes(ns, "Evidence")
@@ -870,6 +904,7 @@ async def dump(graph, ns):
             "decisions": decisions,
             "raw_steps": sorted(await store.match_nodes(ns, "DecisionStep"), key=lambda row: row["id"]),
             "raw_entities": raw_entities,
+            "filters": filters,
             "evidence": evidence,
             "raw_evidence": sorted(raw_evidence, key=lambda r: r["id"]),
             "source_versions": sorted(source_versions, key=lambda s: s["id"]),
@@ -895,6 +930,19 @@ async def dump(graph, ns):
 
 async def main():
     cmd = sys.argv[1]
+    if cmd == "kuzu_isolation":
+        from selfgraph import KuzuStore
+
+        result = []
+        for path in ("", ":memory:"):
+            async with SelfGraph(KuzuStore(path)) as first, SelfGraph(KuzuStore(path)) as second:
+                entity = await first.entities.create("Jane", "Person")
+                result.append(await second.entities.get(entity.id) is None)
+                await second.insert.facts({"entities": [{"name": "Jane", "type": "Person"}]})
+                await second.entities.delete(entity.id)
+                result.append(await first.entities.get(entity.id) == entity)
+        json.dump(result, sys.stdout)
+        return
     if cmd == "schema":
         json.dump(schema_warnings(), sys.stdout, sort_keys=True, ensure_ascii=False)
         return

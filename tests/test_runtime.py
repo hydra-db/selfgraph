@@ -371,6 +371,24 @@ def test_kuzu_keeps_its_connection_while_a_raw_transaction_is_open(tmp_path):
     run(g.close())
 
 
+@pytest.mark.parametrize("path", ["", ":memory:", "file"])
+def test_kuzu_database_identity_and_close(path, tmp_path):
+    pytest.importorskip("kuzu")
+    shared = path == "file"
+    if shared:
+        path = str(tmp_path / "shared.kuzu")
+    with SyncSelfGraph(KuzuStore(path)) as first:
+        entity = first.entities.create("Jane", "Person")
+        with SyncSelfGraph(KuzuStore(path)) as second:
+            assert (second.entities.get(entity.id) is not None) == shared
+            if not shared:
+                second.entities.create("Jane", "Person")
+            second.entities.delete(entity.id)
+            assert (first.entities.get(entity.id) is None) == shared
+        assert (first.entities.get(entity.id) is None) == shared
+        first.entities.create("Ann", "Person")
+
+
 def test_bind_params_checks_references_and_drops_unused():
     assert bind_params("RETURN $a AS a", {"a": 1, "b": 2}) == {"a": 1}
     assert bind_params("RETURN '$a' AS a, `$b` AS b /* $c */ // $d", None) == {}

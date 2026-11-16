@@ -75,7 +75,7 @@ class Insert:
         _require_bool("replace_source", replace_source)
         if replace_source and source_id is None:
             raise ValidationError("replace_source needs a source_id: it replaces that source's earlier versions")
-        _require_json_mapping("metadata", metadata)
+        metadata = _require_json_mapping("metadata", metadata)
         event_time = parse_time(event_time, "event_time")
         if not text.strip():
             raise ValidationError("text cannot be empty or whitespace")
