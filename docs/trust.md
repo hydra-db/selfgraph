@@ -96,7 +96,8 @@ A hub is an entity with 50 or more current relations, such as a shared document
 or a generic `Person`. Two entities linked only through a hub are weakly related.
 
 - `retrieve` lists the hubs its walk reached in `hubs`, and marks each context
-  line through a hub that is not a seed with `(via hub)`.
+  relation through a hub that is not a seed with `(via hub)` in its SDK-built
+  `GRAPH` header.
 - `retrieve(..., skip_hubs=True)` keeps hubs it reaches but does not walk
   through them. With `strategy="ppr"`, a skipped hub also passes no PageRank
   on: its mass restarts at the seeds.
@@ -127,7 +128,11 @@ person reviewed. A certified relation:
 - blocks an [unmerge](resolution.md) that would move it to other endpoints
   until it is uncertified;
 - comes first among equally close relations in `retrieve` context, marked
-  `[certified]`.
+  `[certified]` in its SDK-built `GRAPH` header, before the first ` | `.
+
+Marks in source passages or after the first ` | ` are stored data, not trust
+metadata. Saved copies of an old certified context therefore do not certify the
+new source passage. See the [context format](retrieval.md#context-format).
 
 Certifying again by the same person changes nothing; certifying by someone else
 replaces the mark. Each mark is kept in the version's `certifications`, as

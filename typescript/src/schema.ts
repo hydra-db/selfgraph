@@ -11,7 +11,7 @@ import {
   type InsertWarning,
   insertWarning,
   type JsonObject,
-  optNumber,
+  optInt,
   optString,
   type ParsedExtraction,
 } from "./models.js";
@@ -71,8 +71,8 @@ export const EntityType = z.strictObject({
 
 export const RelationEndpoint = z.strictObject({
   types: z.array(z.string()).default([]),
-  min_count: optNumber,
-  max_count: optNumber,
+  min_count: optInt,
+  max_count: optInt,
 });
 
 export const RelationType = z.strictObject({
@@ -285,10 +285,16 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
     }
     if (rtype !== null) types.set(rtype, i);
     for (const side of ["from", "to"] as const) {
-      for (const [j, name] of (schema.entities.length ? relation[side].types : []).entries()) {
-        if (!names.has(casefold(canonicalEntityType(name, schema)))) {
-          return [["relations", i, side, "types", j], `unknown type ${pyRepr(name)}`];
+      if (schema.entities.length) {
+        const resolvedTypes: string[] = [];
+        for (const [j, name] of relation[side].types.entries()) {
+          const resolved = canonicalEntityType(name, schema);
+          if (!names.has(casefold(resolved))) {
+            return [["relations", i, side, "types", j], `unknown type ${pyRepr(name)}`];
+          }
+          if (!resolvedTypes.includes(resolved)) resolvedTypes.push(resolved);
         }
+        relation[side].types = resolvedTypes;
       }
       const { min_count: min, max_count: max } = relation[side];
       if (max != null && max < 1) return [["relations", i, side, "max_count"], "must be >= 1"];

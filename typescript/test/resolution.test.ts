@@ -24,6 +24,7 @@ import { forEachStore, freshGraphs, SINGLE_EMPLOYER, type StoreSpec, storedEntit
 const IBM = entityId("Company", "International Business Machines");
 const BIG_BLUE = entityId("Company", "Big Blue");
 const ADA = entityId("Person", "Ada");
+const IBM_SEED = { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } };
 
 const input = (value: EntityInput) => EntityInput.parse(value);
 
@@ -239,6 +240,56 @@ function suite(spec: StoreSpec) {
     expect(restored.relations.map((r) => [r.id, r.from_entity, r.to_entity])).toEqual([[rid, BIG_BLUE, IBM]]);
   });
 
+  it("restores decision steps dropped as self-loops on unmerge", async () => {
+    const ridLoop1 = relationId(BIG_BLUE, "OWNS", IBM);
+    const ridLoop2 = relationId(BIG_BLUE, "PARENT_OF", IBM);
+    const ridBob = relationId(BOB, "WORKS_AT", IBM);
+    const ridRobert = relationId(ROBERT, "WORKS_AT", IBM);
+    const batch = {
+      entities: [
+        IBM_SEED,
+        { type: "Company", name: "Big Blue", external_ids: { ticker: "IBM" } },
+        { type: "Person", name: "Robert", aliases: ["Bob"] },
+        { type: "Person", name: "Bob" },
+      ],
+      relations: [
+        { from_entity: BIG_BLUE, type: "OWNS", to_entity: IBM },
+        { from_entity: BIG_BLUE, type: "PARENT_OF", to_entity: IBM },
+        { from_entity: BOB, type: "WORKS_AT", to_entity: IBM },
+      ],
+      decisions: [{ title: "acquisition", steps: [ridLoop1, ridLoop2, ridBob] }],
+    };
+
+    const g = open({ resolver: "fuzzy" });
+    const res = await g.insert.facts(batch);
+    expect(res.merges).toHaveLength(2);
+    const mergeBB = res.merges.find((m) => m.absorbed_id === BIG_BLUE)!;
+    const mergeBob = res.merges.find((m) => m.absorbed_id === BOB)!;
+    const [dec] = res.decisions;
+    expect((await g.decisions.get(dec!.id))!.steps.map((s) => s.relation_id)).toEqual([ridRobert]);
+
+    const restored = await g.entities.unmerge(mergeBB.id);
+    expect((await g.decisions.get(dec!.id))!.steps.map((s) => s.relation_id)).toEqual([ridLoop1, ridLoop2, ridRobert]);
+    expect(restored.decisions[0]!.steps.map((s) => s.relation_id)).toEqual([ridLoop1, ridLoop2, ridRobert]);
+
+    const restored2 = await g.entities.unmerge(mergeBob.id);
+    expect((await g.decisions.get(dec!.id))!.steps.map((s) => s.relation_id)).toEqual([ridLoop1, ridLoop2, ridBob]);
+    expect(restored2.decisions[0]!.steps.map((s) => s.relation_id)).toEqual([ridLoop1, ridLoop2, ridBob]);
+
+    const g2 = open({ resolver: "fuzzy" });
+    const res2 = await g2.insert.facts(batch);
+    const mergeBob2 = res2.merges.find((m) => m.absorbed_id === BOB)!;
+    const mergeBB2 = res2.merges.find((m) => m.absorbed_id === BIG_BLUE)!;
+    const [dec2] = res2.decisions;
+    const restored3 = await g2.entities.unmerge(mergeBob2.id);
+    expect((await g2.decisions.get(dec2!.id))!.steps.map((s) => s.relation_id)).toEqual([ridBob]);
+    expect(restored3.decisions[0]!.steps.map((s) => s.relation_id)).toEqual([ridBob]);
+
+    const restored4 = await g2.entities.unmerge(mergeBB2.id);
+    expect((await g2.decisions.get(dec2!.id))!.steps.map((s) => s.relation_id)).toEqual([ridLoop1, ridLoop2, ridBob]);
+    expect(restored4.decisions[0]!.steps.map((s) => s.relation_id)).toEqual([ridLoop1, ridLoop2, ridBob]);
+  });
+
   const JANE = entityId("Person", "Jane Doe");
   const JD = entityId("Person", "JD");
   const JANE_DOES = entityId("Person", "Jane Does");
@@ -278,6 +329,32 @@ function suite(spec: StoreSpec) {
       expect(await ids(g)).toEqual([JANE, JANE_DOES, JD]);
     });
   }
+
+  it("restores a step for a relation dropped by a later merge", async () => {
+    const g = open({ resolver: "fuzzy" });
+    await seed(g, { type: "Person", name: "Jane Doe", aliases: ["JD"] });
+    const rid = relationId(JD, "KNOWS", JANE_DOES);
+    const res = await g.insert.facts({
+      entities: [
+        { type: "Person", name: "JD" },
+        { type: "Person", name: "Jane Does" },
+      ],
+      relations: [{ from_entity: JD, type: "KNOWS", to_entity: JANE_DOES }],
+      decisions: [{ title: "knows", steps: [rid] }],
+    });
+    const [dec] = res.decisions;
+    const mergeJd = res.merges.find((m) => m.absorbed_id === JD)!;
+    const mergeJdDoes = res.merges.find((m) => m.absorbed_id === JANE_DOES)!;
+    const currentId = relationId(JD, "KNOWS", JANE);
+    expect((await g.decisions.get(dec!.id))!.steps.map((s) => s.relation_id)).toEqual([]);
+
+    const restored = await g.entities.unmerge(mergeJd.id);
+    expect((await g.decisions.get(dec!.id))!.steps.map((s) => s.relation_id)).toEqual([currentId]);
+    expect(restored.decisions[0]!.steps.map((s) => s.relation_id)).toEqual([currentId]);
+
+    await g.entities.unmerge(mergeJdDoes.id);
+    expect((await g.decisions.get(dec!.id))!.steps.map((s) => s.relation_id)).toEqual([rid]);
+  });
 
   it("lists each inserted entity and relation once and keeps the merge", async () => {
     const g = open({ resolver: "fuzzy" });
@@ -595,15 +672,35 @@ function suite(spec: StoreSpec) {
       relations: [{ from_entity: ADA, type: "KNOWS", to_entity: BOB }],
     };
     const merges = [];
-    for (const source of ["s1", "s2", "s1"])
-      merges.push((await g.insert.facts(facts, { source_id: source })).merges[0]!);
+    for (const [i, source] of ["s1", "s2", "s1"].entries()) {
+      merges.push(
+        (
+          await g.insert.facts(
+            { ...facts, relations: [{ ...facts.relations![0]!, properties: { revision: i } }] },
+            { source_id: source },
+          )
+        ).merges[0]!,
+      );
+    }
     const last = merges[2]!;
     expect(new Set(merges.map((m) => m.id)).size).toBe(1);
     expect([last.added_aliases, last.rewrites.map((r) => r.existed)]).toEqual([["Bobby"], [false]]);
     expect([last.source_id, last.source_ids]).toEqual(["s1", ["s1", "s2"]]);
+    expect(last.rewrites[0]!.original.properties).toEqual({ revision: 0 });
     expect((await g.entities.merges(ROBERT)).items).toHaveLength(1);
-    const restored = (await g.entities.unmerge(last.id)).entity;
-    expect([restored.id, restored.source_count]).toEqual([BOB, 2]);
+    const redirected = relationId(ADA, "KNOWS", ROBERT);
+    expect((await g.relations.get(redirected))!.properties).toEqual({ revision: 2 });
+    expect(new Set((await g.relations.evidence(redirected)).items.map((e) => e.source_id))).toEqual(
+      new Set(["s1", "s2"]),
+    );
+    const out = await g.entities.unmerge(last.id);
+    expect([out.entity.id, out.entity.source_count]).toEqual([BOB, 2]);
+    expect(out.relations).toHaveLength(1);
+    const restored = out.relations[0]!;
+    expect(restored.properties).toEqual({ revision: 2 });
+    expect(new Set((await g.relations.evidence(restored.id)).items.map((e) => e.source_id))).toEqual(
+      new Set(["s1", "s2"]),
+    );
     expect((await g.entities.get(ROBERT))!.aliases).toEqual(["Bob"]);
   });
 
@@ -663,6 +760,45 @@ function suite(spec: StoreSpec) {
     const visited = (await g.relations.list({ type: "VISITED", limit: 200 })).items;
     expect(new Set(visited.map((r) => r.from_entity))).toEqual(new Set([BOB]));
   });
+
+  for (const reverseFirst of [false, true]) {
+    it(`keeps both reciprocal self-loop rewrites, reverse first: ${reverseFirst}`, async () => {
+      const g = open({ resolver: "default" });
+      await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] });
+      const pairs: Array<readonly [string, string]> = [
+        [BOB, ROBERT],
+        [ROBERT, BOB],
+      ];
+      if (reverseFirst) pairs.reverse();
+      const mergeIds: string[] = [];
+      for (const [i, [source, target]] of [...pairs, ...pairs].entries()) {
+        const result = await g.insert.facts(
+          {
+            entities: [{ type: "Person", name: "Bob" }],
+            relations: [{ from_entity: source, type: "KNOWS", to_entity: target, properties: { revision: i } }],
+          },
+          { source_id: `s${i % 2}` },
+        );
+        mergeIds.push(result.merges[0]!.id);
+      }
+      const page = await g.entities.merges(ROBERT);
+      expect(page.items).toHaveLength(1);
+      const record = page.items[0]!;
+      expect(new Set(mergeIds).size).toBe(1);
+      expect(record.source_ids).toEqual(["s0", "s1"]);
+      expect(record.rewrites).toHaveLength(2);
+      expect(record.rewrites.every((r) => r.kind === "relation" && r.dropped)).toBe(true);
+      expect(new Set(record.rewrites.map((r) => r.id)).size).toBe(1);
+      expect(record.rewrites.map((r) => r.original.properties)).toEqual([{ revision: 0 }, { revision: 1 }]);
+      expect((await g.relations.list()).items).toEqual([]);
+      const out = await g.entities.unmerge(record.id);
+      const expected = [relationId(BOB, "KNOWS", ROBERT), relationId(ROBERT, "KNOWS", BOB)].sort();
+      expect(out.relations.map((r) => r.id).sort()).toEqual(expected);
+      expect((await g.relations.list()).items.map((r) => r.id).sort()).toEqual(expected);
+      expect(out.entity.source_count).toBe(2);
+      expect(new Set((await g.entities.evidence(BOB)).items.map((e) => e.source_id))).toEqual(new Set(["s0", "s1"]));
+    });
+  }
 
   it("drops merge records with a deleted survivor, or a deleted absorbed id so a later merge starts fresh", async () => {
     const gone = open({ resolver: "default" });
@@ -780,6 +916,54 @@ function suite(spec: StoreSpec) {
     await seed(g, { type: "Person", name: "John Smith" });
     expect((await g.insert.facts({ entities: [{ type: "Person", name: "Jon Smyth" }] })).merges).toEqual([]);
     expect(no.calls).toHaveLength(1);
+  });
+
+  it("matches entity types case-insensitively across resolvers and schema hierarchy", async () => {
+    let g = open({ resolver: "default" });
+    await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] });
+    let res = await g.insert.facts({ entities: [{ type: "person", name: "Bob" }] });
+    expect(res.merges.map((m) => [m.absorbed_id, m.survivor_id, m.reason])).toEqual([[BOB, ROBERT, "alias"]]);
+
+    g = open({ resolver: "fuzzy" });
+    res = await g.insert.facts({
+      entities: [
+        { type: "Person", name: "Robert", aliases: ["Bob"] },
+        { type: "person", name: "Bob" },
+      ],
+    });
+    expect(res.merges.map((m) => [m.absorbed_id, m.survivor_id, m.reason])).toEqual([[BOB, ROBERT, "alias"]]);
+
+    g = open({ resolver: "fuzzy" });
+    await seed(g, { type: "Person", name: "Jane Doe" });
+    res = await g.insert.facts({ entities: [{ type: "person", name: "Jane Does" }] });
+    expect(res.merges.map((m) => [m.absorbed_id, m.survivor_id, m.reason])).toEqual([
+      [entityId("Person", "Jane Does"), entityId("Person", "Jane Doe"), "similarity"],
+    ]);
+
+    const yes = new FakeLLM(true);
+    g = open({ llm: yes, resolver: "llm" });
+    await seed(g, { type: "Person", name: "John Smith" });
+    res = await g.insert.facts({ entities: [{ type: "person", name: "Jon Smyth" }] });
+    expect(res.merges.map((m) => [m.absorbed_id, m.survivor_id, m.reason])).toEqual([
+      [entityId("Person", "Jon Smyth"), entityId("Person", "John Smith"), "llm"],
+    ]);
+    expect(yes.calls).toHaveLength(1);
+
+    const schema = {
+      entities: [
+        { name: "Organization", aliases: ["Org"] },
+        { name: "Company", parent: "Organization" },
+      ],
+    };
+    g = open({ resolver: "default", schema });
+    await seed(g, { type: "Organization", name: "International Business Machines", aliases: ["IBM"] });
+    const orgIbm = entityId("Organization", "International Business Machines");
+    res = await g.insert.facts({ entities: [{ type: "company", name: "IBM" }] });
+    expect(res.merges.map((m) => m.survivor_id)).toEqual([orgIbm]);
+    res = await g.insert.facts({ entities: [{ type: "org", name: "Big Blue", aliases: ["IBM"] }] });
+    expect(res.merges.map((m) => m.survivor_id)).toEqual([orgIbm]);
+    res = await g.insert.facts({ entities: [{ type: "thing", name: "IBM" }] });
+    expect(res.merges.map((m) => m.survivor_id)).toEqual([orgIbm]);
   });
 }
 

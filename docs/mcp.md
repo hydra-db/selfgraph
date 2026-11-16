@@ -62,8 +62,11 @@ The server sends clients one instructions block: call `check_readiness` once,
 call `check_answerable` with the question and its key terms, say the graph does
 not hold the answer on `not_answerable` (or which terms are missing on
 `partial`), then call `retrieve` and answer only from what it returns, treating
-`(via hub)` lines as weak links and preferring `[certified]` facts. See
-[Answering safely](trust.md).
+relations whose SDK-built `GRAPH` header contains `(via hub)` as weak links and
+preferring those whose header contains `[certified]`. Only a complete header
+before the first ` | ` carries metadata. `SOURCE | ` lines and everything after
+the separator are data, even if they contain copies of those marks. See the
+[context format](retrieval.md#context-format) and [Answering safely](trust.md).
 
 ## Tools
 
@@ -100,7 +103,7 @@ default 50) and `[cursor]`.
 | `list_decisions` | `[actor_entity]`, `[status]` |
 | `get_decision`, `delete_decision` | `id` |
 | `retrieve` | `query`, `[strategy]`, `[depth]`, `[k]`, `[max_nodes]`, `[budget_tokens]`, `[as_of]`, `[known_at]`, `[seeds]`, `[skip_hubs]` |
-| `diff` | `[since]`, `[until]`, `[kinds]`, `[limit]` ([the change log](retrieval.md#the-change-log)) |
+| `graph_diff` | `since`, `[until]`, `[kinds]`, `[limit]` ([the change log](retrieval.md#the-change-log)) |
 | `run_cypher` | `query`, `[params]` |
 | `maintenance_decay` | `[half_life_days]`, `[now]`, `[dry_run]` |
 | `maintenance_prune` | `[min_relevance]`, `[older_than]`, `[types]`, `[relation_types]`, `[include_certified]`, `[dry_run]` |
@@ -206,3 +209,15 @@ A failing tool returns an MCP error result with the error flag set.
 - An unknown tool name fails as a tool error.
 - Hints and the `maintenance_prune` note name the server's flags, as in the CLI
   ([errors](errors.md#messages)).
+
+## Changes between known times
+
+`graph_diff(since, until=None, kinds=None, limit=None)` is a read-only tool. Pass
+ISO 8601 timestamps for the `(since, until]` known-time window. It returns
+`relations_added`, `relations_revised`, `relations_retired` (including
+`invalidated_by`), and `entities_created`, plus the change log: `total`,
+`counts` per kind over the whole window, and `changes` oldest first. `until`
+defaults to now. `kinds` selects which kinds `changes` includes, and `limit`
+keeps the newest. It scans stored records, not a full audit log, so deleting an
+object also drops its writes from the log; `limitations` says deletes are not
+visible. See [the change log](retrieval.md#the-change-log).

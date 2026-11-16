@@ -1,3 +1,4 @@
+import UPPERCASE from "@unicode/unicode-15.0.0/Binary_Property/Uppercase/code-points.mjs";
 import { LLM_HINT } from "../errors.js";
 import { log } from "../internal/log.js";
 import { MARK_CLASS } from "../internal/marks.js";
@@ -7,7 +8,8 @@ import type { Extractor } from "../protocols.js";
 import { assembleExtraction, FALLBACK_TYPE, type RawEntity, type RawRelation, WarningSink } from "./extractor.js";
 
 const WORD = `[\\p{L}\\p{N}${MARK_CLASS}_&.'\\-]`;
-const CAP = new RegExp(`[A-Z]${WORD}*(?:[${PY_WS_CLASS}]+[A-Z]${WORD}*)*`, "gu");
+const UPPER = `[${UPPERCASE.map((cp) => `\\u{${cp.toString(16)}}`).join("")}]`;
+const CAP = new RegExp(`${UPPER}${WORD}*(?:[${PY_WS_CLASS}]+${UPPER}${WORD}*)*`, "gu");
 const SENT = new RegExp(`(?<=[.!?])[${PY_WS_CLASS}]+`, "u");
 const STOPNAMES = new Set(
   "the a an he she it they we you i this that these those there here his her their our your its".split(" "),

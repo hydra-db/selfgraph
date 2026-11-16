@@ -63,3 +63,22 @@ def test_evidence_is_not_written_when_a_write_queued_before_it_fails():
         return found
 
     assert run(go()) is None
+
+
+def test_upsert_nodes_applies_extra_label():
+    store, ns = make_store(), unique_ns("queue")
+
+    async def go():
+        async with store.transaction() as tx:
+            await tx.upsert_nodes(
+                ns,
+                "Source",
+                [("x:a", _props(ns, "x:a")), ("x:b", _props(ns, "x:b"))],
+                extra_label="CustomLabel",
+            )
+        found_primary = [await store.get_node(ns, "Source", i) for i in ("x:a", "x:b")]
+        found_extra = [await store.get_node(ns, "CustomLabel", i) for i in ("x:a", "x:b")]
+        await store.close()
+        return [f["id"] for f in found_primary if f], [f["id"] for f in found_extra if f]
+
+    assert run(go()) == (["x:a", "x:b"], ["x:a", "x:b"])

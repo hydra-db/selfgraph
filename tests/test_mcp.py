@@ -210,13 +210,13 @@ def test_server_metadata_tools_and_annotations(server):
     assert sorted(names) == sorted(TOOL_NAMES)
     tools = {t.name: t.annotations.model_dump(by_alias=True) for t in listed}
     for name in (
+        "graph_diff",
         "get_entity",
         "list_relations",
         "relation_versions",
         "entity_evidence",
         "run_cypher",
         "retrieve",
-        "diff",
     ):
         assert tools[name]["readOnlyHint"] is True
     for name in ("delete_entity", "maintenance_prune", "maintenance_dedupe_relations"):
@@ -362,3 +362,13 @@ def test_run_stdio_validates_settings_and_files_at_startup(tmp_path):
         srv.run_stdio(
             srv.GraphSettings(store="kuzu", prompts='{"entities": {"system": "s", "user": "x", "version": "1"}}')
         )
+
+
+@needs_mcp
+def test_graph_diff_tool_returns_structured_changes_and_validates_window(server):
+    run(srv.insert_facts(AB_FACTS))
+    result = run(server.call_tool("graph_diff", {"since": "2000-01-01", "until": "2099-01-01"}))
+    assert [r["id"] for r in result.structured_content["relations_added"]] == ["relation:ab"]
+    assert [e["id"] for e in result.structured_content["entities_created"]] == ["t:a", "t:b"]
+    with pytest.raises(Exception, match="until must be at or after since"):
+        run(server.call_tool("graph_diff", {"since": "2021-01-01", "until": "2020-01-01"}))

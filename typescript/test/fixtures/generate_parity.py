@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -162,6 +163,7 @@ TEXTS = [
     "🚀 Rocket Labs launched from New Zealand. The Team cheered.",
     "He met She. They saw It, This! Those were Acme's. Neo4j and S3 work with GPT-4.",
     "The rain fell. A Storm hit Paris; Berlin, Rome: Madrid! Done?",
+    "Łukasz Nowak joined Ørsted in Århus. Иван Петров met Σωκράτης.",
     "# Acme Handbook\n\nAcme was founded in 2019 by Jane Doe.\nCompany Handbook\nAnn works at Acme.",
     "Jane Doe met\nBob Smith at Acme.",
     unicodedata.normalize(
@@ -1259,6 +1261,7 @@ def main():
         ],
         "chunks": chunk_cases(),
         "extract": extract_cases(),
+        "uppercase": "".join(re.findall(f"[{_marks.UPPERCASE_CLASS}]", "".join(map(chr, range(0x110000))))),
         "assemble": assemble_case(),
         "as_of": as_of_cases(),
         "known_at": known_cases(),

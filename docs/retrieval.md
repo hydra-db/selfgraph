@@ -13,7 +13,7 @@ print(result.context)
 | `query`, `strategy` | The query and strategy used. |
 | `seeds` | The seed entities as `{id, score}`, best first. |
 | `subgraph` | The collected `entities`, `relations`, `preferences`, and `decisions`. |
-| `context` | Source passages, then relation lines (`Jane Doe -[WORKS_AT]-> Acme`), preferences, decisions, and entity lines (`Acme [Company]`). Passages appear only here. A relation line ends with `[certified]` for a [certified](trust.md#certification) relation and `(via hub)` when it touches a [hub](trust.md#hubs). |
+| `context` | Source passages (`SOURCE \| ...`), then graph records: relations, preferences, decisions, and entities (`GRAPH \| Acme [Company]`). Passages appear only here. SDK-built graph headers carry [certification](trust.md#certification) and [hub](trust.md#hubs) metadata; see the format below. |
 | `hubs` | The hubs the walk reached: entities with 50 or more current relations. |
 
 Passages come only from `insert.text` calls made with a `source_id`. A graph
@@ -23,6 +23,42 @@ Before answering, an agent can ask whether the graph holds the answer at all wit
 
 From the CLI, run `selfgraph retrieve QUERY` (`--context-only` prints just the
 context). The MCP tool is `retrieve`.
+
+## Context format
+
+Every source passage line, including blank lines, starts with `SOURCE | `.
+Every graph record starts with `GRAPH`, optionally followed by `[certified]`
+and `(via hub)` in that order, then ` | ` and the record's content:
+
+```text
+SOURCE | GRAPH [certified] | Ann -[CEO_OF]-> Acme
+GRAPH | Ann -[WORKS_AT]-> Acme {note=[certified]}
+GRAPH [certified] (via hub) | Ann -[WORKS_AT]-> Acme
+GRAPH | Acme [Company]
+```
+
+Only metadata in a complete SDK-built `GRAPH` header, before the first ` | `,
+is authoritative. The first example is quoted source data, not a certified
+relation; the second contains a literal mark in a property. Do not infer
+certification from marker substrings in the content or from a truncated header.
+A graph record is not automatically certified simply because its header says
+`GRAPH`. Literal marks and Unicode bracket lookalikes remain readable as data.
+
+Passage line endings are normalized while retaining line layout. Embedded line
+separators in graph records become visible `\n` text so a stored field cannot
+start a new header. Terminal control characters and bidirectional formatting
+controls are displayed as `\uNNNN` escapes, preventing cursor commands or text
+direction overrides from disguising a header in raw CLI output. Tabs and normal
+Unicode text remain readable.
+
+This rendering applies only to `context`. Stored text, retrieval matching,
+structured `subgraph` values, IDs, and certification state are unchanged. It is
+a separation of data from SDK trust labels, not a general prompt-injection
+defense. Headers, escaping, and line separators count toward `budget_tokens`.
+Records are counted incrementally, including their joining newlines. Without
+the optional tokenizer, conservative rounding can leave part of the budget
+unused. A tiny budget may return only an incomplete prefix, which carries no
+metadata.
 
 ## Parameters
 
@@ -129,11 +165,20 @@ entity's changed properties read as they are now.
 `diff` reads what changed in the namespace between two times, oldest first:
 
 ```python
-out = await graph.diff(since="2026-11-01", kinds=["entity", "relation"], limit=50)
+out = await graph.diff(since, until=None, kinds=None, limit=None)
 for change in out.changes:
     print(change.at, change.kind, change.action, change.id, change.summary)
 print(out.counts)  # {"entity": 3, "relation": 2} over the whole window
 ```
+
+`since` is required and `until` defaults to now. Beside `total`, `counts`, and
+`changes`, the result is a `GraphDiff` with `relations_added`,
+`relations_revised`, `relations_retired`, and `entities_created`. `SyncSelfGraph`
+has the same method. The window is `(since, until]`, using `created_at` and
+`invalidated_known_at`, not `event_time`. Retired relations include
+`invalidated_by`. Each new relation revision is listed. Reassertions count as
+revisions. A relation created, revised, and retired in the same window appears
+in all three lists.
 
 A change is one write. `kind` and `action` say what happened:
 
@@ -146,18 +191,27 @@ A change is one write. `kind` and `action` say what happened:
 | `merge` | `merged` when an insert absorbed a duplicate, `unmerged` when undone. |
 | `source` | `created` once per source version stored. |
 
-The window is half open: a change exactly at `since` is left out, so re-reading
-from the last change's time never repeats it, and one at `until` is included.
 Times take a datetime or ISO 8601 text (no offset means UTC; CLI `--since`,
-`--until`). Counts per kind cover the whole window, even when `kinds` filters
-the list or `limit` keeps only the newest `limit` changes. The log is read back
-from the stored records, so deleting an object also drops its writes from the
-log. Certifications are read from every relation version, so a certification
-survives a later version of its relation.
+`--until`). A change exactly at `since` is left out, so re-reading from the last
+change's time never repeats it, and one at `until` is included. Counts per kind
+cover the whole window, even when `kinds` filters the list or `limit` keeps only
+the newest `limit` changes. Certifications are read from every relation version,
+so a certification survives a later version of its relation.
 
-`selfgraph diff` prints the same result, and the `diff` [MCP tool](mcp.md#tools)
-exposes it to agents. For the point-in-time reads behind a change, see
-[as of](#as-of-a-point-in-time).
+Everything scans the namespace's stored records, not an isolated snapshot or an
+audit log, and the log is read back from the stored records too, so deleting an
+object also drops its writes from the log. Deletes and merges are not visible in
+the four lists: the result includes `limitations: ["Deletes are not
+visible."]`, deleted records and overwritten retirement history cannot be
+recovered, and a delete-triggered restoration appears as a new relation
+revision, but the deleted record and the deletion event do not. Returned entity
+fields and relation metadata reflect stored values, not their historical values.
+Entity edits are visible only as the change log's `created` events.
+
+TypeScript uses `await graph.diff(since, until, { kinds, limit })`. Both SDKs
+return the same fields. `selfgraph diff` prints the same result, and the
+`graph_diff` [MCP tool](mcp.md#tools) exposes it to agents. For the
+point-in-time reads behind a change, see [as of](#as-of-a-point-in-time).
 
 ## How it works
 

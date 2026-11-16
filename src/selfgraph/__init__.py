@@ -28,7 +28,6 @@ from .models import (
     DedupeGroup,
     DedupeResult,
     DeleteResult,
-    DiffResult,
     Entity,
     EntityInput,
     Evidence,
@@ -36,6 +35,7 @@ from .models import (
     Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
+    GraphDiff,
     InsertResult,
     InsertWarning,
     LintIssue,
@@ -96,6 +96,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "GraphDiff",
     "SelfGraph",
     "SyncSelfGraph",
     "CypherStore",
@@ -151,7 +152,6 @@ __all__ = [
     "LintIssue",
     "SourceDiff",
     "Change",
-    "DiffResult",
     "EntityResolver",
     "ResolutionDecision",
     "DefaultResolver",

@@ -434,7 +434,7 @@ class KuzuStore(AutoCommitStore):
         _where_doc_equals("r", equals, where, params)
         where_after("r.sid", id_gt, where, params)
         if order_by == "id":
-            ob = "r.sid"
+            ob = "r.sid, r.revision"
         elif order_by == "revision":
             ob = "r.revision"
         else:

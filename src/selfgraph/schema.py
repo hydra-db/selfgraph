@@ -1,13 +1,16 @@
 import logging
+import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, ClassVar, Literal, get_args
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import ValidationError as PydanticValidationError
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from . import _ops
 from ._serde import L_ENTITY, decode_entity
 from .errors import ValidationError
-from .ids import _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
+from .ids import MAX_SAFE_INTEGER, _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
 from .models import Extraction, InputModel, InsertWarning, TopInputModel, as_input
 
 __all__ = [
@@ -81,12 +84,66 @@ class EntityType(InputModel):
     certified: bool = False
 
 
+_COUNT_RANGE = "count_range"
+_UNBOUNDED_COUNTS = "selfgraph_unbounded_counts"
+
+
+def _js_count(value: int) -> str:
+    """Render a count the way JavaScript renders the same number in a message.
+
+    @param value (int): the count.
+    @return (str): the count as JavaScript prints it.
+    """
+    if abs(value) <= MAX_SAFE_INTEGER:
+        return str(value)
+    sign = "-" if value < 0 else ""
+    try:
+        text = repr(float(abs(value)))
+    except OverflowError:
+        return str(value)
+    mantissa, _, exponent = text.partition("e")
+    whole, _, fraction = mantissa.partition(".")
+    digits = (whole + fraction).rstrip("0")
+    point = len(whole) + (int(exponent) if exponent else 0)
+    if point <= 21:
+        if len(digits) <= point:
+            return sign + digits + "0" * (point - len(digits))
+        return sign + digits[:point] + "." + digits[point:]
+    head, rest = digits[0], digits[1:]
+    return f"{sign}{head}{'.' + rest if rest else ''}e+{point - 1}"
+
+
 class RelationEndpoint(InputModel):
     input_label: ClassVar[str] = "relation endpoint"
 
     types: list[str] = Field(default_factory=list)
     min_count: int | None = None
     max_count: int | None = None
+
+    @field_validator("min_count", "max_count", mode="before")
+    @classmethod
+    def _whole_count(cls, value: Any, info: ValidationInfo) -> Any:
+        """Accept a safe integer count, or a float with no fractional part, with the TypeScript error text.
+
+        @param value (Any): the raw count.
+        @param info (ValidationInfo): the validation context; _UNBOUNDED_COUNTS skips the safe integer range.
+        @return (Any): the count as an int, or None.
+        """
+        if value is None:
+            return value
+        if not isinstance(value, int) or isinstance(value, bool):
+            if not isinstance(value, float) or not math.isfinite(value):
+                raise ValueError("expected number")
+            if not value.is_integer():
+                raise ValueError("expected integer")
+            value = int(value)
+        if (info.context or {}).get(_UNBOUNDED_COUNTS):
+            return value
+        if value > MAX_SAFE_INTEGER:
+            raise PydanticCustomError(_COUNT_RANGE, f"must be <= {MAX_SAFE_INTEGER}")
+        if value < -MAX_SAFE_INTEGER:
+            raise PydanticCustomError(_COUNT_RANGE, f"must be >= {-MAX_SAFE_INTEGER}")
+        return value
 
 
 class RelationType(InputModel):
@@ -111,6 +168,38 @@ class Schema(TopInputModel):
     version: str | None = None
     entities: list[EntityType] = Field(default_factory=list)
     relations: list[RelationType] = Field(default_factory=list)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _report_counts_with_consistency(cls, data: Any, handler: Any) -> Any:
+        """Report the first consistency problem after counts outside the safe integer range, as TypeScript does.
+
+        @param data (Any): the raw schema.
+        @param handler (Any): the inner validator.
+        @return (Any): the validated schema.
+        """
+        try:
+            return handler(data)
+        except PydanticValidationError as exc:
+            errors = exc.errors()
+            if not isinstance(data, Mapping) or any(e["type"] != _COUNT_RANGE for e in errors):
+                raise
+            unbounded = {_UNBOUNDED_COUNTS: True}
+            schema = cls.model_construct(
+                entities=[EntityType.model_validate(e, context=unbounded) for e in data.get("entities") or []],
+                relations=[RelationType.model_validate(r, context=unbounded) for r in data.get("relations") or []],
+            )
+            try:
+                schema._check_consistency()
+            except ValueError as problem:
+                errors.append({"type": "value_error", "msg": str(problem), "loc": (), "input": data})
+            else:
+                raise
+            details = [
+                InitErrorDetails(type=PydanticCustomError(e["type"], str(e["msg"])), loc=e["loc"], input=e["input"])
+                for e in errors
+            ]
+            raise PydanticValidationError.from_exception_data(cls.__name__, details) from exc
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "Schema":
@@ -171,16 +260,23 @@ class Schema(TopInputModel):
                 types[rtype] = i
             for side, end in (("from", relation.from_), ("to", relation.to)):
                 at = f"relations[{i}].{side}"
-                for j, name in enumerate(end.types if self.entities else ()):
-                    if canonical_entity_type(name, self).casefold() not in names:
-                        raise ValueError(f"{at}.types[{j}]: unknown type {name!r}")
+                if self.entities:
+                    resolved_types: list[str] = []
+                    for j, name in enumerate(end.types):
+                        resolved = canonical_entity_type(name, self)
+                        if resolved.casefold() not in names:
+                            raise ValueError(f"{at}.types[{j}]: unknown type {name!r}")
+                        if resolved not in resolved_types:
+                            resolved_types.append(resolved)
+                    end.types = resolved_types
                 if end.max_count is not None and end.max_count < 1:
                     raise ValueError(f"{at}.max_count: must be >= 1")
                 if end.min_count is not None and end.min_count < 0:
                     raise ValueError(f"{at}.min_count: must be >= 0")
                 if end.min_count is not None and end.max_count is not None and end.min_count > end.max_count:
                     raise ValueError(
-                        f"{at}.min_count: min_count {end.min_count} is greater than max_count {end.max_count}"
+                        f"{at}.min_count: min_count {_js_count(end.min_count)} is greater than "
+                        f"max_count {_js_count(end.max_count)}"
                     )
         for i, relation in enumerate(self.relations):
             for j, alias in enumerate(relation.aliases):

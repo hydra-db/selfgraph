@@ -8,7 +8,7 @@ import {
 } from "../models.js";
 import * as ops from "../ops.js";
 import { checkOptions, keysOf, parseTime } from "../validate.js";
-import { paginate, parseStatus, Resource } from "./common.js";
+import { paginate, Resource } from "./common.js";
 
 export interface DecisionCreateOptions {
   steps?: readonly string[];
@@ -77,7 +77,7 @@ export class Decisions extends Resource {
    */
   async create(title: string, options: DecisionCreateOptions = {}): Promise<DecisionTrace> {
     checkOptions("decisions.create", options, CREATE_KEYS);
-    const status = parseStatus(options.status ?? DEFAULT_STATUS);
+    const status = options.status ?? DEFAULT_STATUS;
     const eventTime = parseTime(options.event_time, "event_time");
     return this.graph.write((tx, ns) =>
       ops.createTrace(tx, ns, {
@@ -105,7 +105,7 @@ export class Decisions extends Resource {
     return this.pageById("decision", options, (store, ns, window) =>
       ops.listTraces(store, ns, {
         actor_entity: options.actor_entity,
-        status: options.status == null ? null : parseStatus(options.status),
+        status: options.status ?? null,
         ...window,
       }),
     );
@@ -139,7 +139,7 @@ export class Decisions extends Resource {
     const out: ops.UpdateTraceFields = {};
     for (const [key, value] of Object.entries(fields)) {
       if (value === undefined) continue;
-      if (key === "status") out.status = parseStatus(value);
+      if (key === "status") out.status = value as Status;
       else if (key === "event_time") out.event_time = parseTime(value, "event_time");
       else (out as Record<string, unknown>)[key] = value;
     }

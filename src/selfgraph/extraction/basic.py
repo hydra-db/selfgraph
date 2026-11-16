@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 
-from .._marks import MARK_CLASS
+from .._marks import MARK_CLASS, UPPERCASE_CLASS
 from ..errors import LLM_HINT
 from ..models import EntityInput, Extraction, InsertWarning, ParsedDocument
 from .extractor import _FALLBACK_TYPE, LLMExtractor, _RelOut, _WarningSink
@@ -29,7 +29,7 @@ _TYPE_MAP = {
     "LANGUAGE": "Language",
 }
 _WORD = rf"[\w&.'\-{MARK_CLASS}]"
-_CAP = re.compile(rf"[A-Z]{_WORD}*(?:\s+[A-Z]{_WORD}*)*")
+_CAP = re.compile(rf"[{UPPERCASE_CLASS}]{_WORD}*(?:\s+[{UPPERCASE_CLASS}]{_WORD}*)*")
 _SENT = re.compile(r"(?<=[.!?])\s+")
 _STOPNAMES = frozenset(
     {

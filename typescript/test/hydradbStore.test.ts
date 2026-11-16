@@ -61,6 +61,23 @@ function suite(spec: StoreSpec) {
       await store.close?.();
     }
   });
+
+  it.runIf(spec.name === "hydradb")("applies extra_label to the node", async () => {
+    const store: GraphStore = spec.make();
+    const ns = uniqueNs("queue");
+    try {
+      await store.transaction(async (tx) => {
+        await tx.upsertNode(ns, "Source", "x:a", props(ns, "x:a"), { extra_label: "CustomLabel" });
+      });
+      const byPrimary = await store.getNode(ns, "Source", "x:a");
+      const byExtra = await store.getNode(ns, "CustomLabel", "x:a");
+      expect(byPrimary).not.toBeNull();
+      expect(byExtra).not.toBeNull();
+      expect(byExtra?.id).toBe("x:a");
+    } finally {
+      await store.close?.();
+    }
+  });
 }
 
 await forEachStore("HydraDB write queue", suite);

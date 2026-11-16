@@ -839,13 +839,40 @@ async function collectPreferences(
 }
 
 /**
+ * Contain stored content before admitting it to the context's SDK-owned headers.
+ *
+ * @param text (string): a source passage or assembled graph record, never its trust header.
+ * @param source (boolean): preserve passage lines and label each as source data.
+ * @return (string): display-safe content with no unlabelled physical lines.
+ */
+function contextPayload(text: string, source = false): string {
+  const normalized = text.replaceAll("\r\n", "\n");
+  const rows: string[] = [""];
+  for (const c of normalized) {
+    const n = c.codePointAt(0)!;
+    if ([10, 13, 11, 12, 28, 29, 30, 133, 8232, 8233].includes(n)) {
+      rows.push("");
+    } else {
+      const control =
+        (n < 32 && n !== 9) ||
+        (n >= 127 && n <= 159) ||
+        [0x061c, 0x200e, 0x200f].includes(n) ||
+        (n >= 0x202a && n <= 0x202e) ||
+        (n >= 0x2066 && n <= 0x2069);
+      rows[rows.length - 1] += control ? `\\u${n.toString(16).padStart(4, "0")}` : c;
+    }
+  }
+  return source ? rows.map((row) => `SOURCE | ${row}`).join("\n") : rows.join("\\n");
+}
+
+/**
  * Fill the token budget with passages, then relations, preferences, decisions, and entities, nearest first.
  *
  * @param passages (string[]): the ranked source passages.
  * @param subgraph (Subgraph): the collected entities, relations, preferences, and decisions.
  * @param names (Map<string, string>): entity id to display name.
  * @param dist (Map<string, number>): entity id to hop distance from the seeds.
- * @param budgetTokens (number): the token budget; the first line that does not fit ends the context, so a farther line never takes the place of a nearer one, and when even the first line does not fit, that line is cut to the budget, so a non-empty subgraph never yields an empty context.
+ * @param budgetTokens (number): the token budget. Records are counted separately; the cached change when the preceding record gains a newline is charged only when a following record fits. The counter's empty-string cost (one for the length estimate, zero for cl100k) covers fallback rounding. The first line that does not fit ends the context, so a farther line never takes the place of a nearer one, and when even the first line does not fit, that line is cut to the budget, so a non-empty subgraph never yields an empty context.
  * @param countTokens ((text: string) => number): the token counter.
  * @param hubs (ReadonlySet<string>): hub entity ids; a relation line through one is marked "(via hub)".
  * @return (string): the context text. Certified relations come first among equally close ones and are marked "[certified]".
@@ -864,22 +891,31 @@ function assemble(
   const lines: string[] = [];
   let first: string | null = null;
   let used = 0;
+  let rounding = 0;
+  let boundary = 0;
   let full = false;
-  const add = (line: string, cap: number): boolean => {
-    first ??= line;
+  const add = (payload: string, cap: number, header = "GRAPH"): boolean => {
+    const line = header === "SOURCE" ? contextPayload(payload, true) : `${header} | ${contextPayload(payload)}`;
+    if (first === null) {
+      first = line;
+      rounding = countTokens("");
+    }
     if (full) return false;
-    const cost = countTokens(line);
+    const plain = countTokens(line);
+    const cost = plain + boundary;
     if (used + cost > cap) {
       full = cap >= budgetTokens;
       return false;
     }
     lines.push(line);
     used += cost;
+    const delta = countTokens(`${line}\n`) - plain;
+    boundary = rounding ? Math.max(rounding, delta) : delta;
     return true;
   };
 
   const passageCap = Math.floor((budgetTokens * PASSAGE_BUDGET_PERCENT) / 100);
-  for (const p of passages) if (!add(p, passageCap)) break;
+  for (const p of passages) if (!add(p, passageCap, "SOURCE")) break;
 
   const distOf = distanceIn(dist);
   const relRank = (r: Relation): [number, number, number, number] => {
@@ -896,9 +932,10 @@ function assemble(
     let line = `${nameOf(r.from_entity)} -[${r.type}]-> ${nameOf(r.to_entity)}`;
     const props = formatProps(r.properties);
     if (props) line += ` ${props}`;
-    if (r.certified_at !== null) line += " [certified]";
-    if (hubs.has(r.from_entity) || hubs.has(r.to_entity)) line += " (via hub)";
-    if (!add(line, budgetTokens)) break;
+    let header = "GRAPH";
+    if (r.certified_at !== null) header += " [certified]";
+    if (hubs.has(r.from_entity) || hubs.has(r.to_entity)) header += " (via hub)";
+    if (!add(line, budgetTokens, header)) break;
   }
 
   for (const p of [...preferences].sort((a, b) => distOf(a.subject_entity) - distOf(b.subject_entity))) {
@@ -998,7 +1035,12 @@ export async function retrieve(
   const skipHubs = options.skip_hubs ?? false;
   requireBool("skip_hubs", skipHubs);
   const asOf = ops.parseAsOf(options.as_of, options.known_at);
-  const { depth, k, max_nodes: maxNodes, budget_tokens: budgetTokens } = { ...RETRIEVE_DEFAULTS, ...options };
+  const {
+    depth = RETRIEVE_DEFAULTS.depth,
+    k = RETRIEVE_DEFAULTS.k,
+    max_nodes: maxNodes = RETRIEVE_DEFAULTS.max_nodes,
+    budget_tokens: budgetTokens = RETRIEVE_DEFAULTS.budget_tokens,
+  } = options;
   const strategy = (options.strategy ?? graph.tiers.strategy).toLowerCase();
   if (!(STRATEGIES as readonly string[]).includes(strategy)) {
     throw new ValidationError(`strategy must be one of ${STRATEGIES.join(", ")}, got ${pyRepr(strategy)}`);

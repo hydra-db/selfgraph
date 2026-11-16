@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildGraph } from "../src/client.js";
 import { toOssie } from "../src/export.js";
-import { FalkorDBStore, KuzuStore, type LLMClient, SelfGraph, ValidationError } from "../src/index.js";
+import { FalkorDBStore, KuzuStore, type LLMClient, SelfGraph, toNeo4jOntology, ValidationError } from "../src/index.js";
 import { runStdio } from "../src/mcp.js";
 import { EntityInput, Extraction, parseOrThrow } from "../src/models.js";
 import { DEFAULT_SETTINGS } from "../src/runtime.js";
@@ -87,6 +87,31 @@ describe("endpoint types", () => {
     expect(check(schema, facts)).toEqual([]);
     const swapped = { ...facts, relations: [{ ...facts.relations[0]!, from_entity: "company:acme" }] };
     expect(check(schema, swapped).map((w) => w.code)).toEqual(["endpoint_type_violation"]);
+    const parsed = asSchema({
+      entities: [
+        { name: "Person", aliases: ["Human"] },
+        { name: "Company", aliases: ["Org"] },
+      ],
+      relations: [
+        { type: "WORKS_AT", from: { types: ["person"] }, to: { types: ["Company", "Org"] } },
+        { type: "KNOWS", from: { types: ["Person"] }, to: { types: ["Human"] } },
+      ],
+    })!;
+    expect(parsed.relations.map((r) => [r.from.types, r.to.types])).toEqual([
+      [["Person"], ["Company"]],
+      [["Person"], ["Person"]],
+    ]);
+    expect((toOssie(parsed).ontology as Array<{ concept: string }>).map((c) => c.concept)).toEqual([
+      "Person",
+      "Company",
+    ]);
+    expect(
+      (toOssie(parsed).ontology as Array<{ relationships: Array<{ roles: unknown }> }>)[0]!.relationships[1]!.roles,
+    ).toEqual([{ concept: "Person", name: "other" }]);
+    expect(toNeo4jOntology(parsed).patterns).toEqual([
+      ["Person", "WORKS_AT", "Company"],
+      ["Person", "KNOWS", "Person"],
+    ]);
     expect(Schema.parse({ relations: [{ type: "R", to: { types: ["Anything"] } }] }).entities).toEqual([]);
     expect(() => asSchema({ ...schema, entities: [...schema.entities, { name: "Team", aliases: ["org"] }] })).toThrow(
       "entities[2].aliases[0]",
@@ -182,12 +207,53 @@ describe("Schema.parse and asSchema", () => {
     ],
     [{ relations: [{ type: "R", from: { max_count: 0 } }] }, "relations[0].from.max_count: must be >= 1"],
     [{ relations: [{ type: "R", to: { min_count: -1 } }] }, "relations[0].to.min_count: must be >= 0"],
+    [{ relations: [{ type: "R", from: { max_count: 1.5 } }] }, "relations[0].from.max_count: expected integer"],
+    [
+      { relations: [{ type: "R", from: { max_count: 2 ** 53 } }] },
+      "relations[0].from.max_count: must be <= 9007199254740991",
+    ],
+    [{ relations: [{ type: "R", to: { min_count: 1e20 } }] }, "relations[0].to.min_count: must be <= 9007199254740991"],
     [
       { relations: [{ type: "R", from: { min_count: 2, max_count: 1 } }] },
       "relations[0].from.min_count: min_count 2 is greater than max_count 1",
     ],
   ])("rejects %j", (spec, message) => {
     expect(() => asSchema(spec as Schema)).toThrow(new ValidationError(`invalid schema: ${message}`));
+  });
+
+  it.each([
+    [
+      { relations: [{ type: "R", from: { max_count: -(2 ** 53) } }] },
+      ["relations[0].from.max_count: must be >= -9007199254740991", "relations[0].from.max_count: must be >= 1"],
+    ],
+    [
+      { relations: [{ type: "R", to: { min_count: -1e20 } }] },
+      ["relations[0].to.min_count: must be >= -9007199254740991", "relations[0].to.min_count: must be >= 0"],
+    ],
+    [
+      { relations: [{ type: "R", from: { min_count: 2 ** 53, max_count: 5 } }] },
+      [
+        "relations[0].from.min_count: must be <= 9007199254740991",
+        "relations[0].from.min_count: min_count 9007199254740992 is greater than max_count 5",
+      ],
+    ],
+    [
+      { relations: [{ type: "R", from: { min_count: 1e21, max_count: 5 } }] },
+      [
+        "relations[0].from.min_count: must be <= 9007199254740991",
+        "relations[0].from.min_count: min_count 1e+21 is greater than max_count 5",
+      ],
+    ],
+    [
+      { relations: [{ type: "R", from: { min_count: 1e20 + 16384, max_count: 5 } }] },
+      [
+        "relations[0].from.min_count: must be <= 9007199254740991",
+        "relations[0].from.min_count: min_count 100000000000000020000 is greater than max_count 5",
+      ],
+    ],
+  ])("reports an unsafe count and then the first consistency problem for %j", (spec, lines) => {
+    const message = `invalid schema:${lines.map((line) => `\n  ${line}`).join("")}`;
+    expect(() => asSchema(spec as Schema)).toThrow(new ValidationError(message));
   });
 
   it("lets an alias repeat its own type name", () => {

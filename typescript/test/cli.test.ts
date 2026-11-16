@@ -34,6 +34,22 @@ describe("built CLI against Kuzu", () => {
     for (const name of names) cli([...kuzu, ...ns, "entity", "create", "--name", name, "--type", "T"]);
   };
 
+  it("prints diff summaries and JSON", () => {
+    const ns = ["--namespace", "cli_diff"];
+    seed(ns, "Ann");
+    const args = [...kuzu, ...ns, "diff", "--since", "1900-01-01", "--until", "2100-01-01"];
+    const summary = cli(args);
+    expect(summary.code).toBe(0);
+    expect(summary.out).toContain("+ entity t:ann");
+    expect(summary.out).toContain("Deletes are not visible.");
+    const json = cli([...args, "--json"]);
+    expect(json.code).toBe(0);
+    expect(json.out).toMatchObject({
+      entities_created: [{ id: "t:ann" }],
+      limitations: ["Deletes are not visible."],
+    });
+  });
+
   it("prints init, the version, and help, warning only about flags kuzu ignores", () => {
     const ok = cli(["init"], { env: { HOME: join(dir, "home") } });
     expect(ok.code).toBe(0);

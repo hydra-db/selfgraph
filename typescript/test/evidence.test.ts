@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 
-import { type Evidence, ids, NotFoundError, type Page, type SelfGraph } from "../src/index.js";
+import { type Evidence, ids, NotFoundError, type Page, type SelfGraph, ValidationError } from "../src/index.js";
 import { forEachStore, freshGraphs, type StoreSpec } from "./helpers.js";
 
 const FACTS = {
@@ -158,6 +158,20 @@ function suite(spec: StoreSpec) {
       ["s1", null],
       ["s2", "works there"],
     ]);
+  });
+
+  it("rejects non-list evidence and a non-object item with the Python text", async () => {
+    const g = open();
+    await g.insert.facts(FACTS);
+    const cases: [unknown, string][] = [
+      ["x", "evidence must be a list of Evidence objects, got string"],
+      [[5], "evidence must be EvidenceInput objects (selfgraph.EvidenceInput(...)), got a number"],
+    ];
+    for (const [bad, message] of cases) {
+      const created = g.relations.create("person:ada", "KNOWS", "company:acme", { evidence: bad as never });
+      await expect(created).rejects.toThrow(new ValidationError(message));
+      await expect(g.relations.update(REL, { evidence: bad as never })).rejects.toThrow(new ValidationError(message));
+    }
   });
 
   it.runIf(spec.name === "hydradb")(

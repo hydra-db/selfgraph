@@ -48,7 +48,7 @@ from .models import (
 )
 from .protocols import LLMClient
 from .retrieval import _fold, _tokens
-from .schema import Schema, _entity_index, _lineage, _require_mode
+from .schema import Schema, _entity_index, _lineage, _require_mode, canonical_entity_type
 
 __all__ = [
     "EntityResolver",
@@ -65,6 +65,7 @@ __all__ = [
 
 ResolverMode = Literal["exact", "default", "fuzzy", "llm"]
 
+_FALLBACK_KEY = _ops.entity_type_key(_FALLBACK_TYPE)
 _DEFAULT_THRESHOLD = 0.92
 _DEFAULT_BAND = (0.8, 0.92)
 _MAX_QUESTIONS = 3
@@ -309,6 +310,7 @@ class DefaultResolver:
         @return (Callable[[Entity], tuple[float, str] | None]): score for one existing entity.
         """
         ctype = _ops._clean_text(candidate.type)
+        ckey = _ops.entity_type_key(ctype)
         forms = _forms(candidate)
         derived: list[str] = []
 
@@ -318,7 +320,8 @@ class DefaultResolver:
             return derived[0]
 
         def score(ent: Entity) -> tuple[float, str] | None:
-            if ctype == _FALLBACK_TYPE and ent.type != ctype:
+            ekey = _ops.entity_type_key(ent.type)
+            if ckey == _FALLBACK_KEY and ekey != ckey:
                 return (_ALIAS_CONFIDENCE, "alias") if not forms.isdisjoint(_forms(ent)) else None
             if cid() == ent.id:
                 return 1.0, "id"
@@ -326,7 +329,7 @@ class DefaultResolver:
                 return 1.0, "external_id"
             if not forms.isdisjoint(_forms(ent)):
                 return _ALIAS_CONFIDENCE, "alias"
-            if self.fuzzy and ctype == ent.type and not distinct_names(candidate.name, ent.name, self.threshold):
+            if self.fuzzy and ekey == ckey and not distinct_names(candidate.name, ent.name, self.threshold):
                 similarity = name_similarity(candidate.name, ent.name)
                 if similarity >= self.threshold:
                     return similarity, "similarity"
@@ -403,11 +406,11 @@ class LLMResolver:
         if decision.target_id is not None:
             return decision
         low, high = self.band
-        ctype = _ops._clean_text(candidate.type)
+        ckey = _ops.entity_type_key(candidate.type)
         scored = [
             (name_similarity(candidate.name, ent.name), ent)
             for ent in existing
-            if ent.type == ctype and not distinct_names(candidate.name, ent.name, low)
+            if _ops.entity_type_key(ent.type) == ckey and not distinct_names(candidate.name, ent.name, low)
         ]
         band = sorted(((s, e) for s, e in scored if low <= s < high), key=lambda pair: (-pair[0], pair[1].id))
         for similarity, ent in band[: self.max_questions]:
@@ -488,17 +491,18 @@ def as_resolver(value: Any, llm: LLMClient | None) -> EntityResolver | None:
 
 
 def compatible_types(etype: str, schema: Schema | None) -> set[str]:
-    """The entity type names a type may merge with: itself, plus its schema ancestors and descendants with aliases.
+    """The case-folded entity type keys a type may merge with: itself, plus schema ancestors, descendants, and aliases.
 
     @param etype (str): the cleaned entity type.
     @param schema (Schema | None): the active schema.
-    @return (set[str]): the compatible type names.
+    @return (set[str]): the compatible case-folded type keys.
     """
-    out = {etype}
+    folded = _ops.entity_type_key(etype)
+    out = {folded}
     if schema is None:
         return out
     index = _entity_index(schema)
-    own = index.get(etype)
+    own = index.get(canonical_entity_type(etype, schema))
     if own is None:
         return out
     related = {t.name for t in _lineage(own, index)}
@@ -507,7 +511,7 @@ def compatible_types(etype: str, schema: Schema | None) -> set[str]:
             related.add(ent.name)
     for ent in schema.entities:
         if ent.name in related:
-            out.update([ent.name, *ent.aliases])
+            out.update(_ops.entity_type_key(n) for n in (ent.name, *ent.aliases))
     return out
 
 
@@ -613,12 +617,12 @@ async def plan_resolution(
 ) -> Resolution:
     """Resolve each new entity without an explicit id against compatible stored and batch entities, and rewrite refs.
 
-    A typed candidate is offered every stored entity of its compatible types, each type read once per insert in
-    id-ordered pages. A candidate of the extraction fallback type (Thing) is also offered entities of other types,
-    stored and from the same batch, whose name or alias matches its own, and is resolved after the others so a typed
-    entity later in the batch can absorb it; of the stored entities of other types, only those are kept in memory.
-    When the store indexes match keys (entities_matching), the default resolver is offered only the stored entities
-    sharing a key with a candidate, the only ones it can merge with, instead of every entity of the compatible types.
+    A typed candidate is offered every stored entity of its compatible types, read once per insert in id-ordered
+    pages. A candidate of the extraction fallback type (Thing) is also offered entities of other types, stored and
+    from the same batch, whose name or alias matches its own, and is resolved after the others so a typed entity later
+    in the batch can absorb it; of the stored entities of other types, only those are kept in memory. When the store
+    indexes match keys (entities_matching), the default resolver is offered only the stored entities sharing a key
+    with a candidate, the only ones it can merge with, instead of every entity of the compatible types.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -637,18 +641,16 @@ async def plan_resolution(
     candidate_types = {etype for ent, eid, etype, _ in keyed if ent.id is None and eid not in stored}
     if not candidate_types:
         return Resolution(facts)
-    wanted: set[str | None] = set()
+    wanted: set[str] = set()
     for etype in candidate_types:
         wanted |= compatible_types(etype, schema)
-    if _FALLBACK_TYPE in candidate_types:
-        wanted.add(None)
     fallback_forms = frozenset().union(
-        *(_forms(ent) for ent, _, etype, _ in keyed if etype == _FALLBACK_TYPE and ent.id is None)
+        *(_forms(ent) for ent, _, etype, _ in keyed if _ops.entity_type_key(etype) == _FALLBACK_KEY and ent.id is None)
     )
     named = {eid for _, eid, _, _ in keyed}
 
     def keep(props: dict[str, Any]) -> bool:
-        if props["type"] in wanted or props["id"] in named:
+        if _ops.entity_type_key(props["type"]) in wanted or props["id"] in named:
             return True
         return not fallback_forms.isdisjoint(_folded_forms(props["name"], tuple(props.get("aliases") or ())))
 
@@ -659,10 +661,9 @@ async def plan_resolution(
             keys = frozenset().union(*(match_keys(ent.name, ent.aliases, ent.external_ids) for ent in new))
             yield [*found.values(), *await lookup(ns, keys)]
             return
-        for etype in [None] if None in wanted else sorted(wanted, key=str):
-            fetch = partial(runner.match_nodes, ns, L_ENTITY, equals={} if etype is None else {"type": etype}, skip=0)
-            async for rows in _ops._keyset(lambda after, limit, fetch=fetch: fetch(limit=limit, id_gt=after)):
-                yield rows
+        fetch = partial(runner.match_nodes, ns, L_ENTITY, equals={}, skip=0)
+        async for rows in _ops._keyset(lambda after, limit, fetch=fetch: fetch(limit=limit, id_gt=after)):
+            yield rows
 
     pool: dict[str, Entity] = {}
     async for rows in candidates():
@@ -674,7 +675,7 @@ async def plan_resolution(
     mapping: dict[str, str] = {}
     merges: dict[str, _Merge] = {}
     entities: list[EntityInput] = list(facts.entities)
-    for i in sorted(range(len(keyed)), key=lambda i: keyed[i][2] == _FALLBACK_TYPE):
+    for i in sorted(range(len(keyed)), key=lambda i: _ops.entity_type_key(keyed[i][2]) == _FALLBACK_KEY):
         ent, eid, etype, ename = keyed[i]
         if eid in mapping:
             merge = merges[eid]
@@ -690,14 +691,19 @@ async def plan_resolution(
             elif ent.id is not None and eid not in stored:
                 batch[eid] = _view(ent, eid, etype, ename, created_at)
             continue
-        fallback = etype == _FALLBACK_TYPE
+        fallback = _ops.entity_type_key(etype) == _FALLBACK_KEY
         compatible = compatible_types(etype, schema)
-        offered = [e for e in pool.values() if e.type in compatible or (fallback and _surface_match(ent, e))]
+        offered = [
+            e
+            for e in pool.values()
+            if _ops.entity_type_key(e.type) in compatible or (fallback and _surface_match(ent, e))
+        ]
         existing = sorted(offered, key=lambda e: e.id)
         existing += [
             e
             for e in batch.values()
-            if (e.type in compatible and within) or (fallback and e.type not in compatible and _surface_match(ent, e))
+            if (_ops.entity_type_key(e.type) in compatible and within)
+            or (fallback and _ops.entity_type_key(e.type) not in compatible and _surface_match(ent, e))
         ]
         decision = await resolver.resolve(ent, existing)
         if not isinstance(decision, ResolutionDecision):
@@ -997,6 +1003,18 @@ async def _write_merges(
     await runner.upsert_nodes(ns, L_MERGE, nodes)
 
 
+def _rewrite_key(rw: MergeRewrite) -> tuple[Any, ...]:
+    """Keep distinct originals of dropped self-loops without duplicating a repeated original.
+
+    @param rw (MergeRewrite): the recorded rewrite.
+    @return (tuple[Any, ...]): its deduplication key.
+    """
+    key = (rw.kind, rw.id)
+    if rw.kind == "relation" and rw.dropped:
+        return (*key, *(rw.original.get(name) for name in ("from_entity", "type", "to_entity")))
+    return key
+
+
 async def save_merges(
     runner: Any, ns: str, resolution: Resolution, *, source_id: str | None, created_at: datetime
 ) -> list[MergeRecord]:
@@ -1035,7 +1053,7 @@ async def save_merges(
         )
         prev = _decode_merge(stored[mid], entries[mid]) if mid in stored else None
         if prev is not None and prev.reverted_at is None:
-            seen = {(r.kind, r.id) for r in prev.rewrites}
+            seen = {_rewrite_key(r) for r in prev.rewrites}
             rec = prev.model_copy(
                 update={
                     "source_ids": _ops._dedup_list([*prev.source_ids, *rec.source_ids]),
@@ -1043,7 +1061,7 @@ async def save_merges(
                     "added_aliases": _ops._dedup_list([*prev.added_aliases, *merge.added_aliases]),
                     "added_external_ids": _ops._dedup_list([*prev.added_external_ids, *merge.added_external_ids]),
                     "added_properties": _ops._dedup_list([*prev.added_properties, *merge.added_properties]),
-                    "rewrites": [*prev.rewrites, *(r for r in merge.rewrites if (r.kind, r.id) not in seen)],
+                    "rewrites": [*prev.rewrites, *(r for r in merge.rewrites if _rewrite_key(r) not in seen)],
                 }
             )
         records.append(rec)
@@ -1123,7 +1141,13 @@ def _forward(
 
 
 async def _forward_siblings(
-    runner: Any, ns: str, merge_id: str, moved: list[tuple[MergeRewrite, MergeRewrite]], restored: dict[str, str]
+    runner: Any,
+    ns: str,
+    merge_id: str,
+    moved: list[tuple[MergeRewrite, MergeRewrite]],
+    restored: dict[str, str],
+    live: list[dict[str, Any]] | None = None,
+    entries: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     """Update the live merges that share a rewrite with an unmerged one, so unmerging them later replays exactly.
 
@@ -1136,10 +1160,14 @@ async def _forward_siblings(
     @param merge_id (str): the merge being reverted.
     @param moved (list[tuple[MergeRewrite, MergeRewrite]]): each rewrite the unmerge replayed, with its new location.
     @param restored (dict[str, str]): the relation ids the unmerge moved, old to new.
+    @param live (list[dict[str, Any]] | None): optional cached live merges.
+    @param entries (dict[str, list[dict[str, Any]]] | None): optional cached entries.
     @return (None): nothing.
     """
-    live = [props for props in await scan_live_merges(runner, ns) if props["id"] != merge_id]
-    entries = await _load_entries(runner, ns, live)
+    if live is None:
+        live = [props for props in await scan_live_merges(runner, ns) if props["id"] != merge_id]
+    if entries is None:
+        entries = await _load_entries(runner, ns, live)
     for props in live:
         sib = _decode_merge(props, entries[props["id"]])
         rewrites = [_forward(rw, moved, restored) for rw in sib.rewrites]
@@ -1214,6 +1242,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         return original if await exists(original) else rewritten
 
     restored: dict[str, str] = {}
+    orig_restored: dict[str, str] = {}
     moved: list[tuple[MergeRewrite, MergeRewrite]] = []
     relations = []
     for rw in (r for r in rec.rewrites if r.kind == "relation"):
@@ -1251,6 +1280,8 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
                 runner, ns, [(edge, versions[0].invalidated_by, versions[0].invalidated_at)], at
             )
         restored[rw.id] = rel.id
+        orig_id = original.id or _ids.relation_id(original.from_entity, original.type, original.to_entity)
+        orig_restored[orig_id] = rel.id
         relations.append(rel)
         moved.append((rw, _moved_to(rw, rel.id, _dump(back, exclude={"evidence"}), existed)))
         await _ops._repoint_steps(runner, ns, touching, restored)
@@ -1284,7 +1315,26 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         moved.append((rw, _moved_to(rw, pref.id, _dump(back), existed)))
 
     decisions = []
-    for rw in (r for r in rec.rewrites if r.kind == "decision"):
+    decision_rws = [r for r in rec.rewrites if r.kind == "decision"]
+    dropped_sibling_ids: set[str] = set()
+    sibling_step_map: dict[str, str] = {}
+    live_merges: list[dict[str, Any]] | None = None
+    live_entries: dict[str, list[dict[str, Any]]] | None = None
+    if decision_rws:
+        live_merges = [props for props in await scan_live_merges(runner, ns) if props["id"] != merge_id]
+        live_entries = await _load_entries(runner, ns, live_merges)
+        for props in live_merges:
+            sib = _decode_merge(props, live_entries[props["id"]])
+            for srw in sib.rewrites:
+                if srw.kind == "relation":
+                    sorig = RelationInput.model_validate(srw.original)
+                    sorig_id = sorig.id or _ids.relation_id(sorig.from_entity, sorig.type, sorig.to_entity)
+                    if srw.dropped:
+                        dropped_sibling_ids.add(sorig_id)
+                    else:
+                        sibling_step_map[sorig_id] = restored.get(srw.id, srw.id)
+
+    for rw in decision_rws:
         original = DecisionTraceInput.model_validate(rw.original)
         rewritten = DecisionTraceInput.model_validate(rw.rewritten)
         actor = await end(original.actor_entity, rewritten.actor_entity)
@@ -1310,9 +1360,21 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         alternatives = [
             await end(o, r) for o, r in zip(original.alternative_entities, rewritten.alternative_entities, strict=True)
         ]
+        restored_steps = []
+        for s in original.steps:
+            if s in dropped_sibling_ids and s not in orig_restored:
+                continue
+            if s in orig_restored:
+                restored_steps.append(orig_restored[s])
+            elif s in sibling_step_map:
+                restored_steps.append(sibling_step_map[s])
+            elif s in restored:
+                restored_steps.append(restored[s])
+            elif await _ops.relation_exists(runner, ns, s):
+                restored_steps.append(s)
         back = base.model_copy(
             update={
-                "steps": steps,
+                "steps": restored_steps,
                 "actor_entity": actor,
                 "outcome_entity": outcome,
                 "alternative_entities": [a for a in alternatives if a is not None and await exists(a)],
@@ -1338,7 +1400,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         moved.append((rw, _moved_to(rw, trace.id, _dump(back), existed)))
 
     if moved:
-        await _forward_siblings(runner, ns, rec.id, moved, restored)
+        await _forward_siblings(runner, ns, rec.id, moved, restored, live=live_merges, entries=live_entries)
     survivor = None
     if await exists(rec.survivor_id):
         survivor = await _ops.update_entity(

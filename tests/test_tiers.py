@@ -138,6 +138,31 @@ def test_llm_judge_keeps_compatible_facts_and_skips_same_write_and_older_inputs(
     assert late.prompts == []
 
 
+def test_llm_judge_excludes_unchanged_relations_in_a_mixed_batch():
+    judge = Judge()
+    g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
+    both = [works_at("acme", 2020), works_at("globex", 2022)]
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": both}))
+    assert run(g.insert.facts({"relations": both})).warnings == []
+    assert judge.prompts == []
+    changed = [both[0], {**both[1], "properties": {"role": "lead"}}]
+    result = run(g.insert.facts({"relations": changed}))
+    assert judge.prompts == []
+    assert result.warnings == []
+    assert [(r.revision, r.is_current) for r in result.relations] == [(1, True), (2, True)]
+    assert run(g.relations.get(ACME)).is_current
+    assert run(g.relations.get(GLOBEX)).is_current
+    assert run(g.insert.facts({"relations": changed})).warnings == []
+    assert judge.prompts == []
+    run(g.entities.create("Initech", "Company"))
+    external = run(g.insert.facts({"relations": [works_at("initech", 2024)]}))
+    assert len(judge.prompts) == 1
+    assert "Ann -[WORKS_AT]-> Acme" in judge.prompts[0]
+    assert "Ann -[WORKS_AT]-> Globex" in judge.prompts[0]
+    assert [w.code for w in external.warnings] == ["relation_superseded"]
+    assert len(run(g.relations.list()).items) == 2
+
+
 def test_llm_judge_leaves_cardinality_types_to_the_schema_rule_and_judges_other_types():
     judge = Judge()
     spec = {"relations": [{"type": "WORKS_AT", "from": {"max_count": 1}}]}
@@ -364,6 +389,19 @@ def test_from_tables_drafts_types_properties_relations_and_mappings():
         Schema.from_tables([{"name": "t", "columns": [{"name": "x_id", "references": "nope"}]}])
     with pytest.raises(ValidationError, match="each table needs a name"):
         Schema.from_tables([{}])
+
+
+@pytest.mark.parametrize(
+    "reference, shown",
+    [
+        ({"table": "users"}, "{'table': 'users'}"),
+        (["users"], "['users']"),
+    ],
+)
+def test_from_tables_rejects_non_string_references_with_a_validation_error(reference, shown):
+    with pytest.raises(ValidationError) as exc:
+        Schema.from_tables([{"name": "orders", "columns": [{"name": "user_id", "references": reference}]}])
+    assert str(exc.value) == f"tables[0].columns[0].references: unknown table {shown}"
 
 
 def test_from_tables_maps_only_integer_sql_types_to_integer():

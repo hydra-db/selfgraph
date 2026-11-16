@@ -24,6 +24,7 @@ __all__ = [
     "Entity",
     "Certification",
     "Relation",
+    "GraphDiff",
     "Preference",
     "DecisionStep",
     "DecisionTrace",
@@ -391,6 +392,27 @@ class Relation(BaseModel):
     certified_at: datetime | None = None
     certified_by: str | None = None
     certifications: list[Certification] = Field(default_factory=list)
+
+
+class Change(BaseModel):
+    kind: Literal["entity", "relation", "preference", "decision", "merge", "source"]
+    action: Literal["created", "updated", "retired", "certified", "uncertified", "merged", "unmerged"]
+    id: str
+    at: datetime
+    summary: str
+
+
+class GraphDiff(BaseModel):
+    since: datetime
+    until: datetime
+    relations_added: list[Relation] = Field(default_factory=list)
+    relations_retired: list[Relation] = Field(default_factory=list)
+    relations_revised: list[Relation] = Field(default_factory=list)
+    entities_created: list[Entity] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=lambda: ["Deletes are not visible."])
+    total: int = 0
+    counts: dict[str, int] = Field(default_factory=dict)
+    changes: list[Change] = Field(default_factory=list)
 
 
 class Preference(BaseModel):
@@ -812,22 +834,6 @@ class AnswerabilityReport(BaseModel):
     connected: bool
     hub_only: list[list[str]] = Field(default_factory=list)
     note: str | None = None
-
-
-class Change(BaseModel):
-    kind: Literal["entity", "relation", "preference", "decision", "merge", "source"]
-    action: Literal["created", "updated", "retired", "certified", "uncertified", "merged", "unmerged"]
-    id: str
-    at: datetime
-    summary: str
-
-
-class DiffResult(BaseModel):
-    since: datetime | None = None
-    until: datetime | None = None
-    total: int = 0
-    counts: dict[str, int] = Field(default_factory=dict)
-    changes: list[Change] = Field(default_factory=list)
 
 
 class LintIssue(BaseModel):

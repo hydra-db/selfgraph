@@ -270,6 +270,17 @@ def test_invalid_schema_and_mode_raise_validation_error():
         ),
         ({"relations": [{"type": "R", "from": {"max_count": 0}}]}, "relations[0].from.max_count: must be >= 1"),
         ({"relations": [{"type": "R", "to": {"min_count": -1}}]}, "relations[0].to.min_count: must be >= 0"),
+        ({"relations": [{"type": "R", "from": {"max_count": 1.5}}]}, "relations[0].from.max_count: expected integer"),
+        ({"relations": [{"type": "R", "to": {"min_count": True}}]}, "relations[0].to.min_count: expected number"),
+        ({"relations": [{"type": "R", "from": {"max_count": "1"}}]}, "relations[0].from.max_count: expected number"),
+        (
+            {"relations": [{"type": "R", "from": {"max_count": 2**53}}]},
+            "relations[0].from.max_count: must be <= 9007199254740991",
+        ),
+        (
+            {"relations": [{"type": "R", "to": {"min_count": 1e20}}]},
+            "relations[0].to.min_count: must be <= 9007199254740991",
+        ),
         (
             {"relations": [{"type": "R", "from": {"min_count": 2, "max_count": 1}}]},
             "relations[0].from.min_count: min_count 2 is greater than max_count 1",
@@ -283,6 +294,66 @@ def test_inconsistent_schemas_are_rejected_with_a_path(spec, message):
     with pytest.raises(ValidationError) as direct:
         Schema(**spec)
     assert str(direct.value) == f"invalid schema: {message}"
+
+
+@pytest.mark.parametrize(
+    ("spec", "lines"),
+    [
+        (
+            {"relations": [{"type": "R", "from": {"max_count": -(2**53)}}]},
+            ["relations[0].from.max_count: must be >= -9007199254740991", "relations[0].from.max_count: must be >= 1"],
+        ),
+        (
+            {"relations": [{"type": "R", "to": {"min_count": -1e20}}]},
+            ["relations[0].to.min_count: must be >= -9007199254740991", "relations[0].to.min_count: must be >= 0"],
+        ),
+        (
+            {"relations": [{"type": "R", "from": {"min_count": 2**53, "max_count": 5}}]},
+            [
+                "relations[0].from.min_count: must be <= 9007199254740991",
+                "relations[0].from.min_count: min_count 9007199254740992 is greater than max_count 5",
+            ],
+        ),
+        (
+            {"relations": [{"type": "R", "from": {"min_count": 1e21, "max_count": 5}}]},
+            [
+                "relations[0].from.min_count: must be <= 9007199254740991",
+                "relations[0].from.min_count: min_count 1e+21 is greater than max_count 5",
+            ],
+        ),
+        (
+            {"relations": [{"type": "R", "from": {"min_count": 10**20 + 16384, "max_count": 5}}]},
+            [
+                "relations[0].from.min_count: must be <= 9007199254740991",
+                "relations[0].from.min_count: min_count 100000000000000020000 is greater than max_count 5",
+            ],
+        ),
+    ],
+)
+def test_unsafe_counts_also_report_the_first_consistency_problem(spec, lines):
+    expected = "invalid schema:" + "".join(f"\n  {line}" for line in lines)
+    with pytest.raises(ValidationError) as err:
+        as_schema(spec)
+    assert str(err.value) == expected
+    with pytest.raises(ValidationError) as direct:
+        Schema(**spec)
+    assert str(direct.value) == expected
+
+
+def test_a_count_beyond_float_range_renders_in_full_and_stays_a_validation_error():
+    huge = 10**400
+    spec = {"relations": [{"type": "R", "from": {"min_count": huge, "max_count": 5}}]}
+    expected = (
+        "invalid schema:"
+        "\n  relations[0].from.min_count: must be <= 9007199254740991"
+        f"\n  relations[0].from.min_count: min_count {huge} is greater than max_count 5"
+    )
+    with pytest.raises(ValidationError) as err:
+        as_schema(spec)
+    assert str(err.value) == expected
+    with pytest.raises(ValidationError) as direct:
+        Schema(**spec)
+    assert str(direct.value) == expected
 
 
 def test_an_alias_may_repeat_its_own_type_name():
@@ -826,6 +897,22 @@ def test_endpoint_types_resolve_like_entity_types_and_are_only_checked_with_enti
         update={"relations": [facts.relations[0].model_copy(update={"from_entity": "company:acme"})]}
     )
     assert [w.code for w in validate_against_schema(swapped, as_schema(schema))] == ["endpoint_type_violation"]
+    parsed = as_schema(
+        {
+            "entities": [{"name": "Person", "aliases": ["Human"]}, {"name": "Company", "aliases": ["Org"]}],
+            "relations": [
+                {"type": "WORKS_AT", "from": {"types": ["person"]}, "to": {"types": ["Company", "Org"]}},
+                {"type": "KNOWS", "from": {"types": ["Person"]}, "to": {"types": ["Human"]}},
+            ],
+        }
+    )
+    assert [(r.from_.types, r.to.types) for r in parsed.relations] == [
+        (["Person"], ["Company"]),
+        (["Person"], ["Person"]),
+    ]
+    assert [c["concept"] for c in parsed.to_ossie()["ontology"]] == ["Person", "Company"]
+    assert parsed.to_ossie()["ontology"][0]["relationships"][1]["roles"] == [{"concept": "Person", "name": "other"}]
+    assert parsed.to_neo4j_ontology()["patterns"] == [["Person", "WORKS_AT", "Company"], ["Person", "KNOWS", "Person"]]
     assert as_schema({"relations": [{"type": "R", "to": {"types": ["Anything"]}}]}).entities == []
     with pytest.raises(ValidationError, match="entities\\[2\\].aliases\\[0\\]"):
         as_schema({**schema, "entities": [*schema["entities"], {"name": "Team", "aliases": ["org"]}]})

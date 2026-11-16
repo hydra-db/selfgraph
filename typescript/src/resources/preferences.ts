@@ -10,7 +10,7 @@ import {
 } from "../models.js";
 import * as ops from "../ops.js";
 import { checkOptions, keysOf, parseTime } from "../validate.js";
-import { paginate, parseStance, Resource, VERSIONS_KEYS } from "./common.js";
+import { paginate, Resource, VERSIONS_KEYS } from "./common.js";
 
 export interface PreferenceCreateOptions {
   id?: string | null;
@@ -78,7 +78,7 @@ export class Preferences extends Resource {
     options: PreferenceCreateOptions = {},
   ): Promise<Preference> {
     checkOptions("preferences.create", options, CREATE_KEYS);
-    const stance = parseStance(options.stance ?? DEFAULT_STANCE);
+    const stance = options.stance ?? DEFAULT_STANCE;
     const eventTime = parseTime(options.event_time, "event_time");
     return this.graph.write((tx, ns) =>
       ops.createPreference(tx, ns, {
@@ -117,7 +117,7 @@ export class Preferences extends Resource {
       ops.listPreferences(store, ns, {
         subject_entity: subject,
         key: opts.key,
-        stance: opts.stance == null ? null : parseStance(opts.stance),
+        stance: opts.stance ?? null,
         ...window,
       }),
     );

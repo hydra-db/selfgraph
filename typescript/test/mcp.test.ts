@@ -21,8 +21,8 @@ const BYPASSES = [
 const READS = ["MATCH (n) RETURN n.set AS x;", "RETURN 1; MATCH (n) RETURN n"];
 
 const TOOL_NAMES = `certify_relation check_answerable check_readiness create_decision create_entity create_preference
-  create_relation delete_decision delete_entity delete_preference delete_relation diff entity_evidence entity_merges
-  get_decision get_entity get_preference get_relation get_schema insert_facts insert_text list_decisions
+  create_relation delete_decision delete_entity delete_preference delete_relation entity_evidence entity_merges
+  get_decision get_entity get_preference get_relation get_schema graph_diff insert_facts insert_text list_decisions
   list_entities list_preferences list_relations maintenance_decay maintenance_dedupe_relations maintenance_prune
   preference_versions relation_evidence relation_versions retrieve run_cypher uncertify_relation unmerge_entity
   update_decision update_entity update_preference update_relation`.split(/\s+/);
@@ -75,6 +75,18 @@ async function mcpError(name: string, args: Record<string, unknown>): Promise<{ 
   expect(isError, `${name}: ${JSON.stringify(result)}`).toBe(true);
   return result as { error: string; error_type: string };
 }
+
+it("graph_diff returns stored changes and validates the window", async () => {
+  await configure({ namespace: "mcp_diff" });
+  await mcpOk("create_entity", { name: "Ann", type: "Person" });
+  const result = await mcpOk<{ entities_created: { id: string }[]; limitations: string[] }>("graph_diff", {
+    since: "1900-01-01",
+    until: "2100-01-01",
+  });
+  expect(result.entities_created.map((e) => e.id)).toEqual(["person:ann"]);
+  expect(result.limitations).toEqual(["Deletes are not visible."]);
+  expect((await callTool("graph_diff", { since: "2100-01-01", until: "1900-01-01" })).isError).toBe(true);
+});
 
 describe("MCP run_cypher guard", () => {
   it("rejects INSERT, unicode escapes, bare keyword aliases, and chained admin statements", async () => {
@@ -260,7 +272,7 @@ describe("MCP tools over Kuzu", () => {
     }
   });
 
-  it("lists 38 tools over a transport and reports bad arguments as path: message lines", async () => {
+  it("lists 39 tools over a transport and reports bad arguments as path: message lines", async () => {
     await configure();
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
@@ -281,6 +293,7 @@ describe("MCP tools over Kuzu", () => {
       for (const name of ["delete_entity", "maintenance_prune", "maintenance_dedupe_relations"]) {
         expect(hints[name]).toMatchObject({ destructiveHint: true, idempotentHint: true });
       }
+      expect(hints.graph_diff).toMatchObject({ readOnlyHint: true });
       expect(hints.retrieve).toMatchObject({ readOnlyHint: true });
       expect(hints.check_answerable).toMatchObject({ readOnlyHint: true });
       expect(hints.create_entity).toMatchObject({ destructiveHint: false, idempotentHint: false });

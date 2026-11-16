@@ -79,7 +79,7 @@ def from_tables(tables: Sequence[Mapping[str, Any]], name: str | None = None) ->
                 raise ValidationError(f"tables[{i}].columns[{j}]: each column needs a name")
             target = column.get("references")
             if target is not None:
-                if target not in names:
+                if not isinstance(target, str) or target not in names:
                     raise ValidationError(f"tables[{i}].columns[{j}].references: unknown table {target!r}")
                 own = [w for w in _words(column["name"]) if w != "id"] or _words(target)
                 rtype = "HAS_" + "_".join(own).upper()

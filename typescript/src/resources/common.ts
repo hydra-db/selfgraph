@@ -1,7 +1,7 @@
 import type { GraphAccess } from "../access.js";
 import { ValidationError } from "../errors.js";
-import { pyRepr, pyStrip } from "../internal/py.js";
-import { type Evidence, EvidenceInput, type Page, parseOrThrow, Stance, Status } from "../models.js";
+import { isPlainObject, pyRepr, pyStrip } from "../internal/py.js";
+import { type Evidence, EvidenceInput, type Page, parseOrThrow } from "../models.js";
 import { evidenceFromInputs } from "../ops.js";
 import type { GraphPrimitives } from "../protocols.js";
 import { hasControl, keysOf, requireInt, typeName } from "../validate.js";
@@ -92,14 +92,27 @@ export async function* paginate<T>(list: (cursor: string | null) => Promise<Page
   }
 }
 
-export const parseStance = (value: unknown): Stance => parseOrThrow(Stance, value, "stance");
-
-export const parseStatus = (value: unknown): Status => parseOrThrow(Status, value, "status");
-
-export const parseEvidence = (inputs: readonly EvidenceInput[]): Evidence[] => {
-  if (!Array.isArray(inputs)) throw new ValidationError("evidence must be a list of Evidence objects");
-  return evidenceFromInputs(inputs.map((ev) => parseOrThrow(EvidenceInput, ev, "evidence")));
-};
+/**
+ * Parse caller evidence into records, rejecting a non-list or a non-object item with the Python SDK's text.
+ *
+ * @param inputs (readonly EvidenceInput[]): the evidence records.
+ * @return (Evidence[]): the evidence.
+ */
+export function parseEvidence(inputs: readonly EvidenceInput[]): Evidence[] {
+  if (!Array.isArray(inputs)) {
+    throw new ValidationError(`evidence must be a list of Evidence objects, got ${typeName(inputs)}`);
+  }
+  return evidenceFromInputs(
+    inputs.map((ev: unknown) => {
+      if (!isPlainObject(ev)) {
+        throw new ValidationError(
+          `evidence must be EvidenceInput objects (selfgraph.EvidenceInput(...)), got a ${typeName(ev)}`,
+        );
+      }
+      return parseOrThrow(EvidenceInput, ev, "evidence");
+    }),
+  );
+}
 
 export interface PageOptions {
   cursor?: string | null;

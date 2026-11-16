@@ -1,10 +1,11 @@
 import { contradictionTier, GraphAccess, seedTier } from "./access.js";
-import { buildDiff, DIFF_KINDS } from "./diff.js";
+import { DIFF_KINDS, graphDiff } from "./diff.js";
 import { LLM_HINT, StoreError, ValidationError } from "./errors.js";
 import { obsidianVault } from "./export.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { Insert } from "./insert.js";
 import { pyStrip } from "./internal/py.js";
+import { epochMicros } from "./internal/time.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
 import { inspect, scanEntities, scanRelations } from "./maintenance.js";
 import {
@@ -12,9 +13,9 @@ import {
   asInput,
   type CypherResult,
   type DateTimeInput,
-  type DiffResult,
   ExtractionInstructions,
   ExtractionPrompts,
+  type GraphDiff,
   type JsonValue,
   type LintIssue,
   type Readiness,
@@ -66,13 +67,11 @@ const LEXICAL_NOTE = "the check is lexical; embedding seeds may still find what 
 const ANSWERABLE_KEYS = keysOf<CheckAnswerableOptions>({ terms: true, as_of: true, known_at: true, depth: true });
 
 export interface DiffOptions {
-  since?: DateTimeInput | null;
-  until?: DateTimeInput | null;
   kinds?: readonly string[] | null;
   limit?: number | null;
 }
 
-const DIFF_KEYS = keysOf<DiffOptions>({ since: true, until: true, kinds: true, limit: true });
+const DIFF_KEYS = keysOf<DiffOptions>({ kinds: true, limit: true });
 
 export interface SelfGraphOptions {
   llm?: LLMArg;
@@ -266,6 +265,47 @@ export class SelfGraph {
   }
 
   /**
+   * List stored changes in the known-time window (since, until], defaulting until to now.
+   *
+   * Beside the four change lists, the change log lists every write between two times oldest first, with counts per
+   * kind over the whole window. The log is read back from the stored records, so deleting an object also drops its
+   * writes from it.
+   *
+   * @param since (DateTimeInput): exclusive lower bound, with no offset read as UTC.
+   * @param until (DateTimeInput | null): inclusive upper bound, or now.
+   * @param options (DiffOptions): kinds, which kinds to include in changes (entity, relation, preference, decision,
+   * merge, source), else all of them; limit, the most changes to return, keeping the newest.
+   * @return (GraphDiff): the four lists, plus the total, the counts per kind, and the changes oldest first.
+   */
+  async diff(since: DateTimeInput, until?: DateTimeInput | null, options: DiffOptions = {}): Promise<GraphDiff> {
+    checkOptions("diff", options, DIFF_KEYS);
+    const start = parseTime(since, "since");
+    const end = parseTime(until, "until") ?? new Date();
+    if (start === null) throw new ValidationError("since is required");
+    if (epochMicros(end) < epochMicros(start)) throw new ValidationError("until must be at or after since");
+    let kinds: string[] | null = null;
+    if (options.kinds != null) {
+      requireList("kinds", options.kinds);
+      if (
+        !options.kinds.length ||
+        !options.kinds.every((k) => typeof k === "string" && DIFF_KINDS.some((d) => d === k))
+      ) {
+        throw new ValidationError(
+          "kinds must be non-empty strings from entity, relation, preference, decision, merge, source",
+        );
+      }
+      kinds = [...new Set(options.kinds.map((k) => k as string))];
+    }
+    let limit: number | null = null;
+    if (options.limit != null) {
+      requireInt("limit", options.limit);
+      if (options.limit < 1) throw new ValidationError(`limit must be >= 1, got ${options.limit}`);
+      limit = options.limit;
+    }
+    return this.graph.read((runner, ns) => graphDiff(runner, ns, start, end, kinds, limit));
+  }
+
+  /**
    * Retrieve graph context for a query via keyword seeds and bounded traversal.
    *
    * @param query (string): the natural-language query to seed from.
@@ -307,41 +347,6 @@ export class SelfGraph {
     );
     if (report.missing.length && this.graph.tiers.seeds === "embeddings") report.note = LEXICAL_NOTE;
     return report;
-  }
-
-  /**
-   * Read the change log of the namespace: every write between two times, oldest first.
-   *
-   * @param options (DiffOptions): since, leave out changes at or before this time (naive means UTC); until,
-   * leave out changes after this time (naive means UTC, default now); kinds, which kinds to include (entity,
-   * relation, preference, decision, merge, source), else all of them; limit, the most changes to return,
-   * keeping the newest.
-   * @return (DiffResult): the window, the total, the counts per kind, and the changes oldest first.
-   */
-  async diff(options: DiffOptions = {}): Promise<DiffResult> {
-    checkOptions("diff", options, DIFF_KEYS);
-    let kinds: string[] | null = null;
-    if (options.kinds != null) {
-      requireList("kinds", options.kinds);
-      if (
-        !options.kinds.length ||
-        !options.kinds.every((k) => typeof k === "string" && DIFF_KINDS.some((d) => d === k))
-      ) {
-        throw new ValidationError(
-          "kinds must be non-empty strings from entity, relation, preference, decision, merge, source",
-        );
-      }
-      kinds = [...new Set(options.kinds.map((k) => k as string))];
-    }
-    let limit: number | null = null;
-    if (options.limit != null) {
-      requireInt("limit", options.limit);
-      if (options.limit < 1) throw new ValidationError(`limit must be >= 1, got ${options.limit}`);
-      limit = options.limit;
-    }
-    const since = parseTime(options.since, "since");
-    const until = parseTime(options.until, "until");
-    return this.graph.read((store, ns) => buildDiff(store, ns, { since, until, kinds, limit }));
   }
 
   /**

@@ -596,6 +596,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       label,
       out,
       indexRows.map((r) => r.id as bigint),
+      options.extra_label,
     );
     for (const [keys, params] of held) {
       await this._run(`MATCH (n:${label}) WHERE n.id IN $iids REMOVE ${removes("n", keys)}`, params);
@@ -608,19 +609,42 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
    * @param label (string): the node label.
    * @param rows (Props[]): the rows, each with its surrogate id and the columns to set.
    * @param needs (readonly bigint[]): ids that must be written first, such as the entities' key rows, so a failed write never leaves an entity stored without them.
+   * @param extraLabel (string | null | undefined): an optional secondary label.
    * @return (void): nothing.
    */
-  private async mergeRows(label: string, rows: Props[], needs: readonly bigint[] = []): Promise<void> {
+  private async mergeRows(
+    label: string,
+    rows: Props[],
+    needs: readonly bigint[] = [],
+    extraLabel?: string | null,
+  ): Promise<void> {
+    const marks = extraLabel != null ? [labelKey(label), labelKey(extraLabel)] : [labelKey(label)];
     for (const batch of byColumns(rows)) {
+      const ids = batch.map((r) => r.id as bigint);
       await this.write(
         `UNWIND $rows AS row MERGE (n {id: row.id}) SET n:${label}, ${sets("n", batch[0]!, ["id"])}`,
         { rows: batch },
-        batch.map((r) => r.id as bigint),
+        ids,
         needs,
-        [labelKey(label)],
+        marks,
         label === L_EVIDENCE || label === L_MERGE,
       );
-      if (queuing.getStore() === this) for (const r of batch) this.pendingNodes.add(`${label}\x00${r.id}`);
+      if (extraLabel != null) {
+        await this.write(
+          `MATCH (n:${label}) WHERE n.id IN $iids SET n:${quoteLabel(extraLabel)}`,
+          { iids: ids },
+          ids,
+          ids,
+          marks,
+          label === L_EVIDENCE || label === L_MERGE,
+        );
+      }
+      if (queuing.getStore() === this) {
+        for (const id of ids) {
+          this.pendingNodes.add(`${label}\x00${id}`);
+          if (extraLabel != null) this.pendingNodes.add(`${extraLabel}\x00${id}`);
+        }
+      }
     }
   }
 
@@ -974,8 +998,8 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     whereAfter("r.sid", id_gt, where, params);
     const res = await this._run(
       `MATCH (${apat})-[r:${EDGE}]->(${bpat}) WHERE ${where.join(" AND ")} ` +
-        "RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`sid` AS __ob " +
-        "ORDER BY __ob SKIP $skip LIMIT $limit",
+        "RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`sid` AS __ob, r.revision AS __rev " +
+        "ORDER BY __ob, __rev SKIP $skip LIMIT $limit",
       params,
     );
     return res.rows.map(edgeRow);

@@ -62,10 +62,13 @@ async def judge_contradictions(
     @return (list[InsertWarning]): one relation_superseded warning per retired relation, and one certified_kept warning
         per certified relation the LLM judged contradicted, which stays current.
     """
+    by_id = {r.id: r for r in written if r.created_at == known}
+    if not by_id:
+        return []
     rivals = await _ops.rival_relations(runner, ns, written, caps, _MAX_RIVALS)
+    rivals = {rid: edges for rid, edges in rivals.items() if rid in by_id}
     if not rivals:
         return []
-    by_id = {r.id: r for r in written}
     refs = {x for rid in rivals for x in (by_id[rid].from_entity, by_id[rid].to_entity)}
     refs |= {e["to_id"] for edges in rivals.values() for e in edges}
     nodes = await _ops._nodes_by_id(runner, ns, L_ENTITY, sorted(refs))

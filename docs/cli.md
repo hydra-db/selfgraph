@@ -111,15 +111,17 @@ Unquoted words join into one query, so `retrieve who works at Acme` works. See
 ### `diff`
 
 Reads the change log: every write between two times, oldest first, with counts
-per kind. See [The change log](retrieval.md#the-change-log). `--kind` is
-repeatable; counts cover the whole window even when `--kind` filters the list.
+per kind, after the summary of the four change lists. See
+[The change log](retrieval.md#the-change-log). `--kind` is repeatable; counts
+cover the whole window even when `--kind` filters the list.
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--since` | | Leave out changes at or before this time. |
-| `--until` | now | Leave out changes after this time. |
+| `--since` | | Exclusive known-time lower bound. |
+| `--until` | now | Inclusive known-time upper bound. |
 | `--kind` | all | One of `entity`, `relation`, `preference`, `decision`, `merge`, `source`. |
-| `--limit` | all | Keep only the newest N changes. |
+| `--limit` | all | Keep only the newest N changes in the change log. |
+| `--json` | off | Print the full structured result instead of a summary. |
 
 ### `query`
 
@@ -245,3 +247,17 @@ methods (`runCypher`) and options in a trailing object
 Watch the property argument: `entities.update` and `preferences.update` take
 `properties=` (CLI `--prop`), while `relations.update` takes `set_properties=`
 (CLI `--set`).
+
+## Changes between known times
+
+```bash
+selfgraph diff --since 2026-01-01T00:00:00Z --until 2026-02-01T00:00:00Z
+selfgraph diff --since 2026-01-01T00:00:00Z --json
+```
+
+The default output lists `+` additions, `~` revisions, and `-` retirements with
+relation endpoints and `invalidated_by`, then the change log's lines. `--json`
+returns the typed result as JSON. The known-time window is `(since, until]`;
+`until` defaults to now. Deletes are not visible in the four lists. JSON
+includes this note in `limitations`.
+See [the change log](retrieval.md#the-change-log).

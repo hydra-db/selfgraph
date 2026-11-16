@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -254,3 +255,10 @@ def extracting_llm(entities: list[tuple[str, str]], relations: list[tuple[str, s
             ),
         }
     )
+
+
+def instant():
+    time.sleep(0.01)
+    stamp = datetime.now(timezone.utc)
+    time.sleep(0.01)
+    return stamp

@@ -245,7 +245,8 @@ export class Insert {
       const maxCount = mode === "strict" && conflicts !== "off";
       const checked = await enforceSchema(tx, ns, resolved, activeSchema, mode, true, maxCount, null, true);
       const found: InsertWarning[] = [];
-      if (mode === "strict" && conflicts === "warn") await ops.requireMaxCount(tx, ns, caps, resolved.relations);
+      if (mode === "strict" && conflicts === "warn")
+        await ops.requireMaxCount(tx, ns, caps, resolved.relations, source.default_event_time, createdAt);
       let sourceVersion: string | null = null;
       let baseEvidence: Evidence[] = [];
       const prior =
@@ -281,8 +282,7 @@ export class Insert {
         { contradiction: conflicts, caps, warnings: found },
       );
       if (judged && llm !== null) {
-        const fresh = relations.filter((r) => r.created_at.getTime() === createdAt.getTime());
-        found.push(...(await judgeContradictions(tx, ns, llm, fresh, caps, createdAt)));
+        found.push(...(await judgeContradictions(tx, ns, llm, relations, caps, createdAt)));
       }
 
       let diff: SourceDiff | null = null;

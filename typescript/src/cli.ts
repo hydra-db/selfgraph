@@ -17,6 +17,7 @@ import { NotFoundError, PromptTemplateError, SelfGraphError, surfaceHint, Valida
 import { toOssie } from "./export.js";
 import { setLogger } from "./internal/log.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
+import { toIso } from "./internal/time.js";
 import { runStdio } from "./mcp.js";
 import {
   DEFAULT_STANCE,
@@ -771,27 +772,6 @@ export function buildParser(): Command<[], GlobalOptions> {
     .description("check the store is reachable and the namespace holds data, with counts and lint")
     .action((_o, cmd) => emit(cmd, (g) => g.readiness()));
   program
-    .command("diff")
-    .description("read the change log: every write between two times, oldest first")
-    .option("--since <iso>", `leave out changes at or before this time (${ISO})`, timeArg("since"))
-    .option("--until <iso>", `leave out changes after this time (${ISO})`, timeArg("until"))
-    .option("--kind <kind>", "only this kind (repeatable)", collect, [])
-    .option("--limit <n>", "keep only the newest N changes", intArg("--limit"))
-    .action((o, cmd) =>
-      emit(cmd, (g) => {
-        for (const k of o.kind) {
-          if (!DIFF_KINDS.some((d) => d === k))
-            throw new ValidationError(`--kind must be one of ${DIFF_KINDS.join(", ")}`);
-        }
-        return g.diff({
-          since: o.since,
-          until: o.until,
-          kinds: o.kind.length ? o.kind : null,
-          limit: o.limit,
-        });
-      }),
-    );
-  program
     .command("check-answerable <question...>")
     .description("judge whether the graph holds what a question asks about; words join into one")
     .option("--term <phrase>", "a key phrase to check instead of the question's words (repeatable)", collect, [])
@@ -831,6 +811,48 @@ export function buildParser(): Command<[], GlobalOptions> {
     .addHelpText("after", QUERY_EXAMPLES)
     .option("--param <KEY=VALUE>", `query parameter (repeatable)${JSON_VALUE}`, collect, [])
     .action((cypher, o, cmd) => emit(cmd, (g) => checkedCypher(g, cypher, bindParams(cypher, kv(o.param, "--param")))));
+  program
+    .command("diff")
+    .description("list stored changes in a known-time window")
+    .requiredOption("--since <iso>", "exclusive lower bound", timeArg("since"))
+    .option("--until <iso>", "inclusive upper bound, or now", timeArg("until"))
+    .option("--kind <kind>", "only this kind in the change log (repeatable)", collect, [])
+    .option("--limit <n>", "keep only the newest N changes in the change log", intArg("--limit"))
+    .option("--json", "print the result as JSON")
+    .action((o, cmd) =>
+      emit(cmd, async (g) => {
+        for (const k of o.kind) {
+          if (!DIFF_KINDS.some((d) => d === k))
+            throw new ValidationError(`--kind must be one of ${DIFF_KINDS.join(", ")}`);
+        }
+        const result = await g.diff(o.since, o.until, {
+          kinds: o.kind.length ? o.kind : null,
+          limit: o.limit,
+        });
+        if (o.json) return result;
+        const lines = [`Changes (${toIso(result.since)}, ${toIso(result.until)}]`];
+        lines.push(...result.limitations.map((limitation) => `Note: ${limitation}`));
+        for (const e of result.entities_created) lines.push(`+ entity ${e.id}`);
+        for (const [mark, relations] of [
+          ["+", result.relations_added],
+          ["~", result.relations_revised],
+        ] as const) {
+          for (const r of relations)
+            lines.push(
+              `${mark} relation ${r.id} revision ${r.revision}: ${r.from_entity} -[${r.type}]-> ${r.to_entity}`,
+            );
+        }
+        for (const r of result.relations_retired)
+          lines.push(
+            `- relation ${r.id}: ${r.from_entity} -[${r.type}]-> ${r.to_entity} invalidated_by=${r.invalidated_by ?? "None"}`,
+          );
+        lines.push(
+          `${result.entities_created.length} entities created, ${result.relations_added.length} relations added, ${result.relations_revised.length} revised, ${result.relations_retired.length} retired`,
+        );
+        for (const c of result.changes) lines.push(`  ${toIso(c.at)} ${c.kind} ${c.action} ${c.id}: ${c.summary}`);
+        return new Text(lines.join("\n"));
+      }),
+    );
   program
     .command("retrieve <query...>")
     .description("retrieve graph context for a query; unquoted words join into one query")

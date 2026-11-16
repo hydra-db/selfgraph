@@ -156,6 +156,33 @@ async def _retrieve(graph, args):
     return _Text(result.context) if args.context_only else result
 
 
+async def _diff(graph, args):
+    result = await graph.diff(args.since, args.until, kinds=args.kind, limit=args.limit)
+    if args.json:
+        return result
+    lines = [f"Changes ({result.since.isoformat()}, {result.until.isoformat()}]"]
+    lines += [f"Note: {limitation}" for limitation in result.limitations]
+    lines += [f"+ entity {e.id}" for e in result.entities_created]
+    lines += [
+        f"+ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
+        for r in result.relations_added
+    ]
+    lines += [
+        f"~ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
+        for r in result.relations_revised
+    ]
+    lines += [
+        f"- relation {r.id}: {r.from_entity} -[{r.type}]-> {r.to_entity} invalidated_by={r.invalidated_by}"
+        for r in result.relations_retired
+    ]
+    lines.append(
+        f"{len(result.entities_created)} entities created, {len(result.relations_added)} relations added, "
+        f"{len(result.relations_revised)} revised, {len(result.relations_retired)} retired"
+    )
+    lines += [f"  {c.at.isoformat()} {c.kind} {c.action} {c.id}: {c.summary}" for c in result.changes]
+    return _Text("\n".join(lines))
+
+
 async def _prune(graph, args):
     return surfaced(
         await graph.maintenance.prune(
@@ -453,6 +480,19 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--param", action="append", metavar="KEY=VALUE", help=f"query parameter (repeatable){_JSON_VALUE}")
     q.set_defaults(func=lambda g, a: checked_cypher(g, a.cypher, bind_params(a.cypher, _kv(a.param, "--param"))))
 
+    diff = sub.add_parser("diff", help="list stored changes by known time, in (since, until]")
+    diff.add_argument("--since", required=True, type=_time("since"), help="exclusive known-time lower bound (ISO 8601)")
+    diff.add_argument("--until", type=_time("until"), help="inclusive known-time upper bound (ISO 8601; default now)")
+    diff.add_argument(
+        "--kind",
+        action="append",
+        choices=("entity", "relation", "preference", "decision", "merge", "source"),
+        help="only this kind in the change log (repeatable)",
+    )
+    diff.add_argument("--limit", type=int, help="keep only the newest N changes in the change log")
+    diff.add_argument("--json", action="store_true", help="print structured changes instead of a summary")
+    diff.set_defaults(func=_diff)
+
     rt = sub.add_parser("retrieve", help="retrieve graph context for a query; unquoted words join into one query")
     rt.add_argument("query", nargs="+")
     rt.add_argument("--strategy", choices=STRATEGIES, default=None, help="traversal order, or ppr for PageRank ranking")
@@ -466,18 +506,6 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--skip-hubs", action="store_true", help="do not walk through entities with 50 or more relations")
     rt.add_argument("--context-only", action="store_true", help="print only the context text, not the JSON result")
     rt.set_defaults(func=_retrieve)
-
-    df = sub.add_parser("diff", help="read the change log: every write between two times, oldest first")
-    df.add_argument("--since", type=_time("since"), help=f"leave out changes at or before this time ({_ISO})")
-    df.add_argument("--until", type=_time("until"), help=f"leave out changes after this time ({_ISO})")
-    df.add_argument(
-        "--kind",
-        action="append",
-        choices=("entity", "relation", "preference", "decision", "merge", "source"),
-        help="only this kind (repeatable)",
-    )
-    df.add_argument("--limit", type=int, help="keep only the newest N changes")
-    df.set_defaults(func=lambda g, a: g.diff(since=a.since, until=a.until, kinds=a.kind, limit=a.limit))
 
     mt = sub.add_parser("maintenance", help="decay (score relevance), prune, or deduplicate relations")
     mta = mt.add_subparsers(dest="action", required=True)

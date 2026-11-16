@@ -63,14 +63,9 @@ function mask(value: unknown): unknown {
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map(([k, v]) => {
-        if (
-          k === "created_at" ||
-          k === "updated_at" ||
-          k === "invalidated_known_at" ||
-          k === "at" ||
-          k === "since" ||
-          k === "until"
-        )
+        if (k === "invalidated_at" && String((value as Record<string, unknown>).invalidated_by).startsWith("sv:"))
+          return [k, "<ts>"];
+        if (["created_at", "updated_at", "invalidated_known_at", "since", "until", "at"].includes(k))
           return [k, "<ts>"];
         if (k === "ns") return [k, "<ns>"];
         if (k === "message") return [k, "<message>"];
@@ -132,6 +127,10 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       expect(mask(fromTs)).toEqual(mask(fromPy));
       const ended = Object.values((fromTs as { versions: Record<string, unknown[][]> }).versions).map((v) => v[0]![3]);
       expect(ended.filter((at) => at !== null).sort()).toEqual(["2022-01-01T00:00:00Z", "2026-01-01T00:00:00Z"]);
+      expect((fromTs as { undated_correction: unknown[][] }).undated_correction.map((v) => v[2])).toEqual([
+        true,
+        false,
+      ]);
     });
 
     it.skipIf(!live.get(store))(
@@ -144,6 +143,12 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
         const tsOps = await ts(store, nsTs, write);
         expect(tsOps.dedupe_conflicts).toEqual({ "relation:touch-b": ["active", "flags"] });
         expect(tsOps.facts_none).toBe("invalid facts: expected object");
+        for (const ops of [pyOps, tsOps]) {
+          const names = (ops as { unicode_text: { entities: { name: string }[] } }).unicode_text.entities.map(
+            (entity) => entity.name,
+          );
+          expect(names).toEqual(expect.arrayContaining(["Émile Zola", "Łukasz Nowak"]));
+        }
 
         const pyReadsPy = py("dump", store, nsPy);
         const tsReadsPy = await ts(store, nsPy, (g) => dump(g, nsPy));
@@ -194,6 +199,15 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
             ],
             unchanged: true,
           });
+        }
+        if (store === "hydradb") {
+          for (const ops of [pyOps, tsOps]) {
+            expect((ops as { extra_label: unknown }).extra_label).toEqual({
+              primary: "extra:batch-1",
+              batch_extra: "extra:batch-2",
+              single_extra: "extra:single",
+            });
+          }
         }
         rmSync(evidence, { recursive: true, force: true });
       },

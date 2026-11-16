@@ -135,7 +135,7 @@ class Relations(Resource):
         @param remove_properties (Iterable[str]): property keys to drop.
         @param event_time (datetime | str | None): the new valid time.
         @param evidence (Iterable[EvidenceInput] | None): evidence records to add; existing evidence is kept.
-        @return (Relation): the new current version.
+        @return (Relation): the new version, current unless supersede retired it.
         """
         check_options("relations.update", extra, ("set_properties", "remove_properties", "event_time", "evidence"))
         _ops._validate_own_id("relation", id)
@@ -147,6 +147,8 @@ class Relations(Resource):
             event_time=event_time,
             evidence=None if evidence is None else _ops.evidence_from_inputs(evidence),
             schema_check=self._c._schema_check,
+            contradiction="supersede" if self._c._contradiction in ("supersede", "llm") else "off",
+            caps=self._c._caps(),
         )
 
     async def evidence(self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page[Evidence]:

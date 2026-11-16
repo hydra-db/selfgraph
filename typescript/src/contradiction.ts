@@ -55,9 +55,11 @@ export async function judgeContradictions(
   caps: ReadonlyMap<string, ops.RelationCap> | null,
   known: Date,
 ): Promise<InsertWarning[]> {
+  const byId = new Map(written.filter((r) => r.created_at.getTime() === known.getTime()).map((r) => [r.id, r]));
+  if (!byId.size) return [];
   const rivals = await ops.rivalRelations(runner, ns, written, caps, MAX_RIVALS);
+  for (const rid of rivals.keys()) if (!byId.has(rid)) rivals.delete(rid);
   if (!rivals.size) return [];
-  const byId = new Map(written.map((r) => [r.id, r]));
   const refs = new Set<string>();
   for (const [rid, edges] of rivals) {
     refs.add(byId.get(rid)!.from_entity).add(byId.get(rid)!.to_entity);

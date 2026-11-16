@@ -238,6 +238,83 @@ def test_within_batch_needs_fuzzy():
     assert [(r.id, r.from_entity, r.to_entity) for r in restored.relations] == [(rid, BIG_BLUE, IBM)]
 
 
+def test_unmerge_restores_decision_steps_dropped_as_self_loops():
+    rid_loop1 = relation_id(BIG_BLUE, "OWNS", IBM)
+    rid_loop2 = relation_id(BIG_BLUE, "PARENT_OF", IBM)
+    rid_bob = relation_id(BOB_ID, "WORKS_AT", IBM)
+    rid_robert = relation_id(ROBERT_ID, "WORKS_AT", IBM)
+    batch = {
+        "entities": [
+            IBM_SEED,
+            {"type": "Company", "name": "Big Blue", "external_ids": {"ticker": "IBM"}},
+            ROBERT,
+            BOB,
+        ],
+        "relations": [
+            {"from_entity": BIG_BLUE, "type": "OWNS", "to_entity": IBM},
+            {"from_entity": BIG_BLUE, "type": "PARENT_OF", "to_entity": IBM},
+            {"from_entity": BOB_ID, "type": "WORKS_AT", "to_entity": IBM},
+        ],
+        "decisions": [{"title": "acquisition", "steps": [rid_loop1, rid_loop2, rid_bob]}],
+    }
+
+    g = fresh_graph("res", resolver="fuzzy")
+    res = run(g.insert.facts(batch))
+    assert len(res.merges) == 2
+    merge_bb = next(m for m in res.merges if m.absorbed_id == BIG_BLUE)
+    merge_bob = next(m for m in res.merges if m.absorbed_id == BOB_ID)
+    [dec] = res.decisions
+    assert [s.relation_id for s in run(g.decisions.get(dec.id)).steps] == [rid_robert]
+
+    restored = run(g.entities.unmerge(merge_bb.id))
+    assert [s.relation_id for s in run(g.decisions.get(dec.id)).steps] == [rid_loop1, rid_loop2, rid_robert]
+    assert [s.relation_id for s in restored.decisions[0].steps] == [rid_loop1, rid_loop2, rid_robert]
+
+    restored2 = run(g.entities.unmerge(merge_bob.id))
+    assert [s.relation_id for s in run(g.decisions.get(dec.id)).steps] == [rid_loop1, rid_loop2, rid_bob]
+    assert [s.relation_id for s in restored2.decisions[0].steps] == [rid_loop1, rid_loop2, rid_bob]
+
+    g2 = fresh_graph("res", resolver="fuzzy")
+    res2 = run(g2.insert.facts(batch))
+    merge_bob2 = next(m for m in res2.merges if m.absorbed_id == BOB_ID)
+    merge_bb2 = next(m for m in res2.merges if m.absorbed_id == BIG_BLUE)
+    [dec2] = res2.decisions
+    restored3 = run(g2.entities.unmerge(merge_bob2.id))
+    assert [s.relation_id for s in run(g2.decisions.get(dec2.id)).steps] == [rid_bob]
+    assert [s.relation_id for s in restored3.decisions[0].steps] == [rid_bob]
+
+    restored4 = run(g2.entities.unmerge(merge_bb2.id))
+    assert [s.relation_id for s in run(g2.decisions.get(dec2.id)).steps] == [rid_loop1, rid_loop2, rid_bob]
+    assert [s.relation_id for s in restored4.decisions[0].steps] == [rid_loop1, rid_loop2, rid_bob]
+
+
+def test_unmerge_restores_step_for_relation_dropped_by_a_later_merge():
+    g = fresh_graph("res", resolver="fuzzy")
+    _seed(g, {"type": "Person", "name": "Jane Doe", "aliases": ["JD"]})
+    rid = relation_id(JD, "KNOWS", JANE_DOES)
+    res = run(
+        g.insert.facts(
+            {
+                **_people("JD", "Jane Does"),
+                "relations": [{"from_entity": JD, "type": "KNOWS", "to_entity": JANE_DOES}],
+                "decisions": [{"title": "knows", "steps": [rid]}],
+            }
+        )
+    )
+    [dec] = res.decisions
+    merge_jd = next(m for m in res.merges if m.absorbed_id == JD)
+    merge_jd_does = next(m for m in res.merges if m.absorbed_id == JANE_DOES)
+    current_id = relation_id(JD, "KNOWS", JANE)
+    assert [s.relation_id for s in run(g.decisions.get(dec.id)).steps] == []
+
+    restored = run(g.entities.unmerge(merge_jd.id))
+    assert [s.relation_id for s in run(g.decisions.get(dec.id)).steps] == [current_id]
+    assert [s.relation_id for s in restored.decisions[0].steps] == [current_id]
+
+    run(g.entities.unmerge(merge_jd_does.id))
+    assert [s.relation_id for s in run(g.decisions.get(dec.id)).steps] == [rid]
+
+
 def test_insert_result_lists_each_entity_and_relation_once_after_a_merge():
     g = fresh_graph("res", resolver="fuzzy")
     batch = [IBM_SEED, {"type": "Company", "name": "Big Blue", "external_ids": {"ticker": "IBM"}}, BOB]
@@ -485,14 +562,24 @@ def test_reinserting_the_same_merge_is_idempotent_and_counts_every_source():
         "entities": [{"type": "Person", "name": "Bob", "aliases": ["Bobby"]}],
         "relations": [{"from_entity": ADA, "type": "KNOWS", "to_entity": BOB_ID}],
     }
-    merges = [run(g.insert.facts(facts, source_id=s)).merges[0] for s in ("s1", "s2", "s1")]
+    merges = []
+    for i, source in enumerate(("s1", "s2", "s1")):
+        facts["relations"][0]["properties"] = {"revision": i}
+        merges.append(run(g.insert.facts(facts, source_id=source)).merges[0])
     assert len({m.id for m in merges}) == 1
     last = merges[-1]
     assert (last.source_id, last.source_ids, last.added_aliases) == ("s1", ["s1", "s2"], ["Bobby"])
     assert [r.existed for r in last.rewrites] == [False]
+    assert last.rewrites[0].original["properties"] == {"revision": 0}
     assert len(run(g.entities.merges(ROBERT_ID)).items) == 1
-    restored = run(g.entities.unmerge(last.id)).entity
-    assert (restored.id, restored.source_count) == (BOB_ID, 2)
+    redirected = relation_id(ADA, "KNOWS", ROBERT_ID)
+    assert run(g.relations.get(redirected)).properties == {"revision": 2}
+    assert {e.source_id for e in run(g.relations.evidence(redirected)).items} == {"s1", "s2"}
+    out = run(g.entities.unmerge(last.id))
+    assert (out.entity.id, out.entity.source_count) == (BOB_ID, 2)
+    [restored] = out.relations
+    assert restored.properties == {"revision": 2}
+    assert {e.source_id for e in run(g.relations.evidence(restored.id)).items} == {"s1", "s2"}
     assert run(g.entities.get(ROBERT_ID)).aliases == ["Bob"]
 
 
@@ -554,6 +641,43 @@ def test_a_merge_repeated_by_many_inserts_keeps_its_record_small_and_unmerges_ev
     restored = run(g.entities.unmerge(rec.id))
     assert restored.entity.id == BOB_ID and len(restored.relations) == 80
     assert {r.from_entity for r in run(g.relations.list(type="VISITED", limit=200)).items} == {BOB_ID}
+
+
+@pytest.mark.parametrize("reverse_first", [False, True])
+def test_a_repeated_merge_keeps_both_reciprocal_self_loop_rewrites(reverse_first):
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT)
+    pairs = [(BOB_ID, ROBERT_ID), (ROBERT_ID, BOB_ID)]
+    if reverse_first:
+        pairs.reverse()
+    merges = []
+    for i, (source, target) in enumerate([*pairs, *pairs]):
+        result = run(
+            g.insert.facts(
+                {
+                    "entities": [BOB],
+                    "relations": [
+                        {"from_entity": source, "type": "KNOWS", "to_entity": target, "properties": {"revision": i}}
+                    ],
+                },
+                source_id=f"s{i % 2}",
+            )
+        )
+        merges.append(result.merges[0])
+    [record] = run(g.entities.merges(ROBERT_ID)).items
+    assert len({m.id for m in merges}) == 1
+    assert record.source_ids == ["s0", "s1"]
+    assert len(record.rewrites) == 2
+    assert all(r.kind == "relation" and r.dropped for r in record.rewrites)
+    assert len({r.id for r in record.rewrites}) == 1
+    assert [r.original["properties"] for r in record.rewrites] == [{"revision": 0}, {"revision": 1}]
+    assert run(g.relations.list()).items == []
+    out = run(g.entities.unmerge(record.id))
+    expected = {relation_id(BOB_ID, "KNOWS", ROBERT_ID), relation_id(ROBERT_ID, "KNOWS", BOB_ID)}
+    assert {r.id for r in out.relations} == expected
+    assert {r.id for r in run(g.relations.list()).items} == expected
+    assert out.entity.source_count == 2
+    assert {e.source_id for e in run(g.entities.evidence(BOB_ID)).items} == {"s0", "s1"}
 
 
 def test_deleting_either_side_drops_merge_records_so_a_later_merge_starts_fresh():
@@ -782,3 +906,53 @@ def test_unmerging_chained_merges_in_any_order_restores_the_exact_relations(orde
         assert out.entity.updated_at == res.created_at
     assert [(r.from_entity, r.type, r.to_entity) for r in run(g.relations.list()).items] == [(JD, "KNOWS", JANE_DOES)]
     assert _ids(g) == [JANE, JANE_DOES, JD]
+
+
+def test_resolution_matches_entity_types_case_insensitively():
+    g = fresh_graph("res", resolver="default")
+    _seed(g, {"type": "Person", "name": "Robert", "aliases": ["Bob"]})
+    res = run(g.insert.facts({"entities": [{"type": "person", "name": "Bob"}]}))
+    assert [(m.absorbed_id, m.survivor_id, m.reason) for m in res.merges] == [(BOB_ID, ROBERT_ID, "alias")]
+
+    g = fresh_graph("res", resolver="fuzzy")
+    res = run(
+        g.insert.facts(
+            {
+                "entities": [
+                    {"type": "Person", "name": "Robert", "aliases": ["Bob"]},
+                    {"type": "person", "name": "Bob"},
+                ]
+            }
+        )
+    )
+    assert [(m.absorbed_id, m.survivor_id, m.reason) for m in res.merges] == [(BOB_ID, ROBERT_ID, "alias")]
+
+    g = fresh_graph("res", resolver="fuzzy")
+    _seed(g, {"type": "Person", "name": "Jane Doe"})
+    res = run(g.insert.facts({"entities": [{"type": "person", "name": "Jane Does"}]}))
+    assert [(m.absorbed_id, m.survivor_id, m.reason) for m in res.merges] == [(JANE_DOES, JANE, "similarity")]
+
+    yes = FakeLLM({"_SameEntity": _SameEntity(same=True)})
+    g = fresh_graph("res", llm=yes, resolver="llm")
+    _seed(g, {"type": "Person", "name": "John Smith"})
+    res = run(g.insert.facts({"entities": [{"type": "person", "name": "Jon Smyth"}]}))
+    assert [(m.absorbed_id, m.survivor_id, m.reason) for m in res.merges] == [
+        (entity_id("Person", "Jon Smyth"), entity_id("Person", "John Smith"), "llm")
+    ]
+    assert len(yes.calls) == 1
+
+    schema = {
+        "entities": [
+            {"name": "Organization", "aliases": ["Org"]},
+            {"name": "Company", "parent": "Organization"},
+        ]
+    }
+    g = fresh_graph("res", resolver="default", schema=schema)
+    _seed(g, {"type": "Organization", "name": "International Business Machines", "aliases": ["IBM"]})
+    org_ibm = entity_id("Organization", "International Business Machines")
+    res = run(g.insert.facts({"entities": [{"type": "company", "name": "IBM"}]}))
+    assert [m.survivor_id for m in res.merges] == [org_ibm]
+    res = run(g.insert.facts({"entities": [{"type": "org", "name": "Big Blue", "aliases": ["IBM"]}]}))
+    assert [m.survivor_id for m in res.merges] == [org_ibm]
+    res = run(g.insert.facts({"entities": [{"type": "thing", "name": "IBM"}]}))
+    assert [m.survivor_id for m in res.merges] == [org_ibm]

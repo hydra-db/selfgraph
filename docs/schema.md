@@ -94,6 +94,13 @@ first problem by its path:
 | `max_count` below 1 | `relations[0].from.max_count: must be >= 1` |
 | `min_count` below 0 | `relations[0].to.min_count: must be >= 0` |
 | `min_count` above `max_count` | `relations[0].from.min_count: min_count 2 is greater than max_count 1` |
+| A `min_count` or `max_count` with a fractional part (`2.0` is read as `2`) | `relations[0].from.max_count: expected integer` |
+| A `min_count` or `max_count` that is not a number, such as `true` or `"1"` | `relations[0].from.max_count: expected number` |
+| A `min_count` or `max_count` above 2^53 - 1, the largest integer JavaScript holds exactly | `relations[0].from.max_count: must be <= 9007199254740991` |
+| A `min_count` or `max_count` below -(2^53 - 1) | `relations[0].from.max_count: must be >= -9007199254740991` |
+
+A count outside that range is listed together with the first problem above, if any, one per line, as in
+`invalid schema:\n  relations[0].from.max_count: must be >= -9007199254740991\n  relations[0].from.max_count: must be >= 1`.
 
 Constructing `Schema(...)` or `Extraction(...)` directly raises the same
 `ValidationError`, never a raw pydantic error.
@@ -214,6 +221,14 @@ Deleting a relation at a `max_count` endpoint settles that endpoint again, as
 included, are current afterwards, and a relation that stays retired is re-pointed
 to the one that now displaces it. A retirement by the LLM judge stays as it is
 (see [updating and deleting](resources.md#updating-and-deleting)).
+
+Moving a relation to another `event_time` settles its endpoints again the same
+way, under `supersede` and `llm`. That covers `relations.update` with a new
+`event_time` and an insert that restates a stored relation with a different
+one. A relation the moved one retired comes back when fewer than `max_count`
+newer facts remain at every endpoint that caps it, and the moved relation is
+retired when it is now the older fact. `relations.update` then returns it
+retired. The other modes leave the endpoint as it is.
 
 ```python
 graph = SelfGraph(store, schema=schema, contradiction="supersede")

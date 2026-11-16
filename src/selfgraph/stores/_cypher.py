@@ -702,10 +702,12 @@ class CypherPrimitives(CypherRunner):
             params["etype"] = type
         where_equals("r", equals, where, params)
         where_after("r.id", id_gt, where, params)
+        order_by = require_identifier(order_by, "order_by")
+        order = "r.id, r.revision" if order_by == "id" else f"r.{order_by}"
         query = (
             f"MATCH (a:{from_label})-[r]->(b{blabel}) WHERE {' AND '.join(where)} "
             f"RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t "
-            f"ORDER BY r.{require_identifier(order_by, 'order_by')} SKIP $skip LIMIT $limit"
+            f"ORDER BY {order} SKIP $skip LIMIT $limit"
         )
         res = await self._run(query, params)
         return [_edge_row(r) for r in res.rows]
