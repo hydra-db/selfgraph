@@ -187,6 +187,71 @@ def test_missing_relation_endpoints_are_named():
         run(g.relations.create("t:y", "R", "t:a"))
 
 
+ANN_ACME = [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}]
+JOINED = {"from_entity": "person:ann", "type": "JOINED", "to_entity": "company:acme"}
+LIKES = {"subject_entity": "person:ann", "key": "employer", "value_entity": "company:acme"}
+
+
+@pytest.mark.parametrize(
+    ("facts", "message"),
+    [
+        ({"relations": [{**JOINED, "event_time": "2021"}]}, 'relations[0].event_time: invalid ISO 8601 string: "2021"'),
+        ({"relations": [{**JOINED, "event_time": 2021}]}, "relations[0].event_time: invalid input"),
+        ({"relations": [{**JOINED, "event_time": True}]}, "relations[0].event_time: invalid input"),
+        (
+            {"preferences": [{**LIKES, "event_time": "2021"}]},
+            'preferences[0].event_time: invalid ISO 8601 string: "2021"',
+        ),
+        ({"decisions": [{"title": "t", "event_time": 1700000000}]}, "decisions[0].event_time: invalid input"),
+        (
+            {"decisions": [{"title": "t", "event_time": "soon"}]},
+            'decisions[0].event_time: invalid ISO 8601 string: "soon"',
+        ),
+        ({"preferences": [{**LIKES, "strength": "0.9"}]}, "preferences[0].strength: expected number"),
+        ({"preferences": [{**LIKES, "strength": True}]}, "preferences[0].strength: expected number"),
+        (
+            {"relations": [{**JOINED, "evidence": [{"source_id": "s", "confidence": "0.5"}]}]},
+            "relations[0].evidence[0].confidence: expected number",
+        ),
+        (
+            {"relations": [{**JOINED, "evidence": [{"source_id": "s", "confidence": False}]}]},
+            "relations[0].evidence[0].confidence: expected number",
+        ),
+    ],
+)
+def test_facts_reject_times_and_numbers_that_parse_time_and_typescript_reject(facts, message):
+    g = fresh_graph("strict_facts")
+    run(g.insert.facts({"entities": ANN_ACME}))
+    with pytest.raises(ValidationError) as err:
+        run(g.insert.facts(facts))
+    assert str(err.value) == f"invalid facts: {message}"
+    assert run(g.relations.list()).items == []
+    run(g.close())
+
+
+def test_facts_times_accept_iso_text_and_strengths_accept_integers():
+    g = fresh_graph("strict_facts")
+    res = run(
+        g.insert.facts(
+            {
+                "entities": ANN_ACME,
+                "relations": [
+                    {**JOINED, "event_time": "2021-03-04", "evidence": [{"source_id": "s", "confidence": 1}]}
+                ],
+                "preferences": [{**LIKES, "strength": 1, "event_time": "2021-03-04T10:15:00Z"}],
+                "decisions": [{"title": "t", "event_time": "2021-03-04T10:15:00+05:30"}],
+            }
+        )
+    )
+    assert res.relations[0].event_time.isoformat() == "2021-03-04T00:00:00+00:00"
+    assert (res.preferences[0].strength, res.preferences[0].event_time.isoformat()) == (
+        1.0,
+        "2021-03-04T10:15:00+00:00",
+    )
+    assert res.decisions[0].event_time.isoformat() == "2021-03-04T04:45:00+00:00"
+    run(g.close())
+
+
 def test_insert_facts_event_time_accepts_iso_text():
     g = new_graph()
     res = run(g.insert.facts(PAYLOAD, event_time="2024-03-01T00:00:00Z"))
