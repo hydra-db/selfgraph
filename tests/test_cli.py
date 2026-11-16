@@ -300,6 +300,17 @@ def test_bad_facts_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsy
     assert json.loads(captured.out)["warnings"][0]["code"] == "unknown_entity_type"
 
 
+def test_facts_file_with_a_bare_year_or_a_text_strength_fails_like_typescript(capsys, tmp_path):
+    rel = {"from_entity": "person:ann", "type": "JOINED", "to_entity": "company:acme", "event_time": "2021"}
+    pref = {"subject_entity": "person:ann", "key": "k", "value_entity": "company:acme", "strength": "0.9"}
+    bad = json_file(tmp_path, "bad.json", {"relations": [rel], "preferences": [pref]})
+    assert kuzu_main(tmp_path, "insert", "facts", bad) == 2
+    assert capsys.readouterr().err == (
+        'error: invalid facts:\n  relations[0].event_time: invalid ISO 8601 string: "2021"\n'
+        "  preferences[0].strength: expected number\n"
+    )
+
+
 def test_null_facts_file_fails_cleanly(capsys, tmp_path):
     null = json_file(tmp_path, "null.json", None)
     assert kuzu_main(tmp_path, "insert", "facts", null) == 2
