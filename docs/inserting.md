@@ -223,6 +223,12 @@ await graph.insert.facts({
 decisions that carry none. Time arguments take a datetime or ISO 8601 text. No
 offset means UTC.
 
+The `event_time` of each relation, preference, and decision in the facts is read
+the same way. A bare year such as `"2021"`, a number, or a boolean is rejected,
+not read as Unix seconds. A preference `strength` and an evidence `confidence`
+must be numbers; text such as `"0.9"` and booleans are rejected. Both SDKs, the
+CLI `insert facts`, and the MCP `insert_facts` tool give the same errors.
+
 A [schema](schema.md), passed to the graph or to one insert, guides extraction
 and checks what you write.
 
