@@ -264,6 +264,20 @@ def test_a_line_that_overflows_the_budget_ends_the_context(monkeypatch):
         previous = context
 
 
+def test_retrieve_budget_counts_separators_between_lines(monkeypatch):
+    monkeypatch.setattr("selfgraph.retrieval.count_tokens", lambda text: max(1, len(text) // 4))
+    g = fresh_graph("separator-budget")
+    run(g.entities.create("A", "Thing"))
+    run(g.entities.create("B", "Thing"))
+    run(g.relations.create("thing:a", "R", "thing:b"))
+    full = run(g.retrieve("A", budget_tokens=100)).context
+    assert "\n" in full
+    for budget in range(1, 30):
+        context = run(g.retrieve("A", budget_tokens=budget)).context
+        assert max(1, len(context) // 4) <= budget
+        assert full.startswith(context)
+
+
 @pytest.mark.skipif(not KUZU, reason="a bulk insert; the paged scan is the same on every backend")
 def test_retrieve_scores_every_entity_past_five_thousand():
     g = fresh_graph("bulk")

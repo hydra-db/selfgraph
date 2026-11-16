@@ -1892,6 +1892,21 @@ describe("property values", () => {
     }
   });
 
+  it("counts separators between context lines against the budget", async () => {
+    const g = open();
+    await g.entities.create("A", "Thing");
+    await g.entities.create("B", "Thing");
+    await g.relations.create("thing:a", "R", "thing:b");
+    const { countTokens } = await loadTokenizer();
+    const full = (await g.retrieve("A", { budget_tokens: 100 })).context;
+    expect(full).toContain("\n");
+    for (let budget = 1; budget < 30; budget++) {
+      const { context } = await g.retrieve("A", { budget_tokens: budget });
+      expect(countTokens(context)).toBeLessThanOrEqual(budget);
+      expect(full.startsWith(context)).toBe(true);
+    }
+  });
+
   it("rejects empty updates, bad list filters, and missing endpoints, and clears named fields", async () => {
     const g = open();
     await g.insert.facts({
