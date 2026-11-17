@@ -899,26 +899,23 @@ function assemble(
   const lines: string[] = [];
   let first: string | null = null;
   let used = 0;
-  let rounding = 0;
-  let boundary = 0;
   let full = false;
   const add = (payload: string, cap: number, header = "GRAPH"): boolean => {
     const line = header === "SOURCE" ? contextPayload(payload, true) : `${header} | ${contextPayload(payload)}`;
     if (first === null) {
       first = line;
-      rounding = countTokens("");
     }
     if (full) return false;
-    const plain = countTokens(line);
-    const cost = plain + boundary;
-    if (used + cost > cap) {
-      full = cap >= budgetTokens;
-      return false;
+    let cost = used + countTokens(line) + (lines.length ? 1 : 0);
+    if (cost > cap) {
+      cost = countTokens([...lines, line].join("\n"));
+      if (cost > cap) {
+        full = cap >= budgetTokens;
+        return false;
+      }
     }
     lines.push(line);
-    used += cost;
-    const delta = countTokens(`${line}\n`) - plain;
-    boundary = rounding ? Math.max(rounding, delta) : delta;
+    used = cost;
     return true;
   };
 
@@ -965,6 +962,7 @@ function assemble(
     if (!add(`${e.name} [${e.type}]`, budgetTokens)) break;
   }
 
+  while (lines.length && countTokens(lines.join("\n")) > budgetTokens) lines.pop();
   return lines.length || first === null ? lines.join("\n") : truncate(first, budgetTokens, countTokens);
 }
 

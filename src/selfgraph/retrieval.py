@@ -876,29 +876,25 @@ def _assemble(
     lines: list[str] = []
     first: list[str] = []
     used = 0
-    rounding = 0
-    boundary = 0
     full = False
 
     def add(payload: str, cap: int, header: str = "GRAPH") -> bool:
-        nonlocal used, full, rounding, boundary
+        nonlocal used, full
         line = (
             _context_payload(payload, source=True) if header == "SOURCE" else f"{header} | {_context_payload(payload)}"
         )
         if not first:
             first.append(line)
-            rounding = count_tokens("")
         if full:
             return False
-        plain = count_tokens(line)
-        cost = plain + boundary
-        if used + cost > cap:
-            full = cap >= budget_tokens
-            return False
+        cost = used + count_tokens(line) + (1 if lines else 0)
+        if cost > cap:
+            cost = count_tokens("\n".join([*lines, line]))
+            if cost > cap:
+                full = cap >= budget_tokens
+                return False
         lines.append(line)
-        used += cost
-        delta = count_tokens(line + "\n") - plain
-        boundary = max(rounding, delta) if rounding else delta
+        used = cost
         return True
 
     passage_cap = budget_tokens * _PASSAGE_BUDGET_PERCENT // 100
@@ -950,6 +946,8 @@ def _assemble(
         if not add(f"{e.name} [{e.type}]", budget_tokens):
             break
 
+    while lines and count_tokens("\n".join(lines)) > budget_tokens:
+        lines.pop()
     return "\n".join(lines) if lines or not first else _truncate(first[0], budget_tokens)
 
 

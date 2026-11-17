@@ -1563,7 +1563,7 @@ async def overflow(graph):
     """Retrieve under a budget where a near line fits, the next overflows under any counter, and short lines remain.
 
     @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
-    @return (dict): the context at the tight budget and at the default one.
+    @return (dict): the context at the tight budget, at the default one, and at every budget from 1 to 24.
     """
     g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_budget")
     for name in ("Ann", "Bob", "Cid"):
@@ -1572,7 +1572,8 @@ async def overflow(graph):
     await g.relations.create("person:bob", "KNOWS", "person:cid", properties={"note": "met at the old harbour " * 20})
     tight = await g.retrieve("Ann", k=1, depth=2, budget_tokens=12)
     full = await g.retrieve("Ann", k=1, depth=2)
-    return {"tight": tight.context, "full": full.context}
+    sweep = [(await g.retrieve("Ann", k=1, depth=1, budget_tokens=b)).context for b in range(1, 25)]
+    return {"tight": tight.context, "full": full.context, "sweep": sweep}
 
 
 async def ppr_ties(graph):

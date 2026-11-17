@@ -1416,9 +1416,9 @@ async function contextBoundary(graph: SelfGraph): Promise<unknown> {
  * Retrieve under a budget where a near line fits, the next overflows under any counter, and short lines remain.
  *
  * @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
- * @return (Promise<{ tight: string; full: string }>): the context at the tight budget and at the default one.
+ * @return (Promise<{ tight: string; full: string; sweep: string[] }>): the context at the tight budget, at the default one, and at every budget from 1 to 24.
  */
-async function overflow(graph: SelfGraph): Promise<{ tight: string; full: string }> {
+async function overflow(graph: SelfGraph): Promise<{ tight: string; full: string; sweep: string[] }> {
   const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_budget` });
   for (const name of ["Ann", "Bob", "Cid"])
     await g.entities.create(name, "Person", { id: `person:${name.toLowerCase()}` });
@@ -1428,7 +1428,9 @@ async function overflow(graph: SelfGraph): Promise<{ tight: string; full: string
   });
   const tight = await g.retrieve("Ann", { k: 1, depth: 2, budget_tokens: 12 });
   const full = await g.retrieve("Ann", { k: 1, depth: 2 });
-  return { tight: tight.context, full: full.context };
+  const sweep: string[] = [];
+  for (let b = 1; b < 25; b++) sweep.push((await g.retrieve("Ann", { k: 1, depth: 1, budget_tokens: b })).context);
+  return { tight: tight.context, full: full.context, sweep };
 }
 
 /**
