@@ -7,9 +7,9 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import NonNegativeInt, PositiveInt, StrictBool, create_model
+from pydantic import BeforeValidator, NonNegativeInt, PositiveInt, StrictBool, create_model
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import core_schema
 
@@ -126,6 +126,21 @@ class _Unset:
 
 
 _UNSET: Any = _Unset()
+
+
+def _json_number(value: Any) -> Any:
+    """Accept a JSON number as it is, rejecting a boolean or text the way the TypeScript server does.
+
+    @param value (Any): the argument value.
+    @return (Any): the value; raises ValueError for anything but an int or a float.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Expected number")
+    return value
+
+
+Number = Annotated[float, BeforeValidator(_json_number)]
+OptNumber = Annotated[float | None, BeforeValidator(lambda v: v if v is None else _json_number(v))]
 
 
 async def configure(settings: GraphSettings | None = None) -> None:
@@ -551,7 +566,7 @@ async def create_preference(
     stance: Stance = "preference",
     id: str | None = None,
     about_entity: str | None = None,
-    strength: float | None = None,
+    strength: OptNumber = None,
     properties: dict | None = None,
     event_time: str | None = None,
 ) -> dict[str, Any]:
@@ -594,7 +609,7 @@ async def preference_versions(id: str, newest_first: StrictBool = True) -> list[
 
 async def update_preference(
     id: str,
-    strength: float | None = None,
+    strength: OptNumber = None,
     properties: dict | None = None,
     remove_properties: list[str] | None = None,
     event_time: str | None = None,
@@ -773,7 +788,7 @@ async def retrieve(
 
 
 async def maintenance_decay(
-    half_life_days: float = 30, now: str | None = None, dry_run: StrictBool = True
+    half_life_days: Number = 30, now: str | None = None, dry_run: StrictBool = True
 ) -> dict[str, Any]:
     """Score every entity and current relation by recency (half-life decay from its latest timestamp) and
     frequency (sources, plus degree for entities) and store it as relevance, without a new version. Never
@@ -785,7 +800,7 @@ async def maintenance_decay(
 
 
 async def maintenance_prune(
-    min_relevance: float | None = None,
+    min_relevance: OptNumber = None,
     older_than: str | None = None,
     types: list[str] | None = None,
     relation_types: list[str] | None = None,
