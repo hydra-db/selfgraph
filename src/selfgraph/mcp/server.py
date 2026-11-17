@@ -661,7 +661,7 @@ async def delete_preference(id: str) -> dict[str, Any]:
 
 async def create_decision(
     title: str,
-    steps: list[str] | None = None,
+    steps: tuple[str, ...] = (),
     id: str | None = None,
     actor_entity: str | None = None,
     summary: str | None = None,
@@ -678,7 +678,7 @@ async def create_decision(
     return to_jsonable(
         await g.decisions.create(
             title,
-            steps=steps or [],
+            steps=list(steps),
             id=id,
             actor_entity=actor_entity,
             summary=summary,
