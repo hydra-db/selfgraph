@@ -529,6 +529,15 @@ def test_ppr_passes_no_mass_through_a_blocked_hub():
     assert blocked["thing:0"] < blocked["thing:b"] and blocked["thing:h"] == 1
 
 
+def test_ppr_ranks_equal_mass_by_id_whatever_the_string_hashing():
+    half = [("s", "{}b"), ("{}b", "{}x1"), ("{}b", "{}x2"), ("{}x1", "{}x2"), ("{}x2", "{}x3"), ("{}x1", "{}x3")]
+    pairs = [(a.format(p), b.format(p)) for p in "lr" for a, b in [*half, ("s", "{}x3")]]
+    walk = ["s", "lb", "lx3", "rb", "rx3", "lx1", "lx2", "rx1", "rx2"]
+    rels = [_relation(f"relation:{a}{b}", f"thing:{a}", "R", f"thing:{b}") for a, b in pairs]
+    ranks = _ppr_rank([(_entity("thing:s", "S"), 1.0)], [f"thing:{n}" for n in walk], rels)
+    assert sorted(ranks, key=ranks.get) == [f"thing:{n}" for n in walk]
+
+
 def test_ossie_export_logs_every_field_it_leaves_out(caplog):
     schema = Schema.model_validate(
         {
