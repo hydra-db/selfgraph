@@ -260,7 +260,7 @@ def test_call_tool_arguments_results_and_errors(server):
     for tool, args, message in (
         ("get_schema", {"format": "bogus"}, "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'"),
         ("create_entity", {"name": "a"}, "invalid arguments: type: field required"),
-        ("list_entities", {"limit": "x"}, "invalid arguments: limit: expected integer"),
+        ("list_entities", {"limit": "x"}, "invalid arguments: limit: expected number"),
     ):
         with pytest.raises(Exception) as exc:
             run(server.call_tool(tool, args))
