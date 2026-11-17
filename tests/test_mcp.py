@@ -288,6 +288,37 @@ def test_call_tool_arguments_results_and_errors(server):
             run(server.call_tool(tool, args))
 
 
+NUMBER_ARGUMENT_CASES = [
+    ("list_entities", {"limit": "5"}, "limit: expected number"),
+    ("list_entities", {"limit": True}, "limit: expected number"),
+    ("list_entities", {"limit": 1.5}, "limit: expected integer"),
+    ("retrieve", {"query": "x", "k": 0}, "k: must be >= 1"),
+    ("retrieve", {"query": "x", "k": 2.5}, "k: expected integer"),
+    ("check_answerable", {"question": "x", "depth": 0}, "depth: must be >= 1"),
+    ("maintenance_decay", {"half_life_days": "30"}, "half_life_days: expected number"),
+    ("maintenance_prune", {"min_relevance": "0.5"}, "min_relevance: expected number"),
+    (
+        "create_preference",
+        {"subject_entity": "t:a", "key": "k", "value_entity": "t:b", "strength": "0.5"},
+        "strength: expected number",
+    ),
+    ("create_decision", {"title": "t", "steps": None}, "steps: expected array"),
+]
+
+
+@pytest.mark.parametrize(("tool", "args", "message"), NUMBER_ARGUMENT_CASES)
+def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, args, message):
+    with pytest.raises(Exception) as exc:
+        run(server.call_tool(tool, args))
+    assert str(exc.value).endswith(f"ValidationError: invalid arguments: {message}")
+
+
+def test_whole_floats_pass_as_integers_and_integers_as_numbers(server):
+    assert json.loads(run(server.call_tool("list_entities", {"limit": 5.0})).content[0].text)["items"] == []
+    decay = json.loads(run(server.call_tool("maintenance_decay", {"half_life_days": 7})).content[0].text)
+    assert decay["half_life_days"] == 7
+
+
 def test_run_cypher_needs_every_parameter_and_ids_need_their_prefix():
     with mcp_session():
         with pytest.raises(ValidationError, match=r"missing parameter \$a$"):
