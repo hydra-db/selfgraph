@@ -124,6 +124,11 @@ default 50) and `[cursor]`.
   read as the [CLI time flags](cli.md#arguments) are.
 - Boolean arguments (`dry_run`, `include_invalidated`, `newest_first`) accept only
   JSON `true` or `false`.
+- Number arguments (`limit`, `depth`, `k`, `max_nodes`, `budget_tokens`,
+  `strength`, `half_life_days`, `min_relevance`) accept only JSON numbers, not
+  text or booleans. The counts also need a whole number: `5.0` passes and `2.5`
+  fails with `expected integer`.
+- `create_decision`'s `steps` must be a list when given; `null` is rejected.
 - `status` accepts only `active`, `completed`, or `reversed`. `stance` accepts only
   `preference` or `disinterest`.
 - A relation, preference, or decision id needs its `relation:`, `preference:`,
