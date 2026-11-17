@@ -1040,6 +1040,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     { source_id: "follow-up" },
   );
   out.retrieval_overflow = await overflow(graph);
+  out.retrieval_ppr_ties = await pprTies(graph);
   try {
     await graph.insert.facts(
       {
@@ -1240,6 +1241,24 @@ async function overflow(graph: SelfGraph): Promise<{ tight: string; full: string
   const tight = await g.retrieve("Ann", { k: 1, depth: 2, budget_tokens: 12 });
   const full = await g.retrieve("Ann", { k: 1, depth: 2 });
   return { tight: tight.context, full: full.context };
+}
+
+/**
+ * Rank a seed with two mirrored halves by PageRank, where four entities share each level of mass.
+ *
+ * @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+ * @return (Promise<{ entities: string[]; context: string }>): the kept entity ids and the context, cut to four entities.
+ */
+async function pprTies(graph: SelfGraph): Promise<{ entities: string[]; context: string }> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_ties` });
+  const half = ["s {}b", "{}b {}x1", "{}b {}x2", "{}x1 {}x2", "{}x2 {}x3", "{}x1 {}x3", "s {}x3"];
+  const pairs = ["l", "r"].flatMap((p) => half.map((edge) => edge.replaceAll("{}", p).split(" ")));
+  await g.entities.create("Sol", "Thing", { id: "thing:s" });
+  for (const name of [...new Set(pairs.flat())].filter((n) => n !== "s").sort())
+    await g.entities.create(`${name.toUpperCase()}node`, "Thing", { id: `thing:${name}` });
+  for (const [a, b] of pairs) await g.relations.create(`thing:${a}`, "LINKS", `thing:${b}`);
+  const ranked = await g.retrieve("Sol", { strategy: "ppr", max_nodes: 4 });
+  return { entities: ranked.subgraph.entities.map((e) => e.id), context: ranked.context };
 }
 
 async function allEvidence(list: (cursor: string | null) => Promise<Page<Evidence>>): Promise<Evidence[]> {

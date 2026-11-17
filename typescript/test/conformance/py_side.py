@@ -1019,6 +1019,7 @@ async def write(graph):
         source_id="follow-up",
     )
     out["retrieval_overflow"] = await overflow(graph)
+    out["retrieval_ppr_ties"] = await ppr_ties(graph)
     try:
         await graph.insert.facts(
             {
@@ -1369,6 +1370,24 @@ async def overflow(graph):
     tight = await g.retrieve("Ann", k=1, depth=2, budget_tokens=12)
     full = await g.retrieve("Ann", k=1, depth=2)
     return {"tight": tight.context, "full": full.context}
+
+
+async def ppr_ties(graph):
+    """Rank a seed with two mirrored halves by PageRank, where four entities share each level of mass.
+
+    @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+    @return (dict): the kept entity ids and the context, cut to four entities.
+    """
+    g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_ties")
+    half = [("s", "{}b"), ("{}b", "{}x1"), ("{}b", "{}x2"), ("{}x1", "{}x2"), ("{}x2", "{}x3"), ("{}x1", "{}x3")]
+    pairs = [(a.format(p), b.format(p)) for p in "lr" for a, b in [*half, ("s", "{}x3")]]
+    await g.entities.create("Sol", "Thing", id="thing:s")
+    for name in sorted({n for pair in pairs for n in pair} - {"s"}):
+        await g.entities.create(f"{name.upper()}node", "Thing", id=f"thing:{name}")
+    for a, b in pairs:
+        await g.relations.create(f"thing:{a}", "LINKS", f"thing:{b}")
+    ranked = await g.retrieve("Sol", strategy="ppr", max_nodes=4)
+    return {"entities": [e.id for e in ranked.subgraph.entities], "context": ranked.context}
 
 
 async def all_evidence(list_fn, oid):
