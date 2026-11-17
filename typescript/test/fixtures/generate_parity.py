@@ -443,6 +443,16 @@ PPR_GRAPHS = {
         ["a", "b", "m", "n2"],
         [rel("a", "m"), rel("b", "m"), rel("a", "n2"), rel("b", "n2")],
     ),
+    "mirrored_halves": (
+        [("s", 1.0)],
+        ["s", "lb", "lx3", "rb", "rx3", "lx1", "lx2", "rx1", "rx2"],
+        [
+            rel(a.format(p), b.format(p))
+            for p in "lr"
+            for a, b in [("s", "{}b"), ("{}b", "{}x1"), ("{}b", "{}x2"), ("{}x1", "{}x2")]
+            + [("{}x2", "{}x3"), ("{}x1", "{}x3"), ("s", "{}x3")]
+        ],
+    ),
 }
 
 
