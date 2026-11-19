@@ -1897,7 +1897,7 @@ describe("property values", () => {
     await g.entities.create("A", "Thing");
     await g.entities.create("B", "Thing");
     await g.relations.create("thing:a", "R", "thing:b");
-    const { countTokens } = await loadTokenizer();
+    const { countTokens } = await chunking.loadTokenizer();
     const full = (await g.retrieve("A", { budget_tokens: 100 })).context;
     expect(full).toContain("\n");
     for (let budget = 1; budget < 30; budget++) {
