@@ -407,6 +407,14 @@ def test_stem_singularizes_es_plurals_and_keeps_status_and_analysis():
         assert (report.verdict, [t.matches for t in report.terms]) == ("answerable", [[matched]])
 
 
+def test_from_tables_upper_cases_first_character_like_typescript():
+    assert [e.name for e in Schema.from_tables([{"name": t} for t in ["ﬂights", "ǆungla", "ß"]]).entities] == [
+        "FLight",
+        "Ǆungla",
+        "SS",
+    ]
+
+
 def test_synonym_seeding_finds_entities_by_a_type_synonym():
     g = fresh_graph("tier", schema=TERMS)
     run(g.insert.facts({"entities": [{"type": "Company", "name": "Acme"}, {"type": "Person", "name": "Ann"}]}))

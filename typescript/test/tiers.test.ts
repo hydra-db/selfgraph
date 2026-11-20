@@ -450,6 +450,14 @@ function suite(spec: StoreSpec): void {
     }
   });
 
+  it("fromTables upper-cases the first character like Python", () => {
+    expect(fromTables([{ name: "ﬂights" }, { name: "ǆungla" }, { name: "ß" }]).entities.map((e) => e.name)).toEqual([
+      "FLight",
+      "Ǆungla",
+      "SS",
+    ]);
+  });
+
   it("fromTables drafts types, properties, relations, and mappings", async () => {
     const schema = fromTables(
       [

@@ -39,7 +39,7 @@ def _type_name(table: str) -> str:
     if not words:
         raise ValidationError(f"tables: table name {table!r} has no letters or digits")
     words[-1] = stem(words[-1])
-    return "".join(w.capitalize() for w in words)
+    return "".join(w[:1].upper() + w[1:] for w in words)
 
 
 def _property_type(sql_type: Any) -> str:
