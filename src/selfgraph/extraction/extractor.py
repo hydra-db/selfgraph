@@ -395,6 +395,8 @@ class LLMExtractor(_WarningSink):
                     properties=dict(props or {}),
                     event_time=event_time,
                 )
+            elif relations[rid].event_time is None:
+                relations[rid].event_time = event_time
             if evidence is not None and evidence not in relations[rid].evidence:
                 relations[rid].evidence.append(evidence)
             return rid

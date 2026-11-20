@@ -254,7 +254,9 @@ export function assembleExtraction(
         evidence: [],
       });
     }
-    const cited = relations.get(rid)!.evidence;
+    const relation = relations.get(rid)!;
+    relation.event_time ??= eventTime ?? null;
+    const cited = relation.evidence;
     if (evidence && !cited.some((ev) => ev.chunk_id === evidence.chunk_id && ev.source_id === evidence.source_id)) {
       cited.push(evidence);
     }

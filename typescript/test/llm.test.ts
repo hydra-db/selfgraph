@@ -4,7 +4,7 @@ import { APICallError, LoadAPIKeyError } from "@ai-sdk/provider";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-
+import { loadTokenizer } from "../src/chunking.js";
 import { assembleExtraction, LLMExtractor } from "../src/extraction/extractor.js";
 import { render } from "../src/extraction/prompts.js";
 import {
@@ -109,6 +109,82 @@ function mockModel(
 const open = freshGraphs(KUZU_SPEC, "llm");
 
 describe("LLM extraction through the AI SDK", () => {
+  it.each([
+    [[null, "2020-01-01"], "2020-01-01"],
+    [["2020-01-01", null], "2020-01-01"],
+    [[null, null], null],
+    [["2020-01-01", "2020-01-01"], "2020-01-01"],
+    [["2020-01-01", "2022-01-01"], "2020-01-01"],
+    [[null, "2020-01-01", "2022-01-01"], "2020-01-01"],
+    [["not a date", "2020-01-01"], "2020-01-01"],
+    [["0001", null], "0001-01-01"],
+  ] as Array<[(string | null)[], string | null]>)(
+    "keeps the first non-null date from repeated extracted relations: %j",
+    (dates, expected) => {
+      const facts = assembleExtraction(
+        [
+          { type: "Person", name: "Jane" },
+          { type: "Company", name: "Acme" },
+        ],
+        dates.map((event_time) => ({ from_name: "Jane", type: "WORKS_AT", to_name: "Acme", event_time })),
+        [],
+        [],
+      );
+      expect(facts.relations).toHaveLength(1);
+      expect(facts.relations[0]!.event_time?.toISOString() ?? null).toBe(
+        expected === null ? null : `${expected}T00:00:00.000Z`,
+      );
+      expect(facts.relations[0]).toMatchObject({
+        from_entity: "person:jane",
+        type: "WORKS_AT",
+        to_entity: "company:acme",
+      });
+    },
+  );
+
+  it("keeps a later chunk date and all evidence for a repeated extracted relation", async () => {
+    const text = `Jane works at Acme.${" context".repeat(650)}`;
+    const chunks = (await loadTokenizer()).chunkText(text);
+    expect(chunks.length).toBeGreaterThan(1);
+    let relationCalls = 0;
+    const llm = {
+      async generate({ output }: { output: z.ZodType }) {
+        const [kind] = Object.keys((output as z.ZodObject).shape);
+        if (kind === "entities")
+          return {
+            entities: [
+              { type: "Person", name: "Jane", aliases: [] },
+              { type: "Company", name: "Acme", aliases: [] },
+            ],
+          };
+        if (kind === "relations")
+          return {
+            relations: [
+              {
+                from_name: "Jane",
+                type: "WORKS_AT",
+                to_name: "Acme",
+                event_time: ++relationCalls === 1 ? null : "2020-01-01",
+              },
+            ],
+          };
+        return { [kind!]: [] };
+      },
+    } as unknown as LLMClient;
+    const g = open({ llm, resolver: "exact" });
+    const result = await g.insert.text(text, { source_id: "dated-chunks" });
+    const [rel] = (await g.relations.list()).items;
+    expect(rel!.event_time?.toISOString()).toBe("2020-01-01T00:00:00.000Z");
+    expect(result.relations).toHaveLength(1);
+    expect(relationCalls).toBe(chunks.length);
+    const evidence = (await g.relations.evidence(rel!.id)).items;
+    expect(new Set(evidence.map((e) => e.chunk_id))).toEqual(
+      new Set(chunks.map((c) => ids.chunkId(result.source_version!, c.index))),
+    );
+    expect(rel!.source_count).toBe(1);
+    expect((await g.retrieve("Jane", { as_of: "2021-01-01" })).subgraph.relations.map((r) => r.id)).toEqual([rel!.id]);
+  });
+
   it("extracts and resolves names to deterministic ids the way Python does", async () => {
     const seen: Array<{ kind: Kind; system: string; user: string }> = [];
     const signals: unknown[] = [];
