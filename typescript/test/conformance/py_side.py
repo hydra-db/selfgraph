@@ -884,7 +884,18 @@ async def canonical_fact_ids(graph):
 
 
 async def write(graph):
-    out = {}
+    from selfgraph.models import CypherResult
+
+    depth_errors = []
+    for kind in ("list", "map"):
+        value = 1
+        for _ in range(255):
+            value = [value] if kind == "list" else {"a": value}
+        try:
+            CypherResult(rows=[{"x": value}])
+        except SelfGraphError as exc:
+            depth_errors.append([exc.code, exc.field, str(exc)])
+    out = {"result_depth_errors": depth_errors}
     out["facts"] = to_jsonable(await graph.insert.facts(FACTS, source_id="spec"))
     out["text"] = to_jsonable(
         await graph.insert.text(TEXT, source_id="notes", metadata={"author": "conformance", "n": 1, "f": 0.5})

@@ -769,3 +769,19 @@ export function validationError(head: string, error: z.ZodError, value: unknown)
 export function asInput<T>(schema: z.ZodType<T>, value: unknown, what: string): T | null {
   return value === null || value === undefined ? null : parseOrThrow(schema, value, what);
 }
+
+/** Check result cell nesting. @param rows (unknown[]): rows. @return (void): nothing. */
+export function checkResultDepth(rows: Record<string, unknown>[]): void {
+  const pending: [unknown, number][] = rows.flatMap((row) =>
+    Object.values(row).map((value) => [value, 0] as [unknown, number]),
+  );
+  while (pending.length) {
+    const [value, depth] = pending.pop()!;
+    if (value !== null && typeof value === "object") {
+      if (depth >= 254) {
+        throw new ValidationError("run_cypher result exceeds the maximum nesting depth of 254", { field: "rows" });
+      }
+      for (const item of Object.values(value)) pending.push([item, depth + 1]);
+    }
+  }
+}

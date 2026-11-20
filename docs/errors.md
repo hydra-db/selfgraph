@@ -215,6 +215,10 @@ placeholder other than `{text}` and `{instructions}`.
 
 ### Store
 
+Raw Cypher result cells may contain at most 254 nested lists or maps. A deeper
+result raises `invalid_argument` with field `rows` and message
+`run_cypher result exceeds the maximum nesting depth of 254` in both SDKs.
+
 #### `query_failed`
 
 The backend rejected a query. The message keeps the engine's reason. Check any

@@ -5,7 +5,7 @@ import { errorMessage, SelfGraphError, StoreError, ValidationError } from "../er
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
-import type { CypherResult, JsonValue } from "../models.js";
+import { type CypherResult, checkResultDepth, type JsonValue } from "../models.js";
 import {
   DEFAULT_MATCH_LIMIT,
   type EdgeRow,
@@ -358,6 +358,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     try {
       const columns = await res.getColumnNames();
       const rows = (await res.getAll()).map((row) => normalize(row) as Record<string, JsonValue>);
+      checkResultDepth(rows);
       return { columns, rows, counters: {}, warnings: [] };
     } finally {
       res.close?.();

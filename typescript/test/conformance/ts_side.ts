@@ -908,6 +908,19 @@ async function canonicalFactIds(graph: SelfGraph): Promise<Record<string, unknow
 
 export async function write(graph: SelfGraph): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
+  const { checkResultDepth } = await import("../../src/models.js");
+  const depthErrors: unknown[] = [];
+  for (const kind of ["list", "map"]) {
+    let value: unknown = 1;
+    for (let depth = 0; depth < 255; depth++) value = kind === "list" ? [value] : { a: value };
+    try {
+      checkResultDepth([{ x: value }]);
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      depthErrors.push([exc.code, exc.field, exc.message]);
+    }
+  }
+  out.result_depth_errors = depthErrors;
   out.facts = toJsonable(await graph.insert.facts(FACTS, { source_id: "spec" }));
   out.text = toJsonable(
     await graph.insert.text(TEXT, { source_id: "notes", metadata: { author: "conformance", n: 1, f: 0.5 } }),

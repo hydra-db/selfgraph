@@ -92,6 +92,21 @@ function sections(start: string, end: string): Record<string, string> {
   return Object.fromEntries([...found].map((m) => [m[1]!, m[2]!.split(/\s+/).join(" ").trim()]));
 }
 
+it.each(["list", "map"])("reports result depth as a coded error for %s", async (kind) => {
+  const { checkResultDepth } = await import("../src/models.js");
+  let value: unknown = 1;
+  for (let depth = 0; depth < 254; depth++) value = kind === "list" ? [value] : { a: value };
+  checkResultDepth([{ x: value }]);
+  value = kind === "list" ? [value] : { a: value };
+  expect(() => checkResultDepth([{ x: value }])).toThrowError(
+    expect.objectContaining({
+      code: "invalid_argument",
+      field: "rows",
+      message: "run_cypher result exceeds the maximum nesting depth of 254",
+    }),
+  );
+});
+
 describe("error codes", () => {
   const open = freshGraphs(KUZU_SPEC, "codes");
 

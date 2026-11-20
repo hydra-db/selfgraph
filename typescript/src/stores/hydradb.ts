@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { blake2b } from "@noble/hashes/blake2.js";
 import type { Driver, Session } from "neo4j-driver";
 
-import { errorMessage, OTHER_ENGINE_HINT, StoreError, TOKEN_HINT } from "../errors.js";
+import { errorMessage, OTHER_ENGINE_HINT, SelfGraphError, StoreError, TOKEN_HINT } from "../errors.js";
 import { comparePy, pyJsonDumps, pyStr, utf8 } from "../internal/py.js";
 import { L_ENTITY, L_EVIDENCE, L_MERGE } from "../labels.js";
 import type { CypherResult } from "../models.js";
@@ -567,6 +567,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
         }
       });
     } catch (exc) {
+      if (exc instanceof SelfGraphError) throw exc;
       throw this.error(exc);
     }
   }

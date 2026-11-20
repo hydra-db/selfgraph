@@ -629,6 +629,20 @@ class CypherResult(BaseModel):
     counters: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
+    @field_validator("rows", mode="before")
+    @classmethod
+    def _result_depth(cls, rows: Any) -> Any:
+        """Bound result cell nesting. @param rows (Any): rows. @return (Any): checked rows."""
+        pending = [(value, 0) for row in rows for value in row.values()]
+        while pending:
+            value, depth = pending.pop()
+            if isinstance(value, dict | list | tuple):
+                if depth >= 254:
+                    raise ValidationError("run_cypher result exceeds the maximum nesting depth of 254", field="rows")
+                items = value.values() if isinstance(value, dict) else value
+                pending.extend((item, depth + 1) for item in items)
+        return rows
+
 
 class EntityInput(InputModel):
     input_label: ClassVar[str] = "entity"

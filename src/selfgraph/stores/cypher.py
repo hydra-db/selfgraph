@@ -8,7 +8,7 @@ from functools import partial
 from typing import Any
 
 from .._serde import LABELS
-from ..errors import StoreError, TransientError
+from ..errors import SelfGraphError, StoreError, TransientError
 from ..models import CypherResult
 from ._cypher import CypherPrimitives, bolt_driver, bolt_error, query_error, records_to_result, syntax_detail
 
@@ -77,6 +77,8 @@ class _CypherWriter(CypherPrimitives):
         try:
             result = await self._tx.run(query, dict(params or {}))
             return await records_to_result(result)
+        except SelfGraphError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise _translate_cypher_error(exc, self._uri, self._database) from exc
 
@@ -123,6 +125,8 @@ class CypherStore(CypherPrimitives):
             async with self._session() as session:
                 result = await session.run(query, dict(params or {}))
                 return await records_to_result(result)
+        except SelfGraphError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise _translate_cypher_error(exc, self._uri, self._database) from exc
 

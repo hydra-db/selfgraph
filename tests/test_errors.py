@@ -314,3 +314,20 @@ def test_settings_fail_with_a_narrow_code(settings, code, field):
     with pytest.raises(SelfGraphError) as exc:
         check_settings(GraphSettings(**settings))
     assert (exc.value.code, exc.value.to_dict().get("field")) == (code, field)
+
+
+@pytest.mark.parametrize("kind", ["list", "map"])
+def test_cypher_result_depth_is_a_coded_error(kind):
+    from selfgraph.errors import ValidationError
+    from selfgraph.models import CypherResult
+
+    value = 1
+    for _ in range(254):
+        value = [value] if kind == "list" else {"a": value}
+    assert CypherResult(rows=[{"x": value}]).rows == [{"x": value}]
+    value = [value] if kind == "list" else {"a": value}
+    with pytest.raises(ValidationError) as caught:
+        CypherResult(rows=[{"x": value}])
+    assert caught.value.code == "invalid_argument"
+    assert caught.value.field == "rows"
+    assert str(caught.value) == "run_cypher result exceeds the maximum nesting depth of 254"

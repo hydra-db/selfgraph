@@ -11,7 +11,7 @@ from typing import Any
 
 from .._ops import _batches
 from .._serde import L_ENTITY, L_EVIDENCE, L_MERGE, decode_entity
-from ..errors import OTHER_ENGINE_HINT, TOKEN_HINT, StoreError
+from ..errors import OTHER_ENGINE_HINT, TOKEN_HINT, SelfGraphError, StoreError
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult
 from ..resolution import match_keys
@@ -341,6 +341,8 @@ class HydraDBStore(AutoCommitStore):
             try:
                 result = await session.run(query, dict(params or {}))
                 return await records_to_result(result)
+            except SelfGraphError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 raise self._error(exc) from exc
 

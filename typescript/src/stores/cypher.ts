@@ -1,6 +1,6 @@
 import type { Config, Driver, Session, Transaction } from "neo4j-driver";
 
-import { errorMessage, StoreError, TransientError } from "../errors.js";
+import { errorMessage, SelfGraphError, StoreError, TransientError } from "../errors.js";
 import { sleep } from "../internal/time.js";
 import { LABELS } from "../labels.js";
 import type { CypherResult } from "../models.js";
@@ -76,6 +76,7 @@ class CypherWriter extends CypherPrimitives {
     try {
       return await recordsToResult(this.tx.run(query, toBoltParams(params)));
     } catch (exc) {
+      if (exc instanceof SelfGraphError) throw exc;
       throw translateCypherError(exc, this.uri, this.database);
     }
   }
@@ -114,6 +115,7 @@ export class CypherStore extends CypherPrimitives implements GraphStore {
     try {
       return await recordsToResult(session.run(query, toBoltParams(params)));
     } catch (exc) {
+      if (exc instanceof SelfGraphError) throw exc;
       throw translateCypherError(exc, this.uri, this.database);
     } finally {
       await session.close().catch(() => undefined);
