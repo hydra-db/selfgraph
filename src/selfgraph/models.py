@@ -302,6 +302,10 @@ def as_input(model: type[M], value: Any, what: str) -> M | None:
     """
     if value is None or isinstance(value, model):
         return value
+    if isinstance(value, Mapping) and issubclass(model, TopInputModel):
+        found = _unknown_key(model, value, model.input_label)
+        if found is not None:
+            raise found
     try:
         return model.model_validate(value)
     except PydanticValidationError as exc:

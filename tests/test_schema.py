@@ -804,6 +804,18 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
         (lambda: as_schema({"entity_types": []}), "unknown key 'entity_types' in schema; did you mean 'entities'?"),
         (lambda: as_schema({"edges": []}), "unknown key 'edges' in schema; did you mean 'relations'?"),
         (
+            lambda: as_schema({1: "x"}),
+            "unknown key '1' in schema (valid keys: name, version, entities, relations)",
+        ),
+        (
+            lambda: as_schema({None: []}),
+            "unknown key 'None' in schema (valid keys: name, version, entities, relations)",
+        ),
+        (
+            lambda: run(new_graph().insert.facts({1: "x"})),
+            "unknown key '1' in facts (valid keys: entities, relations, preferences, decisions)",
+        ),
+        (
             lambda: as_schema({"relations": [{"type": "X", "from": {"type": ["A"]}}]}),
             "unknown key 'type' in schema.relations[0].from; did you mean 'types'?",
         ),

@@ -21,12 +21,14 @@ from selfgraph import (
     SelfGraph,
     StoreError,
     TransientError,
+    ValidationError,
 )
 from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason
 from selfgraph.llm.base import _fatal
 from selfgraph.mcp.server import run_cypher
 from selfgraph.resolution import ResolutionDecision
 from selfgraph.runtime import GraphSettings, check_settings
+from selfgraph.schema import as_schema
 from selfgraph.stores.kuzu import _kuzu_error
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -312,3 +314,14 @@ def test_settings_fail_with_a_narrow_code(settings, code, field):
     with pytest.raises(SelfGraphError) as exc:
         check_settings(GraphSettings(**settings))
     assert (exc.value.code, exc.value.to_dict().get("field")) == (code, field)
+
+
+def test_a_non_string_top_level_key_raises_unknown_key():
+    for call in (
+        lambda: as_schema({1: "x"}),
+        lambda: as_schema({None: []}),
+        lambda: run(new_graph().insert.facts({1: "x"})),
+    ):
+        with pytest.raises(ValidationError) as exc:
+            call()
+        assert exc.value.code == "unknown_key"
