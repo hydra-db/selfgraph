@@ -1984,11 +1984,18 @@ class Contradictions:
         self._starts[version.id] = _run_start(found)
         return effective_time(version), version.revision, aware(version.created_at)
 
-    def _valid_at(self, rid: str, when: datetime, retired: Mapping[str, tuple[str, datetime]] | None = None) -> bool:
+    def _valid_at(
+        self,
+        rid: str,
+        when: datetime,
+        old: str | None = None,
+        retired: Mapping[str, tuple[str, datetime]] | None = None,
+    ) -> bool:
         """Whether a relation was valid at a point in time by its recorded revisions and retirements.
 
         @param rid (str): the relation id.
         @param when (datetime): the point in time to check.
+        @param old (str | None): the displaced relation id.
         @param retired (Mapping[str, tuple[str, datetime]] | None): pending retirements from the current settle run.
         @return (bool): True when valid, False otherwise.
         """
@@ -1997,6 +2004,8 @@ class Contradictions:
             ordered = sorted(versions, key=lambda v: v.revision)
             picked = None
             for v in ordered:
+                if old is not None and v.invalidated_by == old:
+                    continue
                 if effective_time(v) <= when:
                     picked = v
             if picked is None:
@@ -2016,7 +2025,7 @@ class Contradictions:
         if start is None or start > when:
             return False
         item = (retired.get(rid) if retired else None) or self._ended.get(rid)
-        return not (item is not None and aware(item[1]) <= when)
+        return not (item is not None and (item[0] == old or aware(item[1]) <= when))
 
     def _displaced_at(
         self,
@@ -2042,6 +2051,8 @@ class Contradictions:
             versions = self._versions.get(rid)
             if versions:
                 for v in versions:
+                    if v.invalidated_by == old:
+                        continue
                     eff = effective_time(v)
                     if since <= eff < at:
                         candidates.add(eff)
@@ -2050,7 +2061,7 @@ class Contradictions:
                 if st is not None and since <= st < at:
                     candidates.add(st)
         for t in sorted(candidates):
-            count = sum(1 for _, rid in newer if self._valid_at(rid, t, retired))
+            count = sum(1 for _, rid in newer if self._valid_at(rid, t, old, retired))
             if count >= limit:
                 return t
         return at

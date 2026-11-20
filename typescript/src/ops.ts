@@ -1988,16 +1988,18 @@ export class Contradictions {
    *
    * @param rid (string): the relation id.
    * @param when (Date): the point in time to check.
+   * @param old (string | undefined): the displaced relation's id.
    * @param retired (ReadonlyMap<string, [string, Date]> | undefined): pending retirements from the current settle run.
    * @return (boolean): true when valid, false otherwise.
    */
-  private isValidAt(rid: string, when: Date, retired?: ReadonlyMap<string, [string, Date]>): boolean {
+  private isValidAt(rid: string, when: Date, old?: string, retired?: ReadonlyMap<string, [string, Date]>): boolean {
     const at = epochMicros(when);
     const versions = this.versions.get(rid);
     if (versions && versions.length > 0) {
       const ordered = [...versions].sort((a, b) => a.revision - b.revision);
       let picked: Relation | null = null;
       for (const v of ordered) {
+        if (old !== undefined && v.invalidated_by === old) continue;
         if (epochMicros(effectiveTime(v)) <= at) picked = v;
       }
       if (picked === null) return false;
@@ -2017,7 +2019,7 @@ export class Contradictions {
     const start = this.starts.get(rid);
     if (start === undefined || epochMicros(start) > at) return false;
     const item = retired?.get(rid) ?? this.ended.get(rid);
-    if (item !== undefined && epochMicros(item[1]) <= at) return false;
+    if (item !== undefined && (item[0] === old || epochMicros(item[1]) <= at)) return false;
     return true;
   }
 
@@ -2045,6 +2047,7 @@ export class Contradictions {
       const versions = this.versions.get(rid);
       if (versions) {
         for (const v of versions) {
+          if (v.invalidated_by === old) continue;
           const eff = effectiveTime(v);
           const us = epochMicros(eff);
           if (epochMicros(since) <= us && us < epochMicros(effective)) candidates.set(us, eff);
@@ -2061,7 +2064,7 @@ export class Contradictions {
     for (const [, t] of sortedTimes) {
       let count = 0;
       for (const [, rid] of newer) {
-        if (this.isValidAt(rid, t, retired)) count++;
+        if (this.isValidAt(rid, t, old, retired)) count++;
         if (count >= limit) return t;
       }
     }
