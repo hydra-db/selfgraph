@@ -82,6 +82,7 @@ import {
   requireInt,
   requireJsonMapping,
   requireList,
+  requireNoControl,
   requireOptionalText,
   requireStr,
   requireStrMapping,
@@ -3289,6 +3290,7 @@ export async function certifyRelation(
   if (by !== null && (typeof by !== "string" || !pyStrip(by))) {
     throw new ValidationError("certified_by must be a non-empty string");
   }
+  if (by !== null) requireNoControl("certified_by", by);
   let edge = await runner.getCurrentEdge(ns, rid);
   if (edge !== null) {
     await runner.lockNode(ns, L_ENTITY, edge.from_id);

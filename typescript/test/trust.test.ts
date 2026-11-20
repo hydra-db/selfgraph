@@ -294,6 +294,9 @@ function suite(spec: StoreSpec): void {
     ]);
     expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([newer.id]);
     await expect(g.relations.certify(old.id, { by: " " })).rejects.toThrow("certified_by must be a non-empty string");
+    await expect(g.relations.certify(old.id, { by: "a\ud83dlonely" })).rejects.toThrow(
+      "certified_by cannot contain control or surrogate characters",
+    );
     await expect(g.relations.certify("relation:missing", { by: "hr" })).rejects.toThrow("does not exist");
   });
 
