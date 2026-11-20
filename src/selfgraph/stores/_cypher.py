@@ -14,6 +14,7 @@ from ..errors import (
     TransientError,
     ValidationError,
     connection_reason,
+    escape_controls,
     mask_uri,
     redact_uri,
     require_encoded_userinfo,
@@ -174,7 +175,7 @@ def query_error(
         return connection
     if transient(f"{getattr(exc, 'code', '') or ''} {exc}".lower()):
         return TransientError(f"{engine} transaction conflict: {exc}")
-    return StoreError(f"{engine} query failed: {syntax_detail(exc) or exc}")
+    return StoreError(f"{engine} query failed: {escape_controls(str(syntax_detail(exc) or exc))}")
 
 
 _IN_WRITE: ContextVar[bool] = ContextVar("selfgraph_in_write", default=False)

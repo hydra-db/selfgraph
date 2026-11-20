@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from functools import partial
 from typing import Any
 
-from ..errors import SelfGraphError, StoreError, ValidationError
+from ..errors import SelfGraphError, StoreError, ValidationError, escape_controls
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult, JsonValue
 from ._cypher import AutoCommitStore, count_of, require_keys, where_after, write_batches
@@ -120,7 +120,7 @@ def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
             "process at a time",
             code="store_locked",
         )
-    message = f"{prefix}: {' '.join(str(exc).split())}"
+    message = f"{prefix}: {escape_controls(' '.join(str(exc).split()))}"
     if "Buffer manager exception: Mmap for size" in str(exc):
         message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size"
     return StoreError(message)

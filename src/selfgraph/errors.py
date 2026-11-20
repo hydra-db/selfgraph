@@ -599,3 +599,30 @@ def error_reason(exc: BaseException) -> str:
         return f"{head}: {inner}" if head and inner else head or inner
 
     return reason(exc) or type(exc).__name__
+
+
+def escape_controls(text: str) -> str:
+    """Render control characters as backslash escapes, the way repr shows quoted input.
+
+    Engine error text can quote the query, so a raw escape byte in it would run in a
+    terminal or log viewer. Newline, carriage return, and tab get their short forms;
+    other C0/C1 controls, DEL, and lone surrogates get \\xNN or \\uNNNN.
+
+    @param text (str): the text, such as an engine error message.
+    @return (str): the text with control characters escaped.
+    """
+    out = []
+    for ch in text:
+        if ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        else:
+            point = ord(ch)
+            if point < 0x20 or 0x7F <= point <= 0x9F or 0xD800 <= point <= 0xDFFF:
+                out.append(f"\\x{point:02x}" if point < 0x100 else f"\\u{point:04x}")
+            else:
+                out.append(ch)
+    return "".join(out)

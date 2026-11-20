@@ -307,6 +307,13 @@ def test_store_settings_warnings_params_and_inline_schema(capsys, tmp_path, monk
     assert "missing parameter $a" in capsys.readouterr().err
     assert kuzu_main(tmp_path, "query", "RETURN $a AS a", "--param", "a=1", "--param", "b=2") == 0
     assert json.loads(capsys.readouterr().out)["rows"] == [{"a": 1}]
+
+
+def test_query_error_escapes_control_characters(tmp_path, capsys):
+    assert kuzu_main(tmp_path, "query", "RETURN (\x1b[2J") == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err
+    assert "\\x1b" in err
     schema = json.dumps({"entities": [{"name": "Person"}]})
     assert kuzu_main(tmp_path, "--schema", schema, "schema") == 0
     assert json.loads(capsys.readouterr().out)["entities"][0]["name"] == "Person"

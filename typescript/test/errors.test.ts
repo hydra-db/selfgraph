@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { connectionReason, HINTS, SelfGraphError, WARNING_HINTS } from "../src/errors.js";
+import { connectionReason, escapeControls, HINTS, SelfGraphError, WARNING_HINTS } from "../src/errors.js";
 import {
   Extraction,
   FalkorDBStore,
@@ -196,6 +196,21 @@ describe("error codes", () => {
       connectionReason(bolt("getaddrinfo ENOTFOUND nohost.invalid")),
       connectionReason(bolt("connect ECONNREFUSED 127.0.0.1:1")),
     ]).toEqual(["host not found", "connection refused"]);
+  });
+
+  it("escapes control characters in a failed query", async () => {
+    expect(escapeControls("a\x1b[2Jb\nc\td\x00\x7f\x85e")).toBe("a\\x1b[2Jb\\nc\\td\\x00\\x7f\\x85e");
+    expect(escapeControls("hello world")).toBe("hello world");
+    const g = open();
+    try {
+      await g.runCypher("RETURN (\x1b[2J");
+      expect.unreachable();
+    } catch (exc) {
+      const err = exc as SelfGraphError;
+      expect(err.code).toBe("query_failed");
+      expect(err.message).not.toContain("\x1b");
+      expect(err.message).toContain("\\x1b");
+    }
   });
 
   it("carries the code, hint, retryability, and both docs links", () => {

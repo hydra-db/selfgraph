@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { errorMessage, SelfGraphError, StoreError, ValidationError } from "../errors.js";
+import { errorMessage, escapeControls, SelfGraphError, StoreError, ValidationError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
@@ -143,7 +143,7 @@ function databasePath(path: string): string {
  * @return (StoreError): the error to throw.
  */
 export function kuzuError(exc: unknown, prefix: string): StoreError {
-  const detail = errorMessage(exc).split(/\s+/).join(" ").trim();
+  const detail = escapeControls(errorMessage(exc).split(/\s+/).join(" ").trim());
   if (detail.includes("Could not set lock on file")) {
     return new StoreError(
       `${prefix}: another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time`,

@@ -22,7 +22,7 @@ from selfgraph import (
     StoreError,
     TransientError,
 )
-from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason
+from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason, escape_controls
 from selfgraph.llm.base import _fatal
 from selfgraph.mcp.server import run_cypher
 from selfgraph.resolution import ResolutionDecision
@@ -312,3 +312,13 @@ def test_settings_fail_with_a_narrow_code(settings, code, field):
     with pytest.raises(SelfGraphError) as exc:
         check_settings(GraphSettings(**settings))
     assert (exc.value.code, exc.value.to_dict().get("field")) == (code, field)
+
+
+def test_query_failed_escapes_control_characters():
+    assert escape_controls("a\x1b[2Jb\nc\td\x00\x7f\x85e") == "a\\x1b[2Jb\\nc\\td\\x00\\x7f\\x85e"
+    assert escape_controls("hello world") == "hello world"
+    with pytest.raises(StoreError) as exc:
+        run(new_graph().run_cypher("RETURN (\x1b[2J"))
+    assert exc.value.code == "query_failed"
+    assert "\x1b" not in str(exc.value)
+    assert "\\x1b" in str(exc.value)
