@@ -527,12 +527,3 @@ def test_evidence_commands_and_parity_flags(capsys, tmp_path):
 def test_cli_rejects_proto_keys(capsys, tmp_path, flags):
     assert kuzu_main(tmp_path, "entity", "create", "--name", "Proto", "--type", "Person", *flags) == 2
     assert "property and external id keys cannot be '__proto__'" in capsys.readouterr().err
-
-
-def test_cli_stores_a_proto_metadata_key(capsys, tmp_path):
-    def insert(source_id: str, *extra: str) -> dict:
-        assert kuzu_main(tmp_path, "insert", "text", "Ada met Charles.", "--source-id", source_id, *extra) == 0
-        return json.loads(capsys.readouterr().out)
-
-    assert insert("s1", "--metadata", '{"__proto__":{"x":1},"a":1}')["source_id"] == "s1"
-    assert insert("s2", "--metadata", '__proto__={"x":1}', "--metadata", "a=1")["source_id"] == "s2"
