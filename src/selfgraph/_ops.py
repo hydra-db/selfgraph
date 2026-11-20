@@ -1984,19 +1984,75 @@ class Contradictions:
         self._starts[version.id] = _run_start(found)
         return effective_time(version), version.revision, aware(version.created_at)
 
-    def _displaced_at(self, newer: list[tuple[tuple, str]], limit: int, old: str) -> datetime:
-        """When newer relations displaced an older one: once limit of them began if not before it, else at the limit-th.
+    def _valid_at(self, rid: str, when: datetime, retired: Mapping[str, tuple[str, datetime]] | None = None) -> bool:
+        """Whether a relation was valid at a point in time by its recorded revisions and retirements.
+
+        @param rid (str): the relation id.
+        @param when (datetime): the point in time to check.
+        @param retired (Mapping[str, tuple[str, datetime]] | None): pending retirements from the current settle run.
+        @return (bool): True when valid, False otherwise.
+        """
+        versions = self._versions.get(rid)
+        if versions:
+            ordered = sorted(versions, key=lambda v: v.revision)
+            picked = None
+            for v in ordered:
+                if effective_time(v) <= when:
+                    picked = v
+            if picked is None:
+                return False
+            for v in ordered:
+                ended = v.invalidated_at
+                if ended is None and v == ordered[-1]:
+                    item = (retired.get(rid) if retired else None) or self._ended.get(rid)
+                    if item is not None:
+                        ended = item[1]
+                if v.revision >= picked.revision and ended is not None:
+                    if aware(ended) <= when:
+                        return False
+                    break
+            return True
+        start = self._starts.get(rid)
+        if start is None or start > when:
+            return False
+        item = (retired.get(rid) if retired else None) or self._ended.get(rid)
+        return not (item is not None and aware(item[1]) <= when)
+
+    def _displaced_at(
+        self,
+        newer: list[tuple[tuple, str]],
+        limit: int,
+        old: str,
+        retired: Mapping[str, tuple[str, datetime]] | None = None,
+    ) -> datetime:
+        """When newer relations displaced an older one: the earliest time limit of them are valid, else at the limit-th.
 
         @param newer (list[tuple[tuple, str]]): the newer relations' ranks and ids, oldest first.
         @param limit (int): the endpoint's max_count.
         @param old (str): the displaced relation's id.
+        @param retired (Mapping[str, tuple[str, datetime]] | None): pending retirements from the current settle run.
         @return (datetime): the displacement time.
         """
         at = newer[limit - 1][0][0]
-        start = sorted(self._starts.get(rid, rank[0]) for rank, rid in newer)[limit - 1]
         since = self._starts.get(old)
-        if since is not None and since <= start < at:
-            return start
+        if since is None or since >= at:
+            return at
+        candidates = {since}
+        for _, rid in newer:
+            versions = self._versions.get(rid)
+            if versions:
+                for v in versions:
+                    eff = effective_time(v)
+                    if since <= eff < at:
+                        candidates.add(eff)
+            else:
+                st = self._starts.get(rid)
+                if st is not None and since <= st < at:
+                    candidates.add(st)
+        for t in sorted(candidates):
+            count = sum(1 for _, rid in newer if self._valid_at(rid, t, retired))
+            if count >= limit:
+                return t
         return at
 
     def _seat(self, key: tuple[str, str, str], rid: str, rank: tuple) -> None:
@@ -2099,7 +2155,7 @@ class Contradictions:
                     )
                     continue
                 by = newer[limit - 1][1]
-                at = self._displaced_at(newer, limit, old)
+                at = self._displaced_at(newer, limit, old, retired)
                 if old not in retired:
                     slots.append(old)
                 if old not in retired or at < retired[old][1]:
@@ -2111,7 +2167,7 @@ class Contradictions:
                 if ended is None or len(newer) < limit:
                     continue
                 by = newer[limit - 1][1]
-                at = self._displaced_at(newer, limit, rid)
+                at = self._displaced_at(newer, limit, rid, retired)
                 if (by, at) != ended and (ended[0] in facts or at < ended[1]):
                     retired[rid] = self._ended[rid] = (by, at)
         warnings: list[InsertWarning] = []

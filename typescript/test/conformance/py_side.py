@@ -1707,6 +1707,19 @@ async def supersede(graph):
     ]
     held = await graph.retrieve("Kim", as_of=datetime(2023, 1, 1, tzinfo=timezone.utc))
     out["moved_later_valid"] = sorted(r.id for r in held.subgraph.relations)
+    mia = [{"type": "Person", "name": "Mia"}, *({"type": "Company", "name": n} for n in ("Aperture", "BlackMesa"))]
+    await graph.insert.facts({"entities": mia})
+    await graph.insert.facts({"relations": [link("mia", "aperture", 2012)]})
+    aperture_mia = ids.relation_id("person:mia", "WORKS_AT", "company:aperture")
+    await graph.relations.update(aperture_mia, event_time=datetime(2016, 1, 1, tzinfo=timezone.utc))
+    await graph.insert.facts({"relations": [link("mia", "blackmesa", 2014)]})
+    blackmesa_mia = ids.relation_id("person:mia", "WORKS_AT", "company:blackmesa")
+    out["moved_earlier_gap"] = [
+        [v.revision, v.is_current, v.invalidated_by, _serde.json_iso(v.invalidated_at) if v.invalidated_at else None]
+        for v in await graph.relations.versions(blackmesa_mia)
+    ]
+    held_mia = await graph.retrieve("Mia", as_of=datetime(2015, 1, 1, tzinfo=timezone.utc))
+    out["moved_earlier_gap_valid"] = sorted(r.id for r in held_mia.subgraph.relations)
     lee = [{"type": "Person", "name": "Lee"}, {"type": "Company", "name": "Umbrella"}]
     await graph.insert.facts({"entities": lee, "relations": [link("lee", "umbrella", 2020)]})
     umbrella = ids.relation_id("person:lee", "WORKS_AT", "company:umbrella")

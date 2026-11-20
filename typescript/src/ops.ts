@@ -1984,21 +1984,88 @@ export class Contradictions {
   }
 
   /**
-   * When newer relations displaced an older one: once limit of them began if not before it, else at the limit-th.
+   * Whether a relation was valid at a point in time by its recorded revisions and retirements.
+   *
+   * @param rid (string): the relation id.
+   * @param when (Date): the point in time to check.
+   * @param retired (ReadonlyMap<string, [string, Date]> | undefined): pending retirements from the current settle run.
+   * @return (boolean): true when valid, false otherwise.
+   */
+  private isValidAt(rid: string, when: Date, retired?: ReadonlyMap<string, [string, Date]>): boolean {
+    const at = epochMicros(when);
+    const versions = this.versions.get(rid);
+    if (versions && versions.length > 0) {
+      const ordered = [...versions].sort((a, b) => a.revision - b.revision);
+      let picked: Relation | null = null;
+      for (const v of ordered) {
+        if (epochMicros(effectiveTime(v)) <= at) picked = v;
+      }
+      if (picked === null) return false;
+      for (const v of ordered) {
+        let ended = v.invalidated_at ?? null;
+        if (ended === null && v.revision === ordered.at(-1)!.revision) {
+          const item = retired?.get(rid) ?? this.ended.get(rid);
+          if (item !== undefined) ended = item[1];
+        }
+        if (v.revision >= picked.revision && ended !== null) {
+          if (epochMicros(ended) <= at) return false;
+          break;
+        }
+      }
+      return true;
+    }
+    const start = this.starts.get(rid);
+    if (start === undefined || epochMicros(start) > at) return false;
+    const item = retired?.get(rid) ?? this.ended.get(rid);
+    if (item !== undefined && epochMicros(item[1]) <= at) return false;
+    return true;
+  }
+
+  /**
+   * When newer relations displaced an older one: the earliest time limit of them are valid, else at the limit-th.
    *
    * @param newer (Array<[Rank, string]>): the newer relations' ranks and ids, oldest first.
    * @param limit (number): the endpoint's max_count.
    * @param old (string): the displaced relation's id.
+   * @param retired (ReadonlyMap<string, [string, Date]> | undefined): pending retirements from the current settle run.
    * @return (Date): the displacement time.
    */
-  private displacedAt(newer: Array<[Rank, string]>, limit: number, old: string): Date {
+  private displacedAt(
+    newer: Array<[Rank, string]>,
+    limit: number,
+    old: string,
+    retired?: ReadonlyMap<string, [string, Date]>,
+  ): Date {
     const effective = this.times.get(newer[limit - 1]![1])!;
-    const starts = newer.map(([, rid]) => this.starts.get(rid) ?? this.times.get(rid)!);
-    const start = starts.sort((a, b) => epochMicros(a) - epochMicros(b))[limit - 1]!;
     const since = this.starts.get(old);
-    if (since === undefined) return effective;
-    const at = epochMicros(start);
-    return epochMicros(since) <= at && at < epochMicros(effective) ? start : effective;
+    if (since === undefined || epochMicros(since) >= epochMicros(effective)) return effective;
+    const candidates = new Map<number, Date>();
+    candidates.set(epochMicros(since), since);
+    for (const [, rid] of newer) {
+      const versions = this.versions.get(rid);
+      if (versions) {
+        for (const v of versions) {
+          const eff = effectiveTime(v);
+          const us = epochMicros(eff);
+          if (epochMicros(since) <= us && us < epochMicros(effective)) candidates.set(us, eff);
+        }
+      } else {
+        const start = this.starts.get(rid);
+        if (start !== undefined) {
+          const us = epochMicros(start);
+          if (epochMicros(since) <= us && us < epochMicros(effective)) candidates.set(us, start);
+        }
+      }
+    }
+    const sortedTimes = [...candidates.entries()].sort(([a], [b]) => a - b);
+    for (const [, t] of sortedTimes) {
+      let count = 0;
+      for (const [, rid] of newer) {
+        if (this.isValidAt(rid, t, retired)) count++;
+        if (count >= limit) return t;
+      }
+    }
+    return effective;
   }
 
   private seat(slot: Slot, rid: string, rank: Rank, effective: Date): void {
@@ -2123,7 +2190,7 @@ export class Contradictions {
           continue;
         }
         const by = newer[limit - 1]![1];
-        const at = this.displacedAt(newer, limit, old);
+        const at = this.displacedAt(newer, limit, old, retired);
         if (!retired.has(old)) slots.push(old);
         if (!retired.has(old) || epochMicros(at) < epochMicros(retired.get(old)![1])) {
           retired.set(old, [by, at]);
@@ -2135,7 +2202,7 @@ export class Contradictions {
         const ended = retired.get(rid) ?? this.ended.get(rid);
         if (ended === undefined || newer.length < limit) continue;
         const by = newer[limit - 1]![1];
-        const at = this.displacedAt(newer, limit, rid);
+        const at = this.displacedAt(newer, limit, rid, retired);
         if (
           (by !== ended[0] || epochMicros(at) !== epochMicros(ended[1])) &&
           (facts.has(ended[0]) || epochMicros(at) < epochMicros(ended[1]))
