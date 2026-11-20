@@ -230,6 +230,8 @@ def test_certified_relations_survive_supersede_and_lead_retrieval():
     assert [r.id for r in run(g.relations.list(from_entity="person:ann")).items] == [newer.id]
     with pytest.raises(ValidationError, match="certified_by must be a non-empty string"):
         run(g.relations.certify(old.id, by=" "))
+    with pytest.raises(ValidationError, match="certified_by cannot contain control or surrogate characters"):
+        run(g.relations.certify(old.id, by="a\ud83dlonely"))
     with pytest.raises(NotFoundError):
         run(g.relations.certify("relation:missing", by="hr"))
 
