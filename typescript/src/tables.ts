@@ -97,7 +97,11 @@ export function fromTables(tables: readonly object[], options: FromTablesOptions
     const tableName = table.name as string;
     const etype = names.get(tableName)!;
     const properties: unknown[] = [];
-    for (const [j, column] of ((table.columns || []) as unknown[]).entries()) {
+    const columns = table.columns ?? [];
+    if (!Array.isArray(columns)) {
+      throw new ValidationError(`tables[${i}].columns must be a list of column mappings, got ${typeName(columns)}`);
+    }
+    for (const [j, column] of (columns as unknown[]).entries()) {
       if (!isPlainObject(column) || typeof column.name !== "string") {
         throw new ValidationError(`tables[${i}].columns[${j}]: each column needs a name`);
       }
