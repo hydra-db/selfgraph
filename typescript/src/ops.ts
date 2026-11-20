@@ -1984,91 +1984,135 @@ export class Contradictions {
   }
 
   /**
-   * Whether a relation was valid at a point in time by its recorded revisions and retirements.
+   * Validity intervals of a relation by its recorded revisions and retirements.
    *
    * @param rid (string): the relation id.
-   * @param when (Date): the point in time to check.
-   * @param old (string | undefined): the displaced relation's id.
    * @param retired (ReadonlyMap<string, [string, Date]> | undefined): pending retirements from the current settle run.
-   * @return (boolean): true when valid, false otherwise.
+   * @return (Array<[Date, Date | null]>): list of [start, end] intervals where the relation was valid.
    */
-  private isValidAt(rid: string, when: Date, old?: string, retired?: ReadonlyMap<string, [string, Date]>): boolean {
-    const at = epochMicros(when);
+  private factWindows(rid: string, retired?: ReadonlyMap<string, [string, Date]>): Array<[Date, Date | null]> {
     const versions = this.versions.get(rid);
-    if (versions && versions.length > 0) {
-      const ordered = [...versions].sort((a, b) => a.revision - b.revision);
-      let picked: Relation | null = null;
-      for (const v of ordered) {
-        if (old !== undefined && v.invalidated_by === old) continue;
-        if (epochMicros(effectiveTime(v)) <= at) picked = v;
-      }
-      if (picked === null) return false;
-      for (const v of ordered) {
-        let ended = v.invalidated_at ?? null;
-        if (ended === null && v.revision === ordered.at(-1)!.revision) {
-          const item = retired?.get(rid) ?? this.ended.get(rid);
-          if (item !== undefined) ended = item[1];
-        }
-        if (v.revision >= picked.revision && ended !== null) {
-          if (epochMicros(ended) <= at) return false;
-          break;
-        }
-      }
-      return true;
+    if (!versions || versions.length === 0) {
+      const start = this.starts.get(rid);
+      if (start === undefined) return [];
+      const item = retired?.get(rid) ?? this.ended.get(rid);
+      return [[start, item !== undefined ? item[1] : null]];
     }
-    const start = this.starts.get(rid);
-    if (start === undefined || epochMicros(start) > at) return false;
     const item = retired?.get(rid) ?? this.ended.get(rid);
-    if (item !== undefined && (item[0] === old || epochMicros(item[1]) <= at)) return false;
-    return true;
+    let checkVersions = versions;
+    if (item !== undefined) {
+      const last = versions.at(-1)!;
+      if (last.invalidated_at !== item[1] || last.invalidated_by !== item[0]) {
+        checkVersions = [...versions.slice(0, -1), { ...last, invalidated_at: item[1], invalidated_by: item[0] }];
+      }
+    }
+    const pointsMap = new Map<number, Date>();
+    for (const v of checkVersions) {
+      const eff = effectiveTime(v);
+      pointsMap.set(epochMicros(eff), eff);
+      if (v.invalidated_at != null) {
+        pointsMap.set(epochMicros(v.invalidated_at), v.invalidated_at);
+      }
+    }
+    const sortedPoints = [...pointsMap.entries()].sort(([a], [b]) => a - b).map(([, d]) => d);
+    const windows: Array<[Date, Date | null]> = [];
+    for (let i = 0; i < sortedPoints.length; i++) {
+      const t = sortedPoints[i]!;
+      if (versionAsOf(checkVersions, { valid: t, known: null }) !== null) {
+        const end = i + 1 < sortedPoints.length ? sortedPoints[i + 1]! : null;
+        if (windows.length > 0 && windows.at(-1)![1] !== null && epochMicros(windows.at(-1)![1]!) === epochMicros(t)) {
+          windows.at(-1)![1] = end;
+        } else {
+          windows.push([t, end]);
+        }
+      }
+    }
+    return windows;
   }
 
   /**
-   * When newer relations displaced an older one: the earliest time limit of them are valid, else at the limit-th.
+   * When newer relations displaced an older one: the retiring relation and the earliest displacement time.
    *
    * @param newer (Array<[Rank, string]>): the newer relations' ranks and ids, oldest first.
    * @param limit (number): the endpoint's max_count.
    * @param old (string): the displaced relation's id.
-   * @param retired (ReadonlyMap<string, [string, Date]> | undefined): pending retirements from the current settle run.
-   * @return (Date): the displacement time.
+   * @param windows (ReadonlyMap<string, Array<[Date, Date | null]>>): validity windows for relations at the endpoint.
+   * @return ([string, Date]): the displacing relation id and the displacement time.
    */
   private displacedAt(
     newer: Array<[Rank, string]>,
     limit: number,
     old: string,
-    retired?: ReadonlyMap<string, [string, Date]>,
-  ): Date {
-    const effective = this.times.get(newer[limit - 1]![1])!;
+    windows: ReadonlyMap<string, Array<[Date, Date | null]>>,
+  ): [string, Date] {
+    const by = newer[limit - 1]![1];
+    const effective = this.times.get(by)!;
     const since = this.starts.get(old);
-    if (since === undefined || epochMicros(since) >= epochMicros(effective)) return effective;
-    const candidates = new Map<number, Date>();
-    candidates.set(epochMicros(since), since);
+    if (since === undefined || epochMicros(since) >= epochMicros(effective)) return [by, effective];
+
+    const sinceUs = epochMicros(since);
+    const effectiveUs = epochMicros(effective);
+
+    const activeIds = new Set<string>();
     for (const [, rid] of newer) {
-      const versions = this.versions.get(rid);
-      if (versions) {
-        for (const v of versions) {
-          if (v.invalidated_by === old) continue;
-          const eff = effectiveTime(v);
-          const us = epochMicros(eff);
-          if (epochMicros(since) <= us && us < epochMicros(effective)) candidates.set(us, eff);
-        }
-      } else {
-        const start = this.starts.get(rid);
-        if (start !== undefined) {
-          const us = epochMicros(start);
-          if (epochMicros(since) <= us && us < epochMicros(effective)) candidates.set(us, start);
+      const rWindows = windows.get(rid) ?? [];
+      for (const [s, e] of rWindows) {
+        if (epochMicros(s) <= sinceUs && (e === null || sinceUs < epochMicros(e))) {
+          activeIds.add(rid);
+          break;
         }
       }
     }
-    const sortedTimes = [...candidates.entries()].sort(([a], [b]) => a - b);
-    for (const [, t] of sortedTimes) {
-      let count = 0;
-      for (const [, rid] of newer) {
-        if (this.isValidAt(rid, t, old, retired)) count++;
-        if (count >= limit) return t;
+
+    if (activeIds.size >= limit) {
+      const valid = newer.map(([, rid]) => rid).filter((rid) => activeIds.has(rid));
+      return [valid[limit - 1]!, since];
+    }
+
+    const events = new Map<number, { time: Date; changes: Array<[number, string]> }>();
+    for (const [, rid] of newer) {
+      const rWindows = windows.get(rid) ?? [];
+      for (const [s, e] of rWindows) {
+        const sUs = epochMicros(s);
+        if (sinceUs < sUs && sUs < effectiveUs) {
+          let entry = events.get(sUs);
+          if (!entry) {
+            entry = { time: s, changes: [] };
+            events.set(sUs, entry);
+          }
+          entry.changes.push([1, rid]);
+        }
+        if (e !== null) {
+          const eUs = epochMicros(e);
+          if (sinceUs < eUs && eUs < effectiveUs) {
+            let entry = events.get(eUs);
+            if (!entry) {
+              entry = { time: e, changes: [] };
+              events.set(eUs, entry);
+            }
+            entry.changes.push([-1, rid]);
+          }
+        }
       }
     }
-    return effective;
+
+    const sortedEvents = [...events.entries()].sort(([a], [b]) => a - b);
+    for (const [, { time, changes }] of sortedEvents) {
+      changes.sort(([kindA], [kindB]) => kindA - kindB);
+      for (const [kind, rid] of changes) {
+        if (kind === 1) {
+          activeIds.add(rid);
+        } else {
+          activeIds.delete(rid);
+        }
+      }
+      if (activeIds.size >= limit) {
+        const valid = newer.map(([, rid]) => rid).filter((rid) => activeIds.has(rid));
+        return [valid[limit - 1]!, time];
+      }
+    }
+
+    return [by, effective];
   }
 
   private seat(slot: Slot, rid: string, rank: Rank, effective: Date): void {
@@ -2179,6 +2223,10 @@ export class Contradictions {
       const facts = new Map([...(this.past.get(key) ?? []), ...group]);
       const ranked = [...group.keys()].sort((a, b) => compareRanked([group.get(b)!, b], [group.get(a)!, a]));
       const [canonical, side, endpoint] = JSON.parse(key) as [string, string, string];
+      const windows = new Map<string, Array<[Date, Date | null]>>();
+      for (const rid of facts.keys()) {
+        windows.set(rid, this.factWindows(rid, retired));
+      }
       for (const old of ranked) {
         const newer = this.newer(facts, old);
         if (newer.length < limit) continue;
@@ -2192,11 +2240,11 @@ export class Contradictions {
           );
           continue;
         }
-        const by = newer[limit - 1]![1];
-        const at = this.displacedAt(newer, limit, old, retired);
+        const [by, at] = this.displacedAt(newer, limit, old, windows);
         if (!retired.has(old)) slots.push(old);
         if (!retired.has(old) || epochMicros(at) < epochMicros(retired.get(old)![1])) {
           retired.set(old, [by, at]);
+          windows.set(old, this.factWindows(old, retired));
           why.set(old, [key, limit, ranked.length >= limit ? ranked[limit - 1]! : by]);
         }
       }
@@ -2204,14 +2252,14 @@ export class Contradictions {
         const newer = this.newer(facts, rid);
         const ended = retired.get(rid) ?? this.ended.get(rid);
         if (ended === undefined || newer.length < limit) continue;
-        const by = newer[limit - 1]![1];
-        const at = this.displacedAt(newer, limit, rid, retired);
+        const [by, at] = this.displacedAt(newer, limit, rid, windows);
         if (
           (by !== ended[0] || epochMicros(at) !== epochMicros(ended[1])) &&
           (facts.has(ended[0]) || epochMicros(at) < epochMicros(ended[1]))
         ) {
           retired.set(rid, [by, at]);
           this.ended.set(rid, [by, at]);
+          windows.set(rid, this.factWindows(rid, retired));
         }
       }
     }
@@ -2719,7 +2767,7 @@ export async function upsertRelations(
       const mergedProperties = mergeProps(prev.properties, rel.properties);
       const reassert = reasserts(prev, effective);
       const unchanged = deepEqual(prev.properties, mergedProperties) && toIso(prev.event_time) === toIso(eventTime);
-      if (eventTime != null && toIso(prev.event_time) !== toIso(eventTime)) moved.add(rid);
+      if (prev.is_current && eventTime != null && toIso(prev.event_time) !== toIso(eventTime)) moved.add(rid);
       if (unchanged && !reassert) {
         write = sources !== prev.source_count;
         props = { ...edge.props, source_count: sources };

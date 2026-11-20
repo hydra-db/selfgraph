@@ -1984,87 +1984,96 @@ class Contradictions:
         self._starts[version.id] = _run_start(found)
         return effective_time(version), version.revision, aware(version.created_at)
 
-    def _valid_at(
+    def _fact_windows(
         self,
         rid: str,
-        when: datetime,
-        old: str | None = None,
         retired: Mapping[str, tuple[str, datetime]] | None = None,
-    ) -> bool:
-        """Whether a relation was valid at a point in time by its recorded revisions and retirements.
+    ) -> list[tuple[datetime, datetime | None]]:
+        """Validity intervals of a relation by its recorded revisions and retirements.
 
         @param rid (str): the relation id.
-        @param when (datetime): the point in time to check.
-        @param old (str | None): the displaced relation id.
         @param retired (Mapping[str, tuple[str, datetime]] | None): pending retirements from the current settle run.
-        @return (bool): True when valid, False otherwise.
+        @return (list[tuple[datetime, datetime | None]]): list of (start, end) intervals where the relation was valid.
         """
         versions = self._versions.get(rid)
-        if versions:
-            ordered = sorted(versions, key=lambda v: v.revision)
-            picked = None
-            for v in ordered:
-                if old is not None and v.invalidated_by == old:
-                    continue
-                if effective_time(v) <= when:
-                    picked = v
-            if picked is None:
-                return False
-            for v in ordered:
-                ended = v.invalidated_at
-                if ended is None and v == ordered[-1]:
-                    item = (retired.get(rid) if retired else None) or self._ended.get(rid)
-                    if item is not None:
-                        ended = item[1]
-                if v.revision >= picked.revision and ended is not None:
-                    if aware(ended) <= when:
-                        return False
-                    break
-            return True
-        start = self._starts.get(rid)
-        if start is None or start > when:
-            return False
+        if not versions:
+            start = self._starts.get(rid)
+            if start is None:
+                return []
+            item = (retired.get(rid) if retired else None) or self._ended.get(rid)
+            return [(start, aware(item[1]) if item is not None else None)]
         item = (retired.get(rid) if retired else None) or self._ended.get(rid)
-        return not (item is not None and (item[0] == old or aware(item[1]) <= when))
+        check_versions = versions
+        if item is not None:
+            last = versions[-1]
+            if last.invalidated_at != item[1] or last.invalidated_by != item[0]:
+                check_versions = versions[:-1] + [
+                    last.model_copy(update={"invalidated_at": item[1], "invalidated_by": item[0]})
+                ]
+        points: set[datetime] = set()
+        for v in check_versions:
+            points.add(effective_time(v))
+            if v.invalidated_at is not None:
+                points.add(aware(v.invalidated_at))
+        sorted_points = sorted(points)
+        windows: list[tuple[datetime, datetime | None]] = []
+        for i, t in enumerate(sorted_points):
+            if version_as_of(check_versions, AsOf(valid=t, known=None)) is not None:
+                end = sorted_points[i + 1] if i + 1 < len(sorted_points) else None
+                if windows and windows[-1][1] == t:
+                    windows[-1] = (windows[-1][0], end)
+                else:
+                    windows.append((t, end))
+        return windows
 
     def _displaced_at(
         self,
         newer: list[tuple[tuple, str]],
         limit: int,
         old: str,
-        retired: Mapping[str, tuple[str, datetime]] | None = None,
-    ) -> datetime:
-        """When newer relations displaced an older one: the earliest time limit of them are valid, else at the limit-th.
+        windows: Mapping[str, list[tuple[datetime, datetime | None]]],
+    ) -> tuple[str, datetime]:
+        """When newer relations displaced an older one: the retiring relation and the earliest displacement time.
 
         @param newer (list[tuple[tuple, str]]): the newer relations' ranks and ids, oldest first.
         @param limit (int): the endpoint's max_count.
         @param old (str): the displaced relation's id.
-        @param retired (Mapping[str, tuple[str, datetime]] | None): pending retirements from the current settle run.
-        @return (datetime): the displacement time.
+        @param windows (Mapping[str, list[tuple[datetime, datetime | None]]]): validity windows for relations at
+            the endpoint.
+        @return (tuple[str, datetime]): the displacing relation id and the displacement time.
         """
+        by = newer[limit - 1][1]
         at = newer[limit - 1][0][0]
         since = self._starts.get(old)
         if since is None or since >= at:
-            return at
-        candidates = {since}
+            return by, at
+        active_ids: set[str] = set()
         for _, rid in newer:
-            versions = self._versions.get(rid)
-            if versions:
-                for v in versions:
-                    if v.invalidated_by == old:
-                        continue
-                    eff = effective_time(v)
-                    if since <= eff < at:
-                        candidates.add(eff)
-            else:
-                st = self._starts.get(rid)
-                if st is not None and since <= st < at:
-                    candidates.add(st)
-        for t in sorted(candidates):
-            count = sum(1 for _, rid in newer if self._valid_at(rid, t, old, retired))
-            if count >= limit:
-                return t
-        return at
+            for s, e in windows.get(rid, ()):
+                if s <= since and (e is None or since < e):
+                    active_ids.add(rid)
+                    break
+        if len(active_ids) >= limit:
+            valid = [rid for _, rid in newer if rid in active_ids]
+            return valid[limit - 1], since
+        events: dict[datetime, list[tuple[int, str]]] = {}
+        for _, rid in newer:
+            for s, e in windows.get(rid, ()):
+                if since < s < at:
+                    events.setdefault(s, []).append((1, rid))
+                if e is not None and since < e < at:
+                    events.setdefault(e, []).append((-1, rid))
+        for t in sorted(events):
+            changes = sorted(events[t], key=lambda x: x[0])
+            for kind, rid in changes:
+                if kind == 1:
+                    active_ids.add(rid)
+                else:
+                    active_ids.discard(rid)
+            if len(active_ids) >= limit:
+                valid = [rid for _, rid in newer if rid in active_ids]
+                return valid[limit - 1], t
+        return by, at
 
     def _seat(self, key: tuple[str, str, str], rid: str, rank: tuple) -> None:
         self._groups.setdefault(key, {})[rid] = rank
@@ -2152,6 +2161,7 @@ class Contradictions:
             facts = {**self._past.get(key, {}), **group}
             ranked = sorted(group, key=lambda o: (group[o], o), reverse=True)
             canonical, side, endpoint = key
+            windows = {rid: self._fact_windows(rid, retired) for rid in facts}
             for old in ranked:
                 newer = self._newer(facts, old)
                 if len(newer) < limit:
@@ -2165,22 +2175,22 @@ class Contradictions:
                         )
                     )
                     continue
-                by = newer[limit - 1][1]
-                at = self._displaced_at(newer, limit, old, retired)
+                by, at = self._displaced_at(newer, limit, old, windows)
                 if old not in retired:
                     slots.append(old)
                 if old not in retired or at < retired[old][1]:
                     retired[old] = (by, at)
+                    windows[old] = self._fact_windows(old, retired)
                     why[old] = (key, limit, ranked[limit - 1] if len(ranked) >= limit else by)
             for rid in self._past.get(key, {}):
                 newer = self._newer(facts, rid)
                 ended = retired.get(rid, self._ended.get(rid))
                 if ended is None or len(newer) < limit:
                     continue
-                by = newer[limit - 1][1]
-                at = self._displaced_at(newer, limit, rid, retired)
+                by, at = self._displaced_at(newer, limit, rid, windows)
                 if (by, at) != ended and (ended[0] in facts or at < ended[1]):
                     retired[rid] = self._ended[rid] = (by, at)
+                    windows[rid] = self._fact_windows(rid, retired)
         warnings: list[InsertWarning] = []
         for slot in slots:
             if not isinstance(slot, str):
@@ -2600,7 +2610,7 @@ async def upsert_relations(
             unchanged = _json_equal(prev.properties, merged_properties) and to_iso(prev.event_time) == to_iso(
                 event_time
             )
-            if event_time is not None and to_iso(prev.event_time) != to_iso(event_time):
+            if prev.is_current and event_time is not None and to_iso(prev.event_time) != to_iso(event_time):
                 moved[rid] = None
             if unchanged and not reassert:
                 write = sources != prev.source_count
