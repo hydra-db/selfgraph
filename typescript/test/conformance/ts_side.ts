@@ -1,7 +1,7 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 
 import { kv } from "../../src/cli.js";
-import { lenientTime } from "../../src/extraction/extractor.js";
+import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
   FalkorDBStore,
@@ -397,6 +397,7 @@ export function schemaWarnings(): {
   ossie: { doc: unknown; warnings: string };
   json_constants: { flags: unknown[]; documents: unknown[] };
   lenient_event_times: Array<string | null>;
+  repeated_extracted_relations: unknown;
 } {
   const terms = Schema.parse(TERMS_SPEC);
   const subSchema = Schema.parse({
@@ -531,6 +532,19 @@ export function schemaWarnings(): {
     }),
     terms_subtypes: ["Employees", "staff", "personnel"].map((q) =>
       [...expandTokens(tokens(q), subSchema, tokens)].sort(comparePy),
+    ),
+    repeated_extracted_relations: toJsonable(
+      assembleExtraction(
+        [],
+        [
+          { event_time: "2022-01-01", properties: { role: "Engineer", remove: "old", nested: { a: 1 } } },
+          { event_time: null, properties: { office: "London" } },
+          { event_time: "2020-01-01", properties: { role: "Lead", remove: null, nested: { b: 2 } } },
+          { event_time: "not a date" },
+        ].map((fields) => ({ from_name: "Jane", type: "WORKS_AT", to_name: "Acme", ...fields })),
+        [],
+        [],
+      ),
     ),
     lenient_event_times: LENIENT_EVENT_TIMES.map((value) => {
       const parsed = lenientTime(value);

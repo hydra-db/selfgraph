@@ -10,6 +10,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from .. import ids as _ids
 from .._ops import (
+    _merge_props,
     _reject_reserved_rel_type,
     _require_optional_text,
     _validate_entity_identity,
@@ -392,11 +393,13 @@ class LLMExtractor(_WarningSink):
                     from_entity=from_id,
                     type=rtype,
                     to_entity=to_id,
-                    properties=dict(props or {}),
+                    properties=_merge_props(None, props),
                     event_time=event_time,
                 )
-            elif relations[rid].event_time is None:
-                relations[rid].event_time = event_time
+            else:
+                relations[rid].properties = _merge_props(relations[rid].properties, props)
+                if event_time is not None:
+                    relations[rid].event_time = event_time
             if evidence is not None and evidence not in relations[rid].evidence:
                 relations[rid].evidence.append(evidence)
             return rid

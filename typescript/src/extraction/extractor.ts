@@ -14,6 +14,8 @@ import {
   type InsertWarning,
   insertWarning,
   issueLine,
+  type JsonObject,
+  JsonValue,
   LLM_DEFAULTS,
   type ParsedDocument,
   type ParsedExtraction,
@@ -21,7 +23,7 @@ import {
   Stance,
   Status,
 } from "../models.js";
-import { rejectReservedRelType, validateEntityIdentity, validateStrength } from "../ops.js";
+import { mergeProps, rejectReservedRelType, validateEntityIdentity, validateStrength } from "../ops.js";
 import type { Extractor, LLMClient } from "../protocols.js";
 import { type ParsedSchema, renderSchemaCatalog } from "../schema.js";
 import { checkOptions, keysOf, requireOptionalText } from "../validate.js";
@@ -38,6 +40,7 @@ const RelationsOut = z.object({
       type: z.string(),
       to_name: z.string(),
       event_time: z.string().nullable(),
+      properties: z.record(z.string(), JsonValue).default({}),
     }),
   ),
 });
@@ -233,7 +236,10 @@ export function assembleExtraction(
     return ids.entityId(ent.type, ent.name);
   };
 
-  const relations = new Map<string, Record<string, unknown> & { evidence: ChunkEvidence[] }>();
+  const relations = new Map<
+    string,
+    Record<string, unknown> & { properties: JsonObject; event_time: Date | null; evidence: ChunkEvidence[] }
+  >();
   const addRelation = (
     fromId: string,
     rtype: string,
@@ -249,13 +255,14 @@ export function assembleExtraction(
         from_entity: fromId,
         type: rtype,
         to_entity: toId,
-        properties: { ...(props ?? {}) },
+        properties: mergeProps(null, props),
         event_time: eventTime ?? null,
         evidence: [],
       });
     }
     const relation = relations.get(rid)!;
-    relation.event_time ??= eventTime ?? null;
+    relation.properties = mergeProps(relation.properties, props);
+    if (eventTime != null) relation.event_time = eventTime;
     const cited = relation.evidence;
     if (evidence && !cited.some((ev) => ev.chunk_id === evidence.chunk_id && ev.source_id === evidence.source_id)) {
       cited.push(evidence);

@@ -14,7 +14,7 @@ from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _kv
 from selfgraph.errors import SelfGraphError
-from selfgraph.extraction.extractor import _lenient_event_time
+from selfgraph.extraction.extractor import LLMExtractor, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
@@ -428,6 +428,28 @@ def schema_warnings():
             for q in ("Employees", "staff", "personnel")
         ],
         "lenient_event_times": [json_iso(_lenient_event_time(value)) for value in LENIENT_EVENT_TIMES],
+        "repeated_extracted_relations": to_jsonable(
+            LLMExtractor._assemble(
+                [],
+                [
+                    _RelOut(from_name="Jane", type="WORKS_AT", to_name="Acme", **fields)
+                    for fields in [
+                        {
+                            "event_time": "2022-01-01",
+                            "properties": {"role": "Engineer", "remove": "old", "nested": {"a": 1}},
+                        },
+                        {"event_time": None, "properties": {"office": "London"}},
+                        {
+                            "event_time": "2020-01-01",
+                            "properties": {"role": "Lead", "remove": None, "nested": {"b": 2}},
+                        },
+                        {"event_time": "not a date"},
+                    ]
+                ],
+                [],
+                [],
+            )
+        ),
     }
 
 

@@ -39,13 +39,15 @@ from selfgraph.extraction.prompts import render
         (["2020-01-01", None], "2020-01-01"),
         ([None, None], None),
         (["2020-01-01", "2020-01-01"], "2020-01-01"),
-        (["2020-01-01", "2022-01-01"], "2020-01-01"),
-        ([None, "2020-01-01", "2022-01-01"], "2020-01-01"),
+        (["2020-01-01", "2022-01-01"], "2022-01-01"),
+        (["2022-01-01", "2020-01-01"], "2020-01-01"),
+        ([None, "2020-01-01", "2022-01-01"], "2022-01-01"),
         (["not a date", "2020-01-01"], "2020-01-01"),
+        (["2020-01-01", "not a date"], "2020-01-01"),
         (["0001", None], "0001-01-01"),
     ],
 )
-def test_repeated_extracted_relations_keep_the_first_non_null_date(dates, expected):
+def test_repeated_extracted_relations_keep_the_last_valid_date(dates, expected):
     facts = LLMExtractor._assemble(
         [EntityInput(type="Person", name="Jane"), EntityInput(type="Company", name="Acme")],
         [_RelOut(from_name="Jane", type="WORKS_AT", to_name="Acme", event_time=date) for date in dates],
@@ -57,33 +59,45 @@ def test_repeated_extracted_relations_keep_the_first_non_null_date(dates, expect
     assert (rel.from_entity, rel.type, rel.to_entity) == ("person:jane", "WORKS_AT", "company:acme")
 
 
-def test_repeated_extracted_relations_keep_a_later_chunk_date_and_all_evidence():
+@pytest.mark.parametrize("multiple_chunks", [False, True])
+def test_repeated_extracted_relations_merge_dates_properties_and_evidence(multiple_chunks):
+    first = [
+        {"event_time": "2020-01-01", "properties": {"role": "Engineer", "remove": "old", "nested": {"old": 1}}},
+        {"event_time": None, "properties": {"team": "Platform"}},
+    ]
+    later = [
+        {"event_time": "2022-01-01", "properties": {"role": "Lead", "remove": None, "nested": {"new": 2}}},
+        {"event_time": "not a date", "properties": {"office": "London"}},
+        {"event_time": None},
+    ]
+
     class DatedLLM(FakeLLM):
         relation_calls = 0
 
         async def generate(self, *, system, user, output):
             if output is _RelationsOut:
                 self.relation_calls += 1
-                date = None if self.relation_calls == 1 else "2020-01-01"
+                rows = (first if self.relation_calls == 1 else later) if multiple_chunks else first + later
                 return _RelationsOut(
-                    relations=[_RelOut(from_name="Jane", type="WORKS_AT", to_name="Acme", event_time=date)]
+                    relations=[_RelOut(from_name="Jane", type="WORKS_AT", to_name="Acme", **row) for row in rows]
                 )
             return await super().generate(system=system, user=user, output=output)
 
-    text = "Jane works at Acme." + " context" * 650
+    text = "Jane works at Acme." + (" context" * 650 if multiple_chunks else "")
     chunks = chunk_text(text)
-    assert len(chunks) > 1
+    assert (len(chunks) > 1) == multiple_chunks
     llm = DatedLLM(extracting_llm([("Person", "Jane"), ("Company", "Acme")], []).responses)
     g = fresh_graph("chunk-dates", llm=llm, resolver="exact")
     result = run(g.insert.text(text, source_id="dated-chunks"))
     [rel] = run(g.relations.list()).items
-    assert rel.event_time == utc(2020)
+    assert rel.event_time == utc(2022)
+    assert rel.properties == {"role": "Lead", "team": "Platform", "office": "London", "nested": {"new": 2}}
     assert len(result.relations) == 1
     assert llm.relation_calls == len(chunks)
     evidence = run(g.relations.evidence(rel.id)).items
     assert {e.chunk_id for e in evidence} == {_ids.chunk_id(result.source_version, c.index) for c in chunks}
     assert rel.source_count == 1
-    assert [r.id for r in run(g.retrieve("Jane", as_of="2021-01-01")).subgraph.relations] == [rel.id]
+    assert [r.id for r in run(g.retrieve("Jane", as_of="2023-01-01")).subgraph.relations] == [rel.id]
 
 
 def _full_responses():
