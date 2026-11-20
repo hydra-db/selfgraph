@@ -785,7 +785,7 @@ async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip
     @param kind (str): "entity" or "relation", for validation and the not-found error.
     @param skip (int): rows to skip.
     @param limit (int): maximum rows.
-    @return (list[Evidence]): the evidence; raises NotFoundError when the first page is empty and the target is unknown.
+    @return (list[Evidence]): the evidence; raises NotFoundError when the target is unknown, whatever the cursor.
     """
     if kind == "entity":
         target_id = _ids.canonical_entity_id(target_id)
@@ -794,7 +794,7 @@ async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip
     rows = await runner.match_nodes(
         ns, L_EVIDENCE, equals={"target_id": target_id}, order_by="id", skip=skip, limit=limit
     )
-    if not rows and skip == 0:
+    if not rows:
         if kind == "entity":
             if not await runner.node_exists(ns, L_ENTITY, target_id):
                 raise await missing_entity(runner, ns, target_id)

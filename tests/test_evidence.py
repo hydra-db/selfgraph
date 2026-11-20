@@ -133,6 +133,16 @@ def test_evidence_of_unknown_object_raises():
     assert run(g.entities.evidence("person:ada")).items == []
 
 
+def test_evidence_cursor_does_not_hide_an_unknown_object():
+    g = fresh_graph("ev_cursor")
+    for page_fn in (g.entities.evidence, g.relations.evidence):
+        missing = "person:nobody" if page_fn is g.entities.evidence else "relation:nothing"
+        with pytest.raises(NotFoundError) as exc:
+            run(page_fn(missing, cursor="NTA="))
+        assert exc.value.code == "not_found"
+        assert missing in str(exc.value)
+
+
 def test_sync_client_lists_evidence():
     with SyncSelfGraph(store=make_store(), namespace=unique_ns("ev")) as g:
         g.insert.facts(FACTS, source_id="s1")

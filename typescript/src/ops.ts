@@ -697,7 +697,7 @@ export async function listEvidence(
   if (kind !== "entity") requireStr(`${kind} id`, given);
   const targetId = kind === "entity" ? ids.canonicalEntityId(given) : given;
   const rows = await runner.matchNodes(ns, L_EVIDENCE, { equals: { target_id: targetId }, skip, limit });
-  if (!rows.length && skip === 0) {
+  if (!rows.length) {
     if (kind === "entity") {
       if (!(await runner.nodeExists(ns, L_ENTITY, targetId))) throw await missingEntity(runner, ns, targetId);
     } else if (!(await relationExists(runner, ns, targetId))) {
