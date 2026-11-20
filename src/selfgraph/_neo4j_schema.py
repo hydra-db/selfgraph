@@ -69,7 +69,7 @@ def _items(data: Mapping[str, Any], key: str, where: str) -> list[Any]:
     if value is None:
         return []
     if isinstance(value, str) or not isinstance(value, list | tuple):
-        raise ValidationError(f"{where}.{key} must be a list, got {type_name(value)}")
+        raise ValidationError(f"{where}.{key} must be a list, got {type_name(value)}", field=key)
     return list(value)
 
 
@@ -163,7 +163,7 @@ def _require(types: dict[str, dict[str, Any]], constraint: Mapping[str, Any], wh
     """
     kind = constraint.get("type")
     label = constraint.get("node_type") or constraint.get("relationship_type")
-    names = list(constraint.get("property_names") or [])
+    names = _items(constraint, "property_names", where)
     if not names and constraint.get("property_name"):
         names = [constraint["property_name"]]
     scope = f"{label}({', '.join(map(str, names))})"

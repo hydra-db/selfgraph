@@ -208,6 +208,20 @@ def test_invalid_neo4j_ontology_and_schema_objects_raise():
             Schema.from_neo4j_ontology(bad)
 
 
+def test_constraint_property_names_must_be_a_list():
+    for bad, name in ((1, "number"), (True, "boolean"), (1.5, "number"), ("age", "string")):
+        with pytest.raises(
+            ValidationError, match=rf"constraints\[0\]\.property_names must be a list, got {name}"
+        ) as exc:
+            Schema.from_neo4j_ontology(
+                {
+                    "node_types": ["Person"],
+                    "constraints": [{"type": "EXISTENCE", "node_type": "Person", "property_names": bad}],
+                }
+            )
+        assert exc.value.field == "property_names"
+
+
 def test_cli_and_mcp_convert_schemas(capsys, tmp_path):
     g = fresh_graph("si")
     imported = cli(g, ["schema", "import", "--from", "neo4j", json_file(tmp_path, "neo.json", CANONICAL)], capsys)
