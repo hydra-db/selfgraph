@@ -57,6 +57,35 @@ describe("built CLI against Kuzu", () => {
     }
   });
 
+  it("stores a __proto__ metadata key that Python stores too", () => {
+    const proto = cli([
+      ...kuzu,
+      "insert",
+      "text",
+      "Ada met Charles.",
+      "--source-id",
+      "s1",
+      "--metadata",
+      '{"__proto__":{"x":1},"a":1}',
+    ]);
+    expect(proto.code).toBe(0);
+    const kvForm = cli([
+      ...kuzu,
+      "insert",
+      "text",
+      "Ada met Charles.",
+      "--source-id",
+      "s2",
+      "--metadata",
+      '__proto__={"x":1}',
+      "--metadata",
+      "a=1",
+    ]);
+    expect(kvForm.code).toBe(0);
+    expect(proto.out).toMatchObject({ source_id: "s1" });
+    expect(kvForm.out).toMatchObject({ source_id: "s2" });
+  });
+
   it("prints diff summaries and JSON", () => {
     const ns = ["--namespace", "cli_diff"];
     seed(ns, "Ann", "Anvil");

@@ -219,7 +219,7 @@ const kvOrNull = (pairs: string[]): JsonObject | null => (pairs.length ? kv(pair
  */
 function metadataOf(items: string[]): JsonObject | null {
   if (!items.length) return null;
-  const out: JsonObject = {};
+  const out: JsonObject = Object.create(null);
   for (const item of items) {
     Object.assign(out, item.trimStart().startsWith("{") ? parseJson(item, " in --metadata") : kv([item], "--metadata"));
   }
