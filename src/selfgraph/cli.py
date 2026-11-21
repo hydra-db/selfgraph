@@ -16,7 +16,6 @@ from . import _ops
 from .errors import (
     WARNING_HINTS,
     NotFoundError,
-    PromptTemplateError,
     SelfGraphError,
     ValidationError,
     internal_error,
@@ -78,7 +77,27 @@ _LOGGED_WARNINGS = ("basic_extraction", "ner_extraction")
 _SCHEMA_HELP = """schema: print the active schema (--schema FILE), or null
 schema import [--from neo4j] FILE: convert a Neo4j graph schema
 schema export [--to neo4j|ossie]: print the active schema as a Neo4j graph schema or an Apache Ossie ontology"""
-_USAGE_ERRORS = (ValidationError, PromptTemplateError, FileNotFoundError)
+_USAGE_CODES = frozenset(
+    {
+        "invalid_argument",
+        "unknown_key",
+        "invalid_setting",
+        "llm_required",
+        "embedder_required",
+        "schema_required",
+        "schema_violation",
+        "immutable_identity",
+        "unknown_reference",
+        "relation_certified",
+        "relation_invalidated",
+        "merge_reverted",
+        "invalid_cursor",
+        "invalid_resolver_decision",
+        "read_only_query",
+        "cypher_query_limit",
+        "invalid_prompt_template",
+    }
+)
 _EVIDENCE_HELP = (
     "evidence as JSON: {source_id, chunk_id?, quote?, start_offset?, end_offset?, confidence?} or an array of them "
     "(repeatable)"
@@ -1012,13 +1031,25 @@ def main(argv: list[str] | None = None) -> int:
         command = _command_path(parser, args)
         if isinstance(exc, SelfGraphError):
             print(error_text(exc, command), file=sys.stderr)
-            return 2 if isinstance(exc, _USAGE_ERRORS) else 1
+            return 2 if _is_usage_error(exc) else 1
         if isinstance(exc, FileNotFoundError):
             masked = redact_uris(str(exc), settings.uri, settings.llm_base_url)
             print(f"error: {surface_hint(masked).rstrip()}", file=sys.stderr)
             return 2
         print(error_text(internal_error(exc, settings.uri, settings.llm_base_url), command), file=sys.stderr)
         return 1
+
+
+def _is_usage_error(exc: BaseException) -> bool:
+    """Whether a failed command was given invalid input or settings, which exits with code 2.
+
+    The code decides, not the class: `invalid_setting` is raised as both ValidationError and StoreError, and both must
+    exit 2 so a script telling "fix your settings" from "the server failed" branches on the code.
+
+    @param exc (BaseException): the error that ended the command.
+    @return (bool): True when the command exits 2.
+    """
+    return isinstance(exc, SelfGraphError) and exc.code in _USAGE_CODES
 
 
 if __name__ == "__main__":

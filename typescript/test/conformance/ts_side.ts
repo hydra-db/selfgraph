@@ -1,7 +1,7 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 
-import { kv } from "../../src/cli.js";
-import { internalError, maskUri, redactUri, redactUris } from "../../src/errors.js";
+import { exitCodeFor, kv } from "../../src/cli.js";
+import { HINTS, internalError, maskUri, redactUri, redactUris } from "../../src/errors.js";
 import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
@@ -710,6 +710,17 @@ const FACTS_TYPE_CASES: unknown[] = [
 
 export const TEXT =
   "Grace Hopper joined Remington Rand. Grace Hopper wrote COBOL. Zoë Ångström met Ada Lovelace in 北京.";
+
+/**
+ * The exit code each error code gets, so both SDKs compare one table.
+ *
+ * @return (Array<[string, number]>): [code, 2 for invalid input or settings, 1 otherwise], sorted by code.
+ */
+export function exitCodes(): Array<[string, number]> {
+  return Object.keys(HINTS)
+    .sort()
+    .map((code) => [code, exitCodeFor(new SelfGraphError("", { code: code as keyof typeof HINTS }))]);
+}
 
 /**
  * A store pointed at the same database the Python side uses for a backend.

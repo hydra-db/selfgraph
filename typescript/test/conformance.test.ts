@@ -11,6 +11,7 @@ import type { Schema } from "../src/schema.js";
 import {
   conformanceStore,
   dump,
+  exitCodes,
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
@@ -24,7 +25,7 @@ const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url
 const KUZU = tempKuzu("selfgraph-conf-");
 
 function py(
-  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation",
+  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation" | "exit_codes",
   store: string,
   ns: string,
 ): unknown {
@@ -134,6 +135,10 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     await shared.close();
     expect(result.slice(0, 4)).toEqual([true, true, true, true]);
     expect(py("kuzu_isolation", "-", "-")).toEqual(result);
+  });
+
+  it("gives every error code the same CLI exit code in both languages", () => {
+    expect(exitCodes()).toEqual(py("exit_codes", "-", "-"));
   });
 
   it("schema validation produces identical warnings in both languages", () => {

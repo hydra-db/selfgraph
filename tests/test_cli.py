@@ -26,7 +26,7 @@ from helpers import (
 import selfgraph
 import selfgraph.cli as cli_module
 from selfgraph._serde import from_iso
-from selfgraph.cli import _metadata, build_parser, main
+from selfgraph.cli import _USAGE_CODES, _metadata, build_parser, main
 from selfgraph.errors import WARNING_HINTS, SelfGraphError, ValidationError
 from selfgraph.runtime import parse_time, read_json
 
@@ -222,6 +222,37 @@ def test_get_of_a_missing_id_fails_like_delete(capsys, tmp_path):
         for action in ("get", "delete") if resource != "entity" else ():
             assert kuzu_main(tmp_path, resource, action, "my-id") == 2
             assert f"{resource} id must start with '{resource}:', got 'my-id'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("code", sorted(_USAGE_CODES))
+def test_every_input_code_exits_two_whatever_class_raised_it(capsys, monkeypatch, code):
+    from selfgraph import StoreError
+
+    def fail(*_args, **_kwargs):
+        raise StoreError("a setting is wrong", code=code, field="uri")
+
+    monkeypatch.setattr(cli_module, "check_settings", fail)
+    assert main(["--store", "kuzu", "--uri", "x.kuzu", "entity", "list"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith(f"error[{code}]: a setting is wrong")
+    assert "field: uri" in err
+
+
+def test_a_cypher_query_limit_exits_two(capsys, tmp_path):
+    assert kuzu_main(tmp_path, "query", "RETURN 1 // " + " " * 65_536) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error[cypher_query_limit]: ")
+    assert "field: query" in err
+
+
+def test_setting_and_runtime_codes_take_their_own_exit_codes(capsys, tmp_path):
+    from selfgraph import NotFoundError
+
+    assert main(["--store", "hydradb", "--uri", "http://127.0.0.1:1", "entity", "list"]) == 2
+    assert capsys.readouterr().err.startswith("error[invalid_setting]: ")
+    assert kuzu_main(tmp_path, "entity", "get", "person:none") == 1
+    assert capsys.readouterr().err.startswith("error[not_found]: ")
+    assert NotFoundError("Entity", "person:none").code not in _USAGE_CODES
 
 
 def test_global_flags_after_the_subcommand(capsys, tmp_path):

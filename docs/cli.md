@@ -196,8 +196,8 @@ code appears by a `hint:` line from
 | Code | Meaning |
 |------|---------|
 | `0` | Success. |
-| `1` | A runtime failure: a missing id (`get`, `update`, `delete`, `NotFoundError`), a conflict (`ConflictError`), a backend or connection error (`StoreError`, `TransientError`), or an LLM error (`ExtractionError`). A `get` for a missing id prints the error on stderr and nothing on stdout. The library and MCP return `null` instead. |
-| `2` | Invalid input or usage (`ValidationError`, `PromptTemplateError`): a bad flag or setting, a missing or unreadable file (`insert facts nofile.json`, `--instructions nofile.json`), invalid JSON or `--schema`, `--instructions`, or `--prompts` content, or a malformed prompt template. |
+| `1` | A runtime failure: a missing id (`get`, `update`, `delete`, `not_found`), a conflict (`already_exists`), a backend or connection error (`query_failed` and the other store codes), or an LLM error (`extraction_failed` and the other LLM codes). A `get` for a missing id prints the error on stderr and nothing on stdout. The library and MCP return `null` instead. |
+| `2` | Invalid input or usage, decided by the error code rather than the class: a bad flag or setting (`invalid_argument`, `unknown_key`, `invalid_setting`), a missing schema or a schema violation, a bad cursor, a missing or unreadable file (`insert facts nofile.json`, `--instructions nofile.json`), invalid JSON or `--schema`, `--instructions`, or `--prompts` content, or a malformed prompt template. `invalid_setting` is 2 even when a `StoreError` raises it, such as a `bolt://` URI that the HydraDB driver rejects. |
 | `130` | Interrupted with Ctrl-C. |
 | `141` | The reader of stdout closed early, as with `head`. |
 

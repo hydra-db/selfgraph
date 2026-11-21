@@ -12,7 +12,7 @@ from pydantic import validate_call
 from selfgraph import EvidenceInput, Extraction, KuzuStore, Neo4jStore, Schema, SelfGraph, ValidationError, _serde, ids
 from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
-from selfgraph.cli import _kv
+from selfgraph.cli import _USAGE_CODES, _kv
 from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris
 from selfgraph.extraction.extractor import LLMExtractor, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
@@ -2196,8 +2196,21 @@ async def dump(graph, ns):
     )
 
 
+def exit_codes() -> list:
+    """The code the CLI would exit with for each error code, so both SDKs compare one table.
+
+    @return (list): [code, 2 for invalid input or settings, 1 otherwise] per code, sorted by code.
+    """
+    from selfgraph.errors import HINTS
+
+    return [[code, 2 if code in _USAGE_CODES else 1] for code in sorted(HINTS)]
+
+
 async def main():
     cmd = sys.argv[1]
+    if cmd == "exit_codes":
+        json.dump(exit_codes(), sys.stdout)
+        return
     if cmd == "kuzu_isolation":
         from selfgraph import KuzuStore, ValidationError
 

@@ -185,6 +185,15 @@ describe("built CLI against Kuzu", () => {
     }
   });
 
+  it("exits 2 for an invalid_setting raised as a StoreError, and 1 for a missing id", () => {
+    const setting = cli(["--store", "hydradb", "--uri", "http://127.0.0.1:1", "entity", "list"]);
+    expect(setting.code).toBe(2);
+    expect(setting.err).toMatch(/^error\[invalid_setting\]: /);
+    const missing = cli([...kuzu, "entity", "get", "person:none"]);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toMatch(/^error\[not_found\]: /);
+  });
+
   it("keeps NaN and Infinity flag values as text, since they are not JSON", () => {
     const ns = ["--namespace", "nan_flags"];
     const props = ["--prop", "a=NaN", "--prop", "b=Infinity", "--prop", "c=-Infinity"];
