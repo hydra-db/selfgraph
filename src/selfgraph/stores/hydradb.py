@@ -297,7 +297,7 @@ class HydraDBStore(AutoCommitStore):
         **driver_kwargs: Any,
     ) -> None:
         auth = bolt_auth(auth)
-        self._driver = bolt_driver(uri, auth, **driver_kwargs)
+        self._driver = bolt_driver(uri, auth, store=type(self).__name__, **driver_kwargs)
         self._uri = uri
         self._has_auth = auth is not None
         self._database = database or "default"

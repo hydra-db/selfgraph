@@ -105,10 +105,10 @@ class CypherStore(CypherPrimitives):
         kwargs = dict(driver_kwargs)
         kwargs.setdefault("notifications_min_severity", "OFF")
         try:
-            self._driver = bolt_driver(uri, auth, **kwargs)
+            self._driver = bolt_driver(uri, auth, store=type(self).__name__, **kwargs)
         except StoreError:
             kwargs.pop("notifications_min_severity", None)
-            self._driver = bolt_driver(uri, auth, **kwargs)
+            self._driver = bolt_driver(uri, auth, store=type(self).__name__, **kwargs)
         self._uri = uri
         self._database = database
 
