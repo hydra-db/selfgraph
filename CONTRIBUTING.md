@@ -36,6 +36,14 @@ to this repository.
 - Raise every new error with a code and a hint, the same on the API, CLI, and MCP in both SDKs, and never show a password or token in it. [`AGENTS.md`](AGENTS.md) has the details.
 - Fill in the "AI Assistance" section of the PR template. Do not remove it. If the section is missing, the gate check fails. You are responsible for each line that you submit.
 
+Use the PR template. Write the Summary in two or three nonempty lines, at most
+400 characters total. Keep decisions, validation results, limits, the linked
+issue, AI disclosure, checklist, and breaking changes inside the collapsed
+Implementation details block. Use `None.` for decisions or limits that do not
+apply. AI disclosure is `None.` or a filled Model/Effort table. The PR gate
+checks this format for external contributors. Maintainers and bots retain
+the existing gate exemptions.
+
 ## Build and test
 
 Install with `pip install -e ".[dev]"`. [`AGENTS.md`](AGENTS.md) covers the

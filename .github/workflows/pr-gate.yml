@@ -13,6 +13,10 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - run: node --test .github/scripts/pr-body.test.cjs
       - uses: actions/github-script@v7
         with:
           script: |
@@ -28,18 +32,15 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo, path: '.github/vouched.json', ref: context.payload.repository.default_branch });
               roster = JSON.parse(Buffer.from(got.data.content, 'base64').toString('utf8'));
             } catch (e) { core.warning(`Could not read vouched.json, treating roster as empty: ${e.message}`); }
-            // Anyone with write access (the backend team) counts as a maintainer.
             const isTeam = async (login) => (roster.maintainers || []).includes(login) ||
               ['admin', 'write'].includes(await github.rest.repos.getCollaboratorPermissionLevel({
                 owner: context.repo.owner, repo: context.repo.repo, username: login }).then(r => r.data.permission, () => 'none'));
             const OVERRIDE = 'gate-override';
 
             if (pr.user.type === 'Bot') { core.info('Bot PR, exempt.'); return; }
-            // Pre-existing PRs from before the gate are exempt.
             if (new Date(pr.created_at) < new Date('2026-10-08T11:57:53Z')) { core.info('Opened before the gate, exempt.'); return; }
             if ((pr.labels || []).some(l => l.name === OVERRIDE)) { core.info(`Has ${OVERRIDE}, exempt.`); return; }
             if (context.payload.action === 'reopened' && await isTeam(context.payload.sender.login)) {
-              // Persist the override so later pushes from the author do not close the PR again.
               await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: number, labels: [OVERRIDE] });
               core.info(`Reopened by a maintainer, labelled ${OVERRIDE}.`);
               return;
@@ -55,7 +56,6 @@ jobs:
                 const iss = await github.rest.issues.get({ owner: context.repo.owner, repo: context.repo.repo, issue_number: n });
                 if (iss.data.pull_request) continue;
                 if (!(iss.data.labels || []).some(l => (l.name || l) === 'approved-for-pr')) continue;
-                // Only the issue author or an assignee can open the PR for an approved issue.
                 if (iss.data.user?.login === author || (iss.data.assignees || []).some(a => a.login === author)) { hasApproved = true; break; }
                 notAssigned = n;
               } catch (e) { }
@@ -68,6 +68,10 @@ jobs:
               await github.rest.pulls.update({ owner: context.repo.owner, repo: context.repo.repo, pull_number: number, state: 'closed' });
               core.setFailed('No linked approved issue.');
               return;
+            }
+            if (!isMaintainer) {
+              const validatePrBody = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-body.cjs`);
+              problems.push(...validatePrBody(body));
             }
             if (!/##\s*AI assistance/i.test(body)) {
               problems.push('The **AI assistance** section is missing from the PR description. Restore it from the PR template and disclose whether AI tools were used.');
