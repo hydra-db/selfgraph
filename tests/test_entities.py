@@ -147,6 +147,11 @@ def test_property_values_and_keys_are_checked_and_null_clears_a_key():
     for bad in ({"": 1}, {"  ": 2}):
         with pytest.raises(ValidationError, match="properties keys cannot be empty or whitespace"):
             run(g.entities.create("A", "T", properties=bad))
+    for bad in ({"": "v"}, {"  ": "v"}):
+        with pytest.raises(ValidationError, match="external_ids keys cannot be empty or whitespace"):
+            run(g.entities.create("B", "T", external_ids=bad))
+        with pytest.raises(ValidationError, match="external_ids keys cannot be empty or whitespace"):
+            run(g.entities.update(e.id, external_ids=bad))
     with pytest.raises(ValidationError, match="properties keys cannot be empty"):
         bad_rel = {"from_entity": e.id, "type": "R", "to_entity": e.id, "properties": {" ": 1}}
         run(g.insert.facts({"relations": [bad_rel]}))

@@ -469,7 +469,9 @@ def _require_str_mapping(name: str, value: Any) -> None:
     @return (None): nothing; raises ValidationError when not a string-to-string mapping.
     """
     _require_mapping(name, value)
-    for item in value.values():
+    for key, item in value.items():
+        if not key.strip():
+            raise ValidationError(f"{name} keys cannot be empty or whitespace")
         if not isinstance(item, str):
             raise ValidationError(f"{name} must map strings to strings")
 
