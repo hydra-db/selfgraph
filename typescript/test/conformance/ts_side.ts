@@ -1995,6 +1995,71 @@ export async function unmerge(graph: SelfGraph): Promise<Record<string, unknown>
  * @return (Promise<Record<string, unknown>>): each relation's versions, newest first, and the warning codes of each insert.
  */
 export async function supersede(graph: SelfGraph): Promise<Record<string, unknown>> {
+  const clearing = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}-uncertify`,
+    schema: SUPERSEDE_SCHEMA,
+    contradiction: "supersede",
+  });
+  await clearing.initialize();
+  await clearing.insert.facts({
+    entities: [
+      { type: "Person", name: "Ann" },
+      { type: "Company", name: "One" },
+      { type: "Company", name: "Two" },
+    ],
+  });
+  const older = await clearing.relations.create("person:ann", "WORKS_AT", "company:one", { event_time: "2020-01-01" });
+  await clearing.relations.certify(older.id, { by: "alice" });
+  const newer = await clearing.relations.create("person:ann", "WORKS_AT", "company:two", { event_time: "2023-01-01" });
+  const result = await clearing.relations.uncertify(older.id);
+  strictEqual(result.is_current, false);
+  strictEqual(result.invalidated_by, newer.id);
+  deepStrictEqual(
+    (await clearing.relations.list()).items.map((r) => r.id),
+    [newer.id],
+  );
+  for (const side of ["from", "to"] as const) {
+    const strict = new SelfGraph(graph.store, {
+      namespace: `${graph.namespace}-strict-${side}`,
+      schema: { entities: SUPERSEDE_SCHEMA.entities, relations: [{ type: "WORKS_AT", [side]: { max_count: 1 } }] },
+      schema_mode: "strict",
+      contradiction: "warn",
+    });
+    await strict.initialize();
+    await strict.insert.facts({
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Person", name: "Bob" },
+        { type: "Company", name: "One" },
+        { type: "Company", name: "Two" },
+      ],
+    });
+    const old = await strict.relations.create("person:ann", "WORKS_AT", "company:one", { event_time: "2020-01-01" });
+    await strict.relations.certify(old.id, { by: "alice" });
+    const rival = await strict.relations.create(
+      side === "from" ? "person:ann" : "person:bob",
+      "WORKS_AT",
+      side === "from" ? "company:two" : "company:one",
+      { event_time: "2023-01-01", contradiction: "supersede" },
+    );
+    const replay = await strict.insert.facts({
+      relations: [
+        { from_entity: rival.from_entity, type: rival.type, to_entity: rival.to_entity, event_time: rival.event_time },
+      ],
+    });
+    strictEqual(replay.relations[0]!.revision, rival.revision);
+    const messages: string[] = [];
+    const previous = setLogger((message) => messages.push(message));
+    try {
+      await strict.relations.uncertify(old.id);
+      strictEqual(
+        messages.some((message) => message.includes("schema warning [contradiction]")),
+        true,
+      );
+    } finally {
+      setLogger(previous);
+    }
+  }
   await graph.insert.facts({
     entities: [
       ...["Ann", "Bob"].map((name) => ({ type: "Person", name })),

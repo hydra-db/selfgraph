@@ -58,7 +58,7 @@ import type {
   NodeRow,
   Props,
 } from "./protocols.js";
-import type { SchemaSubject } from "./schema.js";
+import { type SchemaSubject, warnSchema } from "./schema.js";
 import {
   decodeEntity,
   decodeEvidence,
@@ -2050,10 +2050,6 @@ export class Contradictions {
   /**
    * Record a relation becoming current at every constrained endpoint.
    *
-   * A conflict is more than max_count current relations of one type at one endpoint. In warn mode both are kept
-   * and a "contradiction" warning names the others. In strict mode the conflict throws ValidationError. In
-   * supersede mode the endpoint is resolved by settle once the whole write is admitted.
-   *
    * @param rid (string): the relation id.
    * @param rtype (string): the normalized relation type.
    * @param fromEntity (string): the source entity id.
@@ -2061,6 +2057,7 @@ export class Contradictions {
    * @param rank (Rank): the relation's rank, from rank.
    * @param effective (Date): the relation's effective time.
    * @param certified (boolean): whether the version becoming current is certified, which spares it in settle.
+   * @param recheck (boolean): check limits even when the relation is already current.
    * @return (InsertWarning[]): the warn-mode contradiction warnings.
    */
   admit(
@@ -2071,6 +2068,7 @@ export class Contradictions {
     rank: Rank,
     effective: Date,
     certified = false,
+    recheck = false,
   ): InsertWarning[] {
     if (certified) this.certified.add(rid);
     else this.certified.delete(rid);
@@ -2083,7 +2081,7 @@ export class Contradictions {
         this.dirty.set(key, limit);
         continue;
       }
-      if (group.has(rid) || group.size + 1 <= limit) continue;
+      if ((group.has(rid) && !recheck) || group.size + (group.has(rid) ? 0 : 1) <= limit) continue;
       const [canonical, side, endpoint] = slot;
       const others = [...group.keys()].join(", ");
       if (this.mode === "strict") {
@@ -3019,7 +3017,8 @@ export async function updateRelation(
  * @param rel (Relation): the new, uncertified revision, already written.
  * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
  * @param at (Date): the write's timestamp, stamped on each retirement.
- * @return (Promise<void>): nothing.
+ * @param mode (string): the endpoint contradiction mode.
+ * @return (Promise<InsertWarning[]>): endpoint warnings.
  */
 async function settleUncertified(
   runner: Runner,
@@ -3027,19 +3026,30 @@ async function settleUncertified(
   rel: Relation,
   caps: ReadonlyMap<string, RelationCap> | null | undefined,
   at: Date,
-): Promise<void> {
-  const [tracker, found] = await contradictionCheck(runner, ns, { contradiction: "supersede", caps }, [
+  mode: string = "supersede",
+): Promise<InsertWarning[]> {
+  const [tracker, found] = await contradictionCheck(runner, ns, { contradiction: mode, caps }, [
     [rel.type, rel.from_entity, rel.to_entity],
   ]);
-  if (tracker === null) return;
-  tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, tracker.rank(rel), effectiveTime(rel));
-  const [ended] = tracker.settle();
+  if (tracker === null) return [];
+  const warnings = tracker.admit(
+    rel.id,
+    rel.type,
+    rel.from_entity,
+    rel.to_entity,
+    tracker.rank(rel),
+    effectiveTime(rel),
+    false,
+    true,
+  );
+  const [ended, foundWarnings] = tracker.settle();
   await retireRelations(
     runner,
     ns,
     [...ended].map(([old, [by, when]]) => [found.get(old)!, by, when] as const),
     at,
   );
+  return [...warnings, ...foundWarnings];
 }
 
 /**
@@ -3291,17 +3301,14 @@ function certifications(rel: Relation, at: Date, by: string | null = null): Prop
 /**
  * Mark the current version of a relation as verified by someone, in place, or clear the mark when by is null.
  *
- * A certified relation stays current when a supersede contradiction or a replaced source would retire it. The mark
- * belongs to the version: a later revision of the relation starts uncertified. Each certification is kept in the
- * version's certifications, with when it ended, so a known_at read shows the one in force then; certifying again by the
- * same verifier, or uncertifying an uncertified version, changes nothing.
- *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rid (string): the relation id.
  * @param by (string | null): who verified it, or null to remove the certification.
  * @param at (Date): when it was certified.
- * @return (Relation): the current version with its certification.
+ * @param mode (string): the endpoint contradiction mode.
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): schema endpoint limits.
+ * @return (Relation): the stored version after certification and settlement.
  */
 export async function certifyRelation(
   runner: Runner,
@@ -3309,6 +3316,8 @@ export async function certifyRelation(
   rid: string,
   by: string | null,
   at: Date,
+  mode: string = "off",
+  caps?: ReadonlyMap<string, RelationCap> | null,
 ): Promise<Relation> {
   requireStr("relation id", rid);
   if (by !== null && (typeof by !== "string" || !pyStrip(by))) {
@@ -3316,7 +3325,9 @@ export async function certifyRelation(
   }
   let edge = await runner.getCurrentEdge(ns, rid);
   if (edge !== null) {
-    await runner.lockNode(ns, L_ENTITY, edge.from_id);
+    for (const eid of relationLockIds(caps, [[edge.type, edge.from_id, edge.to_id]])) {
+      await runner.lockNode(ns, L_ENTITY, eid);
+    }
     edge = await runner.getCurrentEdge(ns, rid);
   }
   if (edge === null || !isRelationType(edge.type)) {
@@ -3326,13 +3337,20 @@ export async function certifyRelation(
       code: "relation_invalidated",
     });
   }
-  const current = relationOf(edge);
-  if (current.certified_by === by) return current;
-  const props = { ...edge.props, ...certifications(current, at, by) };
-  const rows: EdgeWrite[] = [[edge.type, edge.from_id, edge.to_id, props]];
-  precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);
-  await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
-  return relationOf({ ...edge, props });
+  let rel = relationOf(edge);
+  if (rel.certified_by !== by) {
+    const props = { ...edge.props, ...certifications(rel, at, by) };
+    const rows: EdgeWrite[] = [[edge.type, edge.from_id, edge.to_id, props]];
+    precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);
+    await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
+    rel = relationOf({ ...edge, props });
+  }
+  if (by === null && mode !== "off" && caps?.size) {
+    const warnings = await settleUncertified(runner, ns, rel, caps, at, mode);
+    warnSchema(warnings);
+    rel = (await newestRelation(runner, ns, rid))!;
+  }
+  return rel;
 }
 
 /**

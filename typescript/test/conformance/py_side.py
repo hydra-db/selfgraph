@@ -5,6 +5,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from pydantic import ValidationError as PydanticValidationError
 from pydantic import validate_call
@@ -1543,6 +1544,72 @@ async def supersede(graph):
     @param graph (SelfGraph): a graph with a two-sided max_count schema and contradiction="supersede".
     @return (dict): each relation's versions, newest first, and the warning codes of each insert.
     """
+    clearing = SelfGraph(
+        graph.store, namespace=graph.namespace + "-uncertify", schema=SUPERSEDE_SCHEMA, contradiction="supersede"
+    )
+    await clearing.initialize()
+    await clearing.insert.facts(
+        {
+            "entities": [
+                {"type": "Person", "name": "Ann"},
+                {"type": "Company", "name": "One"},
+                {"type": "Company", "name": "Two"},
+            ]
+        }
+    )
+    older = await clearing.relations.create("person:ann", "WORKS_AT", "company:one", event_time="2020-01-01")
+    await clearing.relations.certify(older.id, by="alice")
+    newer = await clearing.relations.create("person:ann", "WORKS_AT", "company:two", event_time="2023-01-01")
+    result = await clearing.relations.uncertify(older.id)
+    assert not result.is_current and result.invalidated_by == newer.id
+    assert [r.id for r in (await clearing.relations.list()).items] == [newer.id]
+    for side in ("from", "to"):
+        strict = SelfGraph(
+            graph.store,
+            namespace=graph.namespace + "-strict-" + side,
+            schema={
+                "entities": SUPERSEDE_SCHEMA["entities"],
+                "relations": [{"type": "WORKS_AT", side: {"max_count": 1}}],
+            },
+            schema_mode="strict",
+            contradiction="warn",
+        )
+        await strict.initialize()
+        await strict.insert.facts(
+            {
+                "entities": [
+                    {"type": "Person", "name": "Ann"},
+                    {"type": "Person", "name": "Bob"},
+                    {"type": "Company", "name": "One"},
+                    {"type": "Company", "name": "Two"},
+                ]
+            }
+        )
+        old = await strict.relations.create("person:ann", "WORKS_AT", "company:one", event_time="2020-01-01")
+        await strict.relations.certify(old.id, by="alice")
+        rival = await strict.relations.create(
+            "person:ann" if side == "from" else "person:bob",
+            "WORKS_AT",
+            "company:two" if side == "from" else "company:one",
+            event_time="2023-01-01",
+            contradiction="supersede",
+        )
+        replay = await strict.insert.facts(
+            {
+                "relations": [
+                    {
+                        "from_entity": rival.from_entity,
+                        "type": rival.type,
+                        "to_entity": rival.to_entity,
+                        "event_time": rival.event_time,
+                    }
+                ]
+            }
+        )
+        assert replay.relations[0].revision == rival.revision
+        with patch("selfgraph.schema._log.warning") as warning:
+            await strict.relations.uncertify(old.id)
+            assert any(call.args[1] == "contradiction" for call in warning.call_args_list)
     people = [{"type": "Person", "name": n} for n in ("Ann", "Bob")]
     companies = [{"type": "Company", "name": n} for n in ("Acme", "Globex", "Initech")]
     await graph.insert.facts({"entities": [*people, *companies]})

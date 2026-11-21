@@ -245,14 +245,15 @@ export class Relations extends Resource {
   }
 
   /**
-   * Remove the certification of the current version of a relation.
+   * Remove certification and settle endpoint limits, including retries after a failed settlement.
    *
    * @param id (string): the relation id.
-   * @return (Relation): the current version without certification.
+   * @return (Relation): the stored version after removing certification and settling endpoint limits.
    */
   async uncertify(id: string): Promise<Relation> {
     ops.validateOwnId("relation", id);
-    return this.graph.write((tx, ns) => ops.certifyRelation(tx, ns, id, null, new Date()));
+    const { contradiction, caps } = this.graph.contradictionFor(null, this.graph.schema);
+    return this.graph.write((tx, ns) => ops.certifyRelation(tx, ns, id, null, new Date(), contradiction, caps));
   }
 
   /**

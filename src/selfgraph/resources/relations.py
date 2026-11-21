@@ -202,13 +202,16 @@ class Relations(Resource):
         return await self._c._write(_ops.certify_relation, id, by, now())
 
     async def uncertify(self, id: str) -> Relation:
-        """Remove the certification of the current version of a relation.
+        """Remove certification and settle endpoint limits, including retries after a failed settlement.
 
         @param id (str): the relation id.
-        @return (Relation): the current version without certification.
+        @return (Relation): the stored version after removing certification and settling endpoint limits.
         """
         _ops._validate_own_id("relation", id)
-        return await self._c._write(_ops.certify_relation, id, None, now())
+        mode, caps = self._c._contradiction_for(None, self._c._schema)
+        return await self._c._write(
+            _ops.certify_relation, id, None, now(), "supersede" if mode == "llm" else mode, caps
+        )
 
     async def delete(self, id: str) -> DeleteResult:
         """Delete a relation, all its versions, and any decision trace that uses it as a step.

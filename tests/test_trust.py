@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from helpers import (
     ANN_ACME_GLOBEX,
+    KUZU,
     RAW_CYPHER,
     cli,
     employment_graph,
@@ -212,26 +213,30 @@ def test_retrieve_lists_hubs_marks_lines_through_them_and_can_skip_them():
 
 
 def test_certified_relations_survive_supersede_and_lead_retrieval():
-    g = employment_graph("cert", contradiction="supersede")
-    old = run(g.insert.facts({"relations": [works_at("acme", 2024)]})).relations[0]
-    certified = run(g.relations.certify(old.id, by="hr"))
-    assert certified.certified_by == "hr" and certified.certified_at is not None
-    assert certified.revision == old.revision
-    result = run(g.insert.facts({"relations": [works_at("globex", 2025)]}))
-    assert [w.code for w in result.warnings] == ["certified_kept"]
-    assert run(g.relations.get(old.id)).is_current
-    assert "GRAPH [certified] | Ann -[WORKS_AT]-> Acme" in run(g.retrieve("Ann")).context
-    assert run(g.relations.uncertify(old.id)).certified_at is None
-    run(g.relations.certify(old.id, by="hr"))
-    bumped = run(g.relations.update(old.id, set_properties={"role": "cto"}))
-    assert bumped.certified_at is None
-    newer = result.relations[0]
-    assert (bumped.is_current, bumped.invalidated_by, bumped.invalidated_at) == (False, newer.id, newer.event_time)
-    assert [r.id for r in run(g.relations.list(from_entity="person:ann")).items] == [newer.id]
-    with pytest.raises(ValidationError, match="certified_by must be a non-empty string"):
-        run(g.relations.certify(old.id, by=" "))
-    with pytest.raises(NotFoundError):
-        run(g.relations.certify("relation:missing", by="hr"))
+    for action in ("uncertify", "update"):
+        g = employment_graph("cert", contradiction="supersede")
+        old = run(g.insert.facts({"relations": [works_at("acme", 2024)]})).relations[0]
+        certified = run(g.relations.certify(old.id, by="hr"))
+        assert certified.certified_by == "hr" and certified.certified_at is not None
+        assert certified.revision == old.revision
+        result = run(g.insert.facts({"relations": [works_at("globex", 2025)]}))
+        assert [w.code for w in result.warnings] == ["certified_kept"]
+        assert run(g.relations.get(old.id)).is_current
+        assert "GRAPH [certified] | Ann -[WORKS_AT]-> Acme" in run(g.retrieve("Ann")).context
+        bumped = run(
+            g.relations.uncertify(old.id)
+            if action == "uncertify"
+            else g.relations.update(old.id, set_properties={"role": "cto"})
+        )
+        assert bumped.certified_by is None
+        assert bumped.certified_at is None
+        newer = result.relations[0]
+        assert (bumped.is_current, bumped.invalidated_by, bumped.invalidated_at) == (False, newer.id, newer.event_time)
+        assert [r.id for r in run(g.relations.list(from_entity="person:ann")).items] == [newer.id]
+        with pytest.raises(ValidationError, match="certified_by must be a non-empty string"):
+            run(g.relations.certify(old.id, by=" "))
+        with pytest.raises(NotFoundError):
+            run(g.relations.certify("relation:missing", by="hr"))
 
 
 def test_certify_rejects_a_retired_relation():
@@ -823,3 +828,75 @@ def test_ossie_export_logs_every_field_it_leaves_out(caplog):
         "ossie export: the aliases, certified flag of entity type Company are left out",
         "ossie export: the synonyms, min counts of relation OWNS are left out",
     ]
+
+
+@pytest.mark.parametrize("mode", ["supersede", "warn"])
+@pytest.mark.parametrize("side", ["from", "to"])
+def test_uncertifying_settles_certification_surplus(mode, side, caplog):
+    schema = {
+        "entities": [{"name": "Person"}, {"name": "Company"}],
+        "relations": [{"type": "WORKS_AT", side: {"max_count": 1}}],
+    }
+    g = fresh_graph("uncertify-surplus", schema=schema, schema_mode="strict", contradiction=mode)
+    run(g.insert.facts({"entities": [*ANN_ACME_GLOBEX, {"type": "Person", "name": "Bob"}]}))
+    old = run(g.relations.create("person:ann", "WORKS_AT", "company:acme", event_time="2020-01-01"))
+    run(g.relations.certify(old.id, by="alice"))
+    new = run(
+        g.relations.create(
+            "person:ann" if side == "from" else "person:bob",
+            "WORKS_AT",
+            "company:globex" if side == "from" else "company:acme",
+            event_time="2023-01-01",
+            contradiction="supersede",
+        )
+    )
+    replay = run(
+        g.insert.facts(
+            {
+                "relations": [
+                    {
+                        "from_entity": new.from_entity,
+                        "type": new.type,
+                        "to_entity": new.to_entity,
+                        "event_time": new.event_time,
+                    }
+                ]
+            }
+        )
+    )
+    assert replay.relations[0].revision == new.revision
+    caplog.clear()
+    result = run(g.relations.uncertify(old.id))
+    assert result.certified_by is None
+    if mode == "supersede":
+        assert not result.is_current and result.invalidated_by == new.id
+        assert [r.id for r in run(g.relations.list()).items] == [new.id]
+    else:
+        assert len(run(g.relations.list()).items) == 2
+    if mode == "warn":
+        assert "schema warning [contradiction]" in caplog.text
+
+
+@pytest.mark.skipif(not KUZU, reason="Kuzu auto-commit settlement recovery")
+def test_uncertify_retry_finishes_failed_settlement(monkeypatch):
+    g = employment_graph("uncertify-retry", contradiction="supersede")
+    old = run(g.relations.create("person:ann", "WORKS_AT", "company:acme", event_time="2020-01-01"))
+    run(g.relations.certify(old.id, by="hr"))
+    newer = run(g.relations.create("person:ann", "WORKS_AT", "company:globex", event_time="2023-01-01"))
+    original = g.store.create_edges
+    calls = 0
+
+    async def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise StoreError("retirement write failed")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(g.store, "create_edges", fail_once)
+    with pytest.raises(StoreError, match="retirement write failed"):
+        run(g.relations.uncertify(old.id))
+    result = run(g.relations.uncertify(old.id))
+    assert result.certified_by is None
+    assert (result.is_current, result.invalidated_by) == (False, newer.id)
+    assert [rel.id for rel in run(g.relations.list()).items] == [newer.id]

@@ -2030,13 +2030,17 @@ class Contradictions:
             self._past.setdefault(key, {})[rid] = self._groups[key].pop(rid)
 
     def admit(
-        self, rid: str, rtype: str, from_entity: str, to_entity: str, rank: tuple, *, certified: bool = False
+        self,
+        rid: str,
+        rtype: str,
+        from_entity: str,
+        to_entity: str,
+        rank: tuple,
+        *,
+        certified: bool = False,
+        recheck: bool = False,
     ) -> list[InsertWarning]:
         """Record a relation becoming current at every constrained endpoint.
-
-        A conflict is more than max_count current relations of one type at one endpoint. In warn mode both are
-        kept and a "contradiction" warning names the others. In strict mode the conflict raises ValidationError. In
-        supersede mode the endpoint is resolved by settle once the whole write is admitted.
 
         @param rid (str): the relation id.
         @param rtype (str): the normalized relation type.
@@ -2044,6 +2048,7 @@ class Contradictions:
         @param to_entity (str): the destination entity id.
         @param rank (tuple): the relation's rank, from rank.
         @param certified (bool): whether the version becoming current is certified, which spares it in settle.
+        @param recheck (bool): check limits even when the relation is already current.
         @return (list[InsertWarning]): the warn-mode contradiction warnings.
         """
         if certified:
@@ -2057,7 +2062,7 @@ class Contradictions:
             if self._mode == "supersede":
                 self._dirty[key] = limit
                 continue
-            if rid in group or len(group) + 1 <= limit:
+            if (rid in group and not recheck) or len(group) + (rid not in group) <= limit:
                 continue
             canonical, side, endpoint = key
             if self._mode == "strict":
@@ -2831,8 +2836,13 @@ async def update_relation(
 
 
 async def _settle_uncertified(
-    runner: Any, ns: str, rel: Relation, caps: Mapping[str, RelationCap] | None, at: datetime
-) -> None:
+    runner: Any,
+    ns: str,
+    rel: Relation,
+    caps: Mapping[str, RelationCap] | None,
+    at: datetime,
+    mode: str = "supersede",
+) -> list[InsertWarning]:
     """Settle the max_count endpoints of a relation whose new revision dropped the certification that kept it current.
 
     @param runner (Any): graph runner.
@@ -2840,16 +2850,17 @@ async def _settle_uncertified(
     @param rel (Relation): the new, uncertified revision, already written.
     @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits, or None without a schema.
     @param at (datetime): the write's timestamp, stamped on each retirement.
-    @return (None): nothing.
+    @param mode (str): the endpoint contradiction mode.
+    @return (list[InsertWarning]): endpoint warnings.
     """
-    tracker, found = await _contradiction_check(
-        runner, ns, "supersede", caps, [(rel.type, rel.from_entity, rel.to_entity)]
-    )
+    tracker, found = await _contradiction_check(runner, ns, mode, caps, [(rel.type, rel.from_entity, rel.to_entity)])
     if tracker is None:
-        return
-    tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, tracker.rank(rel))
-    ended, _ = tracker.settle()
+        return []
+    warnings = tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, tracker.rank(rel), recheck=True)
+    ended, found_warnings = tracker.settle()
     await retire_relations(runner, ns, [(found[old], by, when) for old, (by, when) in ended.items()], at)
+
+    return warnings + found_warnings
 
 
 async def list_relations(
@@ -3119,27 +3130,33 @@ def _certifications(rel: Relation, at: datetime, by: str | None = None) -> dict:
     }
 
 
-async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: datetime) -> Relation:
+async def certify_relation(
+    runner: Any,
+    ns: str,
+    rid: str,
+    by: str | None,
+    at: datetime,
+    mode: str = "off",
+    caps: Mapping[str, RelationCap] | None = None,
+) -> Relation:
     """Mark the current version of a relation as verified by someone, in place, or clear the mark when by is None.
-
-    A certified relation stays current when a supersede contradiction or a replaced source would retire it.
-    The mark belongs to the version: a later revision of the relation starts uncertified. Each certification is kept
-    in the version's certifications, with when it ended, so a known_at read shows the one in force then; certifying
-    again by the same verifier, or uncertifying an uncertified version, changes nothing.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param rid (str): relation id.
     @param by (str | None): who verified it, or None to remove the certification.
     @param at (datetime): when it was certified.
-    @return (Relation): the current version with its certification.
+    @param mode (str): the endpoint contradiction mode.
+    @param caps (Mapping[str, RelationCap] | None): schema endpoint limits.
+    @return (Relation): the stored version after certification and settlement.
     """
     _ids._require_str("relation id", rid)
     if by is not None and (not isinstance(by, str) or not by.strip()):
         raise ValidationError("certified_by must be a non-empty string")
     edge = await runner.get_current_edge(ns, rid)
     if edge is not None:
-        await runner.lock_node(ns, L_ENTITY, edge["from_id"])
+        for eid in _relation_lock_ids(caps, [(edge["type"], edge["from_id"], edge["to_id"])]):
+            await runner.lock_node(ns, L_ENTITY, eid)
         edge = await runner.get_current_edge(ns, rid)
     if edge is None or not _is_relation_type(edge["type"]):
         newest = await _newest_edge(runner, ns, rid, _is_relation_type)
@@ -3149,14 +3166,20 @@ async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: d
             f"{invalidated_note(_relation_of(newest))}; only a current relation can be certified",
             code="relation_invalidated",
         )
-    current = _relation_of(edge)
-    if current.certified_by == by:
-        return current
-    props = {**edge["props"], **_certifications(current, at, by)}
-    rows = [(edge["type"], edge["from_id"], edge["to_id"], props)]
-    await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, rows)
-    await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
-    return _relation_of({**edge, "props": props})
+    rel = _relation_of(edge)
+    if rel.certified_by != by:
+        props = {**edge["props"], **_certifications(rel, at, by)}
+        rows = [(edge["type"], edge["from_id"], edge["to_id"], props)]
+        await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, rows)
+        await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
+        rel = _relation_of({**edge, "props": props})
+    if by is None and mode != "off" and caps:
+        from .schema import log_schema_warnings
+
+        warnings = await _settle_uncertified(runner, ns, rel, caps, at, mode)
+        log_schema_warnings(warnings)
+        rel = _relation_of(await _newest_edge(runner, ns, rid, _is_relation_type))
+    return rel
 
 
 async def source_targets(runner: Any, ns: str, source_id: str) -> set[str]:
