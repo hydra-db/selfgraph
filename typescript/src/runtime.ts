@@ -189,8 +189,17 @@ export function parseJson(text: string, where: string): unknown {
  */
 export function readText(path: string): string {
   try {
-    return readFileSync(path === "-" ? 0 : path, "utf8");
+    const input = path === "-" ? 0 : path;
+    const bytes = readFileSync(input);
+    const text = bytes.toString("utf8");
+    if (text.includes("\uFFFD") && !bytes.equals(Buffer.from(text, "utf8"))) {
+      throw new ValidationError(`cannot read ${pyRepr(path)}: not valid UTF-8; save the file as UTF-8 and try again`, {
+        field: "path",
+      });
+    }
+    return text;
   } catch (exc) {
+    if (exc instanceof ValidationError) throw exc;
     throw new ValidationError(`cannot read ${pyRepr(path)}: ${(exc as Error).message}`);
   }
 }

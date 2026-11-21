@@ -136,6 +136,11 @@ def read_text(path: str) -> str:
     """
     try:
         return sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(
+            f"cannot read {path!r}: not valid UTF-8; save the file as UTF-8 and try again",
+            field="path",
+        ) from exc
     except OSError as exc:
         raise ValidationError(f"cannot read {path!r}: {exc.strerror or exc}") from exc
 
