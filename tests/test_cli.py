@@ -236,9 +236,8 @@ def test_global_flags_after_the_subcommand(capsys, tmp_path):
     assert json.loads(capsys.readouterr().out)["id"] == "t:a"
     assert main(["--store", "kuzu", "--uri", uri, "--namespace", "n", "entity", "get", "t:a", "--namespace", "m"]) == 1
     capsys.readouterr()
-    with pytest.raises(SystemExit) as exc:
-        main(["entity", "get", "t:a", "--bogus"])
-    assert exc.value.code == 2
+    assert main(["entity", "get", "t:a", "--bogus"]) == 2
+    assert "error[invalid_argument]" in capsys.readouterr().err
 
 
 def test_time_flags_share_one_parser(capsys):
@@ -253,9 +252,10 @@ def test_time_flags_share_one_parser(capsys):
     cli(g, ["entity", "create", "--name", "b", "--type", "T"], capsys)
     out = cli(g, ["relation", "create", "t:a", "KNOWS", "t:b", "--event-time", "2024-01-02T03:04:05Z"], capsys)
     assert out["event_time"] == "2024-01-02T03:04:05Z"
-    with pytest.raises(SystemExit):
+    with pytest.raises(SelfGraphError) as raised:
         cli(g, ["relation", "create", "t:a", "KNOWS", "t:b", "--event-time", "soon"], capsys)
-    assert "is not an ISO 8601 date or time" in capsys.readouterr().err
+    assert raised.value.code == "invalid_argument"
+    assert raised.value.field == "event_time"
 
 
 def test_time_arguments_read_one_iso_grammar_on_every_python():
@@ -431,6 +431,48 @@ def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path
     assert raised.value.code == "invalid_argument"
     assert raised.value.field == "directory"
     assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
+
+
+@pytest.mark.parametrize(
+    ("argv", "code", "field", "text"),
+    [
+        (["entity", "list", "--limit", "x"], "invalid_argument", "limit", "--limit expects an integer, got 'x'"),
+        (["retrieve", "Ada", "--k", "1.5"], "invalid_argument", "k", "--k expects an integer, got '1.5'"),
+        (
+            ["preference", "create", "--strength", "x"],
+            "invalid_argument",
+            "strength",
+            "--strength expects a number, got 'x'",
+        ),
+        (
+            ["diff", "--since", "nope"],
+            "invalid_argument",
+            "since",
+            "invalid since: 'nope' is not an ISO 8601 date or time",
+        ),
+        (
+            ["--store", "bogus", "entity", "list"],
+            "invalid_setting",
+            "store",
+            "--store got 'bogus'; choose from neo4j, cypher, memgraph",
+        ),
+        (
+            ["--store", "kuzu", "--uri", ":memory:", "preference", "create", "--stance", "bogus"],
+            "invalid_argument",
+            "stance",
+            "--stance got 'bogus'; choose from preference, disinterest",
+        ),
+    ],
+)
+def test_typed_and_choice_flags_report_the_same_coded_error_as_typescript(capsys, argv, code, field, text):
+    args = argv if argv[0] == "--store" else ["--store", "kuzu", "--uri", ":memory:", *argv]
+    if any(flag in argv for flag in ("--limit", "--k", "--strength", "--since")):
+        pytest.importorskip("kuzu")
+    assert main(args) == 2
+    err = capsys.readouterr().err
+    assert err.startswith(f"error[{code}]: {text}")
+    assert f"field: {field}" in err
+    assert "usage:" not in err
 
 
 def test_version_and_help_text(capsys):

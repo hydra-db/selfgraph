@@ -40,6 +40,20 @@ function cli(args: string[], options: { input?: string; env?: Record<string, str
 beforeAll(buildCli);
 
 describe("built CLI against Kuzu", () => {
+  it.each([
+    ["--store", "bogus", "entity", "list"],
+    ["--store", "kuzu", "--uri", ":memory:", "entity", "list", "--limit", "x"],
+    ["--store", "kuzu", "--uri", ":memory:", "retrieve", "Ada", "--k", "1.5"],
+    ["--store", "kuzu", "--uri", ":memory:", "diff", "--since", "nope"],
+    ["--store", "kuzu", "--uri", ":memory:", "preference", "create", "--stance", "bogus"],
+  ])("reports a coded error for %j", (...args) => {
+    const result = cli(args as string[]);
+    expect(result.code).toBe(2);
+    expect(result.err).toMatch(/^error\[(invalid_argument|invalid_setting)\]: /);
+    expect(result.err).toContain("field: ");
+    expect(result.err).not.toContain("Usage:");
+  });
+
   const kuzu = ["--store", "kuzu", "--uri", join(dir, "cli.kuzu")];
   const seed = (ns: string[], ...names: string[]) => {
     for (const name of names) cli([...kuzu, ...ns, "entity", "create", "--name", name, "--type", "T"]);
@@ -253,7 +267,7 @@ describe("built CLI against Kuzu", () => {
       [["maintenance", "prune", "--older-than", "2999-01-01"], "older_than 2999-01-01T00:00:00Z is in the future"],
       [["schema", "export", "--to", "neo4j"], "no schema set; pass --schema FILE or SELFGRAPH_SCHEMA"],
       [["--schema-mode", "strict", "entity", "list"], "schema_mode 'strict' needs a schema"],
-      [["--resolver", "fuzzier", "init"], "Allowed choices are exact, default, fuzzy, llm"],
+      [["--resolver", "fuzzier", "init"], "--resolver got 'fuzzier'; choose from exact, default, fuzzy, llm"],
       [["--resolver", "llm", "entity", "list"], "pass --llm-provider and --llm-model (or SELFGRAPH_LLM_*)", noLlm],
     ] as Array<[string[], string, Record<string, string>?]>) {
       const res = cli([...kuzu, ...args], { env });

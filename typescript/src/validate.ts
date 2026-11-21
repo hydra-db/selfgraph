@@ -345,6 +345,7 @@ export function parseTime(value: unknown, field: string): Date | null {
   } catch {
     throw new ValidationError(
       `invalid ${field}: ${pyRepr(value)} is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)`,
+      { field },
     );
   }
   requireDatetime(field, parsed);
