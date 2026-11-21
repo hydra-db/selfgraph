@@ -771,6 +771,10 @@ describe("obsidian vault file names", () => {
     expect(new Set(out).size).toBe(3);
     for (const path of out) expect(new TextEncoder().encode(path).length).toBeLessThanOrEqual(255);
   });
+
+  it("strips leading and trailing dots", () => {
+    expect(notes([". .NET", "Acme. .", "v1. ."]).sort()).toEqual(["Acme.md", "NET.md", "v1.md"]);
+  });
 });
 
 describe("trust rules without a store", () => {
