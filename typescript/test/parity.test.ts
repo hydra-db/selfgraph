@@ -159,6 +159,29 @@ describe("extraction, chunking, and retrieval helpers match Python", () => {
     expect(chunkByChars(fx.chunks.text, 200, 40)).toEqual(fx.chunks.by_chars);
   });
 
+  it("character chunking starts after leading whitespace and keeps a fitting word whole", () => {
+    const texts = [
+      ["\nSupercalifragilistic rest", 20],
+      [" aaaaaaaa ", 9],
+      [" abcdefghij klm", 8],
+      ["\n\n  abc def", 5],
+    ] as const;
+    for (const [text, size] of texts) {
+      const chunks = chunkByChars(text, size, 0);
+      expect(
+        chunks.map((chunk) => chunk.text),
+        JSON.stringify([text, size]),
+      ).toEqual(chunks.map((chunk) => Array.from(text).slice(chunk.start_offset, chunk.end_offset).join("")));
+      for (const chunk of chunks) expect(chunk.text.length).toBeLessThanOrEqual(size);
+    }
+    expect(chunkByChars("\nSupercalifragilistic rest", 20, 0).map((chunk) => chunk.text)).toEqual([
+      "Supercalifragilistic",
+      "rest",
+    ]);
+    expect(chunkByChars(" aaaaaaaa ", 9, 0).map((chunk) => chunk.text)).toEqual(["aaaaaaaa "]);
+    expect(chunkByChars(" abcdefghij klm", 8, 0).map((chunk) => chunk.text)).toEqual(["abcdefgh", "ij klm"]);
+  });
+
   it("token chunking and counting with cl100k_base", async () => {
     const { chunkText, countTokens } = await loadTokenizer();
     expect(chunkText(fx.chunks.text, { max_tokens: 64, overlap_tokens: 8 })).toEqual(fx.chunks.by_tokens);

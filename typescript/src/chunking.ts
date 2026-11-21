@@ -175,6 +175,7 @@ export function chunkByChars(text: string, sizeIn: number, overlapIn: number): C
   const chunks: Chunk[] = [];
   const n = cps.length;
   let start = 0;
+  while (start < n && space[start]) start++;
   let index = 0;
   while (start < n) {
     let end = Math.min(start + size, n);
