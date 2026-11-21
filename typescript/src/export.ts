@@ -142,7 +142,12 @@ export function toOssie(raw: Schema | ParsedSchema): Obj {
  * @return (string): the file name without extension, or "" when nothing usable is left.
  */
 function stem(text: string): string {
-  const cleaned = pyStrip(pyStrip(pyStrip(text.replace(UNSAFE, "-")), "."));
+  let cleaned = text.replace(UNSAFE, "-");
+  let stripped = pyStrip(pyStrip(pyStrip(cleaned), "."));
+  while (stripped !== cleaned) {
+    cleaned = stripped;
+    stripped = pyStrip(pyStrip(pyStrip(cleaned), "."));
+  }
   const raw = utf8(cleaned);
   if (raw.length <= STEM_MAX_BYTES) return cleaned;
   let end = STEM_MAX_BYTES;
