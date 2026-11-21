@@ -1863,15 +1863,15 @@ const reasserts = (prev: Relation, effective: Date): boolean =>
   !prev.is_current && (prev.invalidated_at === null || epochMicros(effective) >= epochMicros(prev.invalidated_at));
 
 type Slot = readonly [string, string, string];
-type Rank = readonly [number, number, number];
+type Rank = readonly [number];
 
 /**
- * Order a relation among others at one endpoint: by effective time, then revision, then creation time.
+ * Order a relation among others at one endpoint: by effective time, with ties left to the relation id.
  *
  * @param rel (Relation): the relation version.
  * @return (Rank): the sort key, newer last.
  */
-const rankOf = (rel: Relation): Rank => [epochMicros(effectiveTime(rel)), rel.revision, epochMicros(rel.created_at)];
+const rankOf = (rel: Relation): Rank => [epochMicros(effectiveTime(rel))];
 
 /**
  * When a relation's latest unbroken stretch of validity began; a reassertion after a retirement starts a new one.
@@ -1899,8 +1899,7 @@ function runStart(versions: readonly Relation[]): Date {
  * @return (number): negative, zero, or positive.
  */
 function compareRanked(a: readonly [Rank, string], b: readonly [Rank, string]): number {
-  for (let i = 0; i < 3; i++) if (a[0][i] !== b[0][i]) return a[0][i]! - b[0][i]!;
-  return comparePy(a[1], b[1]);
+  return a[0][0] - b[0][0] || comparePy(a[1], b[1]);
 }
 
 /**
@@ -1990,7 +1989,7 @@ export class Contradictions {
   }
 
   /**
-   * Order a relation at an endpoint by effective time, revision, and creation time, and record when it began.
+   * Order a relation by effective time, leaving ties to its id, and record when it began.
    *
    * @param version (Relation): the relation version.
    * @return (Rank): the sort key, newer last.
@@ -2318,7 +2317,7 @@ export async function requireMaxCount(
       const prev = relationOf(edge);
       if (!prev.is_current && !reasserts(prev, effective)) continue;
     }
-    const rank: Rank = [epochMicros(effective), 0, epochMicros(createdAt)];
+    const rank: Rank = [epochMicros(effective)];
     tracker.admit(rid, rtype, rel.from_entity, rel.to_entity, rank, effective);
     admitted.add(rid);
   }
@@ -2666,12 +2665,18 @@ export async function upsertRelations(
     } else {
       requireSameEnds(rid, [edge.from_id, edge.type, edge.to_id], [rel.from_entity, rtype, rel.to_entity]);
       const prev = relationOf(edge);
-      eventTime = named ?? (prev.is_current ? prev.event_time : null);
+      eventTime = named ?? (prev.is_current || options.contradiction === "supersede" ? prev.event_time : null);
       const effective = eventTime ?? createdAt;
       const sources = prev.source_count + takeGained(gained, rid);
       const mergedProperties = mergeProps(prev.properties, rel.properties);
-      const reassert = reasserts(prev, effective);
+      let reassert = reasserts(prev, effective);
       const unchanged = deepEqual(prev.properties, mergedProperties) && toIso(prev.event_time) === toIso(eventTime);
+      if (
+        unchanged &&
+        options.contradiction === "supersede" &&
+        (named === null || toIso(effective) === toIso(prev.invalidated_at))
+      )
+        reassert = false;
       if (eventTime != null && toIso(prev.event_time) !== toIso(eventTime)) moved.add(rid);
       if (unchanged && !reassert) {
         write = sources !== prev.source_count;

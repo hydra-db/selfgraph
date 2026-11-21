@@ -827,3 +827,20 @@ def test_a_relation_capped_at_both_ends_is_reinstated_only_when_neither_end_disp
     else:
         assert (held.is_current, held.invalidated_by) == (True, None)
     assert (valid_at(g, 2019), valid_at(g, 2023)) == ({ann_globex}, {ann_acme})
+
+
+@pytest.mark.parametrize("dated", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_same_time_batch_replay_is_idempotent(dated, reverse):
+    g = fresh_graph("same-time-replay", schema=SPEC, contradiction="supersede")
+    facts = {"entities": PEOPLE, "relations": [works_at("acme"), works_at("globex")]}
+    if reverse:
+        facts["relations"].reverse()
+    kwargs = {"event_time": "2024-01-01"} if dated else {}
+    run(g.insert.facts(facts, **kwargs))
+    before = sorted((r.id, r.revision, r.is_current) for r in run(g.relations.list(include_invalidated=True)).items)
+    assert sum(current for _, _, current in before) == 1
+    for _ in range(50):
+        run(g.insert.facts(facts, **kwargs))
+        after = sorted((r.id, r.revision, r.is_current) for r in run(g.relations.list(include_invalidated=True)).items)
+        assert after == before
