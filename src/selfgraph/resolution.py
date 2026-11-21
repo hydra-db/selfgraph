@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache, partial
@@ -415,10 +416,72 @@ class LLMResolver:
         ]
         band = sorted(((s, e) for s, e in scored if low <= s < high), key=lambda pair: (-pair[0], pair[1].id))
         for similarity, ent in band[: self.max_questions]:
-            answer = await self._llm.generate(system=_LLM_SYSTEM, user=_question(candidate, ent), output=_SameEntity)
+            client = (_RECORDED.get(None) or {}).get(id(self), self._llm)
+            answer = await client.generate(system=_LLM_SYSTEM, user=_question(candidate, ent), output=_SameEntity)
             if answer.same:
                 return ResolutionDecision(target_id=ent.id, confidence=similarity, reason="llm")
         return _no_match()
+
+    async def ask_ahead(
+        self, runner: Any, ns: str, facts: Extraction, schema: Schema | None, created_at: datetime
+    ) -> Callable[[Callable[[], Awaitable[Any]]], Awaitable[Any]]:
+        """Ask the LLM every question resolving some facts needs before the write, and return a runner that replays
+        those answers alone, so the write transaction never waits on the LLM and a retried write never asks again.
+
+        A question the write asks that was not asked here, because the graph changed in between, is answered "not the
+        same entity", which keeps the lexical decision. The resolver itself is never copied, so a subclass and its
+        state are the ones that run.
+
+        @param runner (Any): a graph reader, outside any write transaction.
+        @param ns (str): namespace.
+        @param facts (Extraction): the validated facts the write will resolve.
+        @param schema (Schema | None): the active schema.
+        @param created_at (datetime): the insert time.
+        @return (Callable[[Callable[[], Awaitable[Any]]], Awaitable[Any]]): runs a call with this resolver answering
+            from the recorded answers.
+        """
+        asked: dict[str, Any] = {}
+        recording = _Answers(self._llm, asked)
+        await _answering(self, recording, lambda: plan_resolution(runner, ns, facts, self, schema, created_at))
+        replay = _Answers(None, asked)
+        return lambda call: _answering(self, replay, call)
+
+
+_RECORDED: ContextVar[dict[int, Any] | None] = ContextVar("selfgraph_recorded_answers", default=None)
+
+
+async def _answering(resolver: LLMResolver, client: Any, call: Callable[[], Awaitable[Any]]) -> Any:
+    """Run a call with one LLM resolver asking a given client instead of its own LLM, for the call's context only.
+
+    @param resolver (LLMResolver): the resolver.
+    @param client (Any): the client it asks within the call.
+    @param call (Callable[[], Awaitable[Any]]): the call.
+    @return (Any): the call's result.
+    """
+    token = _RECORDED.set({**(_RECORDED.get() or {}), id(resolver): client})
+    try:
+        return await call()
+    finally:
+        _RECORDED.reset(token)
+
+
+class _Answers:
+    def __init__(self, llm: Any, asked: dict[str, Any]) -> None:
+        self._llm = llm
+        self._asked = asked
+
+    async def generate(self, *, system: str, user: str, output: type[_SameEntity]) -> Any:
+        """Ask the LLM and keep its answer, or, with no LLM, answer from the kept ones and "not the same" otherwise.
+
+        @param system (str): the system prompt.
+        @param user (str): the question.
+        @param output (type[_SameEntity]): the answer model.
+        @return (Any): the answer.
+        """
+        if self._llm is None:
+            return self._asked.get(user) or output(same=False)
+        self._asked[user] = await self._llm.generate(system=system, user=user, output=output)
+        return self._asked[user]
 
 
 def _question(candidate: EntityInput, ent: Entity) -> str:

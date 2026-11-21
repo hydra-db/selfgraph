@@ -1,5 +1,5 @@
 import type { GraphAccess } from "./access.js";
-import { judgeContradictions } from "./contradiction.js";
+import { judgedRivals, judgeWritten } from "./contradiction.js";
 import { ExtractionError, errorMessage, SelfGraphError, ValidationError } from "./errors.js";
 import { NERExtractor } from "./extraction/basic.js";
 import { LLMExtractor } from "./extraction/extractor.js";
@@ -32,6 +32,7 @@ import type { Extractor, LLMClient } from "./protocols.js";
 import { recordSource } from "./provenance.js";
 import {
   type EntityResolver,
+  LLMResolver,
   mergeWarnings,
   planResolution,
   type ResolverMode,
@@ -51,6 +52,7 @@ import {
   requireSchemaMode,
   type Schema,
   type SchemaMode,
+  warnSchema,
 } from "./schema.js";
 import {
   checkOptions,
@@ -229,12 +231,28 @@ export class Insert {
       resolution: resolverTier,
       contradiction: judged ? "llm" : conflicts,
     };
-    return this.graph.write(async (tx, ns) => {
+    const replay =
+      activeResolver instanceof LLMResolver
+        ? await this.graph.read(async (store, ns) =>
+            activeResolver.askAhead(
+              store,
+              ns,
+              await ops.validateFacts(store, ns, facts, (o) => canonicalizeTypes(o, activeSchema)),
+              activeSchema,
+              createdAt,
+            ),
+          )
+        : null;
+    const deferred: string[] = [];
+    const result = await this.graph.write(async (tx, ns) => {
+      deferred.length = 0;
       const canonical = await ops.validateFacts(tx, ns, facts, (o) => canonicalizeTypes(o, activeSchema));
       let resolution =
         activeResolver === null
           ? null
-          : await planResolution(tx, ns, canonical, activeResolver, activeSchema, createdAt);
+          : await (replay ?? ((call) => call()))(() =>
+              planResolution(tx, ns, canonical, activeResolver, activeSchema, createdAt),
+            );
       let resolved = resolution?.facts ?? canonical;
       let dropped: InsertWarning[] = [];
       if (extracted && mode === "strict") {
@@ -282,20 +300,22 @@ export class Insert {
         warnings: found,
         ...(via ? { via } : {}),
       });
-      if (judged && llm !== null) {
-        found.push(...(await judgeContradictions(tx, ns, llm, relations, caps, createdAt)));
-      }
 
       let diff: SourceDiff | null = null;
       if (source.replace_source && source.source_id !== null && sourceVersion !== null) {
         const produced = new Set(relations.map((r) => r.id));
         const at = source.default_event_time ?? createdAt;
+        const stale = [...prior].filter((id) => !produced.has(id));
+        if (judged && llm !== null) {
+          const rivals = await judgedRivals(tx, ns, relations, caps, createdAt);
+          deferred.push(...stale.filter((id) => rivals.has(id)).sort(comparePy));
+        }
         const [retired, notes] = await ops.replaceSource(
           tx,
           ns,
           source.source_id,
           sourceVersion,
-          [...prior].filter((id) => !produced.has(id)),
+          stale.filter((id) => !deferred.includes(id)),
           at,
           createdAt,
         );
@@ -353,6 +373,21 @@ export class Insert {
         source_diff: diff,
       };
     });
+    if (judged && llm !== null) {
+      const notes = await judgeWritten(this.graph, llm, result.relations, caps, createdAt);
+      warnSchema(notes.filter((w) => w.code === "contradiction_not_judged"));
+      const sourceId = source.source_id;
+      const version = result.source_version;
+      if (deferred.length && result.source_diff && sourceId !== null && version !== null) {
+        const [retired, replaced] = await this.graph.write((tx, ns) =>
+          ops.replaceSourceLate(tx, ns, sourceId, version, deferred, createdAt),
+        );
+        result.source_diff.retired = [...new Set([...result.source_diff.retired, ...retired])].sort(comparePy);
+        notes.push(...replaced);
+      }
+      result.warnings.push(...notes.map((w) => ({ ...w, source_id: source.source_id })));
+    }
+    return result;
   }
 
   private async extract(extractor: Extractor, document: ParsedDocument): Promise<ParsedExtraction> {

@@ -1,7 +1,20 @@
+import asyncio
+import contextvars
+from datetime import datetime
+
 import pytest
 from helpers import ANN_ACME_GLOBEX, cli, fresh_graph, mcp_session, run, store_settings, utc, works_at
 
-from selfgraph import Schema, ValidationError, ids
+from selfgraph import (
+    LLMResolver,
+    ResolutionDecision,
+    Schema,
+    SelfGraph,
+    TransientError,
+    ValidationError,
+    _ops,
+    ids,
+)
 from selfgraph.runtime import build_graph
 from selfgraph.terms import schema_forms, stem
 
@@ -31,6 +44,20 @@ class Judge:
     async def generate(self, *, system, user, output):
         self.prompts.append(user)
         return output(retired=self.retire)
+
+
+class WritingLLM:
+    def __init__(self, answer):
+        self.answer = answer
+        self.prompts = []
+        self.write = None
+
+    async def generate(self, *, system, user, output):
+        self.prompts.append(user)
+        if self.write is not None:
+            other_client = contextvars.Context().run(asyncio.ensure_future, self.write())
+            await asyncio.wait_for(other_client, timeout=5)
+        return output(**self.answer)
 
 
 class Embedder:
@@ -579,3 +606,217 @@ def test_cli_mcp_and_settings_carry_the_level(capsys):
     with mcp_session("tier", level="light") as srv:
         run(srv.create_entity("Acme", "Company"))
         assert run(srv.retrieve("Acme"))["tiers"] == {"seeds": "bm25", "traversal": "bfs"}
+
+
+def test_llm_judge_answers_outside_the_write_and_rechecks_what_it_chose():
+    judge = WritingLLM({"retired": [1]})
+    g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
+    judge.write = lambda: g.relations.certify(ACME, by="hr")
+    res = run(g.insert.facts({"relations": [works_at("globex", 2022)]}))
+    assert len(judge.prompts) == 1 and [w.code for w in res.warnings] == ["certified_kept"]
+    assert {r.id for r in run(g.relations.list(from_entity="person:ann")).items} == {ACME, GLOBEX}
+
+
+def test_llm_judge_drops_a_verdict_when_the_new_relation_changed_while_it_answered():
+    judge = WritingLLM({"retired": [1]})
+    g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
+    judge.write = lambda: g.relations.update(GLOBEX, set_properties={"role": "intern"})
+    res = run(g.insert.facts({"relations": [works_at("globex", 2022)]}))
+    assert len(judge.prompts) == 1 and res.warnings == []
+    assert {r.id for r in run(g.relations.list(from_entity="person:ann")).items} == {ACME, GLOBEX}
+    assert run(g.relations.get(GLOBEX)).revision == 2
+
+
+@pytest.mark.parametrize("retire", [True, False])
+def test_llm_judge_sees_a_rival_the_replaced_source_would_retire(retire):
+    g = fresh_graph("tier", llm=Judge([1] if retire else []), extraction="regex", contradiction="llm")
+    old = run(g.insert.text("Ann works at Acme.", source_id="hr")).relations[0]
+    res = run(g.insert.text("Ann works at Globex.", source_id="hr", replace_source=True))
+    new = res.relations[0]
+    codes = [w.code for w in res.warnings if w.code != "basic_extraction"]
+    stored = [v for v in run(g.relations.versions(old.id)) if v.invalidated_at is not None][0]
+    if retire:
+        assert codes == ["relation_superseded"] and res.source_diff.retired == []
+        assert stored.invalidated_by == new.id
+    else:
+        assert codes == ["fact_retired_by_source"] and res.source_diff.retired == [old.id]
+        assert stored.invalidated_by == res.source_version
+    assert [r.id for r in run(g.relations.list()).items] == [new.id]
+
+
+def test_a_deferred_source_replacement_skips_a_version_a_newer_replacement_superseded():
+    judge = WritingLLM({"retired": []})
+    g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
+    run(g.insert.text("Ann works at Acme.", source_id="hr"))
+    other = SelfGraph(store=g.store, namespace=g.namespace, extraction="regex")
+    newer = []
+
+    async def initech():
+        newer.append(await other.insert.text("Ann works at Initech.", source_id="hr", replace_source=True))
+
+    judge.write = initech
+    res = run(g.insert.text("Ann works at Globex.", source_id="hr", replace_source=True))
+    assert len(judge.prompts) == 1 and len(newer) == 1
+    assert {r.to_entity for r in run(g.relations.list()).items} == {"thing:initech"}
+    stored = {v["id"]: v.get("replaced_by") for v in run(g.store.match_nodes(g.namespace, "SourceVersion"))}
+    assert stored[newer[0].source_version] is None
+    assert stored[res.source_version] == newer[0].source_version
+    [acme] = [r for r in run(g.relations.list(include_invalidated=True)).items if r.to_entity == "thing:acme"]
+    assert acme.invalidated_by == newer[0].source_version
+    [initech] = [v for v in run(g.store.match_nodes(g.namespace, "SourceVersion")) if v["id"] == acme.invalidated_by]
+    assert acme.invalidated_known_at >= datetime.fromisoformat(initech["created_at"])
+
+
+class PausedJudge:
+    def __init__(self):
+        self.asked = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def generate(self, *, system, user, output):
+        self.asked.set()
+        await asyncio.wait_for(self.release.wait(), timeout=5)
+        return output(retired=[])
+
+
+@pytest.mark.parametrize("restated", [False, True])
+@pytest.mark.parametrize("first", ["globex", "initech"])
+def test_a_deferred_source_replacement_follows_the_newer_one_past_a_version_appended_while_both_wait(first, restated):
+    g = fresh_graph("tier", extraction="regex")
+    run(g.insert.text("Ann works at Acme.", source_id="hr"))
+    judges = {"globex": PausedJudge(), "initech": PausedJudge()}
+
+    async def scenario():
+        tasks = {}
+        for company in ("globex", "initech"):
+            llm = judges[company]
+            graph = SelfGraph(store=g.store, namespace=g.namespace, extraction="regex", llm=llm, contradiction="llm")
+            text = f"Ann works at {company.capitalize()}."
+            tasks[company] = asyncio.ensure_future(graph.insert.text(text, source_id="hr", replace_source=True))
+            await asyncio.wait_for(judges[company].asked.wait(), timeout=5)
+        text = "Ann works at Acme. Bob works at Paris." if restated else "Bob works at Paris."
+        appended = await g.insert.text(text, source_id="hr")
+        for company in (first, ({"globex", "initech"} - {first}).pop()):
+            judges[company].release.set()
+            await tasks[company]
+        return await tasks["initech"], appended
+
+    initech, appended = run(scenario())
+    current = {r.to_entity for r in run(g.relations.list()).items}
+    assert current == {"thing:initech", "thing:paris"} | ({"thing:acme"} if restated else set())
+    stored = {v["id"]: v.get("replaced_by") for v in run(g.store.match_nodes(g.namespace, "SourceVersion"))}
+    assert (stored[initech.source_version], stored[appended.source_version]) == (None, None)
+    if not restated:
+        [acme] = [r for r in run(g.relations.list(include_invalidated=True)).items if r.to_entity == "thing:acme"]
+        assert acme.invalidated_by == initech.source_version
+        [row] = [v for v in run(g.store.match_nodes(g.namespace, "SourceVersion")) if v["id"] == initech.source_version]
+        assert acme.invalidated_known_at >= datetime.fromisoformat(row["created_at"])
+
+
+class FailingJudge:
+    async def generate(self, *, system, user, output):
+        raise RuntimeError("provider down")
+
+
+@pytest.mark.parametrize("via", ["insert", "create"])
+def test_a_failed_llm_judge_warns_instead_of_failing_the_committed_write(via, caplog):
+    g = fresh_graph("tier", llm=FailingJudge(), extraction="regex", contradiction="llm")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
+    with caplog.at_level("WARNING", logger="selfgraph"):
+        if via == "insert":
+            warnings = run(g.insert.facts({"relations": [works_at("globex", 2022)]})).warnings
+        else:
+            run(g.relations.create("person:ann", "WORKS_AT", "company:globex", event_time="2022-01-01"))
+    message = f"the LLM contradiction judge failed, so {GLOBEX} were not judged: RuntimeError: provider down"
+    if via == "insert":
+        assert [(w.code, w.message) for w in warnings] == [("contradiction_not_judged", message)]
+    logged = [r.getMessage() for r in caplog.records if "contradiction_not_judged" in r.getMessage()]
+    assert logged == [f"schema warning [contradiction_not_judged]: {message}"]
+    assert {r.id for r in run(g.relations.list(from_entity="person:ann")).items} == {ACME, GLOBEX}
+
+
+@pytest.mark.parametrize("recreated", ["rival", "new"])
+def test_llm_judge_drops_a_verdict_when_a_relation_is_created_again_while_it_answered(recreated):
+    judge = WritingLLM({"retired": [1]})
+    g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]}))
+    company, rid = ("acme", ACME) if recreated == "rival" else ("globex", GLOBEX)
+
+    async def recreate():
+        await g.relations.delete(rid)
+        await g.relations.create(
+            "person:ann", "WORKS_AT", f"company:{company}", properties={"role": "temp"}, contradiction="warn"
+        )
+
+    judge.write = recreate
+    res = run(g.insert.facts({"relations": [works_at("globex", 2022)]}))
+    assert len(judge.prompts) == 1 and res.warnings == []
+    current = {r.id: r for r in run(g.relations.list(from_entity="person:ann")).items}
+    assert set(current) == {ACME, GLOBEX} and (current[rid].revision, current[rid].properties) == (1, {"role": "temp"})
+
+
+def test_llm_resolver_answers_before_the_write_and_never_asks_inside_it():
+    llm = WritingLLM({"same": True})
+    g = fresh_graph("tier", llm=llm, resolver="llm")
+    run(g.entities.create("Katherine Jones", "Person"))
+    llm.write = lambda: g.entities.create("Unrelated", "Thing")
+    res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Kathy Jones"}]}))
+    assert [(m.absorbed_id, m.survivor_id) for m in res.merges] == [("person:kathy-jones", "person:katherine-jones")]
+    assert len(llm.prompts) == 1 and run(g.entities.get("thing:unrelated")) is not None
+
+
+def test_an_llm_resolver_subclass_runs_as_given_and_asks_the_llm_once():
+    class Counting(LLMResolver):
+        calls = 0
+
+        async def resolve(self, candidate, existing):
+            self.calls += 1
+            return await super().resolve(candidate, existing)
+
+    llm = WritingLLM({"same": True})
+    g = fresh_graph("tier", llm=llm)
+    run(g.entities.create("Katherine Jones", "Person"))
+    resolver = Counting(llm)
+    res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Kathy Jones"}]}, resolver=resolver))
+    assert [(m.absorbed_id, m.survivor_id) for m in res.merges] == [("person:kathy-jones", "person:katherine-jones")]
+    assert (len(llm.prompts), resolver.calls) == (1, 2)
+
+
+def test_an_llm_resolver_subclass_keeps_its_own_resolve():
+    class NeverMerge(LLMResolver):
+        async def resolve(self, candidate, existing):
+            return ResolutionDecision()
+
+    llm = WritingLLM({"same": True})
+    g = fresh_graph("tier", llm=llm)
+    run(g.entities.create("Katherine Jones", "Person"))
+    res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Kathy Jones"}]}, resolver=NeverMerge(llm)))
+    assert res.merges == [] and run(g.entities.get("person:kathy-jones")) is not None
+
+
+def test_a_retried_write_does_not_ask_the_llm_resolver_again(monkeypatch):
+    llm = WritingLLM({"same": True})
+    g = fresh_graph("tier", llm=llm, resolver="llm")
+    run(g.entities.create("Katherine Jones", "Person"))
+    upsert, failed = _ops.upsert_entities, []
+
+    async def conflict_once(*args, **kwargs):
+        if not failed:
+            failed.append(True)
+            raise TransientError("transaction conflict")
+        return await upsert(*args, **kwargs)
+
+    monkeypatch.setattr(_ops, "upsert_entities", conflict_once)
+    res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Kathy Jones"}]}))
+    assert failed and len(llm.prompts) == 1 and len(res.merges) == 1
+
+
+def test_llm_resolver_keeps_the_lexical_decision_when_the_target_changed_after_asking():
+    llm = WritingLLM({"same": True})
+    g = fresh_graph("tier", llm=llm, resolver="llm")
+    run(g.entities.create("Katherine Jones", "Person"))
+    llm.write = lambda: g.entities.update("person:katherine-jones", aliases=["KJ"])
+    res = run(g.insert.facts({"entities": [{"type": "Person", "name": "Kathy Jones"}]}))
+    assert res.merges == [] and len(llm.prompts) == 1
+    assert run(g.entities.get("person:kathy-jones")) is not None

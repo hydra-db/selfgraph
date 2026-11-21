@@ -181,6 +181,7 @@ result full of `dropped_off_schema` warnings.
 | `certified_kept` | A [certified](trust.md#certification) relation stayed current where a contradiction or a replaced source would have retired it. |
 | `certified_dropped` | A write changed a certified relation, so its new revision is not certified. |
 | `fact_retired_by_source` | A [replaced source](inserting.md#replacing-a-source) no longer states a relation, so it was retired. |
+| `contradiction_not_judged` | With `contradiction="llm"`, the judge failed after the write committed, so the relations it names were stored without being judged. Also logged on the `selfgraph` logger. |
 
 Cardinality is counted per insert call, over that batch's relations only. So:
 
@@ -271,6 +272,19 @@ What bounds the cost:
 - Only relations this write created or changed are judged, so re-inserting the
   same facts asks nothing.
 - At most 20 rivals are listed per call, lowest id first.
+- The LLM is asked after the write commits, outside any transaction, so a
+  retried write never asks again.
+
+No lock is held while the LLM answers, so other writes are not blocked. The
+retirement is a second, short write. It reads each rival and the new relation
+again under their source entities' locks, and drops the verdict when either one
+changed or was deleted since the LLM was asked. A rival certified in the meantime stays current with a
+`certified_kept` warning. Until that write commits, a read can see the new
+relation and its rival both current. With `replace_source`, a rival the judge
+is asked about is left to the judge: the source replacement retires it after
+the judge, only when the judge kept it, so the result matches judging before
+the replacement. If the judge fails, the write still stands and the result has
+a `contradiction_not_judged` warning.
 
 The LLM can decide differently on a rerun. Use `max_count` where the rule is
 known, and keep `llm` for what a schema cannot state.

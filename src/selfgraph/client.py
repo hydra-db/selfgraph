@@ -14,13 +14,13 @@ from ._diff import graph_diff
 from ._export import obsidian_vault
 from ._maintenance import inspect, scan_entities, scan_relations
 from ._serde import L_TRACE, aware, now
-from .contradiction import judge_contradictions
+from .contradiction import apply_verdicts, ask_judge, judged_rivals
 from .errors import CLOSED_MESSAGE, StoreError, TransientError, ValidationError, needs_llm
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
 from .ids import _require_namespace, decision_id, type_name
 from .insert import Insert
-from .llm.base import resolve_llm
+from .llm.base import resolve_llm, summarize_error
 from .models import (
     AnswerabilityReport,
     CypherResult,
@@ -35,6 +35,7 @@ from .models import (
     JsonValue,
     LLMConfig,
     Readiness,
+    Relation,
     RetrievalResult,
     SourceDiff,
     as_input,
@@ -44,6 +45,7 @@ from .protocols import Embedder, Extractor, GraphStore, LLMClient
 from .provenance import record_source
 from .resolution import (
     EntityResolver,
+    LLMResolver,
     ResolverMode,
     as_resolver,
     merge_warnings,
@@ -554,16 +556,40 @@ class SelfGraph:
         async def create(tx: Any) -> Any:
             found.clear()
             check = self._schema_check
-            rel = await _ops.create_relation(
+            return await _ops.create_relation(
                 tx, self.namespace, **fields, schema_check=check, contradiction=mode, caps=caps, warnings=found
             )
-            if judged and self._llm is not None:
-                found.extend(await judge_contradictions(tx, self.namespace, self._llm, [rel], caps, rel.created_at))
-            return rel
 
         rel = await self._in_tx(create)
+        if judged and self._llm is not None:
+            found.extend(await self._judge([rel], caps, rel.created_at))
         log_schema_warnings(found)
         return rel
+
+    async def _judge(self, written: list[Relation], caps: dict[str, Any], written_at: datetime) -> list[InsertWarning]:
+        """Ask the LLM judge about relations a committed write stored, then retire what it chose in a short write.
+
+        The LLM is asked outside any transaction, so no lock is held while it answers and a retried write never asks
+        again; the write that retires reads each verdict's relations again under their locks (see apply_verdicts).
+        The write has already committed, so a failed judge does not fail it: it is reported as a
+        contradiction_not_judged warning naming the relations it did not judge.
+
+        @param written (list[Relation]): the relations the write stored.
+        @param caps (dict[str, Any]): the schema's max_count limits by relation type.
+        @param written_at (datetime): the write's timestamp; only relations it created or revised are judged.
+        @return (list[InsertWarning]): the judge's relation_superseded and certified_kept warnings, or one
+            contradiction_not_judged warning when the judge failed.
+        """
+        reader = await self._reader()
+        try:
+            chosen = await ask_judge(reader, self.namespace, self._llm, written, caps, written_at)  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001
+            unjudged = ", ".join(sorted({r.id for r in written if r.created_at == written_at}))
+            message = f"the LLM contradiction judge failed, so {unjudged} were not judged: {summarize_error(exc)}"
+            return [InsertWarning(code="contradiction_not_judged", message=message)]
+        if not chosen:
+            return []
+        return await self._in_tx(lambda tx: apply_verdicts(tx, self.namespace, chosen, now()))
 
     def _build_extractor(
         self,
@@ -624,12 +650,23 @@ class SelfGraph:
         if extraction is not None:
             used = {"extraction": extraction, **used}
 
+        replay = None
+        if isinstance(active_resolver, LLMResolver):
+            _ops._require_datetime("event_time", default_event_time)
+            reader = await self._reader()
+            ahead = await _ops.validate_facts(reader, ns, facts, rewrite=lambda o: canonicalize_types(o, active_schema))
+            replay = await active_resolver.ask_ahead(reader, ns, ahead, active_schema, created_at)
+
+        deferred: list[str] = []
+
         async def _apply(tx: Any) -> InsertResult:
+            deferred.clear()
             _ops._require_datetime("event_time", default_event_time)
             canonical = await _ops.validate_facts(tx, ns, facts, rewrite=lambda o: canonicalize_types(o, active_schema))
             resolution = None
             if active_resolver is not None:
-                resolution = await plan_resolution(tx, ns, canonical, active_resolver, active_schema, created_at)
+                plan = partial(plan_resolution, tx, ns, canonical, active_resolver, active_schema, created_at)
+                resolution = await (plan() if replay is None else replay(plan))
             resolved = resolution.facts if resolution is not None else canonical
             dropped: list[InsertWarning] = []
             if extracted and mode == "strict":
@@ -687,15 +724,16 @@ class SelfGraph:
                 warnings=found,
                 via=None if resolution is None else [[resolution.statements(rel)] * len(ev) for rel, ev in items],
             )
-            if judged and self._llm is not None:
-                found.extend(await judge_contradictions(tx, ns, self._llm, relations, caps, created_at))
 
             diff = None
             if replace_source and source_id is not None and source_version is not None:
                 produced = {r.id for r in relations}
                 at = aware(default_event_time or created_at)
+                stale = prior - produced
+                if judged and self._llm is not None:
+                    deferred.extend(sorted(stale & await judged_rivals(tx, ns, relations, caps, created_at)))
                 retired, notes = await _ops.replace_source(
-                    tx, ns, source_id, source_version, prior - produced, at, created_at
+                    tx, ns, source_id, source_version, stale - set(deferred), at, created_at
                 )
                 found.extend(notes)
                 diff = SourceDiff(kept=sorted(produced & prior), added=sorted(produced - prior), retired=retired)
@@ -763,4 +801,16 @@ class SelfGraph:
                 source_diff=diff,
             )
 
-        return await self._in_tx(_apply)
+        result = await self._in_tx(_apply)
+        if judged and self._llm is not None:
+            notes = await self._judge(result.relations, caps, created_at)
+            log_schema_warnings([w for w in notes if w.code == "contradiction_not_judged"])
+            if deferred and result.source_diff is not None and result.source_version is not None:
+                version = result.source_version
+                retired, replaced = await self._in_tx(
+                    lambda tx: _ops.replace_source_late(tx, ns, source_id, version, deferred, created_at)
+                )
+                result.source_diff.retired = sorted({*result.source_diff.retired, *retired})
+                notes += replaced
+            result.warnings += [w.model_copy(update={"source_id": source_id}) for w in notes]
+        return result

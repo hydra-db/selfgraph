@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { z } from "zod";
 
@@ -7,14 +9,28 @@ import {
   type Embedder,
   fromTables,
   type GraphSettings,
+  type InsertResult,
   ids,
   type LLMClient,
   type Schema,
+  SelfGraph,
+  TransientError,
   ValidationError,
 } from "../src/index.js";
 import { callTool, close as closeMcp, configure as configureMcp } from "../src/mcp.js";
+import { LLMResolver, type ResolutionDecision } from "../src/resolution.js";
 import { stem } from "../src/terms.js";
-import { buildCli, forEachStore, freshGraphs, runCli, type StoreSpec, tempKuzu, uniqueNs, worksAt } from "./helpers.js";
+import {
+  buildCli,
+  captureLog,
+  forEachStore,
+  freshGraphs,
+  runCli,
+  type StoreSpec,
+  tempKuzu,
+  uniqueNs,
+  worksAt,
+} from "./helpers.js";
 
 const ACME = ids.relationId("person:ann", "WORKS_AT", "company:acme");
 const GLOBEX = ids.relationId("person:ann", "WORKS_AT", "company:globex");
@@ -47,6 +63,43 @@ class Judge implements LLMClient {
   async generate<T>(args: { system: string; user: string; output: z.ZodType<T> }): Promise<T> {
     this.prompts.push(args.user);
     return args.output.parse({ retired: this.retire });
+  }
+}
+
+class WritingLLM implements LLMClient {
+  readonly prompts: string[] = [];
+  write: (() => Promise<unknown>) | null = null;
+  private readonly otherClient = AsyncLocalStorage.snapshot();
+  constructor(private readonly answer: Record<string, unknown>) {}
+
+  async generate<T>(args: { system: string; user: string; output: z.ZodType<T> }): Promise<T> {
+    this.prompts.push(args.user);
+    const write = this.write;
+    if (write !== null) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("the write waited on the LLM call")), 5000);
+      });
+      await Promise.race([this.otherClient(() => write()), timeout]).finally(() => clearTimeout(timer));
+    }
+    return args.output.parse(this.answer);
+  }
+}
+
+class PausedJudge implements LLMClient {
+  release: () => void = () => {};
+  private readonly released = new Promise<void>((resolve) => {
+    this.release = resolve;
+  });
+  private markAsked: () => void = () => {};
+  readonly asked = new Promise<void>((resolve) => {
+    this.markAsked = resolve;
+  });
+
+  async generate<T>(args: { system: string; user: string; output: z.ZodType<T> }): Promise<T> {
+    this.markAsked();
+    await this.released;
+    return args.output.parse({ retired: [] });
   }
 }
 
@@ -513,6 +566,266 @@ function suite(spec: StoreSpec): void {
       ...Array(3).fill("integer"),
       ...Array(7).fill("string"),
     ]);
+  });
+
+  it("asks the LLM judge outside the write and rechecks what it chose", async () => {
+    const judge = new WritingLLM({ retired: [1] });
+    const g = open({ llm: judge, extraction: "regex", contradiction: "llm" });
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
+    judge.write = () => g.relations.certify(ACME, { by: "hr" });
+    const res = await g.insert.facts({ relations: [annAt("globex", 2022)] });
+    expect([judge.prompts.length, res.warnings.map((w) => w.code)]).toEqual([1, ["certified_kept"]]);
+    expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id).sort()).toEqual(
+      [ACME, GLOBEX].sort(),
+    );
+  });
+
+  it("drops a judge verdict when the new relation changed while the LLM answered", async () => {
+    const judge = new WritingLLM({ retired: [1] });
+    const g = open({ llm: judge, extraction: "regex", contradiction: "llm" });
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
+    judge.write = () => g.relations.update(GLOBEX, { set_properties: { role: "intern" } });
+    const res = await g.insert.facts({ relations: [annAt("globex", 2022)] });
+    expect([judge.prompts.length, res.warnings]).toEqual([1, []]);
+    expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id).sort()).toEqual(
+      [ACME, GLOBEX].sort(),
+    );
+    expect((await g.relations.get(GLOBEX))!.revision).toBe(2);
+  });
+
+  it.each([true, false])("lets the judge see a rival the replaced source would retire (retire=%s)", async (retire) => {
+    const g = open({ llm: new Judge(retire ? [1] : []), extraction: "regex", contradiction: "llm" });
+    const old = (await g.insert.text("Ann works at Acme.", { source_id: "hr" })).relations[0]!;
+    const res = await g.insert.text("Ann works at Globex.", { source_id: "hr", replace_source: true });
+    const fresh = res.relations[0]!;
+    const codes = res.warnings.map((w) => w.code).filter((code) => code !== "basic_extraction");
+    const stored = (await g.relations.versions(old.id)).find((v) => v.invalidated_at !== null)!;
+    if (retire) {
+      expect([codes, res.source_diff!.retired, stored.invalidated_by]).toEqual([["relation_superseded"], [], fresh.id]);
+    } else {
+      expect([codes, res.source_diff!.retired, stored.invalidated_by]).toEqual([
+        ["fact_retired_by_source"],
+        [old.id],
+        res.source_version,
+      ]);
+    }
+    expect((await g.relations.list()).items.map((r) => r.id)).toEqual([fresh.id]);
+  });
+
+  it("folds a deferred source replacement into a newer replacement that committed first", async () => {
+    const judge = new WritingLLM({ retired: [] });
+    const g = open({ llm: judge, extraction: "regex", contradiction: "llm" });
+    await g.insert.text("Ann works at Acme.", { source_id: "hr" });
+    const other = new SelfGraph(g.store, { namespace: g.namespace, extraction: "regex" });
+    const newer: InsertResult[] = [];
+    judge.write = async () => {
+      newer.push(await other.insert.text("Ann works at Initech.", { source_id: "hr", replace_source: true }));
+    };
+    const res = await g.insert.text("Ann works at Globex.", { source_id: "hr", replace_source: true });
+    expect([judge.prompts.length, newer.length]).toEqual([1, 1]);
+    expect((await g.relations.list()).items.map((r) => r.to_entity)).toEqual(["thing:initech"]);
+    const stored = new Map(
+      (await g.store.matchNodes(g.namespace, "SourceVersion")).map((v) => [v.id as string, v.replaced_by ?? null]),
+    );
+    expect([stored.get(newer[0]!.source_version!), stored.get(res.source_version!)]).toEqual([
+      null,
+      newer[0]!.source_version,
+    ]);
+    const acme = (await g.relations.list({ include_invalidated: true })).items.find(
+      (r) => r.to_entity === "thing:acme",
+    );
+    expect(acme!.invalidated_by).toBe(newer[0]!.source_version);
+    const initech = (await g.store.matchNodes(g.namespace, "SourceVersion")).find((v) => v.id === acme!.invalidated_by);
+    expect(acme!.invalidated_known_at!.getTime()).toBeGreaterThanOrEqual(
+      new Date(initech!.created_at as string).getTime(),
+    );
+  });
+
+  const appended = [
+    ["globex", false],
+    ["globex", true],
+    ["initech", false],
+    ["initech", true],
+  ] as const;
+  it.each(appended)("folds a deferred replacement past an append: %s first, restated %s", async (first, restated) => {
+    const g = open({ extraction: "regex" });
+    await g.insert.text("Ann works at Acme.", { source_id: "hr" });
+    const judges = { globex: new PausedJudge(), initech: new PausedJudge() };
+    const tasks: Record<string, Promise<InsertResult>> = {};
+    for (const company of ["globex", "initech"] as const) {
+      const graph = new SelfGraph(g.store, {
+        namespace: g.namespace,
+        extraction: "regex",
+        llm: judges[company],
+        contradiction: "llm",
+      });
+      const text = `Ann works at ${company[0]!.toUpperCase()}${company.slice(1)}.`;
+      tasks[company] = graph.insert.text(text, { source_id: "hr", replace_source: true });
+      await judges[company].asked;
+    }
+    const text = restated ? "Ann works at Acme. Bob works at Paris." : "Bob works at Paris.";
+    const append = await g.insert.text(text, { source_id: "hr" });
+    for (const company of first === "globex" ? (["globex", "initech"] as const) : (["initech", "globex"] as const)) {
+      judges[company].release();
+      await tasks[company];
+    }
+    const initech = await tasks.initech!;
+    const current = (await g.relations.list()).items.map((r) => r.to_entity).sort();
+    expect(current).toEqual(
+      restated ? ["thing:acme", "thing:initech", "thing:paris"] : ["thing:initech", "thing:paris"],
+    );
+    const versions = await g.store.matchNodes(g.namespace, "SourceVersion");
+    const replacedBy = (id: string | null) => versions.find((v) => v.id === id)!.replaced_by ?? null;
+    expect([replacedBy(initech.source_version), replacedBy(append.source_version)]).toEqual([null, null]);
+    if (!restated) {
+      const acme = (await g.relations.list({ include_invalidated: true })).items.find(
+        (r) => r.to_entity === "thing:acme",
+      );
+      expect(acme!.invalidated_by).toBe(initech.source_version);
+      const stored = versions.find((v) => v.id === initech.source_version)!;
+      expect(acme!.invalidated_known_at!.getTime()).toBeGreaterThanOrEqual(
+        new Date(stored.created_at as string).getTime(),
+      );
+    }
+  });
+
+  it.each(["insert", "create"])("warns instead of failing a committed write when the judge fails (%s)", async (via) => {
+    const failing: LLMClient = {
+      generate: async () => {
+        throw new Error("provider down");
+      },
+    };
+    const g = open({ llm: failing, extraction: "regex", contradiction: "llm" });
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
+    const { result: warnings, logged } = await captureLog(async () => {
+      if (via === "insert") return (await g.insert.facts({ relations: [annAt("globex", 2022)] })).warnings;
+      await g.relations.create("person:ann", "WORKS_AT", "company:globex", { event_time: "2022-01-01" });
+      return [];
+    });
+    const message = `the LLM contradiction judge failed, so ${GLOBEX} were not judged: Error: provider down`;
+    if (via === "insert")
+      expect(warnings.map((w) => [w.code, w.message])).toEqual([["contradiction_not_judged", message]]);
+    expect(logged.filter((line) => line.includes("contradiction_not_judged"))).toEqual([
+      `warning: schema warning [contradiction_not_judged]: ${message}`,
+    ]);
+    expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id).sort()).toEqual(
+      [ACME, GLOBEX].sort(),
+    );
+  });
+
+  it.each(["rival", "new"])(
+    "drops a judge verdict when the %s relation is created again while the LLM answered",
+    async (recreated) => {
+      const judge = new WritingLLM({ retired: [1] });
+      const g = open({ llm: judge, extraction: "regex", contradiction: "llm" });
+      await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: [annAt("acme", 2020)] });
+      const [company, rid] = recreated === "rival" ? ["acme", ACME] : ["globex", GLOBEX];
+      judge.write = async () => {
+        await g.relations.delete(rid);
+        await g.relations.create("person:ann", "WORKS_AT", `company:${company}`, {
+          properties: { role: "temp" },
+          contradiction: "warn",
+        });
+      };
+      const res = await g.insert.facts({ relations: [annAt("globex", 2022)] });
+      expect([judge.prompts.length, res.warnings]).toEqual([1, []]);
+      const current = new Map((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => [r.id, r]));
+      expect([...current.keys()].sort()).toEqual([ACME, GLOBEX].sort());
+      expect([current.get(rid)!.revision, current.get(rid)!.properties]).toEqual([1, { role: "temp" }]);
+    },
+  );
+
+  it("asks the LLM resolver before the write and never inside it", async () => {
+    const llm = new WritingLLM({ same: true });
+    const g = open({ llm, resolver: "llm" });
+    await g.entities.create("Katherine Jones", "Person");
+    llm.write = () => g.entities.create("Unrelated", "Thing");
+    const res = await g.insert.facts({ entities: [{ type: "Person", name: "Kathy Jones" }] });
+    expect(res.merges.map((m) => [m.absorbed_id, m.survivor_id])).toEqual([
+      ["person:kathy-jones", "person:katherine-jones"],
+    ]);
+    expect(llm.prompts).toHaveLength(1);
+    expect(await g.entities.get("thing:unrelated")).not.toBeNull();
+  });
+
+  it("runs an LLMResolver subclass with private fields as given, asking the LLM once", async () => {
+    class Remembering extends LLMResolver {
+      readonly #seen: string[] = [];
+      override async resolve(...args: Parameters<LLMResolver["resolve"]>): Promise<ResolutionDecision> {
+        this.#seen.push(args[0].name);
+        return super.resolve(...args);
+      }
+      get seen(): string[] {
+        return [...this.#seen];
+      }
+    }
+    const llm = new WritingLLM({ same: true });
+    const g = open({ llm });
+    await g.entities.create("Katherine Jones", "Person");
+    const resolver = new Remembering(llm);
+    const res = await g.insert.facts({ entities: [{ type: "Person", name: "Kathy Jones" }] }, { resolver });
+    expect(res.merges.map((m) => [m.absorbed_id, m.survivor_id])).toEqual([
+      ["person:kathy-jones", "person:katherine-jones"],
+    ]);
+    expect([llm.prompts.length, resolver.seen]).toEqual([1, ["Kathy Jones", "Kathy Jones"]]);
+  });
+
+  it("keeps an LLMResolver subclass's own resolve", async () => {
+    class NeverMerge extends LLMResolver {
+      override async resolve(): Promise<ResolutionDecision> {
+        return {};
+      }
+    }
+    const llm = new WritingLLM({ same: true });
+    const g = open({ llm });
+    await g.entities.create("Katherine Jones", "Person");
+    const res = await g.insert.facts(
+      { entities: [{ type: "Person", name: "Kathy Jones" }] },
+      { resolver: new NeverMerge(llm) },
+    );
+    expect(res.merges).toEqual([]);
+    expect(await g.entities.get("person:kathy-jones")).not.toBeNull();
+  });
+
+  it("does not ask the LLM resolver again when the write is retried", async () => {
+    const llm = new WritingLLM({ same: true });
+    const g = open({ llm, resolver: "llm" });
+    await g.entities.create("Katherine Jones", "Person");
+    const store = g.store as unknown as { transaction: (fn: (tx: object) => Promise<unknown>) => Promise<unknown> };
+    const transaction = store.transaction;
+    let failed = false;
+    const conflicting = (tx: object): object =>
+      new Proxy(tx, {
+        get(target, key) {
+          if (key === "upsertNodes" && !failed) {
+            return async () => {
+              failed = true;
+              throw new TransientError("transaction conflict");
+            };
+          }
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    store.transaction = function (this: unknown, fn) {
+      return transaction.call(this, (tx) => fn(failed ? tx : conflicting(tx)));
+    };
+    try {
+      const res = await g.insert.facts({ entities: [{ type: "Person", name: "Kathy Jones" }] });
+      expect([failed, llm.prompts.length, res.merges.length]).toEqual([true, 1, 1]);
+    } finally {
+      store.transaction = transaction;
+    }
+  });
+
+  it("keeps the lexical decision when the resolver's target changed after asking", async () => {
+    const llm = new WritingLLM({ same: true });
+    const g = open({ llm, resolver: "llm" });
+    await g.entities.create("Katherine Jones", "Person");
+    llm.write = () => g.entities.update("person:katherine-jones", { aliases: ["KJ"] });
+    const res = await g.insert.facts({ entities: [{ type: "Person", name: "Kathy Jones" }] });
+    expect([res.merges, llm.prompts.length]).toEqual([[], 1]);
+    expect(await g.entities.get("person:kathy-jones")).not.toBeNull();
   });
 }
 

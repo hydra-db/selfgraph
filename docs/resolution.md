@@ -122,6 +122,12 @@ strict yes/no question, highest similarity first, at most `max_questions` times
 per candidate. It merges on the first yes, with reason `llm` and the similarity
 as confidence. It also merges within one insert.
 
+The questions are asked before the insert's write transaction, from a read of
+the graph, so no lock is held while the LLM answers and a retried write never
+asks again. Inside the write, the resolver answers from those answers only. A
+question it did not ask beforehand, because an entity changed in between, gets
+"not the same entity", which keeps the lexical decision.
+
 Below the band nothing is asked, so the LLM never merges an entity without a
 lexical candidate. Pairs that fail the [word check](#names-that-never-merge-by-similarity)
 are never asked either. `Bill Gates` and `William Gates` score 0.81, inside the

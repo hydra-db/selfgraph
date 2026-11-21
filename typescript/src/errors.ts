@@ -97,6 +97,8 @@ export const WARNING_HINTS: Readonly<Record<string, string>> = {
     "A write changed a certified relation, so its new revision is not certified. Ask the user to certify it again if it should be.",
   fact_retired_by_source:
     "A replaced source no longer states a relation, so the relation was retired. Nothing to fix if the source changed on purpose.",
+  contradiction_not_judged:
+    'With `contradiction="llm"`, the judge failed after the write committed, so the relations the message names were stored without being judged. Fix the LLM, then check whether they replace older facts.',
   extraction_partial_failure:
     "Some extraction calls or items failed, and the rest was inserted. The message names the failure, the source, and the chunk. Insert that chunk again once the cause is fixed.",
   dropped_reserved_relation:
