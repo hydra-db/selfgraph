@@ -635,7 +635,7 @@ describe("LLM extraction through the AI SDK", () => {
       model: "m",
       base_url: "https://proxyuser:hunter2@llm.example/v1",
     });
-    expect(err?.message).toContain('LLM model "m" was not found for provider openai at https://***@llm.example/v1');
+    expect(err?.message).toContain("LLM model 'm' was not found for provider openai at https://***@llm.example/v1");
     expect(err?.message).not.toContain("hunter2");
     expect(err?.code).toBe("llm_model_not_found");
   });
@@ -662,12 +662,47 @@ describe("LLM extraction through the AI SDK", () => {
         .catch((e: unknown) => e);
     try {
       expect(String(await call({ max_retries: 0 }))).toContain(
-        `LLM model "m" was not found for provider openai at ${base}`,
+        `LLM model 'm' was not found for provider openai at ${base}`,
       );
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
     expect(paths).toEqual(["/v1/chat/completions"]);
     expect(summarizeError(await call({ timeout: 0.5 }))).toBe(`connection refused 127.0.0.1:${port}`);
+  });
+
+  it.each([
+    [
+      403,
+      "LLM access denied for provider openai and model 'm': check the API key, set by api_key in the llm config (or SELFGRAPH_LLM_API_KEY)",
+    ],
+    [404, "LLM model 'm' was not found for provider openai"],
+  ])("quotes the model like Python on HTTP %i", async (status, expected) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(status, { "content-type": "application/json" }).end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      const error = await buildLlmClient({
+        provider: "openai",
+        model: "m",
+        api_key: "k",
+        base_url: `http://127.0.0.1:${port}`,
+        max_retries: 0,
+      })
+        .generate({ system: "", user: "x", output: z.object({ ok: z.boolean() }) })
+        .catch((e: unknown) => e);
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message.startsWith(expected), message).toBe(true);
+      if (status === 404) {
+        expect(message).toBe(
+          `${expected} at http://127.0.0.1:${port}: ` +
+            "check the llm_model option (or SELFGRAPH_LLM_MODEL) and the provider",
+        );
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
