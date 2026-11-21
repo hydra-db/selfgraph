@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 
-from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph
+from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph, runtime
 from selfgraph._serde import LABELS
 from selfgraph.errors import (
     StoreError,
@@ -153,6 +153,72 @@ def test_check_settings_needs_no_store():
         SelfGraph.connect(store="kuzu", namspace="x")
     with pytest.raises(ValidationError, match="did you mean 'store'"):
         SelfGraph.from_env(stor="kuzu")
+
+
+def _fail_after_the_store(**options):
+    raise ValidationError("the LLM setup failed", code="invalid_setting")
+
+
+@pytest.mark.parametrize("in_loop", [False, True])
+def test_a_build_that_fails_after_the_store_releases_the_kuzu_lock(tmp_path, monkeypatch, in_loop):
+    pytest.importorskip("kuzu")
+    monkeypatch.setattr(runtime, "SelfGraph", _fail_after_the_store)
+    path = str(tmp_path / "g.kuzu")
+
+    async def build_in_loop():
+        build_graph(GraphSettings(store="kuzu", uri=path))
+
+    with pytest.raises(ValidationError, match="the LLM setup failed"):
+        run(build_in_loop()) if in_loop else build_graph(GraphSettings(store="kuzu", uri=path))
+    opened = subprocess.run(
+        [sys.executable, "-c", f"import kuzu; kuzu.Database({path!r})"], capture_output=True, text=True, timeout=60
+    )
+    assert opened.returncode == 0, opened.stderr
+
+
+def test_a_build_that_fails_does_not_wait_for_a_query_another_graph_runs_on_the_path(tmp_path):
+    pytest.importorskip("kuzu")
+    path = str(tmp_path / "g.kuzu")
+    script = f"""
+import asyncio
+from selfgraph import KuzuStore, runtime
+from selfgraph.errors import ValidationError
+
+def fail(**options):
+    raise ValidationError("the LLM setup failed", code="invalid_setting")
+
+runtime.SelfGraph = fail
+
+async def main():
+    other = KuzuStore({path!r})
+    async with other._lock:
+        try:
+            runtime.build_graph(runtime.GraphSettings(store="kuzu", uri={path!r}))
+        except ValidationError as exc:
+            print(exc)
+    await other.close()
+
+asyncio.run(main())
+"""
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert (proc.returncode, proc.stdout.strip()) == (0, "the LLM setup failed"), proc.stderr
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_a_build_that_fails_after_the_store_closes_it_and_raises_the_build_error(monkeypatch, close_fails):
+    closed = []
+
+    class Store:
+        async def close(self):
+            closed.append(True)
+            if close_fails:
+                raise StoreError("close failed")
+
+    monkeypatch.setattr(runtime, "_build_store", lambda settings: Store())
+    monkeypatch.setattr(runtime, "SelfGraph", _fail_after_the_store)
+    with pytest.raises(ValidationError, match="the LLM setup failed"):
+        build_graph(GraphSettings(store="neo4j", uri=NEO4J_URI))
+    assert closed == [True]
 
 
 def test_jsonable_and_dumps():
