@@ -139,7 +139,11 @@ def _stem(text: str) -> str:
     @param text (str): the name.
     @return (str): the file name without extension, or "" when nothing usable is left.
     """
-    stem = _UNSAFE.sub("-", text).strip().strip(".").strip()
+    stem = _UNSAFE.sub("-", text)
+    cleaned = stem.strip().strip(".").strip()
+    while cleaned != stem:
+        stem = cleaned
+        cleaned = stem.strip().strip(".").strip()
     raw = stem.encode("utf-8")
     if len(raw) <= _STEM_MAX_BYTES:
         return stem
