@@ -1,4 +1,4 @@
-import { needsLlm, StoreError, TransientError, ValidationError } from "./errors.js";
+import { EMBEDDER_HINT, needsLlm, StoreError, TransientError, ValidationError } from "./errors.js";
 import { Lazy } from "./internal/lazy.js";
 import { sleep } from "./internal/time.js";
 import type { RelationCap, SchemaCheck } from "./ops.js";
@@ -55,7 +55,7 @@ export function seedTier(seeds: unknown, embedder: Embedder | null, maxTier: Lev
   requireTier("seeds", seeds);
   const tier = clamp("seeds", seeds, maxTier) as SeedTier;
   if (tier === "embeddings" && embedder === null) {
-    throw new ValidationError("seeds 'embeddings' needs an embedder: pass embedder in the SelfGraph options", {
+    throw new ValidationError(`seeds 'embeddings' needs an embedder: ${EMBEDDER_HINT}`, {
       code: "embedder_required",
     });
   }

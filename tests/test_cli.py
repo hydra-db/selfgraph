@@ -416,6 +416,10 @@ def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
     monkeypatch.setenv("SELFGRAPH_AUTH", "u:p")
     assert kuzu_main(tmp_path, "init") == 0
     assert "ignored" not in capsys.readouterr().err
+    assert kuzu_main(tmp_path, "retrieve", "--seeds", "embeddings", "Ada") == 2
+    err = capsys.readouterr().err
+    assert "seeds 'embeddings' needs an embedder: which only the SDK can take; use --seeds bm25 or synonyms here" in err
+    assert "pass embedder=" not in err
 
 
 def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path):

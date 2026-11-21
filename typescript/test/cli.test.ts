@@ -631,6 +631,20 @@ describe("CLI settings", () => {
     }
   });
 
+  it("rewords the embedder hint for the CLI", async () => {
+    const { seedTier } = await import("../src/access.js");
+    let message = "";
+    try {
+      seedTier("embeddings", null, "max");
+    } catch (exc) {
+      message = (exc as Error).message;
+    }
+    expect(message).toBe("seeds 'embeddings' needs an embedder: pass embedder= to SelfGraph");
+    expect(surfaceHint(message)).toBe(
+      "seeds 'embeddings' needs an embedder: which only the SDK can take; use --seeds bm25 or synonyms here",
+    );
+  });
+
   it("binds raw query parameters, warns when kuzu ignores a setting, and rejects a kuzu path for a server", async () => {
     expect(bindParams("RETURN $a AS a", { a: 1, b: 2 })).toEqual({ a: 1 });
     expect(bindParams("RETURN '$a' AS a, `$b` AS b /* $c */ // $d", null)).toEqual({});

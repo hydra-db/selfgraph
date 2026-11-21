@@ -397,6 +397,7 @@ class InternalError(SelfGraphError):
 
 CLOSED_MESSAGE = "this SelfGraph is closed; create a new SelfGraph to keep using the store"
 LLM_HINT = "pass llm= to SelfGraph (or set SELFGRAPH_LLM_PROVIDER and SELFGRAPH_LLM_MODEL)"
+EMBEDDER_HINT = "pass embedder= to SelfGraph"
 STORE_CLOSED_MESSAGE = "this store is closed; create a new store for each SelfGraph"
 TOKEN_HINT = "pass auth=TOKEN to HydraDBStore (or set SELFGRAPH_AUTH)"
 STORE_KUZU_HINT = 'pass store="kuzu" (or SELFGRAPH_STORE=kuzu)'
@@ -435,6 +436,7 @@ def setting_hint(key: str) -> str:
 
 _SURFACE_HINTS = (
     (LLM_HINT, "pass --llm-provider and --llm-model (or SELFGRAPH_LLM_*)"),
+    (EMBEDDER_HINT, "which only the SDK can take; use --seeds bm25 or synonyms here"),
     (TOKEN_HINT, "pass --auth TOKEN (or SELFGRAPH_AUTH)"),
     (STORE_KUZU_HINT, "pass --store kuzu (or SELFGRAPH_STORE=kuzu)"),
     (OTHER_ENGINE_HINT, "pass --store neo4j (or memgraph)"),

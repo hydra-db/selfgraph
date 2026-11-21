@@ -268,6 +268,7 @@ export class InternalError extends SelfGraphError {
 }
 
 export const LLM_HINT = "pass llm in the SelfGraph options (or set SELFGRAPH_LLM_PROVIDER and SELFGRAPH_LLM_MODEL)";
+export const EMBEDDER_HINT = "pass embedder= to SelfGraph";
 export const STORE_CLOSED_MESSAGE = "this store is closed; create a new store for each SelfGraph";
 export const TOKEN_HINT = "pass auth: TOKEN in the HydraDBStore options (or set SELFGRAPH_AUTH)";
 export const STORE_KUZU_HINT = 'pass store: "kuzu" (or SELFGRAPH_STORE=kuzu)';
@@ -297,6 +298,7 @@ export function settingHint(key: string): string {
 
 const SURFACE_HINTS: ReadonlyArray<readonly [string, string]> = [
   [LLM_HINT, "pass --llm-provider and --llm-model (or SELFGRAPH_LLM_*)"],
+  [EMBEDDER_HINT, "which only the SDK can take; use --seeds bm25 or synonyms here"],
   [TOKEN_HINT, "pass --auth TOKEN (or SELFGRAPH_AUTH)"],
   [STORE_KUZU_HINT, "pass --store kuzu (or SELFGRAPH_STORE=kuzu)"],
   [OTHER_ENGINE_HINT, "pass --store neo4j (or memgraph)"],

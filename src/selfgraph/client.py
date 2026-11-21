@@ -15,7 +15,7 @@ from ._export import obsidian_vault
 from ._maintenance import inspect, scan_entities, scan_relations
 from ._serde import L_TRACE, aware, now
 from .contradiction import judge_contradictions
-from .errors import CLOSED_MESSAGE, StoreError, TransientError, ValidationError, needs_llm
+from .errors import CLOSED_MESSAGE, EMBEDDER_HINT, StoreError, TransientError, ValidationError, needs_llm
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
 from .ids import _require_namespace, decision_id, type_name
@@ -207,9 +207,7 @@ class SelfGraph:
         tiers.require_tier("seeds", seeds)
         tier = tiers.clamp("seeds", str(seeds), self._max_tier)
         if tier == "embeddings" and self._embedder is None:
-            raise ValidationError(
-                "seeds 'embeddings' needs an embedder: pass embedder= to SelfGraph", code="embedder_required"
-            )
+            raise ValidationError(f"seeds 'embeddings' needs an embedder: {EMBEDDER_HINT}", code="embedder_required")
         return tier
 
     def _resolver_for(self, resolver: EntityResolver | ResolverMode) -> tuple[str, EntityResolver | None]:
