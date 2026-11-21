@@ -907,7 +907,17 @@ async function canonicalFactIds(graph: SelfGraph): Promise<Record<string, unknow
 }
 
 export async function write(graph: SelfGraph): Promise<Record<string, unknown>> {
-  const out: Record<string, unknown> = {};
+  const errors: unknown[] = [];
+  for (const type of [":a", "a:b", "Person:"]) {
+    try {
+      ids.entityId(type, "X");
+      errors.push("accepted");
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      errors.push([exc.code, exc.field, exc.message]);
+    }
+  }
+  const out: Record<string, unknown> = { entity_type_errors: errors };
   out.facts = toJsonable(await graph.insert.facts(FACTS, { source_id: "spec" }));
   out.text = toJsonable(
     await graph.insert.text(TEXT, { source_id: "notes", metadata: { author: "conformance", n: 1, f: 0.5 } }),

@@ -60,6 +60,16 @@ function attempt<T>(fn: () => T): T | { error: string } {
   }
 }
 
+it.each([":a", "a:b", "Person:"])("rejects entity type %s", (type) => {
+  expect(() => entityId(type, "X")).toThrowError(
+    expect.objectContaining({
+      code: "invalid_argument",
+      field: "type",
+      message: `entity type ${pyRepr(type)} cannot contain ':', which separates an entity id's type and name`,
+    }),
+  );
+});
+
 describe("ids match Python byte for byte", () => {
   it.each([
     [" Person : Jane  Doe ", "person:jane-doe"],

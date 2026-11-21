@@ -326,6 +326,14 @@ def _canonical_name(type: str, name: str) -> str:
     return "-".join(words) if words else slug(name)
 
 
+def _reject_type_colon(type: str) -> None:
+    """Reject the id separator in a type. @param type (str): entity type. @return (None): nothing."""
+    if ":" in type:
+        raise ValidationError(
+            f"entity type {type!r} cannot contain ':', which separates an entity id's type and name", field="type"
+        )
+
+
 def entity_id(type: str, name: str) -> str:
     """``<type>:<canonical-name>``, so surface variants of one entity share an id.
 
@@ -335,6 +343,7 @@ def entity_id(type: str, name: str) -> str:
     """
     _require_str("entity type", type)
     _require_str("entity name", name)
+    _reject_type_colon(type)
     type = normalize_text(type)
     return f"{slug(type)}:{_canonical_name(type, name)}"
 

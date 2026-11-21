@@ -152,8 +152,7 @@ def _validate_entity_identity(eid: str, type: str, name: str) -> None:
         raise ValidationError(f"entity type {type!r} is reserved for internal use; choose another type")
     if "`" in type:
         raise ValidationError("entity type cannot contain a backtick")
-    if ":" in type:
-        raise ValidationError(f"entity type {type!r} cannot contain ':', which separates an entity id's type and name")
+    _ids._reject_type_colon(type)
     if _has_control(name) or _has_control(type):
         raise ValidationError("entity type and name cannot contain control or surrogate characters")
     if not all(ch.isalnum() or ch in " _-." or _ids._is_mark(ch) for ch in type):

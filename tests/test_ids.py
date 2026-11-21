@@ -132,3 +132,15 @@ def test_require_identifier_rejects_injection_and_non_identifiers():
     for bad in ("id` RETURN 1 //", "a`b", "a b", "1name", "na.me", "", "n`) DETACH DELETE (m"):
         with pytest.raises(ValidationError):
             ids.require_identifier(bad)
+
+
+@pytest.mark.parametrize("bad_type", [":a", "a:b", "Person:"])
+def test_entity_type_colons_rejected(bad_type):
+    with pytest.raises(ValidationError) as caught:
+        ids.entity_id(bad_type, "X")
+    assert caught.value.code == "invalid_argument"
+    assert caught.value.field == "type"
+    assert (
+        str(caught.value)
+        == f"entity type {bad_type!r} cannot contain ':', which separates an entity id's type and name"
+    )

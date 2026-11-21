@@ -136,6 +136,16 @@ function canonicalName(type: string, rawName: string): string {
   return words.length > 0 ? words.join("-") : slug(name);
 }
 
+/** Reject the id separator in a type. @param type (string): entity type. @return (void): nothing. */
+export function rejectTypeColon(type: string): void {
+  if (type.includes(":")) {
+    throw new ValidationError(
+      `entity type ${pyRepr(type)} cannot contain ':', which separates an entity id's type and name`,
+      { field: "type" },
+    );
+  }
+}
+
 /**
  * Derive an entity id "<type>:<canonical-name>", dropping punctuation, keeping combining marks, and, for organisation-like types, dropping a leading article and trailing corporate suffixes.
  *
@@ -146,6 +156,7 @@ function canonicalName(type: string, rawName: string): string {
 export function entityId(type: string, name: string): string {
   requireStr("entity type", type);
   requireStr("entity name", name);
+  rejectTypeColon(type);
   const t = normalizeText(type);
   return `${slug(t)}:${canonicalName(t, name)}`;
 }
