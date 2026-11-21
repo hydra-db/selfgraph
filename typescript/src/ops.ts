@@ -211,11 +211,7 @@ export function validateEntityIdentity(eid: unknown, type: unknown, name: unknow
     throw new ValidationError(`entity type ${pyRepr(type)} is reserved for internal use; choose another type`);
   }
   if (type.includes("`")) throw new ValidationError("entity type cannot contain a backtick");
-  if (type.includes(":")) {
-    throw new ValidationError(
-      `entity type ${pyRepr(type)} cannot contain ':', which separates an entity id's type and name`,
-    );
-  }
+  ids.rejectTypeColon(type);
   if (hasControl(name) || hasControl(type)) {
     throw new ValidationError("entity type and name cannot contain control or surrogate characters");
   }
