@@ -572,7 +572,7 @@ def quote_label(name: str) -> str:
     """
     if not name or not name.strip():
         raise ValidationError("label / type names cannot be empty")
-    if _IDENT.match(name):
+    if _IDENT.fullmatch(name):
         return name
     escaped = name.replace("`", "``")
     return f"`{escaped}`"

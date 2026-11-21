@@ -55,6 +55,8 @@ def test_quote_label():
     assert ids.quote_label("WORKS_AT") == "WORKS_AT"
     assert ids.quote_label("Graph Database") == "`Graph Database`"
     assert ids.quote_label("we`ird") == "`we``ird`"
+    assert ids.quote_label("a\n") == "`a\n`"
+    assert ids.quote_label("Person\n") == "`Person\n`"
 
 
 def test_explicit_entity_ids_are_canonicalized_like_derived_ones():
