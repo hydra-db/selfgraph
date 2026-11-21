@@ -314,8 +314,8 @@ JSON_INPUTS = ["NaN", "Infinity", "-Infinity", "1.5", "[1]", "nope"]
 def json_constants():
     """Parse each input as a KEY=VALUE flag value and inside a JSON document, as the CLI and settings do.
 
-    @return (dict): each input's flag value, and each document's parsed value or its error up to the first colon,
-        since the two JSON parsers word a syntax error differently.
+    @return (dict): each input's flag value, each document's parsed value or its error up to the first colon,
+        since the two JSON parsers word a syntax error differently, and a deep document's error.
     """
 
     def document(text):
@@ -324,9 +324,16 @@ def json_constants():
         except ValidationError as exc:
             return str(exc).partition(":")[0]
 
+    deep = "[" * 100000 + "]" * 100000
+    deep_error = ""
+    try:
+        parse_json(deep, " in --prop")
+    except ValidationError as exc:
+        deep_error = f"{exc.code}: {exc}"
     return {
         "flags": [_kv([f"v={x}"], "--prop")["v"] for x in JSON_INPUTS],
         "documents": [document(f'{{"v": {x}}}') for x in JSON_INPUTS],
+        "deep": deep_error,
     }
 
 

@@ -359,9 +359,9 @@ const JSON_INPUTS = ["NaN", "Infinity", "-Infinity", "1.5", "[1]", "nope"];
 /**
  * Parse each input as a KEY=VALUE flag value and inside a JSON document, as the CLI and settings do.
  *
- * @return ({ flags: unknown[]; documents: unknown[] }): each input's flag value, and each document's parsed value or its error up to the first colon, since the two JSON parsers word a syntax error differently.
+ * @return ({ flags: unknown[]; documents: unknown[]; deep: string }): each input's flag value, each document's parsed value or its error up to the first colon, since the two JSON parsers word a syntax error differently, and a deep document's error.
  */
-function jsonConstants(): { flags: unknown[]; documents: unknown[] } {
+function jsonConstants(): { flags: unknown[]; documents: unknown[]; deep: string } {
   const document = (text: string): unknown => {
     try {
       return parseJson(text, " in --metadata");
@@ -370,9 +370,18 @@ function jsonConstants(): { flags: unknown[]; documents: unknown[] } {
       return exc.message.split(":")[0];
     }
   };
+  const deep = "[".repeat(100_000) + "]".repeat(100_000);
+  let deepError = "";
+  try {
+    parseJson(deep, " in --prop");
+  } catch (exc) {
+    if (!(exc instanceof ValidationError)) throw exc;
+    deepError = `${exc.code}: ${exc.message}`;
+  }
   return {
     flags: JSON_INPUTS.map((x) => kv([`v=${x}`], "--prop").v),
     documents: JSON_INPUTS.map((x) => document(`{"v": ${x}}`)),
+    deep: deepError,
   };
 }
 
@@ -446,7 +455,7 @@ export function schemaWarnings(): {
   terms_subtypes: unknown[];
   neo4j_dropped: string;
   ossie: { doc: unknown; warnings: string };
-  json_constants: { flags: unknown[]; documents: unknown[] };
+  json_constants: { flags: unknown[]; documents: unknown[]; deep: string };
   lenient_event_times: Array<string | null>;
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
   credential_masking: { mask: string; redact: string; redact_many: string; internal: string };

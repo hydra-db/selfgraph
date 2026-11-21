@@ -31,7 +31,7 @@ from .errors import (
     surface_hint,
 )
 from .extraction.prompts import check_prompts
-from .ids import _require_namespace
+from .ids import MAX_JSON_DEPTH, _DeepJSON, _json_nesting, _require_namespace
 from .llm.base import check_llm_config
 from .models import (
     LLM_CONCURRENCY,
@@ -149,26 +149,33 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not a JSON value")
 
 
-def parse_json(text: str, where: str = "") -> Any:
+def parse_json(text: str, where: str = "", field: str | None = None) -> Any:
     """Parse strict JSON text, naming where it came from in the error.
 
     @param text (str): the JSON text.
     @param where (str): appended to "invalid JSON" in the error, e.g. " in 'graph.json'".
+    @param field (str | None): the argument or key at fault, when one is.
     @return (Any): the parsed value.
     """
+    if _json_nesting(text) > MAX_JSON_DEPTH:
+        message = f"invalid JSON{where}: too deeply nested; keep it under {MAX_JSON_DEPTH} levels"
+        if field is None and not where:
+            return _DeepJSON(message)
+        raise ValidationError(message, field=field)
     try:
         return json.loads(text, parse_constant=_reject_constant)
     except ValueError as exc:
         raise ValidationError(f"invalid JSON{where}: {exc}") from exc
 
 
-def read_json(path: str) -> Any:
+def read_json(path: str, field: str | None = "path") -> Any:
     """Read and parse a JSON file, or stdin when the path is '-'.
 
     @param path (str): the file path, or '-'.
+    @param field (str | None): the argument or key at fault, when one is.
     @return (Any): the parsed JSON.
     """
-    return parse_json(read_text(path), f" in {path!r}")
+    return parse_json(read_text(path), f" in {path!r}", field)
 
 
 def _json_setting(value: Any, what: str) -> Any:
@@ -181,8 +188,8 @@ def _json_setting(value: Any, what: str) -> Any:
     if not isinstance(value, str):
         return value
     if value.lstrip().startswith("{"):
-        return parse_json(value, f" in the inline {what}")
-    return read_json(value)
+        return parse_json(value, f" in the inline {what}", what)
+    return read_json(value, what)
 
 
 _PATTERN_NAMES = re.compile(

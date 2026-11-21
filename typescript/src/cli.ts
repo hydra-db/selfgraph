@@ -50,6 +50,7 @@ import {
   DEFAULT_SETTINGS,
   type GraphSettings,
   ignoredSettings,
+  jsonDepth,
   parseJson,
   readJson,
   readText,
@@ -199,6 +200,11 @@ export function kv(pairs: string[], flag: string, text = false): JsonObject {
     if (text) {
       out[pair.slice(0, i)] = value;
       continue;
+    }
+    if (jsonDepth(value) > 64) {
+      throw new ValidationError("invalid JSON: too deeply nested; keep it under 64 levels", {
+        field: pair.slice(0, i),
+      });
     }
     try {
       out[pair.slice(0, i)] = JSON.parse(value);

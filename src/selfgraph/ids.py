@@ -58,8 +58,38 @@ def _has_control(text: str) -> bool:
     return any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or 0xD800 <= ord(ch) <= 0xDFFF for ch in text)
 
 
-_MAX_JSON_DEPTH = 64
+MAX_JSON_DEPTH = 64
 MAX_SAFE_INTEGER = 2**53 - 1
+
+
+class _DeepJSON(str):
+    pass
+
+
+def _json_nesting(text: str) -> int:
+    """Find the deepest object or array nesting in JSON text.
+
+    @param text (str): the JSON text, or a flag value that may be JSON.
+    @return (int): the nesting depth; a string literal's brackets do not count.
+    """
+    depth = deepest = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif ch in "]}":
+            depth -= 1
+    return deepest
 
 
 def _reject_proto_keys(value: Any) -> Any:
@@ -98,8 +128,8 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
     @return (None): nothing; raises ValidationError on excess depth, a non-string or control/surrogate key, a surrogate
         value, an unsafe integer, NaN or Infinity, a date or datetime, or any other non-JSON value.
     """
-    if depth > _MAX_JSON_DEPTH:
-        raise ValidationError(f"{name} is nested too deeply; keep it under {_MAX_JSON_DEPTH} levels")
+    if depth > MAX_JSON_DEPTH:
+        raise ValidationError(f"{name} is nested too deeply; keep it under {MAX_JSON_DEPTH} levels")
     if isinstance(value, str):
         if _unstorable(value):
             raise ValidationError(f"{name} values cannot contain NUL or unpaired surrogate characters")
@@ -119,6 +149,8 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
                 raise ValidationError(f"{name} keys must be strings")
             if _has_control(key):
                 raise ValidationError(f"{name} keys cannot contain control or surrogate characters")
+            if isinstance(item, _DeepJSON):
+                raise ValidationError(str(item), field=key)
             _require_clean_json(name, item, depth + 1, safe_ints=safe_ints)
     elif isinstance(value, list | tuple):
         for item in value:

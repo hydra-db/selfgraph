@@ -167,13 +167,49 @@ export function settingsFromEnv(
 }
 
 /**
+ * Find the deepest object or array nesting in JSON text.
+ *
+ * @param text (string): the JSON text, or a flag value that may be JSON.
+ * @return (number): the nesting depth; a string literal's brackets do not count.
+ */
+export function jsonDepth(text: string): number {
+  let depth = 0;
+  let deepest = 0;
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === "[" || ch === "{") {
+      depth += 1;
+      deepest = Math.max(deepest, depth);
+    } else if (ch === "]" || ch === "}") {
+      depth -= 1;
+    }
+  }
+  return deepest;
+}
+
+/**
  * Parse JSON text, naming where it came from in the error.
  *
  * @param text (string): the JSON text.
  * @param where (string): appended to "invalid JSON" in the error, e.g. " in 'graph.json'".
+ * @param field (string | undefined): the argument or key at fault, when one is.
  * @return (unknown): the parsed value.
  */
-export function parseJson(text: string, where: string): unknown {
+export function parseJson(text: string, where: string, field?: string): unknown {
+  if (jsonDepth(text) > 64) {
+    const named = field ?? (where.startsWith(" in --") ? where.slice(" in --".length) : undefined);
+    throw new ValidationError(
+      `invalid JSON${where}: too deeply nested; keep it under 64 levels`,
+      named === undefined ? {} : { field: named },
+    );
+  }
   try {
     return JSON.parse(text);
   } catch (exc) {
@@ -201,8 +237,8 @@ export function readText(path: string): string {
  * @param path (string): the file path, or "-".
  * @return (unknown): the parsed JSON.
  */
-export function readJson(path: string): unknown {
-  return parseJson(readText(path), ` in ${pyRepr(path)}`);
+export function readJson(path: string, field = "path"): unknown {
+  return parseJson(readText(path), ` in ${pyRepr(path)}`, field);
 }
 
 /**
