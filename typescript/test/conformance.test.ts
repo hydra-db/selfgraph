@@ -11,6 +11,7 @@ import type { Schema } from "../src/schema.js";
 import {
   conformanceStore,
   dump,
+  kuzuParamErrors,
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
@@ -24,7 +25,7 @@ const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url
 const KUZU = tempKuzu("selfgraph-conf-");
 
 function py(
-  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation",
+  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation" | "kuzu_params",
   store: string,
   ns: string,
 ): unknown {
@@ -110,6 +111,35 @@ const live = new Map<string, boolean>();
 for (const spec of specs) live.set(spec.name, await reachable(spec));
 
 describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
+  it.skipIf(!live.get("kuzu"))(
+    "rejects empty Kuzu parameters with the same error fields in both languages",
+    async () => {
+      expect(await kuzuParamErrors()).toEqual(py("kuzu_params", "-", "-"));
+      expect(await kuzuParamErrors()).toEqual({
+        list: expect.objectContaining({
+          error: "parameter 'x' is an empty list, which Kuzu cannot type; pass a non-empty list",
+          code: "invalid_argument",
+          field: "x",
+        }),
+        map: expect.objectContaining({
+          error: "parameter 'x' is an empty map, which Kuzu cannot type; pass a non-empty map",
+          code: "invalid_argument",
+          field: "x",
+        }),
+        nested_list: expect.objectContaining({
+          error: "parameter 'x.a' is an empty list, which Kuzu cannot type; pass a non-empty list",
+          code: "invalid_argument",
+          field: "x",
+        }),
+        nested_map: expect.objectContaining({
+          error: "parameter 'x.a' is an empty map, which Kuzu cannot type; pass a non-empty map",
+          code: "invalid_argument",
+          field: "x",
+        }),
+      });
+    },
+  );
+
   it.skipIf(!live.get("kuzu"))("isolates anonymous Kuzu databases in both languages", async () => {
     const result: (boolean | string)[] = [];
     for (const path of ["", ":memory:"]) {

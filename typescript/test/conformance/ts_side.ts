@@ -739,6 +739,29 @@ const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
 ];
 
 /**
+ * Bind empty containers that Kuzu cannot type and report the error both SDKs raise.
+ *
+ * @return (Promise<Record<string, object | string>>): the error fields for a top-level list, a top-level map, a nested list, and a nested map.
+ */
+export async function kuzuParamErrors(): Promise<Record<string, object | string>> {
+  const store = new KuzuStore("");
+  const calls = {
+    list: { x: [] },
+    map: { x: {} },
+    nested_list: { x: { a: [] } },
+    nested_map: { x: { a: {} } },
+  };
+  return Object.fromEntries(
+    await Promise.all(
+      Object.entries(calls).map(async ([name, params]) => [
+        name,
+        await errorOf(() => store.runCypher("RETURN $x AS x", params)),
+      ]),
+    ),
+  );
+}
+
+/**
  * Call MCP tools with text, boolean, and null arguments the servers must reject before running the tool.
  *
  * @return (Promise<object[]>): the error text, code, and field each call reports, or "accepted".

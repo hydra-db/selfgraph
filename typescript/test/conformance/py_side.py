@@ -688,6 +688,21 @@ async def mcp_argument_errors():
     return errors
 
 
+async def kuzu_param_errors():
+    """Bind empty containers that Kuzu cannot type and report the error both SDKs raise.
+
+    @return (dict): the error fields for a top-level list, a top-level map, a nested list, and a nested map.
+    """
+    store = KuzuStore("")
+    calls = {
+        "list": {"x": []},
+        "map": {"x": {}},
+        "nested_list": {"x": {"a": []}},
+        "nested_map": {"x": {"a": {}}},
+    }
+    return {name: await error_of(store.run_cypher("RETURN $x AS x", params)) for name, params in calls.items()}
+
+
 USES_SPEC = {
     "entities": [{"name": "Person"}, {"name": "Tool"}],
     "relations": [{"type": "USES", "from": {"types": ["Person"], "max_count": 2}}],
@@ -2223,6 +2238,9 @@ async def main():
         return
     if cmd == "schema":
         json.dump(schema_warnings(), sys.stdout, sort_keys=True, ensure_ascii=False)
+        return
+    if cmd == "kuzu_params":
+        json.dump(await kuzu_param_errors(), sys.stdout, sort_keys=True, ensure_ascii=False)
         return
     store_name, ns = sys.argv[2], sys.argv[3]
     kuzu_path = sys.argv[4] if len(sys.argv) > 4 else None

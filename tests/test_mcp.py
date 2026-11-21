@@ -5,7 +5,7 @@ import logging
 from unittest.mock import AsyncMock
 
 import pytest
-from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, error_links, mcp_session, preference_update_recorder, run
+from helpers import AB_FACTS, HYDRADB, KUZU, RAW_CYPHER, error_links, mcp_session, preference_update_recorder, run
 
 import selfgraph
 import selfgraph.mcp.server as srv
@@ -429,6 +429,19 @@ def test_run_cypher_needs_every_parameter_and_ids_need_their_prefix():
         ):
             with pytest.raises(ValidationError, match=f"{kind} id must start with '{kind}:'"):
                 run(call)
+
+
+def test_run_cypher_rejects_an_empty_kuzu_param_with_the_parameter_field(server):
+    if not KUZU:
+        pytest.skip("the empty-container error is Kuzu-specific")
+    failure = tool_failure(server, "run_cypher", {"query": "RETURN $x AS x", "params": {"x": []}})
+    assert {key: failure[key] for key in ("error", "error_type", "code", "field", "tool")} == {
+        "error": "parameter 'x' is an empty list, which Kuzu cannot type; pass a non-empty list",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "field": "x",
+        "tool": "run_cypher",
+    }
 
 
 def test_facts_evidence_versions_dry_runs_and_decision_steps():

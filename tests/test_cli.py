@@ -342,6 +342,16 @@ def test_store_settings_warnings_params_and_inline_schema(capsys, tmp_path, monk
     assert json.loads(capsys.readouterr().out)["entities"][0]["name"] == "Person"
 
 
+def test_query_rejects_an_empty_kuzu_param_with_the_parameter_field(capsys, tmp_path):
+    assert kuzu_main(tmp_path, "query", "RETURN $x AS x", "--param", "x=[]") == 2
+    assert capsys.readouterr().err == cli_error(
+        "invalid_argument",
+        "parameter 'x' is an empty list, which Kuzu cannot type; pass a non-empty list",
+        "selfgraph query",
+        "x",
+    )
+
+
 def test_bad_facts_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsys, tmp_path):
     bad = json_file(tmp_path, "bad.json", {"entities": [{"type": "P"}, {"name": 3, "type": "P"}]})
     assert kuzu_main(tmp_path, "insert", "facts", bad) == 2
