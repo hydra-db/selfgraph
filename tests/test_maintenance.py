@@ -34,6 +34,8 @@ def test_relevance_formula():
     assert relevance_score([T0 + timedelta(days=5)], T0, 30, 0) == 0.5
     assert relevance_score([T0], T0, 30, 63) == 0.992188
     assert relevance_score([datetime(2026, 1, 1)], T0 + timedelta(days=10), 7, 2) == 0.309582
+    assert relevance_score([T0], T0, 30, 999_998) == 0.999999
+    assert relevance_score([T0], T0, 0.25, 999_999_999) == 0.999999
 
 
 def test_decay_scores_in_place_and_is_idempotent():

@@ -22,6 +22,11 @@ describe("relevance formula", () => {
   it("decays by half-life and rises with frequency", () => {
     expect(relevanceScore([T0], days(10), 7, 2)).toBe(0.309582);
   });
+
+  it("never reaches 1.0", () => {
+    expect(relevanceScore([T0], T0, 30, 999_998)).toBe(0.999999);
+    expect(relevanceScore([T0], T0, 0.25, 999_999_999)).toBe(0.999999);
+  });
 });
 
 async function cascading(g: SelfGraph): Promise<void> {

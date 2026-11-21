@@ -55,7 +55,7 @@ export function relevanceScore(
   const ageMs = Math.max(0, now.getTime() - latest(timestamps).getTime());
   const recency = 0.5 ** (ageMs / DAY_MS / halfLifeDays);
   const frequency = signal / (signal + 1);
-  return Math.floor(((recency * (1 + frequency)) / 2) * SCALE + 0.5) / SCALE;
+  return Math.min(Math.floor(((recency * (1 + frequency)) / 2) * SCALE + 0.5) / SCALE, 0.999999);
 }
 
 /**
