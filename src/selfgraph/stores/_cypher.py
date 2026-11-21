@@ -20,7 +20,7 @@ from ..errors import (
     split_scheme,
 )
 from ..ids import quote_label, quote_reltype, require_identifier
-from ..models import CypherResult, JsonValue
+from ..models import CypherResult, JsonValue, check_options
 
 BOLT_CONNECT_TIMEOUT = 10.0
 _WRITE_BATCH = 500
@@ -73,7 +73,34 @@ def bolt_auth(auth: Any) -> Any:
     return parse_auth(auth)
 
 
-def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
+def _driver_option_keys() -> list[str] | None:
+    """The neo4j driver config keys the installed driver accepts, or None when they cannot be read.
+
+    The driver consumes its config through a pool config class and a workspace config class; their keys are
+    the options a Bolt store accepts.
+
+    @return (list[str] | None): the sorted accepted keys, without auth, or None.
+    """
+    try:
+        from neo4j._async.config import AsyncPoolConfig
+    except Exception:  # noqa: BLE001
+        try:
+            from neo4j._conf import PoolConfig as AsyncPoolConfig
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        from neo4j._conf import WorkspaceConfig
+    except Exception:  # noqa: BLE001
+        return None
+    keys = set(AsyncPoolConfig.keys()) | set(WorkspaceConfig.keys())
+    for cls in (AsyncPoolConfig, WorkspaceConfig):
+        deprecated = getattr(cls, "_deprecated_keys", None)
+        if callable(deprecated):
+            keys |= set(deprecated())
+    return sorted(keys - {"auth"})
+
+
+def bolt_driver(uri: str, auth: Any, *, store: str = "CypherStore", **kwargs: Any) -> Any:
     """Open an async Bolt driver with bounded connect timeouts.
 
     Raises ValidationError on an unencoded user or password and StoreError on a bad URI or driver config. The driver's
@@ -81,6 +108,7 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
 
     @param uri (str): the Bolt URI.
     @param auth (Any): the auth, as bolt_auth takes it.
+    @param store (str): the store the options belong to, for an unknown-option error.
     @param kwargs (Any): extra driver config; connection_timeout and connection_acquisition_timeout default to 10 s.
     @return (Any): the driver.
     """
@@ -97,6 +125,9 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
         )
     kwargs.setdefault("connection_timeout", BOLT_CONNECT_TIMEOUT)
     kwargs.setdefault("connection_acquisition_timeout", BOLT_CONNECT_TIMEOUT)
+    allowed = _driver_option_keys()
+    if allowed is not None:
+        check_options(store, kwargs, allowed)
     try:
         return AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
     except Exception as exc:  # noqa: BLE001
