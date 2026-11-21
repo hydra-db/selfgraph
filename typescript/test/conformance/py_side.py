@@ -2198,6 +2198,19 @@ async def dump(graph, ns):
 
 async def main():
     cmd = sys.argv[1]
+    if cmd == "kuzu_rejects_scheme":
+        from selfgraph import KuzuStore
+
+        result = []
+        for uri in ("bolt://u:hunter2@h:1", "redis://u:hunter2@h:1", "https://u:hunter2@h:1"):
+            try:
+                KuzuStore(uri)
+            except SelfGraphError as exc:
+                result.append([exc.code, exc.field, str(exc)])
+            else:
+                result.append("no error")
+        json.dump(result, sys.stdout, ensure_ascii=False)
+        return
     if cmd == "kuzu_isolation":
         from selfgraph import KuzuStore, ValidationError
 

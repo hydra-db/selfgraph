@@ -11,6 +11,7 @@ import type { Schema } from "../src/schema.js";
 import {
   conformanceStore,
   dump,
+  kuzuSchemeErrors,
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
@@ -24,7 +25,7 @@ const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url
 const KUZU = tempKuzu("selfgraph-conf-");
 
 function py(
-  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation",
+  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation" | "kuzu_rejects_scheme",
   store: string,
   ns: string,
 ): unknown {
@@ -110,6 +111,10 @@ const live = new Map<string, boolean>();
 for (const spec of specs) live.set(spec.name, await reachable(spec));
 
 describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
+  it.skipIf(!live.get("kuzu"))("rejects server URIs with the same Kuzu error in both languages", () => {
+    expect(py("kuzu_rejects_scheme", "-", "-")).toEqual(kuzuSchemeErrors());
+  });
+
   it.skipIf(!live.get("kuzu"))("isolates anonymous Kuzu databases in both languages", async () => {
     const result: (boolean | string)[] = [];
     for (const path of ["", ":memory:"]) {

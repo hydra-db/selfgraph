@@ -12,6 +12,7 @@ from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph
 from selfgraph._serde import LABELS
 from selfgraph.errors import (
+    SelfGraphError,
     StoreError,
     TransientError,
     ValidationError,
@@ -474,6 +475,25 @@ def test_kuzu_paths_settings_and_errors(caplog, monkeypatch, tmp_path):
     for uri in ("graph.kuzu", str(tmp_path / "db")):
         with pytest.raises(ValidationError, match='this looks like a Kuzu path; pass store="kuzu"'):
             build_graph(GraphSettings(uri=uri))
+
+
+def test_kuzu_store_refuses_a_server_uri_without_creating_a_directory(tmp_path, monkeypatch):
+    pytest.importorskip("kuzu")
+    monkeypatch.chdir(tmp_path)
+    cases = {
+        "bolt://u:hunter2@h:1": "Neo4jStore",
+        "redis://u:hunter2@h:1": "FalkorDBStore",
+        "falkors://u:hunter2@h:1": "FalkorDBStore",
+        "hydradb://u:hunter2@h:1": "HydraDBStore",
+        "https://u:hunter2@h:1": "a server store",
+    }
+    for uri, store in cases.items():
+        with pytest.raises(SelfGraphError) as raised:
+            KuzuStore(uri)
+        assert (raised.value.code, raised.value.field) == ("invalid_setting", "uri")
+        assert "hunter2" not in str(raised.value)
+        assert store in str(raised.value)
+        assert not (tmp_path / "bolt:").exists()
 
 
 def test_kuzu_relative_path_uses_each_stores_working_directory(tmp_path, monkeypatch):

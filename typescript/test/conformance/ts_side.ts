@@ -712,6 +712,23 @@ export const TEXT =
   "Grace Hopper joined Remington Rand. Grace Hopper wrote COBOL. Zoë Ångström met Ada Lovelace in 北京.";
 
 /**
+ * The error each server URI raises from KuzuStore, as code, field, and message.
+ *
+ * @return (Array<[string | undefined, string | undefined, string | undefined]>): one triple per URI.
+ */
+export function kuzuSchemeErrors(): Array<[string | undefined, string | undefined, string | undefined]> {
+  return ["bolt://u:hunter2@h:1", "redis://u:hunter2@h:1", "https://u:hunter2@h:1"].map((uri) => {
+    try {
+      new KuzuStore(uri);
+      return ["no error", undefined, undefined];
+    } catch (exc) {
+      const error = exc as { code?: string; field?: string; message?: string };
+      return [error.code, error.field, error.message];
+    }
+  });
+}
+
+/**
  * A store pointed at the same database the Python side uses for a backend.
  *
  * @param name (string): the backend name.

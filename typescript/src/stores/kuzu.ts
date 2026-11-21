@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { errorMessage, SelfGraphError, StoreError, ValidationError } from "../errors.js";
+import { errorMessage, maskUri, SelfGraphError, StoreError, splitScheme, ValidationError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
@@ -138,6 +138,16 @@ function databasePath(path: string): string {
       : path,
   );
 }
+
+const SCHEME_STORES: Record<string, string> = {
+  bolt: "Neo4jStore",
+  neo4j: "Neo4jStore",
+  memgraph: "Neo4jStore",
+  redis: "FalkorDBStore",
+  falkor: "FalkorDBStore",
+  falkors: "FalkorDBStore",
+  hydradb: "HydraDBStore",
+};
 
 /**
  * Map a Kuzu error to a StoreError, adding what to do for the lock and mmap failures.
@@ -329,6 +339,15 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     const size = options.max_db_size;
     if (size !== undefined && (typeof size !== "number" || !Number.isSafeInteger(size) || size < 1)) {
       throw new ValidationError(`max_db_size must be a positive integer of bytes, got ${pyRepr(size)}`);
+    }
+    const [scheme] = splitScheme(path);
+    if (scheme) {
+      const store = SCHEME_STORES[scheme.toLowerCase()] ?? "a server store";
+      throw new StoreError(
+        `KuzuStore takes a local path, not the server URI ${pyRepr(maskUri(path))}; use ${store} for that scheme, ` +
+          "or pass a file path for Kuzu",
+        { code: "invalid_setting", field: "uri" },
+      );
     }
     this.path = databasePath(path);
     this.cacheKey = this.path === "" || this.path === ":memory:" ? Symbol() : this.path;

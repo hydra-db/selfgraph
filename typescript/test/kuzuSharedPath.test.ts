@@ -3,6 +3,29 @@ import type { Schema } from "../src/index.js";
 import { KuzuStore, SelfGraph } from "../src/index.js";
 import { tempKuzu, uniqueNs } from "./helpers.js";
 
+describe("KuzuStore path validation", () => {
+  it("rejects a server URI before creating a directory", () => {
+    expect(() => new KuzuStore("bolt://u:hunter2@h:1")).toThrow(
+      expect.objectContaining({ name: "StoreError", code: "invalid_setting", field: "uri" }),
+    );
+    let message = "";
+    try {
+      new KuzuStore("bolt://u:hunter2@h:1");
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toContain("Neo4jStore");
+    expect(message).toContain("bolt://***@h:1");
+    expect(message).not.toContain("hunter2");
+  });
+
+  it("names the store that matches the scheme", () => {
+    expect(() => new KuzuStore("redis://u:hunter2@h:1")).toThrow(
+      expect.objectContaining({ name: "StoreError", code: "invalid_setting", field: "uri" }),
+    );
+  });
+});
+
 const MAX_ONE: Schema = {
   entities: [{ name: "Person" }, { name: "Company" }],
   relations: [{ type: "WORKS_AT", from: { types: ["Person"], max_count: 1 } }],

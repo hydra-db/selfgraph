@@ -12,13 +12,23 @@ from contextvars import ContextVar
 from functools import partial
 from typing import Any
 
-from ..errors import SelfGraphError, StoreError, ValidationError
+from ..errors import SelfGraphError, StoreError, ValidationError, mask_uri, split_scheme
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult, JsonValue
 from ._cypher import AutoCommitStore, count_of, require_keys, where_after, write_batches
 from ._docrows import docs, edge_row, first_doc, merged_current_edge
 
 __all__ = ["KuzuStore"]
+
+_SCHEME_STORES = {
+    "bolt": "Neo4jStore",
+    "neo4j": "Neo4jStore",
+    "memgraph": "Neo4jStore",
+    "redis": "FalkorDBStore",
+    "falkor": "FalkorDBStore",
+    "falkors": "FalkorDBStore",
+    "hydradb": "HydraDBStore",
+}
 
 
 def _normalize(value: Any) -> Any:
@@ -241,6 +251,15 @@ class KuzuStore(AutoCommitStore):
         max_db_size = db_kwargs.get("max_db_size")
         if max_db_size is not None and (type(max_db_size) is not int or max_db_size < 1):
             raise ValidationError(f"max_db_size must be a positive integer of bytes, got {max_db_size!r}")
+        scheme = split_scheme(path)[0]
+        if scheme:
+            store = _SCHEME_STORES.get(scheme.lower(), "a server store")
+            raise StoreError(
+                f"KuzuStore takes a local path, not the server URI {mask_uri(path)!r}; use {store} for that scheme, "
+                "or pass a file path for Kuzu",
+                code="invalid_setting",
+                field="uri",
+            )
         path = os.path.expanduser(path)
         if path in ("", ":memory:"):
             key: object = object()
