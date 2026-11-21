@@ -362,7 +362,7 @@ describe("contradiction and as-of rules match Python", () => {
       const tracker = new Contradictions(caps, c.mode, c.existing.map(dates) as unknown as Relation[]);
       const got = c.admits.map(([rid, rtype, from, to, iso]) => {
         const at = parseIso(iso);
-        const warnings = tracker.admit(rid, rtype, from, to, [epochMicros(at), 1, epochMicros(at)], at);
+        const warnings = tracker.admit(rid, rtype, from, to, [epochMicros(at)], at);
         const [ended, settled] = tracker.settle();
         const retired = Object.fromEntries([...ended].map(([old, [by, when]]) => [old, [by, toIso(when)]]));
         return [retired, [...warnings, ...settled].map((w) => [w.code, w.message])];

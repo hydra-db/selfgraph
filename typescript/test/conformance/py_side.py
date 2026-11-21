@@ -1543,6 +1543,40 @@ async def supersede(graph):
     @param graph (SelfGraph): a graph with a two-sided max_count schema and contradiction="supersede".
     @return (dict): each relation's versions, newest first, and the warning codes of each insert.
     """
+    replay = SelfGraph(
+        graph.store, namespace=graph.namespace + "-replay", schema=SUPERSEDE_SCHEMA, contradiction="supersede"
+    )
+    await replay.initialize()
+    for dated in (False, True):
+        facts = {
+            "entities": [
+                {"type": "Person", "name": f"Replay{dated}"},
+                {"type": "Company", "name": "One"},
+                {"type": "Company", "name": "Two"},
+            ],
+            "relations": [
+                {
+                    "from_entity": ids.entity_id("Person", f"Replay{dated}"),
+                    "type": "WORKS_AT",
+                    "to_entity": f"company:{name}",
+                }
+                for name in ("one", "two")
+            ],
+        }
+        kwargs = {"event_time": "2024-01-01"} if dated else {}
+        await replay.insert.facts(facts, **kwargs)
+        before = sorted(
+            (r.id, r.revision, r.is_current) for r in (await replay.relations.list(include_invalidated=True)).items
+        )
+        for _ in range(2):
+            await replay.insert.facts(facts, **kwargs)
+            assert (
+                sorted(
+                    (r.id, r.revision, r.is_current)
+                    for r in (await replay.relations.list(include_invalidated=True)).items
+                )
+                == before
+            )
     people = [{"type": "Person", "name": n} for n in ("Ann", "Bob")]
     companies = [{"type": "Company", "name": n} for n in ("Acme", "Globex", "Initech")]
     await graph.insert.facts({"entities": [*people, *companies]})

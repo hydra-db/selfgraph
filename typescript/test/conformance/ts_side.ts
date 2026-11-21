@@ -1995,6 +1995,37 @@ export async function unmerge(graph: SelfGraph): Promise<Record<string, unknown>
  * @return (Promise<Record<string, unknown>>): each relation's versions, newest first, and the warning codes of each insert.
  */
 export async function supersede(graph: SelfGraph): Promise<Record<string, unknown>> {
+  const replay = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}-replay`,
+    schema: SUPERSEDE_SCHEMA,
+    contradiction: "supersede",
+  });
+  await replay.initialize();
+  for (const dated of [false, true]) {
+    const facts = {
+      entities: [
+        { type: "Person", name: `Replay${dated}` },
+        { type: "Company", name: "One" },
+        { type: "Company", name: "Two" },
+      ],
+      relations: ["one", "two"].map((name) => ({
+        from_entity: ids.entityId("Person", `Replay${dated}`),
+        type: "WORKS_AT",
+        to_entity: `company:${name}`,
+      })),
+    };
+    const options = dated ? { event_time: "2024-01-01" } : {};
+    await replay.insert.facts(facts, options);
+    const snapshot = async () =>
+      (await replay.relations.list({ include_invalidated: true })).items
+        .map((r) => [r.id, r.revision, r.is_current])
+        .sort();
+    const before = await snapshot();
+    for (let i = 0; i < 2; i++) {
+      await replay.insert.facts(facts, options);
+      deepStrictEqual(await snapshot(), before);
+    }
+  }
   await graph.insert.facts({
     entities: [
       ...["Ann", "Bob"].map((name) => ({ type: "Person", name })),

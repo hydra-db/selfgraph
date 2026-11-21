@@ -1989,16 +1989,16 @@ class Contradictions:
             for key, _ in _cap_slots(self._caps, rel.type, rel.from_entity, rel.to_entity):
                 self._seat(key, rel.id, self.rank(rel))
 
-    def rank(self, version: Relation) -> tuple[datetime, int, datetime]:
-        """Order a relation at an endpoint by effective time, revision, and creation time, and record when it began.
+    def rank(self, version: Relation) -> tuple[datetime]:
+        """Order a relation by effective time, leaving ties to its id, and record when it began.
 
         @param version (Relation): the relation version.
-        @return (tuple[datetime, int, datetime]): the sort key, newer last.
+        @return (tuple[datetime]): the sort key, newer last.
         """
         found = [v for v in self._versions.get(version.id, ()) if v.revision < version.revision] + [version]
         self._versions[version.id] = found
         self._starts[version.id] = _run_start(found)
-        return effective_time(version), version.revision, aware(version.created_at)
+        return (effective_time(version),)
 
     def _displaced_at(self, newer: list[tuple[tuple, str]], limit: int, old: str) -> datetime:
         """When newer relations displaced an older one: once limit of them began if not before it, else at the limit-th.
@@ -2083,7 +2083,7 @@ class Contradictions:
         """Retire the oldest current relations beyond max_count at every endpoint a supersede-mode write touched.
 
         The current relations at an endpoint, the ones just written included, rank by effective time, then
-        revision, then creation time, and all but the newest max_count are retired, except a certified relation,
+        relation id, and all but the newest max_count are retired, except a certified relation,
         which stays current with a "certified_kept" warning. A retired relation is invalidated by the fact that
         displaced it in time order, the max_count-th newer fact at the endpoint with retired history counted, at
         the time it displaced it (see _displaced_at). Each retired relation gets one warning:
@@ -2196,7 +2196,7 @@ async def require_max_count(
             prev = _relation_of(edge)
             if not prev.is_current and not _reasserts(prev, effective):
                 continue
-        tracker.admit(rid, rtype, rel.from_entity, rel.to_entity, (effective, 0, created_at))
+        tracker.admit(rid, rtype, rel.from_entity, rel.to_entity, (effective,))
         admitted.add(rid)
 
 
@@ -2541,7 +2541,13 @@ async def upsert_relations(
                 rid, (edge["from_id"], edge["type"], edge["to_id"]), (rel.from_entity, rtype, rel.to_entity)
             )
             prev = _relation_of(edge)
-            event_time = named if named is not None else prev.event_time if prev.is_current else None
+            event_time = (
+                named
+                if named is not None
+                else prev.event_time
+                if prev.is_current or contradiction == "supersede"
+                else None
+            )
             effective = aware(event_time or created_at)
             sources = prev.source_count + gained.pop(rid, 0)
             merged_properties = _merge_props(prev.properties, rel.properties)
@@ -2549,6 +2555,8 @@ async def upsert_relations(
             unchanged = _json_equal(prev.properties, merged_properties) and to_iso(prev.event_time) == to_iso(
                 event_time
             )
+            if unchanged and contradiction == "supersede" and (named is None or effective == prev.invalidated_at):
+                reassert = False
             if event_time is not None and to_iso(prev.event_time) != to_iso(event_time):
                 moved[rid] = None
             if unchanged and not reassert:
