@@ -441,6 +441,20 @@ def schema_warnings():
             ]
             for facts in cases
         ],
+        "integer_properties": [
+            [
+                {"code": w.code, "message": w.message}
+                for w in validate_against_schema(
+                    Extraction.model_validate(
+                        {"entities": [{"type": "Item", "name": "x", "properties": {"n": value}}]}
+                    ),
+                    Schema.model_validate(
+                        {"entities": [{"name": "Item", "properties": [{"name": "n", "type": "integer"}]}]}
+                    ),
+                )
+            ]
+            for value in (-0.0, 1.0, 1.5)
+        ],
         "alias_errors": alias_errors,
         "own_keys": [
             [{"code": w.code, "message": w.message} for w in validate_against_schema(facts, own_key_schema)]
