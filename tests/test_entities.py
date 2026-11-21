@@ -80,6 +80,19 @@ def test_insert_keeps_the_stored_type_when_only_its_case_differs():
     assert run(s.insert.facts({"entities": [{"type": "person", "name": "Bob"}]})).entities[0].type == "Person"
 
 
+@pytest.mark.parametrize(("name", "type"), [("İ\u0327", "Person"), ("Ada", "İ\u0327")])
+def test_an_entity_named_with_a_dotted_capital_i_and_a_cedilla_is_found_by_its_id(name, type):
+    g = fresh_graph()
+    e = run(g.entities.create(name, type))
+    assert run(g.entities.get(e.id)).id == e.id
+    assert run(g.entities.update(e.id, properties={"k": 1})).properties == {"k": 1}
+    rel = run(g.relations.create(e.id, "KNOWS", e.id))
+    assert (rel.from_entity, rel.to_entity) == (e.id, e.id)
+    assert [x.id for x in run(g.insert.facts({"entities": [{"type": type, "name": name}]})).entities] == [e.id]
+    assert run(g.entities.delete(e.id)).deleted_entities == 1
+    assert run(g.entities.get(e.id)) is None
+
+
 def test_explicit_ids_are_canonical_on_every_input_path():
     g = new_graph()
     t = run(g.entities.create("X", "T", id="T:X"))

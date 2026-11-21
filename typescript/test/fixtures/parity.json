@@ -9,7 +9,8 @@
   "Organization": "organization",
   "Work": "work",
   " Bank ": "bank",
-  "U\u0308ber": "u\u0308ber",
+  "U\u0308ber": "\u00fcber",
+  "\u0130\u0327": "i\u0327\u0307",
   "Acme": "acme",
   "Acme, Inc.": "acme,-inc.",
   "The Acme Corporation": "the-acme-corporation",
@@ -25,12 +26,13 @@
   "a\ufeffb": "a\ufeffb",
   "Tab\tSeparated\u001cName": "tab-separated-name",
   "\u0130stanbul": "i\u0307stanbul",
+  "\u0130\u0327stanbul Holdings Ltd": "i\u0327\u0307stanbul-holdings-ltd",
   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3": "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2",
   "": "",
   "   ": "",
   "Group Holdings": "group-holdings",
   "acme  llc  ltd": "acme-llc-ltd",
-  "Cafe\u0301 Ole\u0301": "cafe\u0301-ole\u0301",
+  "Cafe\u0301 Ole\u0301": "caf\u00e9-ol\u00e9",
   "Caf\u00e9 Ol\u00e9": "caf\u00e9-ol\u00e9",
   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e": "\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
   "\u0930\u093e\u092e": "\u0930\u093e\u092e",
@@ -140,6 +142,16 @@
    "Person",
    "\u0130stanbul",
    "person:i\u0307stanbul"
+  ],
+  [
+   "Person",
+   "\u0130\u0327",
+   "person:i\u0327\u0307"
+  ],
+  [
+   "Person",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "person:i\u0327\u0307stanbul-holdings-ltd"
   ],
   [
    "Person",
@@ -334,6 +346,16 @@
   ],
   [
    "Big Company",
+   "\u0130\u0327",
+   "big-company:i\u0327\u0307"
+  ],
+  [
+   "Big Company",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "big-company:i\u0327\u0307stanbul-holdings-ltd"
+  ],
+  [
+   "Big Company",
    "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
    "big-company:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
   ],
@@ -522,6 +544,16 @@
    "  Org ",
    "\u0130stanbul",
    "org:i\u0307stanbul"
+  ],
+  [
+   "  Org ",
+   "\u0130\u0327",
+   "org:i\u0327\u0307"
+  ],
+  [
+   "  Org ",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "org:i\u0327\u0307stanbul"
   ],
   [
    "  Org ",
@@ -716,6 +748,16 @@
   ],
   [
    "\u00dcberType",
+   "\u0130\u0327",
+   "\u00fcbertype:i\u0327\u0307"
+  ],
+  [
+   "\u00dcberType",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "\u00fcbertype:i\u0327\u0307stanbul-holdings-ltd"
+  ],
+  [
+   "\u00dcberType",
    "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
    "\u00fcbertype:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
   ],
@@ -904,6 +946,16 @@
    "a\u3000b",
    "\u0130stanbul",
    "a-b:i\u0307stanbul"
+  ],
+  [
+   "a\u3000b",
+   "\u0130\u0327",
+   "a-b:i\u0327\u0307"
+  ],
+  [
+   "a\u3000b",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "a-b:i\u0327\u0307stanbul-holdings-ltd"
   ],
   [
    "a\u3000b",
@@ -1098,6 +1150,16 @@
   ],
   [
    "Company",
+   "\u0130\u0327",
+   "company:i\u0327\u0307"
+  ],
+  [
+   "Company",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "company:i\u0327\u0307stanbul"
+  ],
+  [
+   "Company",
    "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
    "company:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
   ],
@@ -1286,6 +1348,16 @@
    "Organization",
    "\u0130stanbul",
    "organization:i\u0307stanbul"
+  ],
+  [
+   "Organization",
+   "\u0130\u0327",
+   "organization:i\u0327\u0307"
+  ],
+  [
+   "Organization",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "organization:i\u0327\u0307stanbul"
   ],
   [
    "Organization",
@@ -1480,6 +1552,16 @@
   ],
   [
    "Work",
+   "\u0130\u0327",
+   "work:i\u0327\u0307"
+  ],
+  [
+   "Work",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "work:i\u0327\u0307stanbul-holdings-ltd"
+  ],
+  [
+   "Work",
    "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
    "work:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
   ],
@@ -1668,6 +1750,16 @@
    " Bank ",
    "\u0130stanbul",
    "bank:i\u0307stanbul"
+  ],
+  [
+   " Bank ",
+   "\u0130\u0327",
+   "bank:i\u0327\u0307"
+  ],
+  [
+   " Bank ",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "bank:i\u0327\u0307stanbul"
   ],
   [
    " Bank ",
@@ -1862,6 +1954,16 @@
   ],
   [
    "U\u0308ber",
+   "\u0130\u0327",
+   "\u00fcber:i\u0327\u0307"
+  ],
+  [
+   "U\u0308ber",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "\u00fcber:i\u0327\u0307stanbul-holdings-ltd"
+  ],
+  [
+   "U\u0308ber",
    "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
    "\u00fcber:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
   ],
@@ -1973,6 +2075,207 @@
    "U\u0308ber",
    "\uff21\uff43\uff4d\uff45",
    "\u00fcber:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "\u0130\u0327",
+   "Acme",
+   "i\u0327\u0307:acme"
+  ],
+  [
+   "\u0130\u0327",
+   "Acme, Inc.",
+   "i\u0327\u0307:acme-inc"
+  ],
+  [
+   "\u0130\u0327",
+   "The Acme Corporation",
+   "i\u0327\u0307:the-acme-corporation"
+  ],
+  [
+   "\u0130\u0327",
+   "  Jane   Doe ",
+   "i\u0327\u0307:jane-doe"
+  ],
+  [
+   "\u0130\u0327",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "i\u0327\u0307:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "\u0130\u0327",
+   "\u5317\u4eac\u5927\u5b66",
+   "i\u0327\u0307:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "\u0130\u0327",
+   "\ud83d\ude80 Rocket Co",
+   "i\u0327\u0307:rocket-co"
+  ],
+  [
+   "\u0130\u0327",
+   "O'Reilly Media LLC",
+   "i\u0327\u0307:o-reilly-media-llc"
+  ],
+  [
+   "\u0130\u0327",
+   "the",
+   "i\u0327\u0307:the"
+  ],
+  [
+   "\u0130\u0327",
+   "Co",
+   "i\u0327\u0307:co"
+  ],
+  [
+   "\u0130\u0327",
+   "AT&T",
+   "i\u0327\u0307:at-t"
+  ],
+  [
+   "\u0130\u0327",
+   "x\u200by",
+   "i\u0327\u0307:x-y"
+  ],
+  [
+   "\u0130\u0327",
+   "a\ufeffb",
+   "i\u0327\u0307:a-b"
+  ],
+  [
+   "\u0130\u0327",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "\u0130\u0327",
+   "\u0130stanbul",
+   "i\u0327\u0307:i\u0307stanbul"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0130\u0327",
+   "i\u0327\u0307:i\u0327\u0307"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "i\u0327\u0307:i\u0327\u0307stanbul-holdings-ltd"
+  ],
+  [
+   "\u0130\u0327",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "i\u0327\u0307:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "\u0130\u0327",
+   "",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "\u0130\u0327",
+   "   ",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "\u0130\u0327",
+   "Group Holdings",
+   "i\u0327\u0307:group-holdings"
+  ],
+  [
+   "\u0130\u0327",
+   "acme  llc  ltd",
+   "i\u0327\u0307:acme-llc-ltd"
+  ],
+  [
+   "\u0130\u0327",
+   "Cafe\u0301 Ole\u0301",
+   "i\u0327\u0307:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "\u0130\u0327",
+   "Caf\u00e9 Ol\u00e9",
+   "i\u0327\u0307:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "i\u0327\u0307:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0930\u093e\u092e",
+   "i\u0327\u0307:\u0930\u093e\u092e"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0930\u0940\u092e\u093e",
+   "i\u0327\u0307:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0e01\u0e34\u0e19",
+   "i\u0327\u0307:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0e01\u0e31\u0e19",
+   "i\u0327\u0307:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "\u0130\u0327",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "i\u0327\u0307:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "\u0130\u0327",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "i\u0327\u0307:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd"
+  ],
+  [
+   "\u0130\u0327",
+   "Bob \u2764\ufe0f",
+   "i\u0327\u0307:bob"
+  ],
+  [
+   "\u0130\u0327",
+   "1\ufe0f\u20e3 first",
+   "i\u0327\u0307:1-first"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0628\u0898\u062a",
+   "i\u0327\u0307:\u0628\u0898\u062a"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0628\u0897\u062a",
+   "i\u0327\u0307:\u0628-\u062a"
+  ],
+  [
+   "\u0130\u0327",
+   "The Trial",
+   "i\u0327\u0307:the-trial"
+  ],
+  [
+   "\u0130\u0327",
+   "The Acme Corporation Inc",
+   "i\u0327\u0307:the-acme-corporation-inc"
+  ],
+  [
+   "\u0130\u0327",
+   "snake_case_name",
+   "i\u0327\u0307:snake_case_name"
+  ],
+  [
+   "\u0130\u0327",
+   "\uff21\uff43\uff4d\uff45",
+   "i\u0327\u0307:\uff41\uff43\uff4d\uff45"
   ]
  ],
  "normalize_rel_type": {
@@ -2036,6 +2339,14 @@
   [
    "\u0130stanbul:\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
    "i\u0307stanbul:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "PERSON:\u0130\u0327",
+   "person:i\u0327\u0307"
+  ],
+  [
+   "\u0130\u0327:Ada",
+   "i\u0327\u0307:ada"
   ],
   [
    "no-colon",

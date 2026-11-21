@@ -98,6 +98,22 @@ def test_combining_marks_stay_in_derived_ids():
     assert ids.relation_id("a:b", "पिता", "c:d") != ids.relation_id("a:b", "पोता", "c:d")
 
 
+@pytest.mark.parametrize(
+    ("type", "name"),
+    [
+        ("Person", "İ\u0327"),
+        ("İ\u0327", "Ada"),
+        ("Company", "İ\u0327stanbul Holdings Ltd"),
+    ],
+)
+def test_a_derived_id_with_a_lowercased_dotted_capital_i_canonicalizes_to_itself(type, name):
+    eid = ids.entity_id(type, name)
+    assert unicodedata.is_normalized("NFC", eid)
+    assert ids.canonical_entity_id(eid) == eid
+    assert ids.canonical_entity_id(eid.upper()) == eid
+    assert ids.slug(ids.slug(type)) == ids.slug(type)
+
+
 def test_names_without_combining_marks_keep_their_ids():
     assert ids.entity_id("Person", "Zoe\u0308 A\u030angstro\u0308m") == ids.entity_id("Person", "Zoë Ångström")
     assert ids.entity_id("Person", "Bob \U0001f600") == "person:bob"

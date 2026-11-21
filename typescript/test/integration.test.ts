@@ -354,6 +354,22 @@ function suite(spec: StoreSpec) {
     );
   });
 
+  const dottedCapitalI = [
+    ["İ\u0327", "Person"],
+    ["Ada", "İ\u0327"],
+  ];
+  it.each(dottedCapitalI)("finds a dotted capital I and cedilla entity by its id: %s / %s", async (name, type) => {
+    const g = fresh();
+    const e = await g.entities.create(name, type);
+    expect((await g.entities.get(e.id))!.id).toBe(e.id);
+    expect((await g.entities.update(e.id, { properties: { k: 1 } })).properties).toEqual({ k: 1 });
+    const rel = await g.relations.create(e.id, "KNOWS", e.id);
+    expect([rel.from_entity, rel.to_entity]).toEqual([e.id, e.id]);
+    expect((await g.insert.facts({ entities: [{ type, name }] })).entities.map((x) => x.id)).toEqual([e.id]);
+    expect((await g.entities.delete(e.id)).deleted_entities).toBe(1);
+    expect(await g.entities.get(e.id)).toBeNull();
+  });
+
   it("canonicalizes explicit entity ids on every input path", async () => {
     const g = fresh();
     expect((await g.entities.create("X", "T", { id: "T:X" })).id).toBe("t:x");

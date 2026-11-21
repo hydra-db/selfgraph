@@ -72,6 +72,19 @@ describe("ids match Python byte for byte", () => {
     expect(profileId(raw)).toBe(profileId(canonical));
   });
 
+  const dottedCapitalI = [
+    ["Person", "İ\u0327"],
+    ["İ\u0327", "Ada"],
+    ["Company", "İ\u0327stanbul Holdings Ltd"],
+  ];
+  it.each(dottedCapitalI)("derives a dotted capital I id that is its own canonical id: %s / %s", (type, name) => {
+    const eid = entityId(type, name);
+    expect(eid).toBe(eid.normalize("NFC"));
+    expect(canonicalEntityId(eid)).toBe(eid);
+    expect(canonicalEntityId(eid.toUpperCase())).toBe(eid);
+    expect(slug(slug(type))).toBe(slug(type));
+  });
+
   it("slug, entity, relation, preference, decision, evidence, and source ids, with bad input rejected", () => {
     for (const [input, expected] of Object.entries(fx.slug)) expect(attempt(() => slug(input))).toEqual(expected);
     for (const [type, name, expected] of fx.entity_id) {

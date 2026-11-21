@@ -129,7 +129,7 @@ def _require_id_matches_type(eid: str, type: str) -> None:
     @param type (str): the entity type, after schema alias canonicalization.
     @return (None): nothing; raises ValidationError when the prefix and the type differ.
     """
-    expected = _ids.slug(_ids.normalize_text(type))
+    expected = _ids.slug(type)
     if eid.split(":", 1)[0] != expected:
         raise ValidationError(f"id {eid!r} does not match type {type!r} (expected prefix '{expected}:')")
 
@@ -1244,7 +1244,7 @@ async def update_entity(
     if existing is None:
         raise TransientError(f"entity {eid!r} was changed concurrently; retry")
     new_type = _clean_text(fields["type"]) if "type" in fields else existing.type
-    if _ids.slug(new_type) != _ids.slug(_ids.normalize_text(existing.type)):
+    if _ids.slug(new_type) != _ids.slug(existing.type):
         raise ValidationError(
             f"type is part of the id {eid!r}; create a new entity to change its type",
             code="immutable_identity",

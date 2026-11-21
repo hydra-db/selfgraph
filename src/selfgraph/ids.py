@@ -301,12 +301,12 @@ def normalize_text(value: str) -> str:
 
 
 def slug(text: str) -> str:
-    """Lowercase ``text`` and turn runs of whitespace into single hyphens.
+    """Lowercase ``text``, turn runs of whitespace into single hyphens, and NFC-normalize the result.
 
     @param text (str): the text to slugify.
     @return (str): the slugified text.
     """
-    return _WS.sub("-", text.strip().lower())
+    return normalize_text(_WS.sub("-", text.strip().lower()))
 
 
 def _canonical_name(type: str, name: str) -> str:
@@ -316,8 +316,7 @@ def _canonical_name(type: str, name: str) -> str:
     @param name (str): the raw entity name.
     @return (str): the canonical hyphenated form.
     """
-    name = normalize_text(name)
-    words = _PUNCT.sub(" ", name.strip().lower()).split()
+    words = _PUNCT.sub(" ", normalize_text(name.strip().lower())).split()
     if slug(type) in _ORG_TYPES:
         if words and words[0] == "the":
             words = words[1:]
@@ -335,7 +334,6 @@ def entity_id(type: str, name: str) -> str:
     """
     _require_str("entity type", type)
     _require_str("entity name", name)
-    type = normalize_text(type)
     return f"{slug(type)}:{_canonical_name(type, name)}"
 
 
@@ -348,7 +346,7 @@ def _canonical_id(eid: Any) -> Any:
     if not isinstance(eid, str) or ":" not in eid:
         return eid
     prefix, name = eid.split(":", 1)
-    return f"{slug(normalize_text(prefix))}:{slug(normalize_text(name))}"
+    return f"{slug(prefix)}:{slug(name)}"
 
 
 def _require_entity_shape(eid: str) -> None:

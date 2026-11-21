@@ -117,18 +117,17 @@ export function normalizeText(value: string): string {
 }
 
 /**
- * Lowercase text and turn runs of whitespace into single hyphens.
+ * Lowercase text, turn runs of whitespace into single hyphens, and NFC-normalize the result.
  *
  * @param text (string): the text to slugify.
  * @return (string): the slugified text.
  */
 export function slug(text: string): string {
-  return pyCollapseWs(pyStrip(text).toLowerCase(), "-");
+  return normalizeText(pyCollapseWs(pyStrip(text).toLowerCase(), "-"));
 }
 
-function canonicalName(type: string, rawName: string): string {
-  const name = normalizeText(rawName);
-  let words = pySplit(pyStrip(name).toLowerCase().replace(PUNCT, " "));
+function canonicalName(type: string, name: string): string {
+  let words = pySplit(normalizeText(pyStrip(name).toLowerCase()).replace(PUNCT, " "));
   if (ORG_TYPES.has(slug(type))) {
     if (words.length > 0 && words[0] === "the") words = words.slice(1);
     while (words.length > 1 && ENTITY_SUFFIXES.has(words[words.length - 1]!)) words = words.slice(0, -1);
@@ -146,8 +145,7 @@ function canonicalName(type: string, rawName: string): string {
 export function entityId(type: string, name: string): string {
   requireStr("entity type", type);
   requireStr("entity name", name);
-  const t = normalizeText(type);
-  return `${slug(t)}:${canonicalName(t, name)}`;
+  return `${slug(type)}:${canonicalName(type, name)}`;
 }
 
 /**
@@ -159,7 +157,7 @@ export function entityId(type: string, name: string): string {
 export function canonicalId<T>(eid: T): T {
   if (typeof eid !== "string" || !eid.includes(":")) return eid;
   const at = eid.indexOf(":");
-  return `${slug(normalizeText(eid.slice(0, at)))}:${slug(normalizeText(eid.slice(at + 1)))}` as T;
+  return `${slug(eid.slice(0, at))}:${slug(eid.slice(at + 1))}` as T;
 }
 
 /**

@@ -48,7 +48,8 @@ To find an entity from a variant, use `entities.get(entity_id(type, name))`. The
 
 A derived id is `type:name`, both slugged:
 
-- NFC-normalized, lowercased, and stripped;
+- lowercased and stripped, then NFC-normalized, since lowercasing `İ` gives
+  `i` and a combining dot that can land out of order;
 - whitespace runs turned into one hyphen;
 - punctuation, symbols, and emoji dropped from the name. Combining marks, such
   as the vowel signs of Devanagari or Thai, are part of the word and stay. Both

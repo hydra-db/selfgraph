@@ -10,7 +10,7 @@ from pydantic_core import InitErrorDetails, PydanticCustomError
 from . import _ops
 from ._serde import L_ENTITY, decode_entity
 from .errors import ValidationError
-from .ids import MAX_SAFE_INTEGER, _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
+from .ids import MAX_SAFE_INTEGER, _canonical_id, entity_id, normalize_rel_type, relation_id, slug
 from .models import Extraction, InputModel, InsertWarning, TopInputModel, as_input
 
 __all__ = [
@@ -494,8 +494,8 @@ def canonical_entity_ref(eid: Any, etype: str, schema: Schema | None) -> Any:
     matched = _entity_index(schema).get(canonical)
     forms = {etype, canonical, *(matched.aliases if matched is not None else ())}
     prefix, name = eid.split(":", 1)
-    target = slug(normalize_text(canonical))
-    if prefix != target and prefix in {slug(normalize_text(form)) for form in forms}:
+    target = slug(canonical)
+    if prefix != target and prefix in {slug(form) for form in forms}:
         return f"{target}:{name}"
     return eid
 
@@ -537,7 +537,7 @@ def canonicalize_types(facts: Extraction, schema: Schema | None) -> Extraction:
             if target != ent.id:
                 update["id"] = target
             prefix, _, name = target.partition(":")
-            own = prefix == slug(normalize_text(canonical))
+            own = prefix == slug(canonical)
         for form in (etype, *forms.get(canonical, ())) if own else ():
             alt = entity_id(form, name) if ent.id is None else _canonical_id(f"{form}:{name}")
             if alt != target:

@@ -187,7 +187,7 @@ function requireIdSize(kind: string, oid: string): void {
  * @return (void): nothing; throws ValidationError when the prefix and the type differ.
  */
 function requireIdMatchesType(eid: string, type: string): void {
-  const expected = ids.slug(ids.normalizeText(type));
+  const expected = ids.slug(type);
   if (eid.slice(0, eid.indexOf(":")) !== expected) {
     throw new ValidationError(`id ${pyRepr(eid)} does not match type ${pyRepr(type)} (expected prefix '${expected}:')`);
   }
@@ -1156,7 +1156,7 @@ export async function updateEntity(
   existing = await getEntity(runner, ns, eid);
   if (existing === null) throw new TransientError(`entity ${pyRepr(eid)} was changed concurrently; retry`);
   let type = fields.type !== undefined ? cleanText(fields.type) : existing.type;
-  if (ids.slug(type) !== ids.slug(ids.normalizeText(existing.type))) {
+  if (ids.slug(type) !== ids.slug(existing.type)) {
     throw new ValidationError(`type is part of the id ${pyRepr(eid)}; create a new entity to change its type`, {
       code: "immutable_identity",
       field: "type",
