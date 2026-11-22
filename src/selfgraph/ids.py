@@ -150,18 +150,19 @@ def type_name(value: object) -> str:
     return type(value).__name__
 
 
-def _require_str(label: str, value: object) -> None:
+def _require_str(label: str, value: object, *, field: str | None = None) -> None:
     """Validate a value is a non-empty string with no control or surrogate characters.
 
     @param label (str): the field name for the error message.
     @param value (object): the value to check.
+    @param field (str | None): the argument at fault, when one is.
     @return (None): nothing; raises ValidationError when not a clean, non-empty string.
     """
     if not isinstance(value, str):
-        raise ValidationError(f"{label} must be a string, got {type_name(value)}")
+        raise ValidationError(f"{label} must be a string, got {type_name(value)}", field=field)
     if not value.strip():
-        raise ValidationError(f"{label} cannot be empty")
-    _require_no_control(label, value)
+        raise ValidationError(f"{label} cannot be empty", field=field)
+    _require_no_control(label, value, field=field)
 
 
 def _require_unit(label: str, value: object, *, finite: bool = False) -> None:
@@ -191,15 +192,16 @@ def _require_namespace(value: object) -> None:
         raise ValidationError("namespace cannot start or end with whitespace")
 
 
-def _require_no_control(label: str, value: str) -> None:
+def _require_no_control(label: str, value: str, *, field: str | None = None) -> None:
     """Reject text holding a control or surrogate character.
 
     @param label (str): the field name for the error message.
     @param value (str): the text to check.
+    @param field (str | None): the argument at fault, when one is.
     @return (None): nothing; raises ValidationError when a control or surrogate character is present.
     """
     if _has_control(value):
-        raise ValidationError(f"{label} cannot contain control or surrogate characters")
+        raise ValidationError(f"{label} cannot contain control or surrogate characters", field=field)
 
 
 _WS = re.compile(r"\s+")
