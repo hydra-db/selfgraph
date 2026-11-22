@@ -392,6 +392,10 @@ class SelfGraph:
             raise ValidationError(f"strategy must be a string, got {type_name(strategy)}")
         for name, value in (("depth", depth), ("k", k), ("max_nodes", max_nodes), ("budget_tokens", budget_tokens)):
             _ops._require_int(name, value)
+        depth = int(depth)
+        k = int(k)
+        max_nodes = int(max_nodes)
+        budget_tokens = int(budget_tokens)
         _ops._require_bool("skip_hubs", skip_hubs)
         as_of = _ops.parse_as_of(as_of, known_at)
         await self._ensure_ready()
@@ -444,6 +448,7 @@ class SelfGraph:
                 raise ValidationError("terms must be a non-empty list of non-empty strings")
             terms = list(dict.fromkeys(t.strip() for t in terms))
         _ops._require_int("depth", depth)
+        depth = int(depth)
         if depth < 1:
             raise ValidationError(f"depth must be >= 1, got {depth}", field="depth")
         as_of = _ops.parse_as_of(as_of, known_at)

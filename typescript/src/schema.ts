@@ -513,7 +513,8 @@ function typeOk(value: unknown, expected: PropertyType): boolean {
   }
   if (expected === "string") return typeof value === "string";
   if (expected === "boolean") return typeof value === "boolean";
-  if (expected === "integer") return typeof value === "number" && Number.isInteger(value);
+  if (expected === "integer")
+    return typeof value === "number" && Number.isInteger(value) && Number.isSafeInteger(value);
   if (expected === "float") return typeof value === "number";
   return true;
 }

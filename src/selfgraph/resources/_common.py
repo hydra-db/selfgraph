@@ -128,6 +128,7 @@ class Resource:
         @return (Page[T]): the page; the extra row only signals a next page.
         """
         _require_int("limit", limit)
+        limit = int(limit)
         if limit < 1:
             raise ValidationError(f"limit must be >= 1, got {limit}", field="limit")
         if limit > _MAX_LIMIT:

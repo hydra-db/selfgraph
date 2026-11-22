@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -102,7 +103,14 @@ def run_typescript():
     env["PARITY_OUT"] = out_file
     env["SELFGRAPH_TEST_STORES"] = "kuzu"
     proc = subprocess.run(
-        ["npx", "vitest", "run", "--config", "vitest.probe.config.ts", "scripts/probes/parity_table.probe.ts"],
+        [
+            shutil.which("npx") or "npx",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.probe.config.ts",
+            "scripts/probes/parity_table.probe.ts",
+        ],
         cwd=os.path.join(REPO, "typescript"),
         env=env,
         capture_output=True,

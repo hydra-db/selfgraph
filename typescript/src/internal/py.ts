@@ -139,15 +139,17 @@ export function pyFloatRepr(x: number): string {
 }
 
 /**
- * Render a number: safe integers without a fraction, everything else in float form.
+ * Render a number the Python way: formatted the way Python renders floats and ints.
  *
  * @param x (number): the number to render.
- * @return (string): the number text.
+ * @return (string): the rendered number.
  */
-function pyNumber(x: number): string {
-  if (Number.isSafeInteger(x) && !Object.is(x, -0)) return String(x);
+export function pyNum(x: number): string {
+  if (Number.isInteger(x) && Math.abs(x) < 1e16 && !Object.is(x, -0)) return String(x);
   return pyFloatRepr(x);
 }
+
+export const pyNumber = pyNum;
 
 function reprString(s: string): string {
   const quote = s.includes("'") && !s.includes('"') ? '"' : "'";

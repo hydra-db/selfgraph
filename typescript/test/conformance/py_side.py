@@ -1187,6 +1187,8 @@ async def choice_errors(graph):
         "store_refused": await error_of(SelfGraph(store=Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
         "list_limit_zero": await error_of(graph.entities.list(limit=0)),
         "list_limit_text": await error_of(graph.entities.list(limit="5")),
+        "list_limit_float_non_integer": await error_of(graph.entities.list(limit=5.5)),
+        "entity_unsafe_float": await error_of(graph.entities.create("Huge", "Person", properties={"p": 1e21})),
         "entity_missing_near": await error_of(graph.entities.delete("person:jane-do")),
     }
 
