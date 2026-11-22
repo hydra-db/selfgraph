@@ -3116,10 +3116,8 @@ async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: d
     @return (Relation): the current version with its certification.
     """
     _ids._require_str("relation id", rid)
-    if by is not None and (not isinstance(by, str) or not by.strip()):
-        raise ValidationError("certified_by must be a non-empty string")
     if by is not None:
-        _ids._require_no_control("certified_by", by)
+        _ids._require_str("certified_by", by, field="by")
     edge = await runner.get_current_edge(ns, rid)
     if edge is not None:
         await runner.lock_node(ns, L_ENTITY, edge["from_id"])
