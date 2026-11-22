@@ -228,10 +228,12 @@ def test_certified_relations_survive_supersede_and_lead_retrieval():
     newer = result.relations[0]
     assert (bumped.is_current, bumped.invalidated_by, bumped.invalidated_at) == (False, newer.id, newer.event_time)
     assert [r.id for r in run(g.relations.list(from_entity="person:ann")).items] == [newer.id]
-    with pytest.raises(ValidationError, match="certified_by must be a non-empty string"):
+    with pytest.raises(ValidationError, match="certified_by cannot be empty") as exc:
         run(g.relations.certify(old.id, by=" "))
-    with pytest.raises(ValidationError, match="certified_by cannot contain control or surrogate characters"):
+    assert exc.value.field == "by"
+    with pytest.raises(ValidationError, match="certified_by cannot contain control or surrogate characters") as exc:
         run(g.relations.certify(old.id, by="a\ud83dlonely"))
+    assert exc.value.field == "by"
     with pytest.raises(NotFoundError):
         run(g.relations.certify("relation:missing", by="hr"))
 
