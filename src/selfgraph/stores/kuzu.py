@@ -14,7 +14,7 @@ from typing import Any
 
 from ..errors import SelfGraphError, StoreError, ValidationError
 from ..ids import quote_label, require_identifier
-from ..models import CypherResult, JsonValue
+from ..models import CypherResult, JsonValue, check_options
 from ._cypher import AutoCommitStore, count_of, require_keys, where_after, write_batches
 from ._docrows import docs, edge_row, first_doc, merged_current_edge
 
@@ -250,6 +250,11 @@ class KuzuStore(AutoCommitStore):
             raise StoreError(
                 "the 'kuzu' package is required for KuzuStore; pip install \"selfgraph[kuzu]\"", code="missing_package"
             ) from exc
+        check_options(
+            "KuzuStore",
+            db_kwargs,
+            [p for p in inspect.signature(kuzu.Database.__init__).parameters if p not in {"self", "database_path"}],
+        )
         max_db_size = db_kwargs.get("max_db_size")
         if max_db_size is not None and (type(max_db_size) is not int or max_db_size < 1):
             raise ValidationError(f"max_db_size must be a positive integer of bytes, got {max_db_size!r}")
