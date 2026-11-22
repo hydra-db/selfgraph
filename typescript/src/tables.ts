@@ -99,7 +99,10 @@ export function fromTables(tables: readonly object[], options: FromTablesOptions
     const properties: unknown[] = [];
     const columns = table.columns ?? [];
     if (!Array.isArray(columns)) {
-      throw new ValidationError(`tables[${i}].columns must be a list of column mappings, got ${typeName(columns)}`);
+      throw new ValidationError(
+        `tables[${i}].columns must be a list of column mappings, got ${typeName(columns)}`,
+        { field: "columns" },
+      );
     }
     for (const [j, column] of (columns as unknown[]).entries()) {
       if (!isPlainObject(column) || typeof column.name !== "string") {
