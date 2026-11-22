@@ -80,7 +80,10 @@ def from_tables(tables: Sequence[Mapping[str, Any]], name: str | None = None) ->
         if columns is None:
             columns = []
         elif isinstance(columns, str) or not isinstance(columns, list | tuple):
-            raise ValidationError(f"tables[{i}].columns must be a list of column mappings, got {type_name(columns)}")
+            raise ValidationError(
+                f"tables[{i}].columns must be a list of column mappings, got {type_name(columns)}",
+                field="columns",
+            )
         for j, column in enumerate(columns):
             if not isinstance(column, Mapping) or not isinstance(column.get("name"), str):
                 raise ValidationError(f"tables[{i}].columns[{j}]: each column needs a name")
