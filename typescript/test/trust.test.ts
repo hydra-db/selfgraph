@@ -15,6 +15,7 @@ import {
   SelfGraph,
   type SelfGraphOptions,
   StoreError,
+  ValidationError,
 } from "../src/index.js";
 import { callTool, close, configure } from "../src/mcp.js";
 import { answerability, HUB_DEGREE, pprRank } from "../src/retrieval.js";
@@ -293,10 +294,17 @@ function suite(spec: StoreSpec): void {
       newer.event_time,
     ]);
     expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([newer.id]);
-    await expect(g.relations.certify(old.id, { by: " " })).rejects.toThrow("certified_by must be a non-empty string");
+    await expect(g.relations.certify(old.id, { by: " " })).rejects.toThrow("certified_by cannot be empty");
     await expect(g.relations.certify(old.id, { by: "a\ud83dlonely" })).rejects.toThrow(
       "certified_by cannot contain control or surrogate characters",
     );
+    try {
+      await g.relations.certify(old.id, { by: "a\ud83dlonely" });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).field).toBe("by");
+    }
     await expect(g.relations.certify("relation:missing", { by: "hr" })).rejects.toThrow("does not exist");
   });
 
