@@ -850,6 +850,7 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
     store_refused: await errorOf(() => new SelfGraph(new Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
     list_limit_zero: await errorOf(() => graph.entities.list({ limit: 0 })),
     list_limit_text: await errorOf(() => graph.entities.list({ limit: "5" } as never)),
+    certify_by_control: await errorOf(() => graph.relations.certify(worksAt, { by: "a\ud83dlonely" })),
     entity_missing_near: await errorOf(() => graph.entities.delete("person:jane-do")),
   };
 }
