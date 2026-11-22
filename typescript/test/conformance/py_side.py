@@ -828,6 +828,7 @@ async def choice_errors(graph):
         "list_limit_zero": await error_of(graph.entities.list(limit=0)),
         "list_limit_text": await error_of(graph.entities.list(limit="5")),
         "entity_missing_near": await error_of(graph.entities.delete("person:jane-do")),
+        "certify_by_control": await error_of(graph.relations.certify(works_at, by="a\ud83dlonely")),
     }
 
 
