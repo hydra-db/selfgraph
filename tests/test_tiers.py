@@ -560,6 +560,7 @@ def test_from_tables_rejects_non_list_columns_with_a_validation_error(columns, s
     with pytest.raises(ValidationError) as exc:
         Schema.from_tables([{"name": "orders", "columns": columns}])
     assert str(exc.value) == f"tables[0].columns must be a list of column mappings, got {shown}"
+    assert exc.value.field == "columns"
 
 
 def test_from_tables_accepts_a_tuple_of_columns():
