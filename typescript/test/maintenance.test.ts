@@ -45,6 +45,14 @@ async function cascading(g: SelfGraph): Promise<void> {
   await g.decisions.create("Gone", { steps: [link.id], id: "decision:gone" });
 }
 
+async function aboutAndValue(g: SelfGraph): Promise<string> {
+  await g.entities.create("A", "Person", { id: "person:a" });
+  await g.entities.create("B", "Temp", { id: "temp:b" });
+  await g.entities.create("C", "Temp", { id: "temp:c" });
+  const pref = await g.preferences.create("person:a", "likes", "temp:c", { about_entity: "temp:b" });
+  return pref.id;
+}
+
 async function cascadeState(g: SelfGraph): Promise<unknown[]> {
   const pref = (await g.preferences.list("person:keep")).items[0]!;
   return [
@@ -294,6 +302,52 @@ function suite(spec: StoreSpec) {
     const state = await cascadeState(one);
     expect(await cascadeState(batched)).toEqual(state);
     expect(state).toEqual([["person:keep"], [], ["decision:keep"], ["person:keep"], [null, 2]]);
+  });
+
+  it("reports the same preference count for prune and either delete order", async () => {
+    const one = open();
+    await aboutAndValue(one);
+    let bThenC = 0;
+    for (const eid of ["temp:b", "temp:c"]) bThenC += (await one.entities.delete(eid)).deleted_preference_versions;
+    const reversed = open();
+    await aboutAndValue(reversed);
+    let cThenB = 0;
+    for (const eid of ["temp:c", "temp:b"]) cThenB += (await reversed.entities.delete(eid)).deleted_preference_versions;
+
+    const batched = open();
+    const pid = await aboutAndValue(batched);
+    const cutoff = later(0.0005);
+    expect((await batched.maintenance.prune({ older_than: cutoff, types: ["Temp"] })).entity_ids).toEqual([
+      "temp:b",
+      "temp:c",
+    ]);
+    const done = await batched.maintenance.prune({ older_than: cutoff, types: ["Temp"], dry_run: false });
+    expect(done.deleted!.deleted_preference_versions).toBe(1);
+    expect([bThenC, cThenB]).toEqual([1, 1]);
+    expect(await batched.preferences.get(pid)).toBeNull();
+    expect((await batched.entities.list()).items.map((e) => e.id)).toEqual(["person:a"]);
+    expect((await one.entities.list()).items.map((e) => e.id)).toEqual(["person:a"]);
+    expect((await reversed.entities.list()).items.map((e) => e.id)).toEqual(["person:a"]);
+  });
+
+  it("reports preference counts that do not depend on call order", async () => {
+    const first = open();
+    await aboutAndValue(first);
+    const bThenC = [];
+    for (const eid of ["temp:b", "temp:c"]) {
+      bThenC.push((await first.entities.delete(eid)).deleted_preference_versions);
+    }
+    const second = open();
+    await aboutAndValue(second);
+    const cThenB = [];
+    for (const eid of ["temp:c", "temp:b"]) {
+      cThenB.push((await second.entities.delete(eid)).deleted_preference_versions);
+    }
+    expect([bThenC, cThenB]).toEqual([
+      [0, 1],
+      [1, 0],
+    ]);
+    expect((await second.preferences.list()).items).toEqual([]);
   });
 
   it("skips relations a contradiction invalidated", async () => {

@@ -1503,6 +1503,10 @@ async def delete_entities(
     alternative is dropped from a decision that is kept, and a kept preference about a deleted entity loses its
     about_entity in a new version. Ids that are not stored are skipped.
 
+    The counts are order independent: deleting the ids one by one, in one batch, and pruning them report the same
+    counts. A version written only to clear a deleted about_entity is not counted again when its value entity is
+    deleted later.
+
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param eids (list[str]): canonical entity ids.
@@ -1537,7 +1541,10 @@ async def delete_entities(
 
     profiles = list(await _nodes_by_id(runner, ns, L_PROFILE, [_ids.profile_id(eid) for eid in eids]))
     gone_profiles = set(profiles)
-    counts["deleted_preference_versions"] = len(await _edges_into(runner, ns, L_PROFILE, None, "from_in", profiles))
+    counts["deleted_preference_versions"] = sum(
+        e["props"].get("about_cleared_by") is None
+        for e in await _edges_into(runner, ns, L_PROFILE, None, "from_in", profiles)
+    )
     for pref in await _preferences_about(runner, ns, doomed):
         if pref["to_id"] not in doomed and pref["from_id"] not in gone_profiles:
             await update_preference(
@@ -1549,9 +1556,12 @@ async def delete_entities(
                 remove_properties=[],
                 event_time=None,
                 clear=["about_entity"],
+                about_cleared_by=pref["props"].get("about_entity"),
             )
     counts["deleted_preference_versions"] += sum(
-        e["type"] in PREFERENCE_EDGE_TYPES and e["from_id"] not in gone_profiles
+        e["type"] in PREFERENCE_EDGE_TYPES
+        and e["from_id"] not in gone_profiles
+        and e["props"].get("about_cleared_by") is None
         for e in await _edges_into(runner, ns, L_PROFILE, L_ENTITY, "to_in", eids)
     )
     for batch in _batches(profiles):
@@ -3559,6 +3569,7 @@ async def update_preference(
     remove_properties: list[str],
     event_time: datetime | None,
     clear: Iterable[str] = (),
+    about_cleared_by: str | None = None,
 ) -> Preference:
     """Create a new version of a preference, merging properties like entities and relations.
 
@@ -3570,6 +3581,7 @@ async def update_preference(
     @param remove_properties (list[str]): property keys to drop.
     @param event_time (datetime | None): new valid time.
     @param clear (Iterable[str]): fields to clear: strength, about_entity, or event_time.
+    @param about_cleared_by (str | None): deleted entity whose about link this version clears.
     @return (Preference): the new current version.
     """
     _validate_strength(strength)
@@ -3614,6 +3626,8 @@ async def update_preference(
         created_at=now(),
         is_current=True,
     )
+    if about_cleared_by is not None:
+        props["about_cleared_by"] = about_cleared_by
     return await _write_preference_version(
         runner, ns, current.profile_id, current.value_entity, current.stance, props, retire=True
     )

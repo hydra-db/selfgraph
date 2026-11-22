@@ -1510,6 +1510,10 @@ async function deleteNodesWhere(
  * alternative is dropped from a decision that is kept, and a kept preference about a deleted entity loses its
  * about_entity in a new version. Ids that are not stored are skipped.
  *
+ * The counts are order independent: deleting the ids one by one, in one batch, and pruning them report the same
+ * counts. A version written only to clear a deleted about_entity is not counted again when its value entity is
+ * deleted later.
+ *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param given (readonly string[]): the canonical entity ids.
@@ -1549,18 +1553,23 @@ export async function deleteEntities(
   const goneProfiles = new Set(profiles);
   counts.deleted_preference_versions = (
     await edgesAt(runner, ns, { from_label: L_PROFILE }, "from_in", profiles)
-  ).length;
+  ).filter((e) => e.props.about_cleared_by == null).length;
   for (const pref of await preferencesAbout(runner, ns, doomed)) {
     if (!doomed.has(pref.to_id) && !goneProfiles.has(pref.from_id)) {
       await updatePreference(runner, ns, idOf(pref.props), {
         properties: null,
         remove_properties: [],
         clear: ["about_entity"],
+        about_cleared_by: pref.props.about_entity as string | null,
       });
     }
   }
   for (const edge of await edgesAt(runner, ns, { from_label: L_PROFILE, to_label: L_ENTITY }, "to_in", eids)) {
-    if (PREFERENCE_EDGE_TYPES.includes(edge.type) && !goneProfiles.has(edge.from_id)) {
+    if (
+      PREFERENCE_EDGE_TYPES.includes(edge.type) &&
+      !goneProfiles.has(edge.from_id) &&
+      edge.props.about_cleared_by == null
+    ) {
       counts.deleted_preference_versions += 1;
     }
   }
@@ -3777,6 +3786,7 @@ export interface UpdatePreferenceArgs {
   remove_properties: readonly string[];
   event_time?: Date | null;
   clear?: readonly string[];
+  about_cleared_by?: string | null;
 }
 
 /**
@@ -3838,6 +3848,7 @@ export async function updatePreference(
     created_at: new Date(),
     is_current: true,
   });
+  if (args.about_cleared_by != null) props.about_cleared_by = args.about_cleared_by;
   return writePreferenceVersion(runner, ns, current, props, true);
 }
 

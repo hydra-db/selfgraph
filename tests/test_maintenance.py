@@ -151,6 +151,11 @@ def _state(g):
     )
 
 
+def _about_and_value(g):
+    create_entities(g, "Person:A", "Temp:B", "Temp:C")
+    return run(g.preferences.create("person:a", "likes", "temp:c", about_entity="temp:b"))
+
+
 def test_prune_dry_run_then_apply_matches_deleting_entities_one_by_one(caplog):
     one = fresh_graph("mt")
     _cascading(one)
@@ -183,6 +188,42 @@ def test_prune_dry_run_then_apply_matches_deleting_entities_one_by_one(caplog):
     }
     assert _state(batched) == _state(one)
     assert _state(one)[:5] == (["person:keep"], [], ["decision:keep"], ["person:keep"], (None, 2))
+
+
+def test_prune_preference_about_and_value_both_pruned():
+    one = fresh_graph("mt")
+    _about_and_value(one)
+    b_then_c = sum(run(one.entities.delete(eid)).deleted_preference_versions for eid in ("temp:b", "temp:c"))
+    reversed_one = fresh_graph("mt")
+    _about_and_value(reversed_one)
+    c_then_b = sum(run(reversed_one.entities.delete(eid)).deleted_preference_versions for eid in ("temp:c", "temp:b"))
+
+    batched = fresh_graph("mt")
+    pref = _about_and_value(batched)
+    cutoff = _later(0.0005)
+    plan = run(batched.maintenance.prune(older_than=cutoff, types=["Temp"]))
+    assert plan.entity_ids == ["temp:b", "temp:c"]
+    done = run(batched.maintenance.prune(older_than=cutoff, types=["Temp"], dry_run=False))
+    assert done.deleted.deleted_preference_versions == 1
+    assert (b_then_c, c_then_b) == (1, 1)
+    assert run(batched.preferences.get(pref.id)) is None
+    assert [e.id for e in run(batched.entities.list()).items] == ["person:a"]
+    assert [e.id for e in run(one.entities.list()).items] == ["person:a"]
+    assert [e.id for e in run(reversed_one.entities.list()).items] == ["person:a"]
+
+
+def test_delete_preference_counts_are_order_independent_when_a_preference_is_reversioned():
+    first = fresh_graph("mt")
+    _about_and_value(first)
+    b_then_c = [run(first.entities.delete(eid)).deleted_preference_versions for eid in ("temp:b", "temp:c")]
+
+    second = fresh_graph("mt")
+    _about_and_value(second)
+    c_then_b = [run(second.entities.delete(eid)).deleted_preference_versions for eid in ("temp:c", "temp:b")]
+
+    assert (b_then_c, c_then_b) == ([0, 1], [1, 0])
+    assert sum(b_then_c) == sum(c_then_b) == 1
+    assert run(second.preferences.list()).items == []
 
 
 def test_prune_by_relevance_skips_unscored_items_and_filters_by_type():
