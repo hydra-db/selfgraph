@@ -773,6 +773,9 @@ describe("obsidian vault file names", () => {
   });
 
   it("strips leading and trailing dots", () => {
+    // A long alternating name is the quadratic case: the old loop peeled one
+    // whitespace/dot layer per iteration, each strip O(n).
+    expect(notes([". ".repeat(8000) + "NET"]).sort()).toEqual(["NET.md"]);
     expect(notes([". .NET", "Acme. .", "v1. ."]).sort()).toEqual(["Acme.md", "NET.md", "v1.md"]);
   });
 });
