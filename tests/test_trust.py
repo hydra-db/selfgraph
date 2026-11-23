@@ -426,6 +426,10 @@ def test_obsidian_vault_strips_leading_and_trailing_dots():
     for name, stem in [(". .NET", "NET"), ("Acme. .", "Acme"), ("v1. .", "v1")]:
         assert _stem(name) == stem
         assert _stem(_stem(name)) == stem
+    # A long alternating name is the quadratic case: the old loop peeled one
+    # whitespace/dot layer per iteration, each strip O(n).
+    assert _stem(". " * 8000 + "NET") == "NET"
+    assert _stem("NET" + " . " * 8000) == "NET"
     g = fresh_graph("vault_dots")
     run(g.insert.facts({"entities": [{"type": "Product", "name": name} for name in [". .NET", "Acme. .", "v1. ."]]}))
     notes = sorted(path for path in run(g.export_obsidian()) if "/" not in path)
