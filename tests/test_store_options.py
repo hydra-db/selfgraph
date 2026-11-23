@@ -10,6 +10,10 @@ from selfgraph.stores.kuzu import KuzuStore
 
 
 def test_kuzu_store_rejects_unknown_options(tmp_path):
+    # The option check reads the allowed names from kuzu.Database, so without
+    # the kuzu package there is nothing to validate against; the backends jobs
+    # do not install it, and the missing-package error is the right answer there.
+    pytest.importorskip("kuzu")
     with pytest.raises(SelfGraphError) as exc:
         KuzuStore(str(tmp_path / "g.kuzu"), buffer_pool=1)
     assert (exc.value.code, exc.value.to_dict()["field"]) == ("unknown_key", "buffer_pool")
