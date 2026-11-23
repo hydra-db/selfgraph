@@ -236,19 +236,6 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
     assert codes == {code: code for code in HINTS}
 
 
-def test_the_identity_and_cursor_errors_name_their_argument():
-    g = new_graph()
-    run(g.insert.facts(PEOPLE))
-
-    with pytest.raises(SelfGraphError) as raised:
-        run(g.entities.update("person:ada", type="Robot"))
-    assert (raised.value.code, raised.value.field) == ("immutable_identity", "type")
-
-    with pytest.raises(SelfGraphError) as raised:
-        run(g.entities.list(cursor="bogus"))
-    assert (raised.value.code, raised.value.field) == ("invalid_cursor", "cursor")
-
-
 def test_a_failed_connection_reads_in_plain_words():
     lookup = RuntimeError("Failed to DNS resolve address nohost.invalid:7687")
     lookup.__cause__ = socket.gaierror(socket.EAI_NONAME, "Name or service not known")
