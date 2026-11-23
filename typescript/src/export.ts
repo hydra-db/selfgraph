@@ -22,6 +22,12 @@ const OSSIE_TYPES: Record<string, string> = {
 const UNSAFE = /[\\/:*?"<>|#^[\]\x00-\x1f]/g;
 const STEM_MAX_BYTES = 200;
 
+// Every character Python str.strip() removes, plus the dot. One pyStrip call
+// with this set removes any mix of whitespace and dots from both ends in a
+// single pass; keep in step with _STEM_TRIM in src/selfgraph/_export.py and
+// PY_WS_CLASS in ./internal/py.ts.
+const STEM_TRIM = " \t\n\v\f\r\x1c\x1d\x1e\x1f\x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000.";
+
 /**
  * Compare string tuples element by element in Python order.
  *
@@ -142,12 +148,7 @@ export function toOssie(raw: Schema | ParsedSchema): Obj {
  * @return (string): the file name without extension, or "" when nothing usable is left.
  */
 function stem(text: string): string {
-  let cleaned = text.replace(UNSAFE, "-");
-  let stripped = pyStrip(pyStrip(pyStrip(cleaned), "."));
-  while (stripped !== cleaned) {
-    cleaned = stripped;
-    stripped = pyStrip(pyStrip(pyStrip(cleaned), "."));
-  }
+  const cleaned = pyStrip(text.replace(UNSAFE, "-"), STEM_TRIM);
   const raw = utf8(cleaned);
   if (raw.length <= STEM_MAX_BYTES) return cleaned;
   let end = STEM_MAX_BYTES;
