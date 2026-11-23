@@ -269,6 +269,12 @@ def test_invalid_schema_and_mode_raise_validation_error():
             {"entities": [{"name": "A"}], "relations": [{"type": "R", "to": {"types": ["A", "B"]}}]},
             "relations[0].to.types[1]: unknown type 'B'",
         ),
+        ({"entities": [{"name": "  "}]}, "entities[0].name: must be a non-empty string, got '  '"),
+        (
+            {"entities": [{"name": "Person", "properties": [{"name": " "}]}]},
+            "entities[0].properties[0].name: must be a non-empty string, got ' '",
+        ),
+        ({"relations": [{"type": "  "}]}, "relations[0].type: must be a non-empty string, got '  '"),
         ({"relations": [{"type": "R", "from": {"max_count": 0}}]}, "relations[0].from.max_count: must be >= 1"),
         ({"relations": [{"type": "R", "to": {"min_count": -1}}]}, "relations[0].to.min_count: must be >= 0"),
         ({"relations": [{"type": "R", "from": {"max_count": 1.5}}]}, "relations[0].from.max_count: expected integer"),
