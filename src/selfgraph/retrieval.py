@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from . import _ops
 from ._maintenance import scan_entities, scan_relations
 from ._ops import AsOf, _paged
+from ._payload import context_payload
 from ._serde import (
     L_CHUNK,
     L_ENTITY,
@@ -25,6 +26,7 @@ from ._serde import (
     from_iso,
     preference_edge_type,
 )
+from ._unicode import WORD_CLASS, casefold
 from .errors import ValidationError
 from .extraction.chunking import count_tokens
 from .ids import _word_runs, normalize_text, profile_id
@@ -127,13 +129,14 @@ _FILLER = frozenset(
         "your",
     }
 )
-_IRREGULAR = re.compile(r"(?<!\w)(?:won|can)['’ʼ]t(?!\w)", re.IGNORECASE)
-_CLITIC = re.compile(r"(?<=\w)n['’ʼ]t(?!\w)|(?<=\w)['’ʼ](?:s|ll|re|ve|d|m)(?!\w)", re.IGNORECASE)
+_IRREGULAR = re.compile(rf"(?<![{WORD_CLASS}])(?:won|can)['’ʼ]t(?![{WORD_CLASS}])")
+_CLITIC = re.compile(
+    rf"(?<=[{WORD_CLASS}])n['’ʼ]t(?![{WORD_CLASS}])|(?<=[{WORD_CLASS}])['’ʼ](?:s|ll|re|ve|d|m)(?![{WORD_CLASS}])"
+)
 _PAGE = 500
 _MAX_POOL = 5000
 _SEED_PAGE = 5000
 _NEIGHBOR_PARTS = 8
-_MAX_PASSAGE_SOURCES = 12
 _MAX_PASSAGES = 6
 _PASSAGE_BUDGET_PERCENT = 60
 _BM25_K1 = 2.0
@@ -158,7 +161,7 @@ def _fold(text: str) -> str:
     @param text (str): the text to fold.
     @return (str): the NFC-normalized, casefolded text.
     """
-    return normalize_text(text).casefold()
+    return normalize_text(casefold(normalize_text(text)))
 
 
 def _token_list(text: str) -> list[str]:
@@ -177,6 +180,15 @@ def _tokens(text: str) -> set[str]:
     @return (set[str]): the distinct content tokens.
     """
     return set(_token_list(text))
+
+
+def _stems(tokens: Iterable[str]) -> set[str]:
+    """Reduce tokens to their singular stems, so a plural word and its singular compare equal.
+
+    @param tokens (Iterable[str]): casefolded content tokens.
+    @return (set[str]): the distinct stems.
+    """
+    return {stem(t) for t in tokens}
 
 
 def _short_tokens(text: str) -> set[str]:
@@ -207,18 +219,18 @@ def _format_props(props: dict) -> str:
     """
     if not props:
         return ""
-    return "{" + ", ".join(f"{k}={v}" for k, v in props.items()) + "}"
+    return "{" + ", ".join(f"{k}={v}" for k, v in sorted(props.items())) + "}"
 
 
 def _term_counts(query: set[str], doc: list[str]) -> dict[str, int]:
-    """Count each query token's occurrences in a document, in first-occurrence order.
+    """Count each query stem's occurrences among a document's stemmed tokens, in first-occurrence order.
 
-    @param query (set[str]): the query content tokens.
+    @param query (set[str]): the query stems.
     @param doc (list[str]): the document's tokens.
-    @return (dict[str, int]): the count of each query token the document holds.
+    @return (dict[str, int]): the count of each query stem the document holds.
     """
     tf: dict[str, int] = {}
-    for token in doc:
+    for token in map(stem, doc):
         if token in query:
             tf[token] = tf.get(token, 0) + 1
     return tf
@@ -232,14 +244,15 @@ def _corpus_stats(
     @param query (set[str]): the query content tokens.
     @param docs (Iterable[list[str]]): the token list for each document.
     @param stats (tuple[int, int, dict[str, int]] | None): the statistics so far, or None to start.
-    @return (tuple[int, int, dict[str, int]]): the document count, total length, and each query token's document
+    @return (tuple[int, int, dict[str, int]]): the document count, total length, and each query stem's document
         frequency.
     """
-    n, total, df = stats or (0, 0, dict.fromkeys(query, 0))
+    terms = _stems(query)
+    n, total, df = stats or (0, 0, dict.fromkeys(terms, 0))
     for doc in docs:
         n += 1
         total += len(doc)
-        for token in _term_counts(query, doc):
+        for token in _term_counts(terms, doc):
             df[token] += 1
     return n, total, df
 
@@ -261,15 +274,16 @@ def _seed_scores(
     """
     n, total, df = stats
     avgdl = (total / n if n else 0) or 1.0
-    idf = {t: math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5)) for t in query_tokens}
+    terms = _stems(query_tokens)
+    idf = {t: math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5)) for t in terms}
     scored = []
     for entity in entities:
         text = _entity_text(entity)
         bm25 = 0.0
-        if query_tokens:
+        if terms:
             doc = _token_list(text)
             norm = _BM25_K1 * (1 - _BM25_B + _BM25_B * len(doc) / avgdl)
-            tf = _term_counts(query_tokens, doc)
+            tf = _term_counts(terms, doc)
             bm25 = sum(idf[t] * f * (_BM25_K1 + 1) / (f + norm) for t, f in tf.items())
         score = bm25 + _GREP_WEIGHT * (_grep_score(query_tokens, _fold(text)) + (_fold(entity.name) in exact))
         if score > 0:
@@ -738,6 +752,25 @@ def _quotable(version: dict | None, as_of: AsOf | None) -> bool:
     )
 
 
+async def _chunk_texts(graph: SelfGraph, ns: str, versions: list[str]) -> dict[str, list[str]]:
+    """Read the stripped, non-empty chunk texts of source versions in chunk order, a batch per query.
+
+    @param graph (SelfGraph): the open graph to read.
+    @param ns (str): the namespace to read.
+    @param versions (list[str]): the source version ids.
+    @return (dict[str, list[str]]): each source version's chunk texts, in chunk order.
+    """
+    edges = await _ops._edges_into(graph.store, ns, L_SOURCE_VERSION, L_CHUNK, "from_in", versions, type=R_HAS_CHUNK)
+    chunks = await _ops._nodes_by_id(graph.store, ns, L_CHUNK, [e["to_id"] for e in edges])
+    ordered: dict[str, list[tuple[int, str]]] = {sv: [] for sv in versions}
+    for e in edges:
+        chunk = chunks[e["to_id"]]
+        text = (chunk.get("text") or "").strip()
+        if text:
+            ordered[e["from_id"]].append((int(chunk["index"]), text))
+    return {sv: [text for _, text in sorted(found)] for sv, found in ordered.items()}
+
+
 async def _collect_passages(
     graph: SelfGraph,
     ns: str,
@@ -747,6 +780,11 @@ async def _collect_passages(
     as_of: AsOf | None = None,
 ) -> list[str]:
     """Gather the most query-relevant source passages behind the retrieved entities.
+
+    Every usable source version of every entity is scored, so a passage is never cut before it is ranked. Chunk
+    texts are read a batch of versions at a time, and only the best _MAX_PASSAGES distinct ones are kept between
+    batches. A passage ranks by the query tokens it holds, then by the closeness of the nearest entity that cites
+    its version, then by first read.
 
     @param graph (SelfGraph): the open graph to read.
     @param ns (str): the namespace to read.
@@ -759,16 +797,15 @@ async def _collect_passages(
         (insert.text with replace_source) by then is skipped.
     """
     far = len(dist) + 1
+    terms = _stems(query_tokens)
     sv_dist: dict[str, int] = {}
     usable: dict[str, bool] = {}
     for e in sorted(entities, key=lambda e: dist.get(e.id, far)):
-        if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
-            break
         if not e.source_count:
             continue
         fetch = partial(graph.store.match_nodes, ns, L_EVIDENCE, equals={"target_id": e.id})
         skip = 0
-        while len(sv_dist) < _MAX_PASSAGE_SOURCES:
+        while True:
             rows = await fetch(skip=skip, limit=_PAGE)
             unseen = list(dict.fromkeys(r["source_version"] for r in rows if r["source_version"] not in usable))
             versions = await _ops._nodes_by_id(graph.store, ns, L_SOURCE_VERSION, unseen)
@@ -779,30 +816,22 @@ async def _collect_passages(
                 if as_of is not None and not _ops._known_by(from_iso(row.get("created_at")), as_of.known):
                     continue
                 sv_dist.setdefault(row["source_version"], dist.get(e.id, far))
-                if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
-                    break
             if len(rows) < _PAGE:
                 break
             skip += len(rows)
 
-    candidates: list[tuple[float, int, str]] = []
-    for sv, d in sv_dist.items():
-        chunks = await graph.store.child_nodes(ns, L_SOURCE_VERSION, sv, R_HAS_CHUNK, L_CHUNK, order_by="index")
-        for c in sorted(chunks, key=lambda c: int(c["index"])):
-            text = (c.get("text") or "").strip()
-            if text:
-                candidates.append((float(len(query_tokens & _tokens(text))), d, text))
-
-    candidates.sort(key=lambda t: (-t[0], t[1]))
-    out: list[str] = []
-    seen: set[str] = set()
-    for score, _, text in candidates:
-        if score <= 0 or len(out) >= _MAX_PASSAGES:
-            break
-        if text not in seen:
-            seen.add(text)
-            out.append(text)
-    return out
+    best: dict[str, tuple[int, int, int]] = {}
+    order = 0
+    for batch in _ops._batches(list(sv_dist)):
+        for sv, texts in (await _chunk_texts(graph, ns, batch)).items():
+            for text in texts:
+                score = len(terms & _stems(_tokens(text)))
+                if score > 0 and text not in best:
+                    best[text] = (-score, sv_dist[sv], order)
+                    order += 1
+        if len(best) > _MAX_PASSAGES:
+            best = dict(heapq.nsmallest(_MAX_PASSAGES, best.items(), key=lambda item: item[1]))
+    return sorted(best, key=best.__getitem__)
 
 
 async def _collect_preferences(
@@ -825,29 +854,6 @@ async def _collect_preferences(
         rows = await _ops._edges_into(graph.store, ns, L_PROFILE, None, "from_in", profiles, current_only=True)
         preferences = [_ops._preference_of(r) for r in rows]
     return sorted((p for p in preferences if p.subject_entity in order), key=lambda p: order[p.subject_entity])
-
-
-def _context_payload(text: str, *, source: bool = False) -> str:
-    """Contain stored content before admitting it to the context's SDK-owned headers.
-
-    @param text (str): a source passage or assembled graph record, never its trust header.
-    @param source (bool): preserve passage lines and label each as source data.
-    @return (str): display-safe content with no unlabelled physical lines.
-    """
-    rendered = [
-        "".join(
-            f"\\u{ord(c):04x}"
-            if (ord(c) < 32 and c != "\t")
-            or 127 <= ord(c) <= 159
-            or ord(c) in (0x061C, 0x200E, 0x200F)
-            or 0x202A <= ord(c) <= 0x202E
-            or 0x2066 <= ord(c) <= 0x2069
-            else c
-            for c in row
-        )
-        for row in re.split(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]", text)
-    ]
-    return "\n".join("SOURCE | " + row for row in rendered) if source else "\\n".join(rendered)
 
 
 def _assemble(
@@ -885,9 +891,7 @@ def _assemble(
 
     def add(payload: str, cap: int, header: str = "GRAPH") -> bool:
         nonlocal used, full, rounding, boundary
-        line = (
-            _context_payload(payload, source=True) if header == "SOURCE" else f"{header} | {_context_payload(payload)}"
-        )
+        line = context_payload(payload, source=True) if header == "SOURCE" else f"{header} | {context_payload(payload)}"
         if not first:
             first.append(line)
             rounding = count_tokens("")
@@ -1111,13 +1115,14 @@ def _term_words(text: str) -> list[str]:
     @param text (str): the question, name, or synonym.
     @return (list[str]): the content tokens, repeats kept.
     """
+    folded = _fold(text)
     words: list[str] = []
     last = 0
-    for m in _IRREGULAR.finditer(text):
-        words += _token_list(_CLITIC.sub("", text[last : m.start()]))
-        words.append(m.group().casefold().replace("’", "'").replace("ʼ", "'"))
+    for m in _IRREGULAR.finditer(folded):
+        words += _token_list(_CLITIC.sub("", folded[last : m.start()]))
+        words.append(m.group().replace("’", "'").replace("ʼ", "'"))
         last = m.end()
-    return words + _token_list(_CLITIC.sub("", text[last:]))
+    return words + _token_list(_CLITIC.sub("", folded[last:]))
 
 
 def _question_terms(question: str, names: Iterable[str]) -> list[str]:

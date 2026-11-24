@@ -6,6 +6,7 @@ import re
 import socket
 import sys
 import types
+from decimal import InvalidOperation
 from typing import get_args
 
 import pytest
@@ -22,7 +23,8 @@ from selfgraph import (
     StoreError,
     TransientError,
 )
-from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason
+from selfgraph._serde import decode_entity
+from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason, internal_error
 from selfgraph.llm.base import _fatal
 from selfgraph.mcp.server import run_cypher
 from selfgraph.resolution import ResolutionDecision
@@ -109,6 +111,26 @@ def _without_kuzu(monkeypatch, path):
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "kuzu", None)
         return KuzuStore(path)
+
+
+def _unreadable_decimal(monkeypatch, path):
+    """Run a statement on a KuzuStore whose driver cannot read a DECIMAL, as Kuzu 0.11.3 does for -0.05.
+
+    @param monkeypatch (pytest.MonkeyPatch): the test's monkeypatch.
+    @param path (str): the database path.
+    @return (Coroutine): the run_cypher call.
+    """
+
+    def get_next():
+        raise InvalidOperation
+
+    result = types.SimpleNamespace(get_column_names=lambda: ["v"], has_next=lambda: True, get_next=get_next)
+    connection = types.SimpleNamespace(execute=lambda query, parameters=None: result)
+    driver = types.SimpleNamespace(Database=lambda path, **options: None, Connection=lambda database: connection)
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "kuzu", driver)
+        store = KuzuStore(path)
+    return store.run_cypher("RETURN 1")
 
 
 def _raise(exc):
@@ -204,6 +226,7 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
             {"entities": [{"name": "Cy", "type": "Person"}]}, resolver=_Resolver("person:nobody")
         ),
         "read_only_query": lambda: run_cypher("CREATE (n)"),
+        "cypher_query_limit": lambda: g.run_cypher("RETURN 1 // " + " " * 65_536),
         "missing_package": lambda: _without_kuzu(monkeypatch, str(tmp_path / "missing")),
         "not_found": lambda: g.entities.delete("person:nobody"),
         "already_exists": lambda: g.entities.create("Ada", "Person"),
@@ -218,7 +241,9 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
         "invalid_prompt_template": lambda: SelfGraph(
             store=g.store, prompts={"entities": {"version": "v1", "system": "s", "user": "no placeholder"}}
         ),
+        "invalid_stored_data": lambda: decode_entity({"id": "person:broken", "ns": "codes"}),
         "query_failed": lambda: g.run_cypher("RETURN ("),
+        "inexact_value": lambda: _unreadable_decimal(monkeypatch, str(tmp_path / "unreadable")),
         "graph_closed": lambda: closed_graph.entities.list(),
         "store_closed": lambda: SelfGraph(store=closed_store).entities.list(),
         "store_unreachable": lambda: SelfGraph(store=Neo4jStore(CLOSED_PORT, auth=("neo4j", "pw"))).entities.list(),
@@ -229,9 +254,23 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
         "write_too_large": lambda: hydradb.upsert_node("n", "Entity", "x", {"id": "x", "blob": "x" * 3_000_000}),
         "write_conflict": lambda: _raise(hydradb._error(DriverError("", "transaction conflict"))),
         "store_busy": lambda: _busy_falkordb(monkeypatch).run_cypher("RETURN 1"),
+        "internal_error": lambda: _raise(internal_error(RuntimeError("boom"))),
     }
     codes |= {code: _code(call) for code, call in triggers.items()}
     assert codes == {code: code for code in HINTS}
+
+
+def test_the_identity_and_cursor_errors_name_their_argument():
+    g = new_graph()
+    run(g.insert.facts(PEOPLE))
+
+    with pytest.raises(SelfGraphError) as raised:
+        run(g.entities.update("person:ada", type="Robot"))
+    assert (raised.value.code, raised.value.field) == ("immutable_identity", "type")
+
+    with pytest.raises(SelfGraphError) as raised:
+        run(g.entities.list(cursor="bogus"))
+    assert (raised.value.code, raised.value.field) == ("invalid_cursor", "cursor")
 
 
 def test_a_failed_connection_reads_in_plain_words():
@@ -299,3 +338,20 @@ def test_settings_fail_with_a_narrow_code(settings, code, field):
     with pytest.raises(SelfGraphError) as exc:
         check_settings(GraphSettings(**settings))
     assert (exc.value.code, exc.value.to_dict().get("field")) == (code, field)
+
+
+@pytest.mark.parametrize("kind", ["list", "map"])
+def test_cypher_result_depth_is_a_coded_error(kind):
+    from selfgraph.errors import ValidationError
+    from selfgraph.models import CypherResult
+
+    value = 1
+    for _ in range(254):
+        value = [value] if kind == "list" else {"a": value}
+    assert CypherResult(rows=[{"x": value}]).rows == [{"x": value}]
+    value = [value] if kind == "list" else {"a": value}
+    with pytest.raises(ValidationError) as caught:
+        CypherResult(rows=[{"x": value}])
+    assert caught.value.code == "invalid_argument"
+    assert caught.value.field == "rows"
+    assert str(caught.value) == "run_cypher result exceeds the maximum nesting depth of 254"

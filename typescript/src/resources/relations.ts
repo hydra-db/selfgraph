@@ -13,7 +13,7 @@ import type {
 } from "../models.js";
 import * as ops from "../ops.js";
 import { type ContradictionMode, canonicalRelationType, warnSchema } from "../schema.js";
-import { checkOptions, keysOf, parseTime } from "../validate.js";
+import { checkOptions, keysOf, parseTime, requireBool } from "../validate.js";
 import { PAGE_KEYS, type PageOptions, paginate, parseEvidence, Resource, VERSIONS_KEYS } from "./common.js";
 
 export interface RelationCreateOptions {
@@ -95,23 +95,23 @@ export class Relations extends Resource {
     const warnings: InsertWarning[] = [];
     const rel = await this.graph.write(async (tx, ns) => {
       warnings.length = 0;
-      const created = await ops.createRelation(
-        tx,
-        ns,
-        {
-          from_entity: fromEntity,
-          type: rtype,
-          to_entity: toEntity,
-          id: options.id,
-          properties: options.properties ?? null,
-          event_time: eventTime,
-          evidence,
-        },
-        this.graph.schemaCheck,
-        { ...conflicts, ...(strict && { contradiction: "strict" }), warnings },
-      );
-      if (judged && llm !== null)
-        warnings.push(...(await judgeContradictions(tx, ns, llm, [created], conflicts.caps, created.created_at)));
+      const fields = {
+        from_entity: fromEntity,
+        type: rtype,
+        to_entity: toEntity,
+        id: options.id,
+        properties: options.properties ?? null,
+        event_time: eventTime,
+        evidence,
+      };
+      const check = { ...conflicts, ...(strict && { contradiction: "strict" }) };
+      let judgment: ((at: Date) => Promise<InsertWarning[]>) | null = null;
+      if (judged && llm !== null) {
+        const planned = await ops.createRelation(tx, ns, fields, this.graph.schemaCheck, { ...check, dry_run: true });
+        judgment = await judgeContradictions(tx, ns, llm, [planned], conflicts.caps, planned.created_at);
+      }
+      const created = await ops.createRelation(tx, ns, fields, this.graph.schemaCheck, { ...check, warnings });
+      if (judgment !== null) warnings.push(...(await judgment(created.created_at)));
       return created;
     });
     warnSchema(warnings);
@@ -137,6 +137,7 @@ export class Relations extends Resource {
    */
   async list(options: RelationListOptions = {}): Promise<Page<Relation>> {
     checkOptions("relations.list", options, LIST_KEYS);
+    requireBool("include_invalidated", options.include_invalidated ?? false);
     const rtype =
       typeof options.type === "string" && pyStrip(options.type)
         ? canonicalRelationType(options.type, this.graph.schema)
@@ -221,6 +222,7 @@ export class Relations extends Resource {
    */
   async versions(id: string, options: { newest_first?: boolean } = {}): Promise<Relation[]> {
     checkOptions("relations.versions", options, VERSIONS_KEYS);
+    requireBool("newest_first", options.newest_first ?? true);
     ops.validateOwnId("relation", id);
     const versions = await this.graph.read((store, ns) =>
       ops.listRelationVersions(store, ns, id, options.newest_first ?? true),
@@ -245,14 +247,15 @@ export class Relations extends Resource {
   }
 
   /**
-   * Remove the certification of the current version of a relation.
+   * Remove certification and settle endpoint limits, including retries after a failed settlement.
    *
    * @param id (string): the relation id.
-   * @return (Relation): the current version without certification.
+   * @return (Relation): the stored version after removing certification and settling endpoint limits.
    */
   async uncertify(id: string): Promise<Relation> {
     ops.validateOwnId("relation", id);
-    return this.graph.write((tx, ns) => ops.certifyRelation(tx, ns, id, null, new Date()));
+    const { contradiction, caps } = this.graph.contradictionFor(null, this.graph.schema);
+    return this.graph.write((tx, ns) => ops.certifyRelation(tx, ns, id, null, new Date(), contradiction, caps));
   }
 
   /**

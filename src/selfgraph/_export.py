@@ -5,6 +5,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from ._serde import _dumps
+from ._unicode import casefold
 from .errors import ValidationError
 from .ids import normalize_rel_type
 from .models import DecisionTrace, Entity, Preference, Relation
@@ -26,11 +27,7 @@ _OSSIE_TYPES = {
 _UNSAFE = re.compile(r'[\\/:*?"<>|#^\[\]\x00-\x1f]')
 _STEM_MAX_BYTES = 200
 
-# Every character str.strip() removes, plus the dot. One strip() call with
-# this set removes any mix of whitespace and dots from both ends in a
-# single pass; keep in step with STEM_TRIM in typescript/src/export.ts and
-# PY_WS_CLASS in typescript/src/internal/py.ts.
-_STEM_TRIM = " \t\n\x0b\x0c\r\x1c\x1d\x1e\x1f\x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000."
+_STEM_TRIM = " \t\n\x0b\x0c\r\x1c\x1d\x1e\x1f\x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000."  # noqa: E501
 
 
 def _left_out(kind: str, name: str, fields: dict[str, Any]) -> None:
@@ -159,13 +156,13 @@ def _claim(options: list[str], taken: set[str]) -> str:
     @param taken (set[str]): the casefolded names already used, updated in place.
     @return (str): the chosen file name.
     """
-    stem = next((s for s in options if s and s.casefold() not in taken), None)
+    stem = next((s for s in options if s and casefold(s) not in taken), None)
     n = 2
     while stem is None:
         candidate = f"{options[-1] or 'note'} {n}"
-        stem = None if candidate.casefold() in taken else candidate
+        stem = None if casefold(candidate) in taken else candidate
         n += 1
-    taken.add(stem.casefold())
+    taken.add(casefold(stem))
     return stem
 
 

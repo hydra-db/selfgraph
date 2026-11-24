@@ -520,7 +520,7 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     const query =
       `MATCH (a:${from_label})-[r]->(b${blabel}) WHERE ${where.join(" AND ")} ` +
       `RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t ` +
-      "ORDER BY r.id, r.revision SKIP $skip LIMIT $limit";
+      "ORDER BY r.id, r.revision, from_e, to_e, t SKIP $skip LIMIT $limit";
     const res = await this._run(query, params);
     return res.rows.map(edgeRow);
   }

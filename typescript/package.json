@@ -72,6 +72,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome ci .",
     "format": "biome check --write .",
+    "generate:unicode": "node scripts/generateUnicodeData.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepack": "cp ../SKILL.md ../docs/errors.md .",

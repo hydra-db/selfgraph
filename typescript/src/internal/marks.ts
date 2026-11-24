@@ -31,6 +31,11 @@ export const MARK_RANGES = [
   "1e8d0-1e8d6 1e944-1e94a",
 ].join(" ");
 
+export const FORMAT_RANGES = [
+  "ad 600-605 61c 6dd 70f 890-891 8e2 180e 200b-200f 202a-202e 2060-2064 2066-206f feff fff9-fffb 110bd 110cd",
+  "13430-1343f 1bca0-1bca3 1d173-1d17a e0001 e0020-e007f",
+].join(" ");
+
 /**
  * Render space-separated hexadecimal code point ranges as the body of a regex character class.
  *
@@ -50,3 +55,4 @@ function charClass(ranges: string): string {
 }
 
 export const MARK_CLASS = charClass(MARK_RANGES);
+export const FORMAT_CLASS = charClass(FORMAT_RANGES);

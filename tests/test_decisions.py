@@ -307,3 +307,13 @@ def test_step_ids_round_trip():
             sid = ids.step_id(tid, order)
             assert sid == f"decisionstep:{tid}:step:{order}"
             assert ids.trace_of_step(sid) == tid
+
+
+def test_listing_decisions_keeps_every_step_when_a_page_holds_more_than_a_thousand():
+    g = fresh_graph("many-steps")
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "A"}, {"type": "Person", "name": "B"}]}))
+    rel = run(g.relations.create("person:a", "KNOWS", "person:b"))
+    for i in range(3):
+        run(g.decisions.create(f"D{i}", steps=[rel.id] * 400, id=f"decision:d{i}"))
+    traces = run(g.decisions.list(limit=10)).items
+    assert [[s.order for s in t.steps] for t in traces] == [list(range(400))] * 3

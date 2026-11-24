@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -12,12 +13,14 @@ from pydantic import ValidationError as PydanticValidationError
 from .. import ids as _ids
 from .._ops import (
     _reject_reserved_rel_type,
+    _require_json_mapping,
     _require_optional_text,
     _validate_entity_identity,
     _validate_strength,
     parse_time,
 )
 from .._serde import EDGE_TYPES, preference_stance_of
+from .._unicode import LETTER_CLASS, lower
 from ..errors import ExtractionError, ValidationError
 from ..llm.base import summarize_error
 from ..models import (
@@ -37,7 +40,7 @@ from ..models import (
     issue_line,
 )
 from ..protocols import LLMClient
-from ..schema import Schema, render_schema_catalog
+from ..schema import Schema, canonical_entity_type, render_schema_catalog
 from .chunking import chunk_text
 from .prompts import check_prompts, effective_instruction, effective_prompt, render
 
@@ -122,10 +125,11 @@ class _DecisionsOut(BaseModel):
 
 _log = logging.getLogger("selfgraph")
 _FALLBACK_TYPE = "Thing"
+_LETTER = re.compile(f"[{LETTER_CLASS}]")
 
 
 def _norm(name: str) -> str:
-    return name.strip().lower()
+    return lower(name.strip())
 
 
 def _is_noise_name(name: str) -> bool:
@@ -139,7 +143,7 @@ def _is_noise_name(name: str) -> bool:
         return True
     if len(text.split()) > 6:
         return True
-    return not any(c.isalpha() for c in text)
+    return _LETTER.search(text) is None
 
 
 def _dropped(warnings: list[InsertWarning], kind: str, exc: ValidationError, rtype: str | None = None) -> None:
@@ -177,7 +181,7 @@ def _checked_output(result: object, schema: type[BaseModel], kind: str) -> BaseM
     @return (BaseModel): the validated output.
     """
     if isinstance(result, schema):
-        return result
+        result = result.model_dump(warnings=False)
     head = f"LLM client returned an invalid result for the {kind} pass"
     if (isinstance(result, Mapping) and kind not in result) or (
         hasattr(result, "__dict__") and not hasattr(result, kind)
@@ -215,7 +219,9 @@ class LLMExtractor(_WarningSink):
         check_prompts(prompts)
         check_prompts(call_prompts)
         self._llm = llm
+        self._schema = schema
         self._source_id = source_id
+        self._schema = schema
         self._client_prompts = prompts
         self._client_instructions = instructions
         self._call_prompts = call_prompts
@@ -240,7 +246,7 @@ class LLMExtractor(_WarningSink):
         if not chunks:
             return Extraction()
 
-        raw_entities: list[EntityInput] = []
+        raw_entities: list[_EntityOut] = []
         raw_relations: list[_RelOut] = []
         raw_preferences: list[_PrefOut] = []
         raw_decisions: list[_DecOut] = []
@@ -273,16 +279,16 @@ class LLMExtractor(_WarningSink):
                 try:
                     system, user = self._messages(kind, chunk.text)
                     result = await self._llm.generate(system=system, user=user, output=schema)
-                    items = getattr(_checked_output(result, schema, kind), kind)
-                    if kind == "entities":
-                        return [EntityInput(type=e.type, name=e.name, aliases=e.aliases or []) for e in items]
-                    return items
+                    return getattr(_checked_output(result, schema, kind), kind)
                 except ExtractionError:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     return InsertWarning(
                         code="extraction_partial_failure",
-                        message=f"{kind} extraction failed on chunk {chunk.index}: {summarize_error(exc)}",
+                        message=(
+                            f"{kind} extraction failed on chunk {chunk.index}: "
+                            f"{summarize_error(exc, getattr(self._llm, 'base_url', None))}"
+                        ),
                         source_id=self._source_id,
                         chunk_id=chunk_id(chunk),
                     )
@@ -309,7 +315,9 @@ class LLMExtractor(_WarningSink):
                 sink.extend(outcome)
 
         failed = len(self._warnings)
-        facts = self._assemble(raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings)
+        facts = self._assemble(
+            raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings, self._schema
+        )
         if failed and not (facts.entities or facts.relations or facts.preferences or facts.decisions):
             raise ExtractionError(
                 f"extraction failed for the whole input ({failed} of {len(tasks)} LLM calls failed); "
@@ -326,23 +334,26 @@ class LLMExtractor(_WarningSink):
 
     @staticmethod
     def _assemble(
-        raw_entities: list[EntityInput],
+        raw_entities: list[_EntityOut],
         raw_relations: list[_RelOut],
         raw_preferences: list[_PrefOut],
         raw_decisions: list[_DecOut],
         warnings: list[InsertWarning] | None = None,
+        schema: Schema | None = None,
     ) -> Extraction:
         """Resolve extracted names to ids and assemble deduplicated facts, dropping invalid items.
 
-        @param raw_entities (list[EntityInput]): the extracted entities.
+        @param raw_entities (list[_EntityOut]): the extracted entities.
         @param raw_relations (list[_RelOut]): the extracted relations, by name.
         @param raw_preferences (list[_PrefOut]): the extracted preferences, by name.
         @param raw_decisions (list[_DecOut]): the extracted decisions, by name.
         @param warnings (list[InsertWarning] | None): receives one warning per dropped invalid item.
+        @param schema (Schema | None): endpoint types for resolving ambiguous names.
         @return (Extraction): the assembled facts.
         """
         sink = warnings if warnings is not None else []
         registry: dict[str, EntityInput] = {}
+        canonical: dict[bool, tuple[str, dict[str, list[EntityInput]]]] = {}
         rejected: set[str] = set()
 
         def admit(ent: EntityInput) -> bool:
@@ -353,25 +364,71 @@ class LLMExtractor(_WarningSink):
                 return False
             return True
 
-        for ent in raw_entities:
-            key = _norm(ent.name)
-            if key not in registry and not _is_noise_name(ent.name) and admit(ent):
-                registry[key] = ent
+        def register(key: str, ent: EntityInput) -> None:
+            """Add an entity to the registry and to the index of canonical names.
 
-        def resolve(name: str | None) -> str | None:
+            @param key (str): the entity id the registry stores it under.
+            @param ent (EntityInput): the entity to register.
+            @return (None): nothing.
+            """
+            _, names = canonical.setdefault(_ids._is_org_type(ent.type), (ent.type, {}))
+            names.setdefault(_ids._canonical_name(ent.type, ent.name), []).append(ent)
+            registry[key] = ent
+
+        def matching(name: str) -> list[EntityInput]:
+            """List the registered entities whose canonical name equals the canonical form of ``name``.
+
+            @param name (str): the extracted name to look up.
+            @return (list[EntityInput]): every registered entity that matches, across entity types.
+            """
+            if not registry:
+                return []
+            _ids._require_str("entity name", name)
+            return [e for type_, names in canonical.values() for e in names.get(_ids._canonical_name(type_, name), [])]
+
+        for ent in raw_entities:
+            if not admit(ent) or _is_noise_name(ent.name):
+                continue
+            key = _ids.entity_id(ent.type, ent.name)
+            clean_aliases = []
+            for alias in ent.aliases or []:
+                try:
+                    _ids._require_no_control("entity alias", alias)
+                    clean_aliases.append(alias)
+                except ValidationError as exc:
+                    _dropped(sink, "alias", exc)
+            if key not in registry:
+                register(key, EntityInput(type=ent.type, name=ent.name, aliases=[]))
+            registry[key].aliases = list(dict.fromkeys([*registry[key].aliases, *clean_aliases]))
+
+        def resolve(name: str | None, types: list[str] | None = None) -> str | None:
+            """Resolve an extracted name to one registered entity id, registering a fallback entity when none match.
+
+            @param name (str | None): the extracted name.
+            @param types (list[str] | None): the endpoint types that narrow several matches to one.
+            @return (str | None): the entity id, or None when the name is blank, invalid, or matches several types.
+            """
             if name is None or not name.strip():
                 return None
             key = _norm(name)
             try:
-                ent = registry.get(key) or next(
-                    (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)),
-                    None,
-                )
+                matches = matching(name)
+                if len(matches) > 1 and types:
+                    matches = [e for e in matches if _norm(e.type) in {_norm(t) for t in types}] or matches
             except ValidationError as exc:
                 if key not in rejected:
                     rejected.add(key)
                     _dropped(sink, "entity", exc)
                 return None
+            if len(matches) > 1:
+                sink.append(
+                    InsertWarning(
+                        code="extraction_partial_failure",
+                        message=f"unresolved extracted entity reference {name!r}: multiple entity types match",
+                    )
+                )
+                return None
+            ent = matches[0] if matches else None
             if ent is None:
                 if _is_noise_name(name) or key in rejected:
                     return None
@@ -379,14 +436,28 @@ class LLMExtractor(_WarningSink):
                 if not admit(ent):
                     rejected.add(key)
                     return None
-                registry[key] = ent
+                register(_ids.entity_id(ent.type, ent.name), ent)
             return _ids.entity_id(ent.type, ent.name)
+
+        def endpoint_types(rtype: str, side: str) -> list[str]:
+            for rel in schema.relations if schema else []:
+                if _norm(rtype) in {_norm(rel.type), *(_norm(a) for a in rel.aliases)}:
+                    return (rel.from_ if side == "from" else rel.to).types
+            return []
 
         relations: dict[str, RelationInput] = {}
 
         def add_relation(from_id: str, rtype: str, to_id: str, props=None, event_time=None, evidence=None) -> str:
             rid = _ids.relation_id(from_id, rtype, to_id)
             _reject_reserved_rel_type(_ids.normalize_rel_type(rtype), rtype)
+            props = dict(props or {})
+            for key in list(props):
+                if not key.strip():
+                    try:
+                        _require_json_mapping("properties", {key: props[key]})
+                    except ValidationError as exc:
+                        _dropped(sink, "relation property", exc)
+                    del props[key]
             _ids._reject_proto_keys(props)
             _ids._require_clean_json("relation property", props)
             if rid not in relations:
@@ -401,14 +472,14 @@ class LLMExtractor(_WarningSink):
 
         promoted: list[_PrefOut] = []
         for rel in raw_relations:
-            from_id = resolve(rel.from_name)
-            to_id = resolve(rel.to_name)
+            from_id = resolve(rel.from_name, endpoint_types(rel.type, "from"))
+            to_id = resolve(rel.to_name, endpoint_types(rel.type, "to"))
             if from_id and to_id:
                 try:
                     stance = preference_stance_of(_ids.normalize_rel_type(rel.type))
-                    value = registry.get(_norm(rel.to_name))
+                    value = registry.get(to_id)
                     if stance is not None and value is not None and value.type != _FALLBACK_TYPE:
-                        key = value.type.lower()
+                        key = lower(canonical_entity_type(value.type, schema))
                         promoted.append(
                             _PrefOut(subject_name=rel.from_name, stance=stance, key=key, value_name=rel.to_name)
                         )
@@ -450,8 +521,8 @@ class LLMExtractor(_WarningSink):
             actor_id = resolve(dec.actor_name)
             step_ids: list[str] = []
             for step in dec.steps:
-                from_id = resolve(step.from_name)
-                to_id = resolve(step.to_name)
+                from_id = resolve(step.from_name, endpoint_types(step.type, "from"))
+                to_id = resolve(step.to_name, endpoint_types(step.type, "to"))
                 if from_id and to_id:
                     try:
                         step_ids.append(add_relation(from_id, step.type, to_id, evidence=dec._evidence))

@@ -30,6 +30,7 @@ export const HINTS = {
     "A custom entity resolver returned a bad decision. Return a `ResolutionDecision` whose target is one of the offered entities, with a confidence and a reason.",
   read_only_query:
     "`run_cypher` runs a single read. Write through the typed tools instead. Do not reword the query to get a write past the guard.",
+  cypher_query_limit: "Shorten the Cypher statement or reduce its delimiter nesting before trying again.",
   missing_package: "An optional package is not installed. Run the install command in the message, or ask the user to.",
   not_found:
     "The object does not exist in the namespace the message names. Check the id and the namespace, and use the `did you mean` suggestion when there is one. Do not create a placeholder object just to make the call pass.",
@@ -45,6 +46,10 @@ export const HINTS = {
     "A prompt template is malformed. Keep `{text}` in the user template and use no placeholder other than `{text}` and `{instructions}`.",
   query_failed:
     "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself.",
+  inexact_value:
+    "The Kuzu driver cannot return a result value exactly. Cast the column in the query to a type it returns exactly, such as `cast(x AS STRING)` for an integer beyond 2^53 or a wide DECIMAL, or `cast(x AS DOUBLE)` for a negative DECIMAL between -0.1 and 0. Do not drop the column to make the call pass.",
+  invalid_stored_data:
+    "A stored node or edge is malformed. Repair the document identified by the message in its namespace before reading it again.",
   graph_closed: "The SelfGraph was closed. Create a new SelfGraph.",
   store_closed: "The store was closed, and closing a graph closes its store. Create a new store for each SelfGraph.",
   store_unreachable:
@@ -61,6 +66,8 @@ export const HINTS = {
   write_conflict:
     "A concurrent write conflicted and the SDK's own retries ran out. Run the same call again: ids are deterministic and inserts are upserts, so a retry does not duplicate anything.",
   store_busy: "The server timed out or was too busy to take the query. Run the same call again after a moment.",
+  internal_error:
+    "An unexpected error reached the CLI or MCP boundary and was not mapped to a specific code. The message keeps the original error with any credentials masked. Report it with the message if it persists.",
 } as const;
 export type ErrorCode = keyof typeof HINTS;
 export const WARNING_HINTS: Readonly<Record<string, string>> = {
@@ -256,11 +263,24 @@ export class StoreError extends SelfGraphError {
   static override readonly code: ErrorCode = "query_failed";
 }
 
+/** Identify a malformed stored record without exposing its contents. */
+export function storedDataError(props: Record<string, unknown>): StoreError {
+  return new StoreError(
+    `stored document ${pyRepr(props.id ?? null)} in namespace ${pyRepr(props.ns ?? null)} is malformed`,
+    { code: "invalid_stored_data", field: "doc" },
+  );
+}
+
 export class TransientError extends StoreError {
   static override readonly code: ErrorCode = "write_conflict";
 }
 
+export class InternalError extends SelfGraphError {
+  static override readonly code: ErrorCode = "internal_error";
+}
+
 export const LLM_HINT = "pass llm in the SelfGraph options (or set SELFGRAPH_LLM_PROVIDER and SELFGRAPH_LLM_MODEL)";
+export const EMBEDDER_HINT = "pass embedder= to SelfGraph";
 export const STORE_CLOSED_MESSAGE = "this store is closed; create a new store for each SelfGraph";
 export const TOKEN_HINT = "pass auth: TOKEN in the HydraDBStore options (or set SELFGRAPH_AUTH)";
 export const STORE_KUZU_HINT = 'pass store: "kuzu" (or SELFGRAPH_STORE=kuzu)';
@@ -290,6 +310,7 @@ export function settingHint(key: string): string {
 
 const SURFACE_HINTS: ReadonlyArray<readonly [string, string]> = [
   [LLM_HINT, "pass --llm-provider and --llm-model (or SELFGRAPH_LLM_*)"],
+  [EMBEDDER_HINT, "which only the SDK can take; use --seeds bm25 or synonyms here"],
   [TOKEN_HINT, "pass --auth TOKEN (or SELFGRAPH_AUTH)"],
   [STORE_KUZU_HINT, "pass --store kuzu (or SELFGRAPH_STORE=kuzu)"],
   [OTHER_ENGINE_HINT, "pass --store neo4j (or memgraph)"],
@@ -328,6 +349,9 @@ const AT_SIGNS = ["@", "\uff20", "\ufe6b"];
 export const UNENCODED_USERINFO =
   "the store URI has an unencoded character in its user or password; " +
   "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)";
+export const MALFORMED_USERINFO_ESCAPE =
+  "the store URI has a malformed percent escape in its user or password; " +
+  "write a literal % as %25 and percent-encode other characters as UTF-8";
 
 /**
  * Split off a URI's scheme and find its authority.
@@ -423,6 +447,17 @@ export function redactUri(text: string, uri: string | null | undefined): string 
 }
 
 /**
+ * Mask the userinfo of each configured URI wherever a message shows it.
+ *
+ * @param text (string): the message.
+ * @param uris ((string | null | undefined)[]): the configured URIs, such as the store URI and the LLM base_url; empty entries are skipped.
+ * @return (string): the message with every URI's credentials replaced by ***.
+ */
+export function redactUris(text: string, ...uris: (string | null | undefined)[]): string {
+  return uris.reduce<string>((out, uri) => redactUri(out, uri), text);
+}
+
+/**
  * The message of a thrown value, or its text when it is not an Error.
  *
  * @param exc (unknown): the thrown value.
@@ -430,6 +465,18 @@ export function redactUri(text: string, uri: string | null | undefined): string 
  */
 export function errorMessage(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
+}
+
+/**
+ * Wrap an unexpected error that reached a boundary as a coded InternalError with every URI's credentials masked.
+ *
+ * @param exc (unknown): the unmapped error.
+ * @param uris ((string | null | undefined)[]): the configured URIs to mask, such as the store URI and the LLM base_url.
+ * @return (InternalError): the coded error, safe to print.
+ */
+export function internalError(exc: unknown, ...uris: (string | null | undefined)[]): InternalError {
+  const name = exc instanceof Error ? exc.name : "Error";
+  return new InternalError(redactUris(`${name}: ${errorMessage(exc)}`, ...uris));
 }
 
 const CONNECT_CODES: Readonly<Record<string, string>> = {

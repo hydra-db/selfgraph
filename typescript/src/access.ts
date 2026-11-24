@@ -1,7 +1,7 @@
-import { needsLlm, StoreError, TransientError, ValidationError } from "./errors.js";
+import { EMBEDDER_HINT, needsLlm, StoreError, TransientError, ValidationError } from "./errors.js";
 import { Lazy } from "./internal/lazy.js";
 import { sleep } from "./internal/time.js";
-import type { RelationCap, SchemaCheck } from "./ops.js";
+import { type RelationCap, type SchemaCheck, withClaims } from "./ops.js";
 import type { Embedder, GraphPrimitives, GraphStore, LLMClient } from "./protocols.js";
 import {
   type ContradictionMode,
@@ -55,7 +55,7 @@ export function seedTier(seeds: unknown, embedder: Embedder | null, maxTier: Lev
   requireTier("seeds", seeds);
   const tier = clamp("seeds", seeds, maxTier) as SeedTier;
   if (tier === "embeddings" && embedder === null) {
-    throw new ValidationError("seeds 'embeddings' needs an embedder: pass embedder in the SelfGraph options", {
+    throw new ValidationError(`seeds 'embeddings' needs an embedder: ${EMBEDDER_HINT}`, {
       code: "embedder_required",
     });
   }
@@ -173,7 +173,7 @@ export class GraphAccess {
     await this.ready.get();
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.store.transaction((tx) => op(tx, this.namespace));
+        return await this.store.transaction((tx) => withClaims(() => op(tx, this.namespace)));
       } catch (exc) {
         if (!(exc instanceof TransientError)) throw exc;
         if (attempt === MAX_TX_RETRIES - 1) {

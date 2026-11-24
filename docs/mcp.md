@@ -236,15 +236,18 @@ code.
   (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`).
 - An unknown argument names the closest one, and lists the tool's arguments when
   there are at most eight.
-- An unknown tool name fails as a tool error.
+- An unknown tool name fails as the result above, a `ValidationError` with code
+  `invalid_argument` (`unknown tool 'list_entitys'`).
 - Hints and the `maintenance_prune` note name the server's flags, as in the CLI
   ([errors](errors.md#messages)).
 
 ## Changes between known times
 
 `graph_diff(since, until=None)` is a read-only tool. Pass ISO 8601 timestamps for
-the `(since, until]` known-time window. It returns `relations_added`,
-`relations_revised`, `relations_retired` (including `invalidated_by`), and
-`entities_created`. `until` defaults to now. It scans stored records, not a full
-audit log. Deletes and merges are not visible; `limitations` includes that note.
+the `(since, until]` known-time window. It returns the same lists as
+`graph.diff`: created entities; added, revised, retired, certified, and
+uncertified relations; added and revised preferences; created and updated
+decisions; merges and unmerges; and added source versions. `until` defaults to
+now. It scans stored records, not a full audit log. Deletes and entity edits are
+not visible; `limitations` includes that note.
 See [diff semantics and limits](retrieval.md#changes-between-known-times).

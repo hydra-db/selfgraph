@@ -183,6 +183,17 @@ def test_store_kind():
     assert store_kind(GraphSettings(store="Neo4j", uri="bolt://x:1")) == "neo4j"
 
 
+@pytest.mark.parametrize("userinfo", ["default:100%", "u:%ff", "u%zz:p", "u:%e2%82"])
+def test_falkordb_url_credentials_reject_a_malformed_escape_without_quoting_them(userinfo):
+    with pytest.raises(ValidationError) as err:
+        build_graph(GraphSettings(store="falkordb", uri=f"redis://{userinfo}@db:6390"))
+    assert (err.value.code, err.value.field) == ("invalid_setting", "uri")
+    assert str(err.value) == (
+        "the store URI has a malformed percent escape in its user or password; "
+        "write a literal % as %25 and percent-encode other characters as UTF-8"
+    )
+
+
 def test_falkordb_settings_pass_credentials_and_graph():
     pytest.importorskip("falkordb")
 
@@ -208,6 +219,11 @@ def test_library_errors_name_settings_and_the_cli_rewords_them_to_flags():
         (GraphSettings(store="neo4j"), "pass uri= (or SELFGRAPH_URI)", "pass --uri (or SELFGRAPH_URI)"),
         (GraphSettings(llm_provider="gemini"), "pass llm_model= (or SELFGRAPH_LLM_MODEL)", "pass --llm-model"),
         (GraphSettings(uri=" "), "omit uri= (or SELFGRAPH_URI)", "omit --uri (or SELFGRAPH_URI)"),
+        (
+            GraphSettings(llm_provider="openai", llm_model="anthropic/claude"),
+            "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model",
+            "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model",
+        ),
     )
     for settings, library, surface in cases:
         with pytest.raises(ValidationError) as exc:
@@ -540,6 +556,76 @@ def test_kuzu_keeps_its_connection_while_a_raw_transaction_is_open(tmp_path):
     run(reads())
     assert store._conn is not held
     run(g.close())
+
+
+def test_kuzu_rejects_multi_statement_before_running(tmp_path):
+    pytest.importorskip("kuzu")
+    store = KuzuStore(str(tmp_path / "m.kuzu"))
+    g = SelfGraph(store, namespace="multi")
+    run(g.initialize())
+    run(g.entities.create("A", "T", id="t:a"))
+    run(g.entities.create("B", "T", id="t:b"))
+
+    async def ids():
+        return [r["id"] for r in (await store.run_cypher("MATCH (n:N) RETURN n.id AS id ORDER BY id")).rows]
+
+    assert run(ids()) == ["t:a", "t:b"]
+    for query in ("RETURN 1 AS a; MATCH (n:N) DETACH DELETE n", "CREATE (:N {pk:'x'}); CREATE (:N {pk:'y'})"):
+        with pytest.raises(StoreError, match="one statement") as err:
+            run(store.run_cypher(query))
+        assert err.value.code == "query_failed"
+    assert run(ids()) == ["t:a", "t:b"]
+    assert run(store.run_cypher("RETURN 'a; b' AS s")).rows == [{"s": "a; b"}]
+    assert run(store.run_cypher("MATCH (n:N) RETURN count(*) AS c ; // trailing")).rows == [{"c": 2}]
+    run(g.close())
+
+
+_CANCEL_CLOSE = """
+import asyncio, os, shutil, tempfile, time
+from selfgraph import KuzuStore, SelfGraph
+
+SLOW = "UNWIND range(1, 1000000) AS x WITH x WHERE x % 7 = 0 RETURN count(*) AS c"
+FAST = "UNWIND range(1, 50000) AS x WITH x WHERE x % 7 = 0 RETURN count(*) AS c"
+
+
+async def one(query):
+    path = tempfile.mkdtemp(prefix="sg290c-")
+    store = KuzuStore(os.path.join(path, "g.kuzu"), buffer_pool_size=128 << 20)
+    g = SelfGraph(store=store, namespace="x")
+    await g.initialize()
+    start = time.monotonic()
+    try:
+        await asyncio.wait_for(store.run_cypher(query), timeout=0.015)
+    except asyncio.TimeoutError:
+        pass
+    waited = time.monotonic() - start
+    await g.close()  # may wait for the worker, but the cancelled await above must not have
+    shutil.rmtree(path, ignore_errors=True)
+    return waited
+
+
+async def main():
+    waited = await one(SLOW)
+    assert waited < 0.4, f"cancelled await blocked for {waited:.2f}s"
+    for _ in range(50):
+        await one(FAST)
+    print("OK")
+
+
+asyncio.run(main())
+"""
+
+
+def test_kuzu_cancel_then_close_returns_promptly_and_does_not_crash():
+    pytest.importorskip("kuzu")
+    import selfgraph
+
+    src = os.path.dirname(os.path.dirname(os.path.abspath(selfgraph.__file__)))
+    env = {**os.environ, "PYTHONPATH": src}
+    proc = subprocess.run([sys.executable, "-c", _CANCEL_CLOSE], capture_output=True, text=True, timeout=120, env=env)
+    assert proc.returncode == 0 and proc.stdout.strip().endswith("OK"), (
+        f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr[-2000:]}"
+    )
 
 
 @pytest.mark.parametrize("path", ["", ":memory:", "file"])

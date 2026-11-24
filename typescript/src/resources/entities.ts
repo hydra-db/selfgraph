@@ -100,7 +100,7 @@ export class Entities extends Resource {
    * @return (UnmergeResult): the reverted record, the recreated entity, the survivor, and what moved back.
    */
   async unmerge(mergeId: string): Promise<UnmergeResult> {
-    return this.graph.write((tx, ns) => unmerge(tx, ns, mergeId));
+    return this.graph.write((tx, ns) => unmerge(tx, ns, mergeId, this.graph.caps()));
   }
 
   /**

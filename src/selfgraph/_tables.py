@@ -4,12 +4,14 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ._unicode import ALNUM_CLASS, lower, upper
 from .errors import ValidationError
 from .ids import type_name
 from .terms import _spaced, stem
 
 __all__ = ["from_tables"]
 
+_WORD = re.compile(f"[{ALNUM_CLASS}]+")
 _TYPES = (
     (re.compile(r"^_|\[|array|range"), "string"),
     (re.compile(r"bool"), "boolean"),
@@ -26,7 +28,7 @@ def _words(name: str) -> list[str]:
     @param name (str): the name, such as sales.invoice_lines or InvoiceLines.
     @return (list[str]): the words.
     """
-    return [w.lower() for w in re.findall(r"[^\W_]+", _spaced(name.rsplit(".", 1)[-1]))]
+    return [lower(w) for w in _WORD.findall(_spaced(name.rsplit(".", 1)[-1]))]
 
 
 def _type_name(table: str) -> str:
@@ -39,7 +41,7 @@ def _type_name(table: str) -> str:
     if not words:
         raise ValidationError(f"tables: table name {table!r} has no letters or digits")
     words[-1] = stem(words[-1])
-    return "".join(w.capitalize() for w in words)
+    return "".join(upper(w[:1]) + w[1:] for w in words)
 
 
 def _property_type(sql_type: Any) -> str:
@@ -69,7 +71,12 @@ def from_tables(tables: Sequence[Mapping[str, Any]], name: str | None = None) ->
         if not isinstance(table, Mapping) or not isinstance(table.get("name"), str):
             raise ValidationError(f"tables[{i}]: each table needs a name")
         names[table["name"]] = _type_name(table["name"])
-        names.setdefault(table["name"].rsplit(".", 1)[-1], names[table["name"]])
+    type_names = list(names.values())
+    for table_name, etype in list(names.items()):
+        if "." in table_name and type_names.count(etype) > 1:
+            names[table_name] = _type_name(table_name.replace(".", "_"))
+    for table_name, etype in list(names.items()):
+        names.setdefault(table_name.rsplit(".", 1)[-1], etype)
     entities: list[dict[str, Any]] = []
     relations: dict[str, dict[str, Any]] = {}
     for i, table in enumerate(tables):
@@ -84,7 +91,7 @@ def from_tables(tables: Sequence[Mapping[str, Any]], name: str | None = None) ->
                 if not isinstance(target, str) or target not in names:
                     raise ValidationError(f"tables[{i}].columns[{j}].references: unknown table {target!r}")
                 own = [w for w in _words(column["name"]) if w != "id"] or _words(target)
-                rtype = "HAS_" + "_".join(own).upper()
+                rtype = "HAS_" + upper("_".join(own))
                 relation = relations.setdefault(
                     rtype, {"type": rtype, "from": {"types": [], "max_count": 1}, "to": {"types": []}}
                 )

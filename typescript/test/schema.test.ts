@@ -251,6 +251,12 @@ describe("Schema.parse and asSchema", () => {
       { relations: [{ type: "WORKS_AT" }, { type: "works at" }] },
       "relations[1].type: duplicate relation type 'works at'",
     ],
+    [{ entities: [{ name: "  " }] }, "entities[0].name: must be a non-empty string, got '  '"],
+    [
+      { entities: [{ name: "Person", properties: [{ name: " " }] }] },
+      "entities[0].properties[0].name: must be a non-empty string, got ' '",
+    ],
+    [{ relations: [{ type: "  " }] }, "relations[0].type: must be a non-empty string, got '  '"],
     [{ relations: [{ type: "R", from: { max_count: 0 } }] }, "relations[0].from.max_count: must be >= 1"],
     [{ relations: [{ type: "R", to: { min_count: -1 } }] }, "relations[0].to.min_count: must be >= 0"],
     [{ relations: [{ type: "R", from: { max_count: 1.5 } }] }, "relations[0].from.max_count: expected integer"],

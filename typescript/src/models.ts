@@ -153,16 +153,6 @@ export interface Relation {
   certifications: Certification[];
 }
 
-export interface GraphDiff {
-  since: Date;
-  until: Date;
-  relations_added: Relation[];
-  relations_retired: Relation[];
-  relations_revised: Relation[];
-  entities_created: Entity[];
-  limitations: string[];
-}
-
 export interface Preference {
   id: string;
   revision: number;
@@ -227,6 +217,7 @@ export interface MergeRewrite {
   rewritten: JsonObject;
   existed: boolean;
   dropped: boolean;
+  evidence: Evidence[];
 }
 
 export interface MergeRecord {
@@ -250,6 +241,34 @@ export interface SourceDiff {
   kept: string[];
   added: string[];
   retired: string[];
+}
+
+export interface SourceVersion {
+  id: string;
+  source_id: string;
+  media_type: string;
+  metadata: JsonObject;
+  event_time: Date | null;
+  created_at: Date;
+}
+
+export interface GraphDiff {
+  since: Date;
+  until: Date;
+  relations_added: Relation[];
+  relations_retired: Relation[];
+  relations_revised: Relation[];
+  entities_created: Entity[];
+  relations_certified: Relation[];
+  relations_uncertified: Relation[];
+  preferences_added: Preference[];
+  preferences_revised: Preference[];
+  decisions_created: DecisionTrace[];
+  decisions_updated: DecisionTrace[];
+  entities_merged: MergeRecord[];
+  entities_unmerged: MergeRecord[];
+  source_versions_added: SourceVersion[];
+  limitations: string[];
 }
 
 export interface InsertResult {
@@ -451,19 +470,32 @@ const KNOWN_PROVIDERS = [
 const SAME_PROVIDER: Record<string, string> = { google: "gemini" };
 
 /**
- * Reject a model prefixed with another provider than a first-party provider's own, such as anthropic with gemini/x. Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed models, so only a first-party provider without a base_url is checked, and only against a known provider prefix.
+ * Find a known provider prefix on a first-party provider's model that names another provider, such as gemini/x. Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed models, so only a first-party provider without a base_url is checked, and only against a known provider prefix.
+ *
+ * @param provider (string): the configured provider.
+ * @param model (string): the configured model.
+ * @param baseUrl (string | null | undefined): the configured base URL.
+ * @return (string | null): the conflicting prefix as written in the model, or null when there is no conflict.
+ */
+export function conflictingPrefix(provider: string, model: string, baseUrl: string | null | undefined): string | null {
+  const i = model.indexOf("/");
+  const prefix = model.slice(0, i);
+  const own = provider.toLowerCase();
+  const other = prefix.toLowerCase();
+  if (i < 0 || baseUrl || !DIRECT_PROVIDERS.includes(own) || !KNOWN_PROVIDERS.includes(other)) return null;
+  return (SAME_PROVIDER[own] ?? own) !== (SAME_PROVIDER[other] ?? other) ? prefix : null;
+}
+
+/**
+ * Reject a model prefixed with another provider than a first-party provider's own, such as anthropic with gemini/x.
  *
  * @param provider (string): the configured provider.
  * @param model (string): the configured model.
  * @param baseUrl (string | null | undefined): the configured base URL.
  */
 export function requireMatchingPrefix(provider: string, model: string, baseUrl: string | null | undefined): void {
-  const i = model.indexOf("/");
-  const prefix = model.slice(0, i);
-  const own = provider.toLowerCase();
-  const other = prefix.toLowerCase();
-  if (i < 0 || baseUrl || !DIRECT_PROVIDERS.includes(own) || !KNOWN_PROVIDERS.includes(other)) return;
-  if ((SAME_PROVIDER[own] ?? own) !== (SAME_PROVIDER[other] ?? other)) {
+  const prefix = conflictingPrefix(provider, model, baseUrl);
+  if (prefix !== null) {
     throw new ValidationError(`provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}`, {
       code: "invalid_setting",
       field: "provider",
@@ -750,4 +782,20 @@ export function validationError(head: string, error: z.ZodError, value: unknown)
  */
 export function asInput<T>(schema: z.ZodType<T>, value: unknown, what: string): T | null {
   return value === null || value === undefined ? null : parseOrThrow(schema, value, what);
+}
+
+/** Check result cell nesting. @param rows (unknown[]): rows. @return (void): nothing. */
+export function checkResultDepth(rows: Record<string, unknown>[]): void {
+  const pending: [unknown, number][] = rows.flatMap((row) =>
+    Object.values(row).map((value) => [value, 0] as [unknown, number]),
+  );
+  while (pending.length) {
+    const [value, depth] = pending.pop()!;
+    if (value !== null && typeof value === "object") {
+      if (depth >= 254) {
+        throw new ValidationError("run_cypher result exceeds the maximum nesting depth of 254", { field: "rows" });
+      }
+      for (const item of Object.values(value)) pending.push([item, depth + 1]);
+    }
+  }
 }

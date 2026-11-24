@@ -3,6 +3,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..errors import stored_data_error
+
+
+def parse_doc(row: dict) -> dict:
+    """Read a stored JSON object or raise a coded error identifying its row."""
+    try:
+        props = json.loads(row["doc"])
+        if not isinstance(props, dict) or (row.get("stored_id") is not None and props.get("id") != row["stored_id"]):
+            raise ValueError
+        return props
+    except (ValueError, TypeError, RecursionError):
+        raise stored_data_error({"id": row.get("stored_id"), "ns": row.get("stored_ns")}) from None
+
 
 def first_doc(rows: list[dict]) -> dict | None:
     """The parsed document of the first row, or None when there is no row or its document is null.
@@ -11,7 +24,7 @@ def first_doc(rows: list[dict]) -> dict | None:
     @return (dict | None): the document.
     """
     doc = rows[0]["doc"] if rows else None
-    return None if doc is None else json.loads(doc)
+    return None if doc is None else parse_doc(rows[0])
 
 
 def docs(rows: list[dict]) -> list[dict]:
@@ -20,7 +33,7 @@ def docs(rows: list[dict]) -> list[dict]:
     @param rows (list[dict]): the rows, each with a doc column.
     @return (list[dict]): the documents.
     """
-    return [json.loads(r["doc"]) for r in rows if r["doc"] is not None]
+    return [parse_doc(r) for r in rows if r["doc"] is not None]
 
 
 def edge_row(row: dict) -> dict:
@@ -30,7 +43,7 @@ def edge_row(row: dict) -> dict:
     @return (dict): the edge's props, from_id, to_id and type.
     """
     return {
-        "props": json.loads(row["doc"]) if row["doc"] is not None else {},
+        "props": parse_doc(row) if row["doc"] is not None else {},
         "from_id": row["fa"],
         "to_id": row["tb"],
         "type": row["et"],

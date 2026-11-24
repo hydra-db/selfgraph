@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from typing import Any
 
-from .errors import ValidationError
+from .errors import ValidationError, stored_data_error
 from .models import (
     DecisionStep,
     DecisionTrace,
@@ -13,6 +14,7 @@ from .models import (
     Evidence,
     Preference,
     Relation,
+    SourceVersion,
 )
 
 _ISO_TIME = re.compile(
@@ -30,6 +32,7 @@ L_CHUNK = "Chunk"
 L_EVIDENCE = "Evidence"
 L_MERGE = "EntityMerge"
 L_MERGE_ENTRY = "EntityMergeEntry"
+ABOUT_DROPPED = "about_dropped"
 
 R_HAS_PROFILE = "HAS_PROFILE"
 R_PREFERS = "PREFERS"
@@ -181,6 +184,21 @@ def encode_evidence_props(*, ns: str, id: str, target_id: str, evidence: Evidenc
     return {"id": id, "ns": ns, "target_id": target_id, **evidence.model_dump()}
 
 
+def _stored_decode(fn):
+    """Translate malformed stored fields at every typed decoder."""
+
+    @wraps(fn)
+    def decode(props, *args, **kwargs):
+        """Decode one stored record."""
+        try:
+            return fn(props, *args, **kwargs)
+        except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
+            raise stored_data_error(props) from None
+
+    return decode
+
+
+@_stored_decode
 def decode_evidence(props: dict[str, Any]) -> Evidence:
     return Evidence.model_validate({k: props.get(k) for k in Evidence.model_fields})
 
@@ -232,6 +250,7 @@ def _relevance_of(props: dict[str, Any]) -> float | None:
     return None if value is None else float(value)
 
 
+@_stored_decode
 def decode_entity(props: dict[str, Any]) -> Entity:
     return Entity(
         id=props["id"],
@@ -277,6 +296,7 @@ def encode_relation_props(
     }
 
 
+@_stored_decode
 def decode_relation(props: dict[str, Any], *, from_entity: str, to_entity: str, type: str) -> Relation:
     return Relation(
         id=props["id"],
@@ -313,8 +333,25 @@ def encode_preference_props(
     event_time: datetime | None,
     created_at: datetime,
     is_current: bool,
+    about_dropped: bool = False,
 ) -> dict[str, Any]:
-    return {
+    """Encode one preference version as stored edge properties, flagging a version only written to drop about_entity.
+
+    @param ns (str): namespace.
+    @param id (str): preference id.
+    @param revision (int): version number.
+    @param subject_entity (str): the entity that holds the preference.
+    @param key (str): the preference key.
+    @param about_entity (str | None): the entity the preference is about.
+    @param strength (float | None): preference strength.
+    @param properties (dict[str, Any]): free-form properties.
+    @param event_time (datetime | None): valid time.
+    @param created_at (datetime): when this version was written.
+    @param is_current (bool): whether this is the current version.
+    @param about_dropped (bool): True when an entity delete wrote the version to drop a deleted about_entity.
+    @return (dict[str, Any]): the stored property map.
+    """
+    props = {
         "id": id,
         "ns": ns,
         "revision": revision,
@@ -327,8 +364,12 @@ def encode_preference_props(
         "event_time": to_iso(event_time),
         "created_at": to_iso(created_at),
     }
+    if about_dropped:
+        props[ABOUT_DROPPED] = True
+    return props
 
 
+@_stored_decode
 def decode_preference(props: dict[str, Any], *, value_entity: str, profile_id: str, stance: str) -> Preference:
     return Preference(
         id=props["id"],
@@ -378,6 +419,7 @@ def encode_trace_props(
     }
 
 
+@_stored_decode
 def decode_trace(props: dict[str, Any], steps: list[DecisionStep]) -> DecisionTrace:
     return DecisionTrace(
         id=props["id"],
@@ -392,4 +434,21 @@ def decode_trace(props: dict[str, Any], steps: list[DecisionStep]) -> DecisionTr
         event_time=from_iso(props.get("event_time")),
         created_at=from_iso(props["created_at"]),
         updated_at=from_iso(props["updated_at"]),
+    )
+
+
+@_stored_decode
+def decode_source_version(props: dict[str, Any]) -> SourceVersion:
+    """Rebuild a source version from its stored node.
+
+    @param props (dict[str, Any]): the source version node.
+    @return (SourceVersion): the version.
+    """
+    return SourceVersion(
+        id=props["id"],
+        source_id=props["source_id"],
+        media_type=props["media_type"],
+        metadata=_loads(props.get("metadata_json"), {}),
+        event_time=from_iso(props.get("event_time")),
+        created_at=from_iso(props["created_at"]),
     )

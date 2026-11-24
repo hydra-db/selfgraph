@@ -14,7 +14,7 @@ export function toJsonable(obj: unknown): unknown {
   if (typeof obj === "bigint") return Number.isSafeInteger(Number(obj)) ? Number(obj) : obj.toString();
   if (Array.isArray(obj)) return obj.map(toJsonable);
   if (isPlainObject(obj)) {
-    const out: Record<string, unknown> = {};
+    const out: Record<string, unknown> = Object.create(null);
     for (const [k, v] of Object.entries(obj)) if (v !== undefined) out[k] = toJsonable(v);
     return out;
   }

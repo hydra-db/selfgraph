@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
+from functools import partial
 
 import pytest
-from helpers import KUZU, extracting_llm, fresh_graph, new_graph, run
+from helpers import KUZU, extracting_llm, fresh_graph, new_graph, run, utc
 
-from selfgraph import Entity, EntityInput, Extraction, Relation, ValidationError
+from selfgraph import Entity, EntityInput, Extraction, Relation, ValidationError, _ops
 from selfgraph.extraction.chunking import count_tokens
 from selfgraph.retrieval import HUB_DEGREE, _assemble
 
@@ -171,6 +172,73 @@ def test_retrieve_includes_source_passage():
     assert "bitemporal provenance ledger" in res.context
 
 
+_NOTE_WORDS = [
+    "zebra",
+    "quartz",
+    "walnut",
+    "falcon",
+    "ember",
+    "lotus",
+    "marble",
+    "nectar",
+    "orchid",
+    "pepper",
+    "raven",
+    "saffron",
+    "tundra",
+    "velvet",
+    "willow",
+    "yarrow",
+    "cobalt",
+    "dahlia",
+    "fennel",
+    "garnet",
+]
+
+
+def _note_graph(**event_times):
+    g = fresh_graph("passage-rank")
+    for i, word in enumerate(_NOTE_WORDS):
+        run(g.insert.text(f"Ann collects {word} items.", source_id=f"note-{i}", event_time=event_times.get(word)))
+    return g
+
+
+def _passages(context):
+    return [line for line in context.splitlines() if line.startswith("SOURCE | ")]
+
+
+@pytest.mark.parametrize("strategy", ["bfs", "dfs", "ppr"])
+def test_retrieve_ranks_every_source_before_keeping_passages(strategy):
+    g = _note_graph()
+    for word in _NOTE_WORDS:
+        passages = _passages(run(g.retrieve(f"Ann {word}", strategy=strategy)).context)
+        assert passages[0] == f"SOURCE | Ann collects {word} items."
+
+
+def test_retrieve_ranks_only_current_sources_among_all_of_them():
+    g = _note_graph(ember=utc(2031), pepper=utc(2031))
+    run(g.insert.text("Ann collects cypress items.", source_id="note-3", replace_source=True))
+    for word in [*_NOTE_WORDS, "cypress"]:
+        context = run(g.retrieve(f"Ann {word}", as_of=utc(2029))).context
+        gone = word in ("falcon", "ember", "pepper")
+        assert (f"collects {word} items" in context) is not gone
+        if not gone:
+            assert _passages(context)[0] == f"SOURCE | Ann collects {word} items."
+
+
+def test_retrieve_keeps_distinct_passages_when_many_sources_repeat_one_text(monkeypatch):
+    g = fresh_graph("passage-copies")
+    others = _NOTE_WORDS[1:6]
+    for i in range(20):
+        run(g.insert.text("Ann collects zebra items.", source_id=f"copy-{i}"))
+    for word in others:
+        run(g.insert.text(f"Ann collects {word} items.", source_id=f"other-{word}"))
+    monkeypatch.setattr(_ops, "_batches", partial(_ops._batches, size=4))
+    passages = _passages(run(g.retrieve("Ann zebra")).context)
+    assert passages[0] == "SOURCE | Ann collects zebra items."
+    assert sorted(passages[1:]) == sorted(f"SOURCE | Ann collects {word} items." for word in others)
+
+
 def test_retrieve_surfaces_preferences():
     g = _graph()
     run(g.preferences.create("person:soham", "database", "company:hydradb", strength=0.9))
@@ -226,6 +294,53 @@ def test_stopword_query_returns_nothing_and_an_empty_query_is_rejected():
     for query in ("", "   "):
         with pytest.raises(ValidationError, match="^query cannot be empty$"):
             run(g.retrieve(query))
+
+
+def _plural_graph():
+    g = fresh_graph("plural-seeds")
+    run(
+        g.insert.facts(
+            {
+                "entities": [
+                    {"id": "engineer:bob", "type": "Engineer", "name": "Bob Ray"},
+                    {"id": "company:acme", "type": "Company", "name": "Acme"},
+                    {"id": "service:payment", "type": "Service", "name": "Payment API"},
+                    {"id": "document:libraries", "type": "Document", "name": "Libraries Index"},
+                    {"id": "person:nathan", "type": "Person", "name": "Nathan"},
+                ],
+                "relations": [
+                    {"from_entity": "engineer:bob", "type": "OWNS", "to_entity": "service:payment"},
+                ],
+            }
+        )
+    )
+    return g
+
+
+@pytest.mark.parametrize(
+    ("plural", "singular", "seed"),
+    [
+        ("who are the engineers", "which engineer", "engineer:bob"),
+        ("list all companies", "list a company", "company:acme"),
+        ("who owns payments", "who owns a payment", "service:payment"),
+        ("show the libraries", "show the library", "document:libraries"),
+    ],
+)
+def test_retrieve_seeds_a_plural_and_singular_word_alike_and_agrees_with_check_answerable(plural, singular, seed):
+    g = _plural_graph()
+    results = [run(g.retrieve(query)) for query in (plural, singular)]
+    assert [[s.id for s in r.seeds] for r in results] == [[seed], [seed]]
+    assert results[0].context == results[1].context != ""
+    for query in (plural, singular):
+        assert run(g.check_answerable(query)).verdict == "answerable"
+    assert run(g.retrieve("what did hans say")).seeds == []
+
+
+def test_retrieve_ranks_a_passage_by_the_plural_form_of_a_query_word():
+    g = fresh_graph("plural-passages")
+    run(g.insert.text("Ann reads one novel.", source_id="a"))
+    run(g.insert.text("Ann reads one poem.", source_id="b"))
+    assert _passages(run(g.retrieve("Ann poems")).context)[0] == "SOURCE | Ann reads one poem."
 
 
 def test_tiny_budgets_cut_to_fit_and_one_letter_names_seed():

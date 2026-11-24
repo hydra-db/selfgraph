@@ -5,7 +5,16 @@ import re
 from collections.abc import Iterator, Mapping
 from typing import TypeVar
 
-from ..errors import _DANGLING, KEY_SOURCES, ExtractionError, ValidationError, error_reason, setting_hint
+from ..errors import (
+    _DANGLING,
+    KEY_SOURCES,
+    ExtractionError,
+    ValidationError,
+    error_reason,
+    mask_uri,
+    redact_uri,
+    setting_hint,
+)
 from ..ids import type_name
 from ..models import LLMConfig, as_input, did_you_mean, suggest_key
 from ..protocols import LLMClient
@@ -18,7 +27,6 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _JSON_MODE_PROVIDERS = frozenset({"gemini", "vertex_ai"})
 _KEY_HINT = f"check the API key, set by {KEY_SOURCES}"
 _KEY_VAR = re.compile(r"\b(?!SELFGRAPH_)[A-Z][A-Z0-9_]*_API_KEY\b")
-_BAD_KEY = re.compile(r"API[_ ]KEY[_ ]INVALID|api key not valid|(?:valid|invalid|incorrect) api key", re.IGNORECASE)
 _MISSING_KEY = re.compile(r"missing .*api key|api_key client option must be set|missing credentials", re.IGNORECASE)
 _KEY_ENV = {"gemini": "GEMINI_API_KEY or GOOGLE_API_KEY", "google": "GEMINI_API_KEY or GOOGLE_API_KEY"}
 _RERAISED = ("API call failed on attempt", "Max retries exceeded")
@@ -59,10 +67,11 @@ def _causes(exc: BaseException) -> Iterator[BaseException]:
         current = last if isinstance(last, BaseException) else current.__cause__
 
 
-def summarize_error(exc: BaseException) -> str:
-    """Summarize an error as ``ErrorType: first line``, unwrapping retry wrappers and capping the length.
+def summarize_error(exc: BaseException, base_url: str | None = None) -> str:
+    """Summarize an error as ``ErrorType: first line``, unwrapping retries, masking a base_url, and capping the length.
 
     @param exc (BaseException): the error.
+    @param base_url (str | None): the LLM base_url, whose credentials are masked wherever the provider quotes it.
     @return (str): the one-line summary.
     """
     err = exc
@@ -72,7 +81,7 @@ def summarize_error(exc: BaseException) -> str:
     line = next((line.strip() for line in _ANSI.sub("", str(err)).splitlines() if line.strip()), "")
     if not line or _DANGLING.search(line):
         line = _ANSI.sub("", error_reason(err))
-    text = f"{type(err).__name__}: {line}"
+    text = redact_uri(f"{type(err).__name__}: {line}", base_url)
     return text if len(text) <= _SUMMARY_LIMIT else text[: _SUMMARY_LIMIT - 3] + "..."
 
 
@@ -95,7 +104,7 @@ def _fatal(exc: BaseException, config: LLMConfig, model: str) -> ExtractionError
             return ExtractionError(
                 f"no API key for LLM provider {provider}: pass {KEY_SOURCES}, or set {own}", code="llm_auth_failed"
             )
-        if name == "AuthenticationError" or status == 401 or _BAD_KEY.search(text):
+        if name == "AuthenticationError" or status == 401:
             return ExtractionError(
                 f"LLM authentication failed for provider {provider}: {_KEY_HINT}", code="llm_auth_failed"
             )
@@ -105,7 +114,7 @@ def _fatal(exc: BaseException, config: LLMConfig, model: str) -> ExtractionError
                 code="llm_auth_failed",
             )
         if name == "NotFoundError" or status == 404 or "LLM Provider NOT provided" in text:
-            where = f" at {config.base_url}" if config.base_url else ""
+            where = f" at {mask_uri(config.base_url)}" if config.base_url else ""
             return ExtractionError(
                 f"LLM model {config.model!r} was not found for provider {provider}{where}: "
                 f"check {setting_hint('llm_model')} and the provider",
@@ -172,6 +181,7 @@ class _UnifiedLLMClient:
             retry_logger.addFilter(_drop_reraised)
         self._config = config
         self.concurrency = config.concurrency
+        self.base_url = config.base_url
         prefixed = config.model.lower().startswith(f"{config.provider.lower()}/")
         self._model = config.model if prefixed else f"{config.provider}/{config.model}"
         family = self._model.split("/", 1)[0].lower()

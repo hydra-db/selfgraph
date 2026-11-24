@@ -270,24 +270,25 @@ def test_conflicting_preference_id_does_not_write_any_facts(collision):
         assert preference is None
 
 
-@pytest.mark.parametrize("restate", ["batch", "stored"])
-def test_matching_preference_ids_still_merge(restate):
+def test_matching_preference_ids_still_merge():
     g = fresh_graph("preference_identity")
     run(g.entities.create("Ada", "Person"))
     run(g.entities.create("Tea", "Drink"))
-    pref = {"id": "preference:fav", "subject_entity": "person:ada", "key": "drink", "value_entity": "drink:tea"}
-    if restate == "stored":
-        run(g.preferences.create("person:ada", "drink", "drink:tea", id="preference:fav", strength=0.2))
-        batch = [{**pref, "strength": 0.9}]
-    else:
-        batch = [{**pref, "strength": 0.2}, {**pref, "strength": 0.9}]
+    pref = {"subject_entity": "person:ada", "key": "drink", "value_entity": "drink:tea"}
+    run(g.preferences.create("person:ada", "drink", "drink:tea", id="preference:stored", strength=0.2))
+    batch = [
+        {**pref, "id": "preference:stored", "strength": 0.9},
+        {**pref, "id": "preference:fresh", "strength": 0.2},
+        {**pref, "id": "preference:fresh", "strength": 0.9},
+    ]
 
     result = run(g.insert.facts({"preferences": batch}, source_id="restated"))
 
-    assert [p.id for p in result.preferences] == ["preference:fav"]
-    preference = run(g.preferences.get("preference:fav"))
-    assert (preference.subject_entity, preference.key, preference.strength) == ("person:ada", "drink", 0.9)
-    assert len(run(g.preferences.versions("preference:fav"))) == 2
+    assert [p.id for p in result.preferences] == ["preference:stored", "preference:fresh"]
+    for pid, versions in (("preference:stored", 2), ("preference:fresh", 1)):
+        preference = run(g.preferences.get(pid))
+        assert (preference.subject_entity, preference.key, preference.strength) == ("person:ada", "drink", 0.9)
+        assert len(run(g.preferences.versions(pid))) == versions
 
 
 def test_facts_bare_years_and_string_strengths_are_rejected():
@@ -363,3 +364,127 @@ def test_other_external_id_errors_keep_value_type_validation(value, key):
     with pytest.raises(ValidationError) as exc:
         Extraction.model_validate({"entities": [{"type": "Person", "name": "Ann", "external_ids": value}]})
     assert str(exc.value) == f"invalid facts: entities[0].external_ids.{key}: expected string"
+
+
+FOLD_ENTITIES = {
+    "entities": [
+        {"type": "Person", "name": "Ann"},
+        {"type": "Food", "name": "Pizza"},
+        {"type": "Food", "name": "Pasta"},
+    ]
+}
+FOLD_RELATION = {"from_entity": "person:ann", "type": "LIKES", "to_entity": "food:pasta"}
+FOLD_PREFERENCE = {"subject_entity": "person:ann", "key": "food", "value_entity": "food:pizza"}
+EARLY = "2020-01-01T00:00:00+00:00"
+LATE = "2021-01-01T00:00:00+00:00"
+
+REPEATED_RELATIONS = [
+    pytest.param(None, [{"properties": {"w": 1}}, {"properties": {"w": 2}}], [(1, {"w": 2}, None)], id="last-wins"),
+    pytest.param(
+        None,
+        [{"properties": {"a": 1, "w": 1}}, {"properties": {"w": 3}}],
+        [(1, {"a": 1, "w": 3}, None)],
+        id="keys-merge",
+    ),
+    pytest.param(
+        {"w": 1},
+        [{"properties": {"w": 2}}, {"properties": {"w": 3}}],
+        [(2, {"w": 3}, None), (1, {"w": 1}, None)],
+        id="stored-one-new-revision",
+    ),
+    pytest.param(
+        {"w": 1},
+        [{"properties": {"w": 2}}, {"properties": {"w": None}}],
+        [(2, {}, None), (1, {"w": 1}, None)],
+        id="later-null-removes",
+    ),
+    pytest.param(
+        {"w": 1},
+        [{"properties": {"w": None}}, {"properties": {"w": 2}}],
+        [(2, {"w": 2}, None), (1, {"w": 1}, None)],
+        id="later-value-restores",
+    ),
+    pytest.param(
+        {"w": 1}, [{"properties": {"w": 2}}, {"properties": {"w": 1}}], [(1, {"w": 1}, None)], id="back-to-stored"
+    ),
+    pytest.param(
+        None,
+        [{"event_time": EARLY}, {"event_time": LATE}],
+        [(1, {}, LATE)],
+        id="newest-event-time",
+    ),
+]
+
+
+@pytest.mark.parametrize("explicit_id", [None, "relation:fold"])
+@pytest.mark.parametrize("stored, given, history", REPEATED_RELATIONS)
+def test_repeated_relation_id_writes_one_revision_and_replays_clean(stored, given, history, explicit_id):
+    g = fresh_graph("fold")
+    run(g.insert.facts(FOLD_ENTITIES))
+    named = {**FOLD_RELATION, **({} if explicit_id is None else {"id": explicit_id})}
+    rid = explicit_id or relation_id("person:ann", "LIKES", "food:pasta")
+    if stored is not None:
+        run(g.insert.facts({"relations": [{**named, "properties": stored}]}))
+    for _ in range(3):
+        res = run(g.insert.facts({"relations": [{**named, **item} for item in given]}))
+        assert [r.id for r in res.relations] == [rid]
+        versions = run(g.relations.versions(rid))
+        assert [(v.revision, v.properties, v.event_time and v.event_time.isoformat()) for v in versions] == history
+
+
+def test_repeated_relation_id_joins_the_evidence_of_every_input():
+    g = fresh_graph("fold")
+    run(g.insert.facts(FOLD_ENTITIES))
+    rid = relation_id("person:ann", "LIKES", "food:pasta")
+    given = [
+        {**FOLD_RELATION, "properties": {"w": n}, "evidence": [{"source_id": f"doc-{n}", "quote": f"quote {n}"}]}
+        for n in (1, 2)
+    ]
+    for _ in range(3):
+        run(g.insert.facts({"relations": given}))
+        [rel] = run(g.relations.versions(rid))
+        assert (rel.revision, rel.source_count) == (1, 2)
+        assert {(e.source_id, e.quote) for e in run(g.relations.evidence(rid)).items} == {
+            ("doc-1", "quote 1"),
+            ("doc-2", "quote 2"),
+        }
+
+
+REPEATED_PREFERENCES = [
+    pytest.param(None, [{"strength": 1.0}, {"strength": 0.1}], [(1, 0.1, None, {})], id="last-strength-wins"),
+    pytest.param(
+        None,
+        [{"about_entity": "food:pasta", "strength": 0.2}, {"strength": 0.3}],
+        [(1, 0.3, "food:pasta", {})],
+        id="unset-about-keeps-earlier",
+    ),
+    pytest.param(
+        None,
+        [{"properties": {"a": 1, "w": 1}}, {"properties": {"w": 2}}],
+        [(1, None, None, {"a": 1, "w": 2})],
+        id="properties-merge",
+    ),
+    pytest.param(
+        {"strength": 0.5},
+        [{"strength": 0.9}, {"strength": 0.1}],
+        [(2, 0.1, None, {}), (1, 0.5, None, {})],
+        id="stored-one-new-revision",
+    ),
+    pytest.param({"strength": 0.5}, [{"strength": 0.9}, {"strength": 0.5}], [(1, 0.5, None, {})], id="back-to-stored"),
+]
+
+
+@pytest.mark.parametrize("explicit_id", [None, "preference:fold"])
+@pytest.mark.parametrize("stored, given, history", REPEATED_PREFERENCES)
+def test_repeated_preference_id_writes_one_revision_and_replays_clean(stored, given, history, explicit_id):
+    g = fresh_graph("fold")
+    run(g.insert.facts(FOLD_ENTITIES))
+    named = {**FOLD_PREFERENCE, **({} if explicit_id is None else {"id": explicit_id})}
+    pid = explicit_id or preference_id("person:ann", "preference", "food", "food:pizza")
+    if stored is not None:
+        run(g.insert.facts({"preferences": [{**named, **stored}]}))
+    for _ in range(3):
+        res = run(g.insert.facts({"preferences": [{**named, **item} for item in given]}))
+        assert [p.id for p in res.preferences] == [pid]
+        versions = run(g.preferences.versions(pid))
+        assert [(v.revision, v.strength, v.about_entity, v.properties) for v in versions] == history

@@ -5,6 +5,8 @@ import {
   ExtractionError,
   errorReason,
   KEY_SOURCES,
+  maskUri,
+  redactUri,
   settingHint,
   ValidationError,
 } from "../errors.js";
@@ -50,7 +52,6 @@ const OLLAMA_BASE_URL = "http://localhost:11434/v1";
 const GOOGLE_KEY_ENV = ["GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"];
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape codes start with the ESC control character.
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
-const BAD_KEY = /API[_ ]KEY[_ ]INVALID|api key not valid|(?:valid|invalid|incorrect) api key/i;
 const KEY_HINT = `check the API key, set by ${KEY_SOURCES}`;
 const MISSING_KEY = /missing .*api key|api_key client option must be set|missing credentials/i;
 const KEY_VAR = /\b(?!SELFGRAPH_)[A-Z][A-Z0-9_]*_API_KEY\b/;
@@ -102,15 +103,16 @@ function lastAttempt(exc: unknown): unknown {
 }
 
 /**
- * Summarize an error as "ErrorType: first line", unwrapping retry wrappers, stripping ANSI codes, and capping the length; a connection error anywhere in the chain reads as its root cause, such as "connection refused 127.0.0.1:11434".
+ * Summarize an error as "ErrorType: first line", unwrapping retry wrappers, stripping ANSI codes, masking a base_url, and capping the length; a connection error anywhere in the chain reads as its root cause, such as "connection refused 127.0.0.1:11434".
  *
  * @param exc (unknown): the thrown value.
+ * @param baseUrl (string | null | undefined): the LLM base_url, whose credentials are masked wherever the provider quotes it.
  * @return (string): the one-line summary.
  */
-export function summarizeError(exc: unknown): string {
+export function summarizeError(exc: unknown, baseUrl?: string | null): string {
   const err = lastAttempt(exc);
   const failure = connectionFailure(err);
-  if (failure) return failure;
+  if (failure) return redactUri(failure, baseUrl);
   const name = err instanceof Error ? err.name : typeof err;
   const message = err instanceof Error ? err.message : String(err);
   const first =
@@ -120,7 +122,7 @@ export function summarizeError(exc: unknown): string {
       .map((l) => l.trim())
       .find(Boolean) ?? "";
   const line = !first || /:[\s.]*$/.test(first) ? errorReason(err).replace(ANSI, "") : first;
-  const text = `${name}: ${line}`;
+  const text = redactUri(`${name}: ${line}`, baseUrl);
   return text.length <= SUMMARY_LIMIT ? text : `${text.slice(0, SUMMARY_LIMIT - 3)}...`;
 }
 
@@ -131,7 +133,7 @@ export function summarizeError(exc: unknown): string {
  * @param config ({ provider: string; model: string; base_url?: string | null }): the LLM settings, for the message.
  * @return (ExtractionError | null): the error to throw, or null when the call may succeed on retry or another chunk.
  */
-function fatalError(exc: unknown, config: ErrorContext): ExtractionError | null {
+export function fatalError(exc: unknown, config: ErrorContext): ExtractionError | null {
   const err = lastAttempt(exc) as {
     name?: unknown;
     statusCode?: unknown;
@@ -160,7 +162,7 @@ function fatalError(exc: unknown, config: ErrorContext): ExtractionError | null 
       code: "llm_auth_failed",
     });
   }
-  if (name === "GatewayAuthenticationError" || status === 401 || BAD_KEY.test(message)) {
+  if (name === "GatewayAuthenticationError" || status === 401) {
     return new ExtractionError(`LLM authentication failed for provider ${provider}: ${KEY_HINT}`, {
       cause: exc,
       code: "llm_auth_failed",
@@ -173,7 +175,7 @@ function fatalError(exc: unknown, config: ErrorContext): ExtractionError | null 
     );
   }
   if (["AI_NoSuchModelError", "GatewayModelNotFoundError", "GatewayNotFoundError"].includes(name) || status === 404) {
-    const where = config.base_url ? ` at ${config.base_url}` : "";
+    const where = config.base_url ? ` at ${maskUri(config.base_url)}` : "";
     return new ExtractionError(
       `LLM model ${JSON.stringify(config.model)} was not found for provider ${provider}${where}: ` +
         `check ${settingHint("llm_model")} and the provider`,
@@ -288,6 +290,15 @@ class AISDKClient implements LLMClient {
     private readonly timeout: number | null,
     readonly concurrency: number = LLM_DEFAULTS.concurrency,
   ) {}
+
+  /**
+   * The configured base_url, for masking it out of a provider's error text.
+   *
+   * @return (string | null): the base_url, or null when none is set or the client wraps a prebuilt model.
+   */
+  get base_url(): string | null {
+    return "config" in this.source ? (this.source.config.base_url ?? null) : null;
+  }
 
   /**
    * The error to report for a failed call: an abort (the timeout firing, often during a retry delay, which hides the attempt's error) becomes the last connection failure, else a timeout naming its length.

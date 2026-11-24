@@ -9,6 +9,7 @@ import {
   type Embedder,
   type Entity,
   type Extractor,
+  KuzuStore,
   type LLMClient,
   Neo4jStore,
   type Relation,
@@ -27,6 +28,7 @@ import {
   captureLog,
   forEachStore,
   freshGraphs,
+  interruptWrite,
   runCli,
   SINGLE_EMPLOYER,
   type StoreSpec,
@@ -270,31 +272,78 @@ function suite(spec: StoreSpec): void {
   });
 
   it("keeps certified relations through supersede and lists them first", async () => {
+    for (const action of ["uncertify", "update"]) {
+      const g = await employment({ contradiction: "supersede" });
+      const old = (await g.insert.facts({ relations: [worksAt("person:ann", "company:acme", 2024)] })).relations[0]!;
+      const certified = await g.relations.certify(old.id, { by: "hr" });
+      expect([certified.certified_by, certified.certified_at !== null, certified.revision]).toEqual([
+        "hr",
+        true,
+        old.revision,
+      ]);
+      const result = await g.insert.facts({ relations: [worksAt("person:ann", "company:globex", 2025)] });
+      expect(result.warnings.map((w) => w.code)).toEqual(["certified_kept"]);
+      expect((await g.relations.get(old.id))!.is_current).toBe(true);
+      expect((await g.retrieve("Ann")).context).toContain("GRAPH [certified] | Ann -[WORKS_AT]-> Acme");
+      const bumped =
+        action === "uncertify"
+          ? await g.relations.uncertify(old.id)
+          : await g.relations.update(old.id, { set_properties: { role: "cto" } });
+      expect(bumped.certified_by).toBeNull();
+      const newer = result.relations[0]!;
+      expect([bumped.certified_at, bumped.is_current, bumped.invalidated_by, bumped.invalidated_at]).toEqual([
+        null,
+        false,
+        newer.id,
+        newer.event_time,
+      ]);
+      expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([newer.id]);
+      await expect(g.relations.certify(old.id, { by: " " })).rejects.toThrow("certified_by must be a non-empty string");
+      await expect(g.relations.certify("relation:missing", { by: "hr" })).rejects.toThrow("does not exist");
+    }
+  });
+
+  it.runIf(!spec.transactional)("settles a certified relation left without a current version", async () => {
     const g = await employment({ contradiction: "supersede" });
     const old = (await g.insert.facts({ relations: [worksAt("person:ann", "company:acme", 2024)] })).relations[0]!;
-    const certified = await g.relations.certify(old.id, { by: "hr" });
-    expect([certified.certified_by, certified.certified_at !== null, certified.revision]).toEqual([
-      "hr",
-      true,
-      old.revision,
-    ]);
-    const result = await g.insert.facts({ relations: [worksAt("person:ann", "company:globex", 2025)] });
-    expect(result.warnings.map((w) => w.code)).toEqual(["certified_kept"]);
-    expect((await g.relations.get(old.id))!.is_current).toBe(true);
-    expect((await g.retrieve("Ann")).context).toContain("GRAPH [certified] | Ann -[WORKS_AT]-> Acme");
-    expect((await g.relations.uncertify(old.id)).certified_at).toBeNull();
     await g.relations.certify(old.id, { by: "hr" });
-    const bumped = await g.relations.update(old.id, { set_properties: { role: "cto" } });
-    const newer = result.relations[0]!;
-    expect([bumped.certified_at, bumped.is_current, bumped.invalidated_by, bumped.invalidated_at]).toEqual([
-      null,
-      false,
-      newer.id,
-      newer.event_time,
-    ]);
+    const newer = (await g.insert.facts({ relations: [worksAt("person:ann", "company:globex", 2025)] })).relations[0]!;
+    await interruptWrite(g, () => g.relations.update(old.id, { set_properties: { role: "cto" } }));
+    expect(await g.relations.get(old.id)).toBeNull();
+
+    const updated = await g.relations.update(old.id, { set_properties: { role: "cto" } });
+
+    expect([updated.revision, updated.is_current, updated.invalidated_by]).toEqual([2, false, newer.id]);
+    expect([updated.certified_at, updated.certified_by, updated.certifications]).toEqual([null, null, []]);
     expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([newer.id]);
-    await expect(g.relations.certify(old.id, { by: " " })).rejects.toThrow("certified_by must be a non-empty string");
-    await expect(g.relations.certify("relation:missing", { by: "hr" })).rejects.toThrow("does not exist");
+    const [second, first] = await g.relations.versions(old.id);
+    expect([first!.revision, first!.is_current, first!.certified_at]).toEqual([1, false, null]);
+    expect(first!.certifications.map((c) => [c.by, c.until !== null])).toEqual([["hr", true]]);
+    expect(second!.properties).toEqual({ role: "cto" });
+  });
+
+  it.runIf(!spec.transactional)("completes a relation left without a current version on insert", async () => {
+    const rows = [
+      ["off", { team: "core" }, { role: "eng", team: "core" }],
+      ["supersede", { role: "eng" }, { role: "eng" }],
+    ] as const;
+    for (const [contradiction, properties, expected] of rows) {
+      const g = await employment({ contradiction });
+      const acme = worksAt("person:ann", "company:acme", 2024, { role: "eng" });
+      const rel = (await g.insert.facts({ relations: [acme] })).relations[0]!;
+      await interruptWrite(g, () => g.relations.update(rel.id, { set_properties: { role: "cto" } }));
+
+      const again = worksAt("person:ann", "company:acme", undefined, properties);
+      const inserted = (await g.insert.facts({ relations: [again] })).relations[0]!;
+
+      expect([inserted.revision, inserted.is_current, inserted.properties]).toEqual([2, true, expected]);
+      expect(inserted.event_time).toEqual(new Date("2024-01-01T00:00:00Z"));
+      expect(await g.relations.get(rel.id)).toEqual(inserted);
+      expect((await g.relations.versions(rel.id)).map((v) => [v.revision, v.is_current])).toEqual([
+        [2, true],
+        [1, false],
+      ]);
+    }
   });
 
   it("refuses to certify a retired relation", async () => {
@@ -735,6 +784,37 @@ function suite(spec: StoreSpec): void {
   });
 }
 
+it("retries settlement after an embedded retirement write fails", async () => {
+  const store = new KuzuStore(tempKuzu("uncertify-retry-"), { buffer_pool_size: 128 << 20 });
+  const g = new SelfGraph(store, { schema: SINGLE_EMPLOYER, contradiction: "supersede" });
+  const original = store.createEdges.bind(store);
+  let calls = 0;
+  try {
+    await g.initialize();
+    await g.insert.facts({
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Company", name: "Acme" },
+        { type: "Company", name: "Globex" },
+      ],
+    });
+    const old = await g.relations.create("person:ann", "WORKS_AT", "company:acme", { event_time: "2020-01-01" });
+    await g.relations.certify(old.id, { by: "hr" });
+    const newer = await g.relations.create("person:ann", "WORKS_AT", "company:globex", { event_time: "2023-01-01" });
+    store.createEdges = async (...args: Parameters<typeof original>) => {
+      if (++calls === 2) throw new StoreError("retirement write failed");
+      return original(...args);
+    };
+    await expect(g.relations.uncertify(old.id)).rejects.toThrow("retirement write failed");
+    const result = await g.relations.uncertify(old.id);
+    expect([result.certified_by, result.is_current, result.invalidated_by]).toEqual([null, false, newer.id]);
+    expect((await g.relations.list()).items.map((rel) => rel.id)).toEqual([newer.id]);
+  } finally {
+    store.createEdges = original;
+    await g.close();
+  }
+});
+
 await forEachStore("agent trust", suite);
 
 describe("obsidian vault file names", () => {
@@ -773,8 +853,6 @@ describe("obsidian vault file names", () => {
   });
 
   it("strips leading and trailing dots", () => {
-    // A long alternating name is the quadratic case: the old loop peeled one
-    // whitespace/dot layer per iteration, each strip O(n).
     expect(notes([". ".repeat(8000) + "NET"]).sort()).toEqual(["NET.md"]);
     expect(notes([". .NET", "Acme. .", "v1. ."]).sort()).toEqual(["Acme.md", "NET.md", "v1.md"]);
   });

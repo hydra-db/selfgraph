@@ -1,3 +1,4 @@
+import { storedDataError } from "./errors.js";
 import { dumps, loads } from "./internal/json.js";
 import { fromIso, toIso } from "./internal/time.js";
 import {
@@ -9,6 +10,7 @@ import {
   type JsonObject,
   type Preference,
   type Relation,
+  type SourceVersion,
   type Stance,
   type Status,
 } from "./models.js";
@@ -37,13 +39,24 @@ export function encodeEvidenceProps(args: { ns: string; id: string; target_id: s
 }
 
 export function decodeEvidence(props: Props): Evidence {
-  return EvidenceSchema.parse(evidenceOf(props as unknown as Evidence));
+  try {
+    return EvidenceSchema.parse(evidenceOf(props as unknown as Evidence));
+  } catch {
+    throw storedDataError(props);
+  }
 }
 
-const str = (v: unknown): string => v as string;
+const str = (v: unknown): string => {
+  if (typeof v !== "string") throw new Error();
+  return v;
+};
 const optStr = (v: unknown): string | null => (v === undefined || v === null ? null : (v as string));
 const optNum = (v: unknown): number | null => (v === undefined || v === null ? null : Number(v));
-const date = (v: unknown): Date => fromIso(v)!;
+const date = (v: unknown): Date => {
+  const value = fromIso(v);
+  if (value === null) throw new Error();
+  return value;
+};
 const count = (v: unknown): number => Math.trunc(Number(v ?? 0)) || 0;
 
 export function encodeEntityProps(args: {
@@ -87,19 +100,23 @@ export function relevanceProps(relevance: number | null, relevanceAt: Date | nul
 }
 
 export function decodeEntity(props: Props): Entity {
-  return {
-    id: str(props.id),
-    type: str(props.type),
-    name: str(props.name),
-    aliases: [...((props.aliases as string[] | null | undefined) ?? [])],
-    external_ids: loads(props.external_ids_json, {}),
-    properties: loads(props.properties_json, {}),
-    source_count: count(props.source_count),
-    created_at: date(props.created_at),
-    updated_at: date(props.updated_at),
-    relevance: optNum(props.relevance),
-    relevance_at: fromIso(props.relevance_at),
-  };
+  try {
+    return {
+      id: str(props.id),
+      type: str(props.type),
+      name: str(props.name),
+      aliases: [...((props.aliases as string[] | null | undefined) ?? [])],
+      external_ids: loads(props.external_ids_json, {}),
+      properties: loads(props.properties_json, {}),
+      source_count: count(props.source_count),
+      created_at: date(props.created_at),
+      updated_at: date(props.updated_at),
+      relevance: optNum(props.relevance),
+      relevance_at: fromIso(props.relevance_at),
+    };
+  } catch {
+    throw storedDataError(props);
+  }
 }
 
 export function encodeRelationProps(args: {
@@ -131,29 +148,35 @@ export function encodeRelationProps(args: {
 }
 
 export function decodeRelation(props: Props, edge: { from_entity: string; to_entity: string; type: string }): Relation {
-  return {
-    id: str(props.id),
-    revision: Math.trunc(Number(props.revision)),
-    from_entity: edge.from_entity,
-    type: edge.type,
-    to_entity: edge.to_entity,
-    properties: loads(props.properties_json, {}),
-    event_time: fromIso(props.event_time),
-    created_at: date(props.created_at),
-    is_current: Boolean(props.is_current),
-    source_count: count(props.source_count),
-    invalidated_at: fromIso(props.invalidated_at),
-    invalidated_by: optStr(props.invalidated_by),
-    invalidated_known_at: fromIso(props.invalidated_known_at),
-    relevance: optNum(props.relevance),
-    relevance_at: fromIso(props.relevance_at),
-    certified_at: fromIso(props.certified_at),
-    certified_by: optStr(props.certified_by),
-    certifications: loads<Array<{ by: string; at: string; until: string | null }>>(props.certifications_json, []).map(
-      (c) => ({ by: c.by, at: fromIso(c.at)!, until: fromIso(c.until) }),
-    ),
-  };
+  try {
+    return {
+      id: str(props.id),
+      revision: Math.trunc(Number(props.revision)),
+      from_entity: edge.from_entity,
+      type: edge.type,
+      to_entity: edge.to_entity,
+      properties: loads(props.properties_json, {}),
+      event_time: fromIso(props.event_time),
+      created_at: date(props.created_at),
+      is_current: Boolean(props.is_current),
+      source_count: count(props.source_count),
+      invalidated_at: fromIso(props.invalidated_at),
+      invalidated_by: optStr(props.invalidated_by),
+      invalidated_known_at: fromIso(props.invalidated_known_at),
+      relevance: optNum(props.relevance),
+      relevance_at: fromIso(props.relevance_at),
+      certified_at: fromIso(props.certified_at),
+      certified_by: optStr(props.certified_by),
+      certifications: loads<Array<{ by: string; at: string; until: string | null }>>(props.certifications_json, []).map(
+        (c) => ({ by: c.by, at: fromIso(c.at)!, until: fromIso(c.until) }),
+      ),
+    };
+  } catch {
+    throw storedDataError(props);
+  }
 }
+
+export const ABOUT_DROPPED = "about_dropped";
 
 export function encodePreferenceProps(args: {
   ns: string;
@@ -167,8 +190,9 @@ export function encodePreferenceProps(args: {
   event_time: Date | null;
   created_at: Date;
   is_current: boolean;
+  about_dropped?: boolean;
 }): Props {
-  return {
+  const props: Props = {
     id: args.id,
     ns: args.ns,
     revision: args.revision,
@@ -181,27 +205,33 @@ export function encodePreferenceProps(args: {
     event_time: toIso(args.event_time),
     created_at: toIso(args.created_at),
   };
+  if (args.about_dropped) props[ABOUT_DROPPED] = true;
+  return props;
 }
 
 export function decodePreference(
   props: Props,
   edge: { value_entity: string; profile_id: string; stance: Stance },
 ): Preference {
-  return {
-    id: str(props.id),
-    revision: Math.trunc(Number(props.revision)),
-    profile_id: edge.profile_id,
-    subject_entity: str(props.subject_entity),
-    stance: edge.stance,
-    key: str(props.key),
-    value_entity: edge.value_entity,
-    about_entity: optStr(props.about_entity),
-    strength: optNum(props.strength),
-    properties: loads(props.properties_json, {}),
-    event_time: fromIso(props.event_time),
-    created_at: date(props.created_at),
-    is_current: Boolean(props.is_current),
-  };
+  try {
+    return {
+      id: str(props.id),
+      revision: Math.trunc(Number(props.revision)),
+      profile_id: edge.profile_id,
+      subject_entity: str(props.subject_entity),
+      stance: edge.stance,
+      key: str(props.key),
+      value_entity: edge.value_entity,
+      about_entity: optStr(props.about_entity),
+      strength: optNum(props.strength),
+      properties: loads(props.properties_json, {}),
+      event_time: fromIso(props.event_time),
+      created_at: date(props.created_at),
+      is_current: Boolean(props.is_current),
+    };
+  } catch {
+    throw storedDataError(props);
+  }
 }
 
 export function encodeTraceProps(args: {
@@ -235,18 +265,43 @@ export function encodeTraceProps(args: {
 }
 
 export function decodeTrace(props: Props, steps: DecisionStep[]): DecisionTrace {
-  return {
-    id: str(props.id),
-    actor_entity: optStr(props.actor_entity),
-    title: str(props.title),
-    summary: optStr(props.summary),
-    rationale: optStr(props.rationale),
-    status: str(props.status) as Status,
-    outcome_entity: optStr(props.outcome_entity),
-    alternative_entities: loads(props.alternative_entities_json, []),
-    steps,
-    event_time: fromIso(props.event_time),
-    created_at: date(props.created_at),
-    updated_at: date(props.updated_at),
-  };
+  try {
+    return {
+      id: str(props.id),
+      actor_entity: optStr(props.actor_entity),
+      title: str(props.title),
+      summary: optStr(props.summary),
+      rationale: optStr(props.rationale),
+      status: str(props.status) as Status,
+      outcome_entity: optStr(props.outcome_entity),
+      alternative_entities: loads(props.alternative_entities_json, []),
+      steps,
+      event_time: fromIso(props.event_time),
+      created_at: date(props.created_at),
+      updated_at: date(props.updated_at),
+    };
+  } catch {
+    throw storedDataError(props);
+  }
+}
+
+/**
+ * Rebuild a source version from its stored node.
+ *
+ * @param props (Props): the source version node.
+ * @return (SourceVersion): the version.
+ */
+export function decodeSourceVersion(props: Props): SourceVersion {
+  try {
+    return {
+      id: str(props.id),
+      source_id: str(props.source_id),
+      media_type: str(props.media_type),
+      metadata: loads(props.metadata_json, {}),
+      event_time: fromIso(props.event_time),
+      created_at: date(props.created_at),
+    };
+  } catch {
+    throw storedDataError(props);
+  }
 }

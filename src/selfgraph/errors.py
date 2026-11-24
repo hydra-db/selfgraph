@@ -17,6 +17,7 @@ __all__ = [
     "PromptTemplateError",
     "StoreError",
     "TransientError",
+    "InternalError",
 ]
 
 
@@ -36,6 +37,7 @@ ErrorCode = Literal[
     "invalid_cursor",
     "invalid_resolver_decision",
     "read_only_query",
+    "cypher_query_limit",
     "missing_package",
     "not_found",
     "already_exists",
@@ -45,6 +47,8 @@ ErrorCode = Literal[
     "invalid_llm_output",
     "invalid_prompt_template",
     "query_failed",
+    "inexact_value",
+    "invalid_stored_data",
     "graph_closed",
     "store_closed",
     "store_unreachable",
@@ -55,6 +59,7 @@ ErrorCode = Literal[
     "write_too_large",
     "write_conflict",
     "store_busy",
+    "internal_error",
 ]
 HINTS: dict[ErrorCode, str] = {
     "invalid_argument": (
@@ -114,6 +119,7 @@ HINTS: dict[ErrorCode, str] = {
         "`run_cypher` runs a single read. Write through the typed tools instead. Do not reword the query to "
         "get a write past the guard."
     ),
+    "cypher_query_limit": "Shorten the Cypher statement or reduce its delimiter nesting before trying again.",
     "missing_package": (
         "An optional package is not installed. Run the install command in the message, or ask the user to."
     ),
@@ -142,6 +148,15 @@ HINTS: dict[ErrorCode, str] = {
     ),
     "query_failed": (
         "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself."
+    ),
+    "inexact_value": (
+        "The Kuzu driver cannot return a result value exactly. Cast the column in the query to a type it returns "
+        "exactly, such as `cast(x AS STRING)` for an integer beyond 2^53 or a wide DECIMAL, or `cast(x AS DOUBLE)` "
+        "for a negative DECIMAL between -0.1 and 0. Do not drop the column to make the call pass."
+    ),
+    "invalid_stored_data": (
+        "A stored node or edge is malformed. Repair the document identified by the message in its namespace "
+        "before reading it again."
     ),
     "graph_closed": "The SelfGraph was closed. Create a new SelfGraph.",
     "store_closed": (
@@ -174,6 +189,10 @@ HINTS: dict[ErrorCode, str] = {
         "deterministic and inserts are upserts, so a retry does not duplicate anything."
     ),
     "store_busy": "The server timed out or was too busy to take the query. Run the same call again after a moment.",
+    "internal_error": (
+        "An unexpected error reached the CLI or MCP boundary and was not mapped to a specific code. The message "
+        "keeps the original error with any credentials masked. Report it with the message if it persists."
+    ),
 }
 WARNING_HINTS: dict[str, str] = {
     "unknown_entity_type": (
@@ -379,12 +398,26 @@ class StoreError(SelfGraphError):
     code: ErrorCode = "query_failed"
 
 
+def stored_data_error(props: dict) -> StoreError:
+    """Identify a malformed stored record without exposing its contents."""
+    return StoreError(
+        f"stored document {props.get('id')!r} in namespace {props.get('ns')!r} is malformed",
+        code="invalid_stored_data",
+        field="doc",
+    )
+
+
 class TransientError(StoreError):
     code: ErrorCode = "write_conflict"
 
 
+class InternalError(SelfGraphError):
+    code: ErrorCode = "internal_error"
+
+
 CLOSED_MESSAGE = "this SelfGraph is closed; create a new SelfGraph to keep using the store"
 LLM_HINT = "pass llm= to SelfGraph (or set SELFGRAPH_LLM_PROVIDER and SELFGRAPH_LLM_MODEL)"
+EMBEDDER_HINT = "pass embedder= to SelfGraph"
 STORE_CLOSED_MESSAGE = "this store is closed; create a new store for each SelfGraph"
 TOKEN_HINT = "pass auth=TOKEN to HydraDBStore (or set SELFGRAPH_AUTH)"
 STORE_KUZU_HINT = 'pass store="kuzu" (or SELFGRAPH_STORE=kuzu)'
@@ -402,6 +435,16 @@ def needs_llm(what: str) -> ValidationError:
     return ValidationError(f"{what} needs an LLM: {LLM_HINT}", code="llm_required")
 
 
+def internal_error(exc: BaseException, *uris: str | None) -> InternalError:
+    """Wrap an unexpected error that reached a boundary as a coded InternalError with every URI's credentials masked.
+
+    @param exc (BaseException): the unmapped error.
+    @param uris (str | None): the configured URIs to mask, such as the store URI and the LLM base_url.
+    @return (InternalError): the coded error, safe to print.
+    """
+    return InternalError(redact_uris(f"{type(exc).__name__}: {exc}", *uris))
+
+
 def setting_hint(key: str) -> str:
     """Name a connect or from_env setting with its environment variable, as library messages do.
 
@@ -413,6 +456,7 @@ def setting_hint(key: str) -> str:
 
 _SURFACE_HINTS = (
     (LLM_HINT, "pass --llm-provider and --llm-model (or SELFGRAPH_LLM_*)"),
+    (EMBEDDER_HINT, "which only the SDK can take; use --seeds bm25 or synonyms here"),
     (TOKEN_HINT, "pass --auth TOKEN (or SELFGRAPH_AUTH)"),
     (STORE_KUZU_HINT, "pass --store kuzu (or SELFGRAPH_STORE=kuzu)"),
     (OTHER_ENGINE_HINT, "pass --store neo4j (or memgraph)"),
@@ -467,6 +511,10 @@ def split_scheme(uri: str) -> tuple[str, str]:
 UNENCODED_USERINFO = (
     "the store URI has an unencoded character in its user or password; "
     "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)"
+)
+MALFORMED_USERINFO_ESCAPE = (
+    "the store URI has a malformed percent escape in its user or password; "
+    "write a literal % as %25 and percent-encode other characters as UTF-8"
 )
 
 
@@ -552,6 +600,18 @@ def redact_uri(text: str, uri: str | None) -> str:
     at = uri[start + len(userinfo)]
     for form in (userinfo, repr(userinfo)[1:-1], json.dumps(userinfo, ensure_ascii=False)[1:-1]):
         text = text.replace(f"{form}{at}", f"***{at}")
+    return text
+
+
+def redact_uris(text: str, *uris: str | None) -> str:
+    """Mask the userinfo of each configured URI wherever a message shows it.
+
+    @param text (str): the message.
+    @param uris (str | None): the configured URIs, such as the store URI and the LLM base_url; None entries are skipped.
+    @return (str): the message with every URI's credentials replaced by ***.
+    """
+    for uri in uris:
+        text = redact_uri(text, uri)
     return text
 
 

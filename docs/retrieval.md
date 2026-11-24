@@ -168,12 +168,15 @@ entity's changed properties read as they are now.
 1. **Seed.** The query is split into Unicode words, NFC-normalized and
    casefolded, with stopwords dropped. Every entity is scored with BM25 plus a
    grep boost: a term that is a substring of the entity's text adds to its score.
-   ASCII terms need three or more characters for the boost; other scripts count
-   at any length. The score is divided by the log of the entity's distinct
-   sources, so a generic entity does not crowd out a specific one. Ties go to the
-   higher [decay](maintenance.md#decay) `relevance`, then the lower id. A
-   one-character word, stopwords included, also seeds an entity whose whole name
-   equals it, ignoring case. The top `k` entities become seeds.
+   BM25 ignores a plain plural ending, the same way `check_answerable` does, so
+   `engineers` seeds an `Engineer` and `payments` seeds `Payment API`. A final
+   `s` always reads as a plural, so `Hans` also matches `Han`. ASCII
+   terms need three or more characters for the boost; other scripts count at any
+   length. The score is divided by the log of the entity's distinct sources, so a
+   generic entity does not crowd out a specific one. Ties go to the higher
+   [decay](maintenance.md#decay) `relevance`, then the lower id. A one-character
+   word, stopwords included, also seeds an entity whose whole name equals it,
+   ignoring case. The top `k` entities become seeds.
 2. **Traverse.** Current relations are walked in BFS or DFS order up to `depth`
    hops. This collects up to `max_nodes` entities and the relations among them.
    With `ppr`, BFS collects up to four times `max_nodes` candidates (at most
@@ -181,8 +184,12 @@ entity's changed properties read as they are now.
    proportion to their scores and weighting edges by their sources. The top
    `max_nodes` are kept.
 3. **Assemble.** Passages, relations, preferences, decisions, and entities are
-   written nearest or highest-ranked first. Passages take at most 60% of the
-   budget, and at most six of them. The context never exceeds `budget_tokens`.
+   written nearest or highest-ranked first. Passages are scored across every
+   source behind the collected entities: a chunk ranks by how many distinct
+   query words it holds, ignoring a plain plural ending, then by the nearest
+   entity that cites its source. The best six distinct chunks are kept, and they
+   take at most 60% of the budget.
+   The context never exceeds `budget_tokens`.
    The first relation, preference, decision, or entity line that does not fit
    ends the context, so a farther line never takes the place of a nearer one.
    When even the first line does not fit, it is cut to the longest prefix that
@@ -193,6 +200,9 @@ entity's changed properties read as they are now.
 **Cost.** Seeding scores every entity, with no cap. It reads entities in
 id-ordered pages twice per query, once for the BM25 corpus statistics and once to
 score, and keeps only the best `k` in memory. Cost grows linearly with the graph.
+Passages read the chunks of every source behind the collected entities, a batch
+of source versions per query, and keep only the best six in memory. That cost
+grows linearly with the number of those sources.
 
 **Seeding limits.**
 
@@ -240,20 +250,46 @@ the notes into a folder you can open as a vault.
 
 ## Changes between known times
 
-`await graph.diff(since, until=None)` returns `GraphDiff` with `relations_added`,
-`relations_revised`, `relations_retired`, and `entities_created`. `SyncSelfGraph`
-has the same method. The window is `(since, until]`, using `created_at` and
-`invalidated_known_at`, not `event_time`. `until` defaults to now; naive times
-mean UTC. Retired relations include `invalidated_by`.
+`await graph.diff(since, until=None)` returns `GraphDiff`, one list per kind of
+stored change. `SyncSelfGraph` has the same method. The window is
+`(since, until]` on the known-time axis, not `event_time`. `until` defaults to
+now; naive times mean UTC.
 
-Each new relation revision is listed. Reassertions count as revisions. A relation
-created, revised, and retired in the same window appears in all three lists.
+| List | Holds | In the window when |
+|------|-------|--------------------|
+| `entities_created` | `Entity` | `created_at` |
+| `relations_added` | `Relation` revision 1 | `created_at` |
+| `relations_revised` | `Relation` revision 2 and later | `created_at` |
+| `relations_retired` | `Relation` with `invalidated_by` | `invalidated_known_at` |
+| `relations_certified` | `Relation` version | a certification's `at` |
+| `relations_uncertified` | `Relation` version | a certification's `until` |
+| `preferences_added` | `Preference` revision 1 | `created_at` |
+| `preferences_revised` | `Preference` revision 2 and later | `created_at` |
+| `decisions_created` | `DecisionTrace` | `created_at` |
+| `decisions_updated` | `DecisionTrace` | `updated_at`, when later than `created_at` |
+| `entities_merged` | `MergeRecord` | `created_at` |
+| `entities_unmerged` | `MergeRecord` | `reverted_at` |
+| `source_versions_added` | `SourceVersion` | `created_at` |
+
+A `SourceVersion` holds the stored `id`, `source_id`, `media_type`, `metadata`,
+`event_time`, and `created_at` of one version of a source.
+
+Each new relation or preference revision is listed. Reassertions count as
+revisions. One record can appear in several lists: a relation created, revised,
+and retired in the same window appears in all three, and a merge made and undone
+in the window appears in both merge lists. Certifications are read from every
+version of a relation, so a certification on a version that was later revised
+still shows. A relation version certified by one verifier and then by another
+in the window is in both certification lists. A decision stores only its latest
+update time, so an update is listed only in the window that holds the latest one.
+Relation and preference lists are sorted by id and revision, retired relations by
+id and retirement time, and the others by id.
+
 This scans the namespace's stored records, not an isolated snapshot or an audit
-log. Deletes and merges are not visible. The result includes
-`limitations: ["Deletes and merges are not visible."]`. Deleted records and
-overwritten retirement history cannot be recovered.
+log. Deletes and entity edits are not visible. The result includes
+`limitations: ["Deletes and entity edits are not visible."]`. Deleted records
+and overwritten retirement history cannot be recovered.
 A delete-triggered restoration is visible as a new relation revision, but the
 deleted record and the deletion event are not.
-Returned entity fields and relation metadata reflect stored values, not their
-historical values. Preferences, decisions, and entity edits are not included.
+Returned records reflect their stored values, not their historical values.
 TypeScript uses `await graph.diff(since, until)`. Both SDKs return the same fields.

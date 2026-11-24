@@ -98,6 +98,22 @@ def test_combining_marks_stay_in_derived_ids():
     assert ids.relation_id("a:b", "पिता", "c:d") != ids.relation_id("a:b", "पोता", "c:d")
 
 
+@pytest.mark.parametrize(
+    ("type", "name"),
+    [
+        ("Person", "İ\u0327"),
+        ("İ\u0327", "Ada"),
+        ("Company", "İ\u0327stanbul Holdings Ltd"),
+    ],
+)
+def test_a_derived_id_with_a_lowercased_dotted_capital_i_canonicalizes_to_itself(type, name):
+    eid = ids.entity_id(type, name)
+    assert unicodedata.is_normalized("NFC", eid)
+    assert ids.canonical_entity_id(eid) == eid
+    assert ids.canonical_entity_id(eid.upper()) == eid
+    assert ids.slug(ids.slug(type)) == ids.slug(type)
+
+
 def test_names_without_combining_marks_keep_their_ids():
     assert ids.entity_id("Person", "Zoe\u0308 A\u030angstro\u0308m") == ids.entity_id("Person", "Zoë Ångström")
     assert ids.entity_id("Person", "Bob \U0001f600") == "person:bob"
@@ -123,6 +139,22 @@ def test_combining_marks_follow_one_pinned_table():
     assert {cp for cp in range(sys.maxunicode + 1) if ids._is_mark(chr(cp))} == marks
 
 
+def test_format_characters_inside_a_name_do_not_split_it():
+    names = ["Ac\u200bme", "Ac\u200dme", "Ac\u00adme", "Ac\u2060me", "Ac\ufeffme", "\ufeffAcme", "Acme\u200f"]
+    assert [ids.entity_id("Person", name) for name in names] == ["person:acme"] * len(names)
+    assert ids.entity_id("Company", "Acme\u200b Inc\u00ad.") == "company:acme"
+    assert ids.entity_id("Person", "Jane\u200b Doe") == "person:jane-doe"
+
+
+def test_format_characters_follow_one_pinned_table():
+    assert [ids._FORMAT.match(ch) is not None for ch in "\u00ad\u200b\u2060\ufeff\U000e0001"] == [True] * 5
+    assert [ids._FORMAT.match(ch) is not None for ch in "a \u0301\ufe0f\u3000"] == [False] * 5
+    if unicodedata.unidata_version != "15.0.0":
+        pytest.skip("the table is checked against the Unicode 15.0 data of Python 3.12")
+    formats = {cp for cp in range(sys.maxunicode + 1) if unicodedata.category(chr(cp)) == "Cf"}
+    assert {cp for cp in range(sys.maxunicode + 1) if ids._FORMAT.match(chr(cp))} == formats
+
+
 def test_require_identifier_accepts_plain_identifiers():
     for name in ("id", "sid", "index", "external_ids", "name", "k_Entity_1"):
         assert ids.require_identifier(name) == name
@@ -132,3 +164,15 @@ def test_require_identifier_rejects_injection_and_non_identifiers():
     for bad in ("id` RETURN 1 //", "a`b", "a b", "1name", "na.me", "", "n`) DETACH DELETE (m"):
         with pytest.raises(ValidationError):
             ids.require_identifier(bad)
+
+
+@pytest.mark.parametrize("bad_type", [":a", "a:b", "Person:"])
+def test_entity_type_colons_rejected(bad_type):
+    with pytest.raises(ValidationError) as caught:
+        ids.entity_id(bad_type, "X")
+    assert caught.value.code == "invalid_argument"
+    assert caught.value.field == "type"
+    assert (
+        str(caught.value)
+        == f"entity type {bad_type!r} cannot contain ':', which separates an entity id's type and name"
+    )

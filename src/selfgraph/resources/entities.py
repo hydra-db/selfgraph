@@ -5,7 +5,7 @@ from functools import partial
 from typing import Any
 
 from .. import _ops, resolution
-from ..models import DeleteResult, Entity, Evidence, JsonValue, MergeRecord, Page, UnmergeResult
+from ..models import DeleteResult, Entity, Evidence, JsonValue, MergeRecord, Page, UnmergeResult, check_options
 from ..schema import canonical_entity_ref, canonical_entity_type
 from ._common import DEFAULT_PAGE_LIMIT, Resource, paginate
 
@@ -22,6 +22,7 @@ class Entities(Resource):
         aliases: list[str] | None = None,
         external_ids: dict[str, str] | None = None,
         properties: dict[str, JsonValue] | None = None,
+        **options: Any,
     ) -> Entity:
         """Create one entity. The positional order is (name, type), e.g. create("Jane Doe", "Person").
 
@@ -34,6 +35,7 @@ class Entities(Resource):
         @param properties (dict[str, JsonValue] | None): extra properties.
         @return (Entity): the created entity.
         """
+        check_options("entities.create", options, ["id", "aliases", "external_ids", "properties"])
         schema = self._c.schema
         if isinstance(type, str):
             type = _ops._clean_text(type)
@@ -60,6 +62,7 @@ class Entities(Resource):
         name: str | None = None,
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
+        **options: Any,
     ) -> Page[Entity]:
         """List entities, optionally filtered by type and exact name.
 
@@ -69,12 +72,15 @@ class Entities(Resource):
         @param limit (int): page size.
         @return (Page[Entity]): entities ordered by id.
         """
+        check_options("entities.list", options, ["type", "name", "cursor", "limit"])
         canonical = partial(canonical_entity_type, schema=self._c.schema)
         return await self._page(
             _ops.list_entities, type=type, name=name, cursor=cursor, limit=limit, by_id="entity", canonical=canonical
         )
 
-    async def evidence(self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page[Evidence]:
+    async def evidence(
+        self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT, **options: Any
+    ) -> Page[Evidence]:
         """List the evidence records supporting an entity, one per source, version, chunk, and quote.
 
         @param id (str): the entity id.
@@ -82,9 +88,12 @@ class Entities(Resource):
         @param limit (int): page size.
         @return (Page[Evidence]): evidence ordered by evidence id; raises NotFoundError for an unknown entity.
         """
+        check_options("entities.evidence", options, ["cursor", "limit"])
         return await self._page(_ops.list_evidence, id, kind="entity", cursor=cursor, limit=limit)
 
-    async def merges(self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page[MergeRecord]:
+    async def merges(
+        self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT, **options: Any
+    ) -> Page[MergeRecord]:
         """List the merge records of entities that entity resolution folded into this one.
 
         @param id (str): the surviving entity id.
@@ -92,6 +101,7 @@ class Entities(Resource):
         @param limit (int): page size.
         @return (Page[MergeRecord]): records ordered by merge id; raises NotFoundError for an unknown entity.
         """
+        check_options("entities.merges", options, ["cursor", "limit"])
         return await self._page(resolution.list_merges, id, cursor=cursor, limit=limit)
 
     async def unmerge(self, merge_id: str) -> UnmergeResult:
@@ -100,10 +110,10 @@ class Entities(Resource):
         @param merge_id (str): the merge record id, from entities.merges or InsertResult.merges.
         @return (UnmergeResult): the reverted record, the recreated entity, the survivor, and what moved back.
         """
-        return await self._c._write(resolution.unmerge, merge_id)
+        return await self._c._write(resolution.unmerge, merge_id, self._c._caps())
 
     def iterate(
-        self, *, type: str | None = None, name: str | None = None, limit: int = DEFAULT_PAGE_LIMIT
+        self, *, type: str | None = None, name: str | None = None, limit: int = DEFAULT_PAGE_LIMIT, **options: Any
     ) -> AsyncIterator[Entity]:
         """Yield every entity across pages, following the list cursor.
 
@@ -112,6 +122,7 @@ class Entities(Resource):
         @param limit (int): the page size per fetch, not a cap; iteration yields every match.
         @return (AsyncIterator[Entity]): every matching entity.
         """
+        check_options("entities.iterate", options, ["type", "name", "limit"])
         return paginate(self.list, type=type, name=name, limit=limit)
 
     async def update(self, id: str, **fields: Any) -> Entity:

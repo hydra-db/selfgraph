@@ -41,6 +41,10 @@ function suite(spec: StoreSpec) {
     const g = open();
     await expect(g.entities.evidence("person:nobody")).rejects.toBeInstanceOf(NotFoundError);
     await expect(g.relations.evidence("relation:nothing")).rejects.toBeInstanceOf(NotFoundError);
+    const cursorError = await g.entities.evidence("person:nobody", { cursor: "NTA=" }).catch((exc) => exc);
+    expect(cursorError).toBeInstanceOf(NotFoundError);
+    expect(cursorError.code).toBe("not_found");
+    await expect(g.relations.evidence("relation:nothing", { cursor: "NTA=" })).rejects.toBeInstanceOf(NotFoundError);
     await g.entities.create("Ada", "Person");
     expect((await g.entities.evidence("person:ada")).items).toEqual([]);
     await g.entities.create("Acme", "Company");

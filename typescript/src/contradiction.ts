@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { ExtractionError } from "./errors.js";
 
+import { contextPayload } from "./internal/payload.js";
 import { comparePy, pyStr } from "./internal/py.js";
 import { L_ENTITY } from "./labels.js";
-import { type InsertWarning, insertWarning, type JsonObject, parseOrThrow, type Relation } from "./models.js";
+import { type InsertWarning, insertWarning, type JsonObject, type Relation } from "./models.js";
 import * as ops from "./ops.js";
 import type { EdgeRow, GraphPrimitives, LLMClient } from "./protocols.js";
 import { decodeEntity } from "./serde.js";
@@ -23,16 +25,16 @@ const Verdict = z.object({ retired: z.array(z.number().int()).default([]) });
  * @param source (string): the source entity's name.
  * @param target (string): the destination entity's name.
  * @param properties (JsonObject): the relation's properties.
- * @return (string): the fact as one line.
+ * @return (string): the fact as one line, with line breaks and control characters escaped.
  */
 function line(edgeType: string, source: string, target: string, properties: JsonObject): string {
-  const entries = Object.entries(properties);
+  const entries = Object.entries(properties).sort(([a], [b]) => comparePy(a, b));
   const props = entries.length ? ` {${entries.map(([k, v]) => `${k}=${pyStr(v)}`).join(", ")}}` : "";
-  return `${source} -[${edgeType}]-> ${target}${props}`;
+  return contextPayload(`${source} -[${edgeType}]-> ${target}${props}`);
 }
 
 /**
- * Ask the LLM which older relations each written relation makes untrue, and retire those.
+ * Validate contradiction verdicts before writing and return their retirement operation.
  *
  * Only relations the cardinality rules left alone are judged: one call per written relation that has a rival (see
  * ops.rivalRelations). A retired relation is invalidated by the written one at its effective time. A certified
@@ -41,11 +43,11 @@ function line(edgeType: string, source: string, target: string, properties: Json
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
  * @param llm (LLMClient): the LLM to ask.
- * @param written (readonly Relation[]): the relations a write just stored.
+ * @param written (readonly Relation[]): the planned relation versions.
  * @param caps (ReadonlyMap<string, ops.RelationCap> | null): the schema's max_count limits by relation type.
  * @param known (Date): the timestamp of the write, stamped on each retirement.
- * @return (InsertWarning[]): one relation_superseded warning per retired relation, and one certified_kept warning per
- * certified relation the LLM judged contradicted, which stays current.
+ * @param names (ReadonlyMap<string, string>): names of entities in the planned write.
+ * @return (Function): apply the validated retirements at the write timestamp and return their warnings.
  */
 export async function judgeContradictions(
   runner: GraphPrimitives,
@@ -54,12 +56,11 @@ export async function judgeContradictions(
   written: readonly Relation[],
   caps: ReadonlyMap<string, ops.RelationCap> | null,
   known: Date,
-): Promise<InsertWarning[]> {
+  names: ReadonlyMap<string, string> = new Map(),
+): Promise<(at: Date) => Promise<InsertWarning[]>> {
   const byId = new Map(written.filter((r) => r.created_at.getTime() === known.getTime()).map((r) => [r.id, r]));
-  if (!byId.size) return [];
   const rivals = await ops.rivalRelations(runner, ns, written, caps, MAX_RIVALS);
   for (const rid of rivals.keys()) if (!byId.has(rid)) rivals.delete(rid);
-  if (!rivals.size) return [];
   const refs = new Set<string>();
   for (const [rid, edges] of rivals) {
     refs.add(byId.get(rid)!.from_entity).add(byId.get(rid)!.to_entity);
@@ -68,10 +69,10 @@ export async function judgeContradictions(
   const nodes = await ops.nodesById(runner, ns, L_ENTITY, [...refs].sort(comparePy));
   const name = (eid: string): string => {
     const props = nodes.get(eid);
-    return props === undefined ? eid : decodeEntity(props).name;
+    return names.get(eid) ?? (props === undefined ? eid : decodeEntity(props).name);
   };
 
-  const retirements: Array<readonly [EdgeRow, string, Date]> = [];
+  const retirements: Array<readonly [EdgeRow, string, Date | null]> = [];
   const kept: InsertWarning[] = [];
   const taken = new Set<unknown>();
   for (const [rid, edges] of rivals) {
@@ -85,14 +86,23 @@ export async function judgeContradictions(
       `New fact: ${line(fresh.type, name(fresh.from_entity), name(fresh.to_entity), fresh.properties)}\n` +
       `Older facts:\n${older}\n` +
       "Which older facts, by number, are no longer true now that the new fact holds?";
-    const answer = await llm.generate({ system: SYSTEM, user, output: Verdict });
-    const verdict = parseOrThrow(Verdict, answer, "contradiction verdict");
+    let verdict: z.infer<typeof Verdict>;
+    try {
+      verdict = Verdict.parse(await llm.generate({ system: SYSTEM, user, output: Verdict }));
+    } catch (error) {
+      if (!(error instanceof z.ZodError)) throw error;
+      throw new ExtractionError("LLM client returned an invalid contradiction verdict", {
+        code: "invalid_llm_output",
+        field: "retired",
+        cause: error,
+      });
+    }
     for (const number of new Set(verdict.retired)) {
       if (number >= 1 && number <= open.length) {
         const edge = open[number - 1]!;
         taken.add(edge.props.id);
         if (edge.props.certified_at === null || edge.props.certified_at === undefined) {
-          retirements.push([edge, fresh.id, ops.effectiveTime(fresh)]);
+          retirements.push([edge, fresh.id, fresh.event_time]);
           continue;
         }
         const message = `relation ${edge.props.id} is certified, so it stays current though the LLM judged ${rid} to contradict it`;
@@ -100,14 +110,21 @@ export async function judgeContradictions(
       }
     }
   }
-  const retired = await ops.retireRelations(runner, ns, retirements, known);
-  return [
-    ...kept,
-    ...retired.map((rel) =>
-      insertWarning(
-        "relation_superseded",
-        `relation ${rel.id} was superseded by ${rel.invalidated_by}, which the LLM judged to contradict it`,
+  return async (at) => {
+    const retired = await ops.retireRelations(
+      runner,
+      ns,
+      retirements.map(([edge, by, when]) => [edge, by, when ?? at] as const),
+      at,
+    );
+    return [
+      ...kept,
+      ...retired.map((rel) =>
+        insertWarning(
+          "relation_superseded",
+          `relation ${rel.id} was superseded by ${rel.invalidated_by}, which the LLM judged to contradict it`,
+        ),
       ),
-    ),
-  ];
+    ];
+  };
 }

@@ -72,6 +72,41 @@ def test_non_retryable_errors_map_to_one_clear_message():
     assert _fatal(RuntimeError("rate limited"), config, "gemini/x") is None
 
 
+def test_llm_model_not_found_masks_base_url_credentials():
+    config = LLMConfig(provider="openai", model="gpt-x", base_url="https://proxyuser:hunter2@llm.example/v1")
+    err = _fatal(NotFoundError("not found"), config, "openai/gpt-x")
+    text = str(err)
+    assert "hunter2" not in text and "proxyuser" not in text
+    assert "was not found for provider openai at https://***@llm.example/v1" in text
+
+
+def test_summarize_error_masks_a_base_url_the_provider_quotes():
+    exc = RuntimeError("APIConnectionError: request to https://u:secret@llm.example/v1/chat failed")
+    summary = summarize_error(exc, "https://u:secret@llm.example/v1")
+    assert "secret" not in summary and "u:secret@" not in summary
+    assert "https://***@llm.example/v1" in summary
+
+
+def test_llm_config_errors_never_leak_the_api_key_in_a_traceback():
+    import traceback
+
+    def tb(exc: BaseException) -> str:
+        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+    secret = "sk-" + "s3cr3t"
+    missing_model = {"provider": "openai", "api_key": secret}
+    with pytest.raises(ValidationError) as caught:
+        LLMConfig(**missing_model)
+    assert secret not in tb(caught.value)
+    bad_key = {"provider": "openai", "model": "m", "api_key": [secret]}
+    with pytest.raises(ValidationError) as caught:
+        LLMConfig(**bad_key)
+    assert secret not in tb(caught.value)
+    with pytest.raises(ValidationError) as caught:
+        resolve_llm(missing_model)
+    assert secret not in tb(caught.value)
+
+
 def test_errors_are_summarized_to_one_capped_line_and_gemini_gets_no_temperature():
     wrapped = InstructorRetryException(ValueError("\x1b[1mNo tool calls\x1b[0m\nModelResponse(...)"))
     assert summarize_error(wrapped) == "ValueError: No tool calls"
@@ -150,6 +185,16 @@ def test_chunk_text_validates_sizes_defaults_the_overlap_and_splits_on_word_boun
         assert chunk.start_offset == 0 or text[chunk.start_offset - 1] == " "
         assert chunk.end_offset == len(text) or text[chunk.end_offset] == " "
         assert len(chunk.text) <= 40
+
+
+def test_character_chunks_keep_a_word_that_fits_after_leading_whitespace():
+    assert [c.text for c in _chunk_by_chars("\nSupercalifragilistic rest", size=20, overlap=0)] == [
+        "Supercalifragilistic",
+        "rest",
+    ]
+    assert [c.text for c in _chunk_by_chars(" aaaaaaaa ", size=9, overlap=0)] == ["aaaaaaaa "]
+    for text, size in (("\nSupercalifragilistic rest", 20), (" abcdefghij klm", 8), (" aaaaaaaa ", 8)):
+        assert all(len(c.text) <= size for c in _chunk_by_chars(text, size=size, overlap=0))
 
 
 def test_a_tiktoken_that_cannot_load_its_encoding_warns_once_and_falls_back(monkeypatch, caplog):
@@ -245,6 +290,34 @@ def test_settings_build_the_llm_config():
         _build_llm(GraphSettings(llm_model="openai/m", llm_timeout="soon"))
 
 
+def test_a_provider_prefix_conflict_from_settings_names_llm_provider(monkeypatch, capsys):
+    from selfgraph import SelfGraph
+    from selfgraph.cli import main
+
+    message = (
+        "llm_provider 'openai' conflicts with model prefix 'anthropic'; "
+        "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model"
+    )
+    with pytest.raises(ValidationError) as built:
+        _build_llm(GraphSettings(llm_provider="openai", llm_model="anthropic/claude"))
+    with pytest.raises(ValidationError) as connected:
+        SelfGraph.connect(store="kuzu", llm_provider="openai", llm_model="anthropic/claude")
+    for exc in (built, connected):
+        assert (exc.value.code, exc.value.field, str(exc.value)) == ("invalid_setting", "llm_provider", message)
+    monkeypatch.setenv("SELFGRAPH_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("SELFGRAPH_LLM_MODEL", "anthropic/claude")
+    assert main(["version"]) == 2
+    err = capsys.readouterr().err
+    assert "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model" in err
+    assert "field: llm_provider\n" in err
+    with pytest.raises(ValidationError) as direct:
+        LLMConfig(provider="openai", model="anthropic/claude")
+    assert (direct.value.field, str(direct.value)) == (
+        "provider",
+        "provider 'openai' conflicts with model prefix 'anthropic'",
+    )
+
+
 def test_chunks_extract_concurrently_up_to_the_setting_and_merge_in_order():
     class Gauge:
         def __init__(self, concurrency):
@@ -268,3 +341,17 @@ def test_chunks_extract_concurrently_up_to_the_setting_and_merge_in_order():
         orders.append([e.name for e in run(LLMExtractor(llm).extract(document)).entities])
         assert llm.peak == peak
     assert orders[0] == orders[1] == [f"Chunk{i}" for i in range(6)]
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_reply_quoting_invalid_api_key_is_not_an_auth_failure(wrapped):
+    config = LLMConfig(provider="openai", model="m")
+    exc = ValueError('Could not parse model reply: "invalid API key"')
+    error = InstructorRetryException(exc) if wrapped else exc
+    assert _fatal(error, config, "openai/m") is None
+    auth = _fatal(AuthenticationError("unauthorized"), config, "openai/m")
+    assert auth.code == "llm_auth_failed"
+    assert str(auth) == (
+        "LLM authentication failed for provider openai: check the API key, set by "
+        "api_key in the llm config (or SELFGRAPH_LLM_API_KEY)"
+    )

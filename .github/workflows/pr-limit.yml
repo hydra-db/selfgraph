@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       backfill:
-        description: 'Comment "N of 3" on all existing open PRs'
+        description: 'Comment "N of 10" on all existing open PRs'
         type: boolean
         default: true
 
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  MAX_OPEN: 3
+  MAX_OPEN: 10
 
 jobs:
   enforce:

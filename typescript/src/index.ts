@@ -76,6 +76,7 @@ export {
   type RetrievalResult,
   type RetrievalSeed,
   type SourceDiff,
+  type SourceVersion,
   Stance,
   Status,
   type Subgraph,

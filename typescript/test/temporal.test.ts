@@ -1289,6 +1289,50 @@ function suite(spec: StoreSpec): void {
     });
   }
 
+  for (const howMove of ["insert", "update"] as const) {
+    for (const howFact of ["insert", "update"] as const) {
+      it(`fact inside earlier stretch of moved relation is retired at arrival (move ${howMove}, fact ${howFact})`, async () => {
+        const g = open({ schema: SPEC, contradiction: "supersede" });
+        await g.insert.facts({ entities: PEOPLE });
+        await insert(g, [annAt("acme", 2012)]);
+        if (howMove === "insert") await insert(g, [annAt("acme", 2016)]);
+        else await g.relations.update(ACME, { event_time: at(2016) });
+        if (howFact === "insert") await insert(g, [annAt("globex", 2014)]);
+        else await g.relations.create("person:ann", "WORKS_AT", "company:globex", { event_time: at(2014) });
+        const [globex] = await g.relations.versions(GLOBEX);
+        expect([globex!.is_current, globex!.invalidated_by, globex!.invalidated_at]).toEqual([false, ACME, at(2014)]);
+        const valid = async (year: number) =>
+          (await g.retrieve("Ann", { as_of: at(year) })).subgraph.relations.map((r) => r.id);
+        expect([await valid(2013), await valid(2015), await valid(2017)]).toEqual([[ACME], [ACME], [ACME]]);
+      });
+    }
+  }
+
+  it("fact dated before multiple higher ranked relations retires at earliest max_count valid", async () => {
+    const relations = [{ type: "WORKS_AT", from: { types: ["Person"], max_count: 2 } }];
+    const g = open({ schema: { ...SPEC, relations }, contradiction: "supersede" });
+    const companies = Array.from({ length: 5 }, (_, i) => ({ type: "Company", name: `Co${i}` }));
+    await g.insert.facts({ entities: [...PEOPLE, ...companies] });
+    const co = Array.from({ length: 5 }, (_, i) => ids.relationId("person:ann", "WORKS_AT", `company:co${i}`));
+    await g.relations.create("person:ann", "WORKS_AT", "company:co0", { event_time: at(2016) });
+    await g.insert.facts({
+      relations: [{ from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:co1", event_time: at(2017) }],
+    });
+    await g.insert.facts({
+      relations: [{ from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:co2", event_time: at(2013) }],
+    });
+    await g.relations.create("person:ann", "WORKS_AT", "company:co3", { event_time: at(2015) });
+    await g.relations.update(co[1]!, { set_properties: { p: 1 } });
+    await g.insert.facts({
+      relations: [{ from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:co2", event_time: at(2019) }],
+    });
+    await g.relations.create("person:ann", "WORKS_AT", "company:co4", { event_time: at(2012) });
+    const [co4] = await g.relations.versions(co[4]!);
+    expect([co4!.is_current, co4!.invalidated_at]).toEqual([false, at(2015)]);
+    const res = await g.retrieve("Ann", { as_of: new Date(Date.UTC(2015, 6, 1)) });
+    expect(res.subgraph.relations.map((r) => r.id).sort()).toEqual([co[2]!, co[3]!].sort());
+  });
+
   it("rejects an invalid as_of and a closed graph", async () => {
     const g = await graph();
     await expect(g.retrieve("Ann", { as_of: 5 as never })).rejects.toThrow("as_of must be a datetime, got number");

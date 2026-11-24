@@ -65,7 +65,7 @@ def relevance_score(timestamps: Iterable[datetime | None], now: datetime, half_l
     age_ms = max(0, epoch_ms(now) - epoch_ms(latest(timestamps)))
     recency = 0.5 ** (age_ms / _DAY_MS / half_life_days)
     frequency = signal / (signal + 1)
-    return math.floor(recency * (1 + frequency) / 2 * _SCALE + 0.5) / _SCALE
+    return min(math.floor(recency * (1 + frequency) / 2 * _SCALE + 0.5) / _SCALE, 0.999999)
 
 
 def require_number(field: str, value: Any, *, positive: bool = False, upper: float | None = None) -> None:

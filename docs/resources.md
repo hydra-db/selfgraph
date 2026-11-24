@@ -48,17 +48,25 @@ To find an entity from a variant, use `entities.get(entity_id(type, name))`. The
 
 A derived id is `type:name`, both slugged:
 
-- NFC-normalized, lowercased, and stripped;
+- lowercased and stripped, then NFC-normalized, since lowercasing `İ` gives
+  `i` and a combining dot that can land out of order;
 - whitespace runs turned into one hyphen;
 - punctuation, symbols, and emoji dropped from the name. Combining marks, such
-  as the vowel signs of Devanagari or Thai, are part of the word and stay. Both
-  SDKs take them from one fixed list, the marks of Unicode 15.0, so an id does
-  not depend on the Python or Node version.
+  as the vowel signs of Devanagari or Thai, are part of the word and stay.
 
 So `Acme` and `ACME` share an id, `Bob 😀` and `Bob` both become `person:bob`,
 type `Per son` gives `per-son:bob`, and `राम` and `रीमा` stay apart as
 `person:राम` and `person:रीमा`. A name with nothing else left keeps its
 symbols (`person:😀`).
+
+Both SDKs take what counts as a letter, a digit, or a combining mark, and the
+lowercase, uppercase, and case-folding mappings, from fixed tables of Unicode
+15.0, so none of them depends on the Python or Node version. A character added
+after 15.0, such as a CJK Extension I ideograph (15.1) or the Cyrillic capital
+Tje (16.0), is not a letter to the SDK and is dropped like punctuation on every
+runtime, so `王𮯰` and `王` share the id `person:王`. NFC normalization is the one
+step that still follows the runtime's Unicode data. Relation types and the
+retrieval tokens use the same tables.
 
 **Organization names.** For organization-like types, the name also drops a
 leading `The` and trailing suffixes until one word is left. Other words, such as
@@ -123,6 +131,12 @@ and any decision trace that references it. Two exceptions:
 
 - A decision that only considered it as an alternative drops that alternative.
 - A preference only about it gets a new version without `about_entity`.
+
+The result's `deleted_preference_versions` counts the versions of each preference
+removed with its subject or value entity, once per preference however many of
+its entities go. The version a delete writes to drop an `about_entity` is never
+counted, so the total is the same in any delete order, in one batch, and in
+`maintenance.prune`. `preferences.delete` follows the same rule.
 
 Deleting a relation at an endpoint the schema's `max_count` constrains settles
 that endpoint again, as [`supersede`](schema.md#contradictions) would have

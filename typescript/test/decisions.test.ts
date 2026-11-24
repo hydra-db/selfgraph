@@ -4,6 +4,22 @@ import { forEachStore, freshGraphs, type StoreSpec } from "./helpers.js";
 
 function suite(spec: StoreSpec): void {
   const open = freshGraphs(spec, "step-ids");
+  it("keeps every step when a page of decisions holds more than a thousand", async () => {
+    const g = open();
+    await g.insert.facts({
+      entities: [
+        { type: "Person", name: "A" },
+        { type: "Person", name: "B" },
+      ],
+    });
+    const rel = await g.relations.create("person:a", "KNOWS", "person:b");
+    for (let i = 0; i < 3; i++) {
+      await g.decisions.create(`D${i}`, { id: `decision:d${i}`, steps: Array(400).fill(rel.id) });
+    }
+    const traces = (await g.decisions.list({ limit: 10 })).items;
+    const want = Array.from({ length: 400 }, (_, k) => k);
+    expect(traces.map((t) => t.steps.map((s) => s.order))).toEqual([want, want, want]);
+  });
   it.each(["relation", "preference", "decision", "profile"] as const)(
     "addresses an inserted %s using id helpers with noncanonical references",
     async (kind) => {

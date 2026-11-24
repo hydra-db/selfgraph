@@ -62,7 +62,7 @@ jobs:
             }
             if (!hasApproved && !isMaintainer) {
               const why = notAssigned
-                ? `Issue #${notAssigned} is approved, but you are not assigned to it. Comment on the issue and ask a maintainer to assign you. Then reopen this PR.`
+                ? `Issue #${notAssigned} is approved, but you are not assigned to it. Comment \`/take\` on the issue to be assigned. Then reopen this PR.`
                 : `This PR has no linked **approved** issue. Open an issue, get it discussed and \`/approved\` by a maintainer, then link it here with \`Closes #N\`. Closing for now; reopen once linked.`;
               await reply(`${why} (Fastest help: the #pr-discussion channel on Discord.)\n\nMaintainers: reopen this PR to override the gate (it gets the \`${OVERRIDE}\` label).`);
               await github.rest.pulls.update({ owner: context.repo.owner, repo: context.repo.repo, pull_number: number, state: 'closed' });

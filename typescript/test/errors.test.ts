@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { connectionReason, HINTS, SelfGraphError, WARNING_HINTS } from "../src/errors.js";
+import { connectionReason, HINTS, internalError, SelfGraphError, WARNING_HINTS } from "../src/errors.js";
 import {
   Extraction,
   FalkorDBStore,
@@ -21,6 +21,7 @@ import { buildLlmClient } from "../src/llm/index.js";
 import { TOOLS } from "../src/mcp.js";
 import { parseOrThrow } from "../src/models.js";
 import { checkSettings, settingsFromEnv } from "../src/runtime.js";
+import { decodeEntity } from "../src/serde.js";
 import { kuzuError } from "../src/stores/kuzu.js";
 import { errorLinks, freshGraphs, KUZU_SPEC } from "./helpers.js";
 
@@ -92,6 +93,21 @@ function sections(start: string, end: string): Record<string, string> {
   return Object.fromEntries([...found].map((m) => [m[1]!, m[2]!.split(/\s+/).join(" ").trim()]));
 }
 
+it.each(["list", "map"])("reports result depth as a coded error for %s", async (kind) => {
+  const { checkResultDepth } = await import("../src/models.js");
+  let value: unknown = 1;
+  for (let depth = 0; depth < 254; depth++) value = kind === "list" ? [value] : { a: value };
+  checkResultDepth([{ x: value }]);
+  value = kind === "list" ? [value] : { a: value };
+  expect(() => checkResultDepth([{ x: value }])).toThrowError(
+    expect.objectContaining({
+      code: "invalid_argument",
+      field: "rows",
+      message: "run_cypher result exceeds the maximum nesting depth of 254",
+    }),
+  );
+});
+
 describe("error codes", () => {
   const open = freshGraphs(KUZU_SPEC, "codes");
 
@@ -159,6 +175,7 @@ describe("error codes", () => {
       invalid_resolver_decision: () =>
         g.insert.facts({ entities: [{ name: "Cy", type: "Person" }] }, { resolver: resolver as never }),
       read_only_query: () => TOOLS.find((t) => t.name === "run_cypher")!.run(g, { query: "CREATE (n)" } as never),
+      cypher_query_limit: () => g.runCypher(`RETURN 1 // ${" ".repeat(65_536)}`),
       missing_package: () =>
         buildLlmClient({ provider: "cerebras", model: "m", api_key: "k" }).generate({
           system: "",
@@ -174,7 +191,9 @@ describe("error codes", () => {
         new SelfGraph(g.store, { llm: { generate: async () => ({ nothing: 1 }) } }).insert.text("Ada."),
       invalid_prompt_template: () =>
         new SelfGraph(g.store, { prompts: { entities: { version: "v1", system: "s", user: "no placeholder" } } }),
+      invalid_stored_data: () => decodeEntity({ id: "person:broken", ns: "codes" }),
       query_failed: () => g.runCypher("RETURN ("),
+      inexact_value: () => g.runCypher("RETURN cast('-0.05' AS DECIMAL(5,2))"),
       graph_closed: () => closedGraph.entities.list(),
       store_closed: () => new SelfGraph(closedStore).entities.list(),
       store_unreachable: () => new SelfGraph(new Neo4jStore(CLOSED_PORT, { auth: ["neo4j", "pw"] })).entities.list(),
@@ -185,6 +204,7 @@ describe("error codes", () => {
       write_too_large: () => hydradb.upsertNode("n", "Entity", "x", { id: "x", blob: "x".repeat(3_000_000) }),
       write_conflict: () => mapError(hydradb, "", "transaction conflict"),
       store_busy: () => busy.runCypher("RETURN 1"),
+      internal_error: () => raise(internalError(new Error("boom"))),
     };
     for (const [code, call] of Object.entries(triggers)) codes[code] = await codeOf(call);
     expect(codes).toEqual(Object.fromEntries(Object.keys(HINTS).map((code) => [code, code])));

@@ -34,7 +34,7 @@ def test_diff_entities_empty_window_validation_and_namespace():
     end = instant()
     d = run(g.diff(start.isoformat(), end))
     assert [e.id for e in d.entities_created] == ["person:ann", "person:bob"]
-    assert d.limitations == ["Deletes and merges are not visible."]
+    assert d.limitations == ["Deletes and entity edits are not visible."]
     assert d.relations_added == d.relations_retired == d.relations_revised == []
     assert run(g.diff(end, end)).entities_created == []
     assert run(fresh_graph("other").diff(start, end)).entities_created == []
@@ -89,16 +89,27 @@ def test_diff_cli_and_mcp(capsys):
     with mcp_session():
         g = run(server._graph_handle())
         start = instant()
-        create_entities(g, "Person:Ann")
+        create_entities(g, "Person:Ann", "Tool:Anvil")
+        rel = run(g.relations.create("person:ann", "USES", "tool:anvil"))
+        run(g.relations.certify(rel.id, by="alice"))
+        pref = run(g.preferences.create("person:ann", "tool", "tool:anvil"))
+        decision = run(g.decisions.create("Pick a tool"))
         end = instant()
         expected = to_jsonable(run(g.diff(start, end)))
         flags = ["diff", "--since", start.isoformat(), "--until", end.isoformat()]
         assert cli(g, [*flags, "--json"], capsys) == expected
         run(dispatch(g, build_parser().parse_args(flags)))
         summary = capsys.readouterr().out
-        assert "Note: Deletes and merges are not visible." in summary
+        assert "Note: Deletes and entity edits are not visible." in summary
         assert "+ entity person:ann" in summary
-        assert "1 entities created, 0 relations added, 0 revised, 0 retired" in summary
+        assert f"* certified relation {rel.id} revision 1" in summary
+        assert f"+ preference {pref.id} revision 1: person:ann tool -> tool:anvil" in summary
+        assert f"+ decision {decision.id}: Pick a tool" in summary
+        assert (
+            "2 entities created, 1 relations added, 0 revised, 0 retired, 1 certified, 0 uncertified, "
+            "1 preferences added, 0 revised, 1 decisions created, 0 updated, 0 merges, 0 unmerges, "
+            "0 source versions added"
+        ) in summary
         assert run(server.graph_diff(start.isoformat(), end.isoformat())) == expected
         assert "graph_diff" in [tool.__name__ for tool in server.TOOLS]
 
@@ -115,7 +126,7 @@ def test_diff_sync():
         d = g.diff(start, end)
         assert d.entities_created == [entity]
         assert d.relations_added == d.relations_revised == d.relations_retired == []
-        assert d.limitations == ["Deletes and merges are not visible."]
+        assert d.limitations == ["Deletes and entity edits are not visible."]
 
 
 def test_diff_pages_entities_and_skips_internal_edges():
@@ -189,6 +200,25 @@ def test_diff_revisions_do_not_repeat_a_copied_retirement():
     assert [r.id for r in run(g.retrieve("Ann", known_at=retired)).subgraph.relations] == [globex.id]
 
 
+def test_diff_reports_a_certification_once_after_a_delete_copies_it():
+    g = employment_graph("diff-cert-copy", contradiction="supersede")
+    run(g.entities.create("Initech", "Company"))
+    start = instant()
+    acme = run(g.relations.create("person:ann", "WORKS_AT", "company:acme", event_time="2020-01-01"))
+    run(g.relations.certify(acme.id, by="alice"))
+    globex = run(g.relations.create("person:ann", "WORKS_AT", "company:globex", event_time="2021-01-01"))
+    run(g.relations.uncertify(acme.id))
+    run(g.relations.create("person:ann", "WORKS_AT", "company:initech", event_time="2022-01-01"))
+    deleting = instant()
+    run(g.relations.delete(globex.id))
+    end = instant()
+    d = run(g.diff(start, end))
+    assert [(r.id, r.revision) for r in d.relations_certified] == [(acme.id, 1)]
+    assert [(r.id, r.revision) for r in d.relations_uncertified] == [(acme.id, 1)]
+    later = run(g.diff(deleting, end))
+    assert later.relations_certified == later.relations_uncertified == []
+
+
 def test_diff_validates_naive_and_offset_times_and_closed_graph():
     from datetime import datetime
 
@@ -245,7 +275,7 @@ def test_bolt_edge_pages_order_revisions_within_each_relation(monkeypatch):
     monkeypatch.setattr(store, "_run", capture)
     run(store.match_edges("test", from_label="Entity", current_only=False, skip=500, limit=500))
     query, params = queries[0]
-    assert "ORDER BY r.id, r.revision SKIP $skip LIMIT $limit" in query
+    assert "ORDER BY r.id, r.revision, from_e, to_e, t SKIP $skip LIMIT $limit" in query
     assert params["skip"] == params["limit"] == 500
 
 
@@ -325,12 +355,145 @@ def test_document_edge_pages_order_by_id_and_revision(backend, monkeypatch):
     try:
         run(store.match_edges("test", from_label="Entity", skip=500, limit=500))
         if backend == "kuzu":
-            assert "ORDER BY r.sid, r.revision SKIP 500 LIMIT 500" in queries[-1]
+            assert "ORDER BY r.sid, r.revision, a.id, b.id, r.etype SKIP 500 LIMIT 500" in queries[-1]
         else:
             assert "r.revision AS __rev" in queries[-1]
-            assert "ORDER BY __ob, __rev SKIP $skip LIMIT $limit" in queries[-1]
+            assert "ORDER BY __ob, __rev, fa, tb, et SKIP $skip LIMIT $limit" in queries[-1]
         run(store.match_edges("test", from_label="Entity", order_by="revision"))
         assert "__rev" not in queries[-1]
-        assert "ORDER BY r.revision SKIP" in queries[-1] if backend == "kuzu" else "ORDER BY __ob SKIP" in queries[-1]
+        assert "ORDER BY r.revision, a.id" in queries[-1] if backend == "kuzu" else "ORDER BY __ob, fa" in queries[-1]
     finally:
         run(store.close())
+
+
+def test_diff_lists_preference_decision_merge_unmerge_and_source_history():
+    g = fresh_graph("diff-history")
+    create_entities(g, "Person:Ann", "Tool:Anvil")
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Mergia Robert", "aliases": ["Mergia Bob"]}]}))
+    start = instant()
+    pref = run(g.preferences.create("person:ann", "tool", "tool:anvil"))
+    run(g.preferences.update(pref.id, strength=0.5))
+    decision = run(g.decisions.create("Pick a tool"))
+    written = instant()
+    run(g.decisions.update(decision.id, summary="the anvil"))
+    merged = run(
+        g.insert.facts({"entities": [{"type": "Person", "name": "Mergia Bob"}]}, source_id="doc", resolver="default")
+    )
+    [record] = merged.merges
+    middle = instant()
+    run(g.entities.unmerge(record.id))
+    end = instant()
+    d = run(g.diff(start, end))
+    assert [(p.id, p.revision) for p in d.preferences_added] == [(pref.id, 1)]
+    assert [(p.id, p.revision, p.strength) for p in d.preferences_revised] == [(pref.id, 2, 0.5)]
+    assert [t.id for t in d.decisions_created] == [t.id for t in d.decisions_updated] == [decision.id]
+    assert d.decisions_updated[0].summary == "the anvil"
+    assert [(m.id, m.absorbed_id, m.survivor_id) for m in d.entities_merged] == [
+        (record.id, record.absorbed_id, record.survivor_id)
+    ]
+    assert [m.id for m in d.entities_unmerged] == [record.id]
+    assert d.entities_unmerged[0].reverted_at is not None
+    assert [(v.source_id, v.id, v.media_type) for v in d.source_versions_added] == [
+        ("doc", merged.source_version, "application/octet-stream")
+    ]
+    early = run(g.diff(start, written))
+    assert [t.id for t in early.decisions_created] == [decision.id]
+    assert early.decisions_updated == early.entities_merged == early.source_versions_added == []
+    late = run(g.diff(middle, end))
+    assert late.entities_merged == late.preferences_added == late.decisions_created == []
+    assert [m.id for m in late.entities_unmerged] == [record.id]
+    assert run(g.diff(end)).model_dump(exclude={"since", "until", "limitations"}) == {
+        name: [] for name in d.model_dump(exclude={"since", "until", "limitations"})
+    }
+
+
+def test_diff_and_decision_list_read_every_decision_in_one_batch(monkeypatch):
+    g = fresh_graph("diff-decision-reads")
+    create_entities(g, "Person:Ann", "Tool:Anvil")
+    rel = run(g.relations.create("person:ann", "USES", "tool:anvil"))
+    start = instant()
+    decisions = [run(g.decisions.create(f"Pick {i}", steps=[rel.id, rel.id])) for i in range(20)]
+    reads: list[str] = []
+    for name in ("get_node", "child_nodes", "match_nodes", "match_edges"):
+        original = getattr(g.store, name)
+
+        async def counted(*args, _name=name, _original=original, **kwargs):
+            reads.append(_name)
+            return await _original(*args, **kwargs)
+
+        monkeypatch.setattr(g.store, name, counted)
+    d = run(g.diff(start))
+    assert sorted(t.id for t in d.decisions_created) == sorted(t.id for t in decisions)
+    assert all([s.relation_id for s in t.steps] == [rel.id, rel.id] for t in d.decisions_created)
+    assert "get_node" not in reads and "child_nodes" not in reads
+    assert len(reads) <= 12
+    reads.clear()
+    listed = run(g.decisions.list()).items
+    assert [len(t.steps) for t in listed] == [2] * 20
+    assert len(reads) <= 3
+
+
+def test_diff_source_version_metadata_keeps_proto_and_nested_keys(capsys):
+    from helpers import cli, mcp_session
+
+    from selfgraph.runtime import to_jsonable
+
+    metadata = {"__proto__": "literal", "nested": [{"__proto__": {"kept": True}, "sibling": "kept"}]}
+    with mcp_session("diff-proto") as server:
+        g = run(server._graph_handle())
+        run(g.insert.text("Ann works at Acme.", source_id="proto", metadata=metadata))
+        d = run(g.diff("1900-01-01"))
+        assert [v.metadata for v in d.source_versions_added] == [metadata]
+        json_out = cli(g, ["diff", "--since", "1900-01-01", "--json"], capsys)
+        assert [v["metadata"] for v in json_out["source_versions_added"]] == [metadata]
+        tool = run(server.graph_diff("1900-01-01"))
+        assert [v["metadata"] for v in tool["source_versions_added"]] == [metadata]
+        assert to_jsonable(d)["source_versions_added"][0]["metadata"] == metadata
+
+
+def test_diff_lists_certify_and_uncertify_by_their_own_times():
+    g = fresh_graph("diff-certify")
+    create_entities(g, "Person:Ann", "Person:Bob")
+    rel = run(g.relations.create("person:ann", "KNOWS", "person:bob"))
+    start = instant()
+    run(g.relations.certify(rel.id, by="alice"))
+    certified = instant()
+    run(g.relations.certify(rel.id, by="bob"))
+    switched = instant()
+    run(g.relations.uncertify(rel.id))
+    end = instant()
+    first = run(g.diff(start, certified))
+    assert [(r.id, r.revision) for r in first.relations_certified] == [(rel.id, 1)]
+    assert first.relations_uncertified == first.relations_added == first.relations_revised == []
+    second = run(g.diff(certified, switched))
+    assert [r.id for r in second.relations_certified] == [r.id for r in second.relations_uncertified] == [rel.id]
+    third = run(g.diff(switched, end))
+    assert third.relations_certified == []
+    [ended] = third.relations_uncertified
+    assert [(c.by, c.until is not None) for c in ended.certifications] == [("alice", True), ("bob", True)]
+
+
+def test_diff_reads_certifications_from_every_version():
+    g = fresh_graph("diff-certify-versions")
+    create_entities(g, "Person:Ann", "Person:Bob")
+    rel = run(g.relations.create("person:ann", "KNOWS", "person:bob"))
+    start = instant()
+    run(g.relations.certify(rel.id, by="alice"))
+    run(g.relations.update(rel.id, set_properties={"n": 2}))
+    d = run(g.diff(start))
+    assert [(r.id, r.revision, r.is_current) for r in d.relations_certified] == [(rel.id, 1, False)]
+    assert [(r.id, r.revision) for r in d.relations_revised] == [(rel.id, 2)]
+
+
+def test_diff_certify_update_uncertify_ends_the_certification_at_the_update():
+    g = fresh_graph("diff-certify-update")
+    create_entities(g, "Person:Ann", "Person:Bob")
+    rel = run(g.relations.create("person:ann", "KNOWS", "person:bob"))
+    start = instant()
+    run(g.relations.certify(rel.id, by="alice"))
+    revised = run(g.relations.update(rel.id, set_properties={"n": 2}))
+    run(g.relations.uncertify(rel.id))
+    d = run(g.diff(start))
+    assert [(r.id, r.revision) for r in d.relations_certified] == [(rel.id, 1)]
+    assert [(r.id, r.revision) for r in d.relations_uncertified] == [(rel.id, 1)]
+    assert d.relations_uncertified[0].certifications[0].until == revised.created_at

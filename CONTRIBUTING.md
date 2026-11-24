@@ -28,8 +28,8 @@ to this repository.
 
 ## Pull request rules
 
-- Link an approved issue with `Closes #N`. You must be the issue author or an assignee. If not, a bot closes the PR.
-- Keep a maximum of 3 open PRs. If you open more, a bot closes your newest PR. Get an earlier PR merged or closed first. To ask, post in `#pr-discussion` on Discord.
+- Link an approved issue with `Closes #N`. You must be the issue author or an assignee. If not, a bot closes the PR. To be assigned, comment `/take` on an unassigned approved issue (up to 10 assigned issues at a time).
+- Keep a maximum of 10 open PRs. If you open more, a bot closes your newest PR. Get an earlier PR merged or closed first. To ask, post in `#pr-discussion` on Discord.
 - Keep each PR small and change only what the issue asks for. If a PR is large or has unrelated changes, we ask you to split it.
 - A PR over 1,000 changed lines (additions plus deletions, lockfiles excluded) is not reviewed. Split it into stacked PRs: open the first against `main`, base each next one on the previous branch, and give the order in each description ("1/3", "2/3").
 - If your PR has a breaking change, describe it in the PR.

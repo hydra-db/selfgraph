@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from .. import _ops
-from ..models import DecisionTrace, DeleteResult, Page, Status
+from ..models import DecisionTrace, DeleteResult, Page, Status, check_options
 from ._common import DEFAULT_PAGE_LIMIT, Resource, paginate
 
 __all__ = ["Decisions"]
@@ -25,6 +25,7 @@ class Decisions(Resource):
         alternative_entities: Iterable[str] = (),
         status: Status = "completed",
         event_time: datetime | str | None = None,
+        **options: Any,
     ) -> DecisionTrace:
         """Record a decision trace over existing relations.
 
@@ -41,6 +42,21 @@ class Decisions(Resource):
         @param event_time (datetime | str | None): the decision's valid time.
         @return (DecisionTrace): the recorded trace.
         """
+        check_options(
+            "decisions.create",
+            options,
+            [
+                "steps",
+                "id",
+                "actor_entity",
+                "summary",
+                "rationale",
+                "outcome_entity",
+                "alternative_entities",
+                "status",
+                "event_time",
+            ],
+        )
         return await self._c._write(
             _ops.create_trace,
             title=title,
@@ -66,7 +82,14 @@ class Decisions(Resource):
         status: Status | None = None,
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
+        **options: Any,
     ) -> Page[DecisionTrace]:
+        """List matching records in id order.
+
+        @param options (Any): extra option names to reject.
+        @return (Page): the matching records.
+        """
+        check_options("decisions.list", options, ["actor_entity", "status", "cursor", "limit"])
         return await self._page(
             _ops.list_traces, actor_entity=actor_entity, status=status, cursor=cursor, limit=limit, by_id="decision"
         )
@@ -77,6 +100,7 @@ class Decisions(Resource):
         actor_entity: str | None = None,
         status: Status | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
+        **options: Any,
     ) -> AsyncIterator[DecisionTrace]:
         """Yield every decision trace across pages, following the list cursor.
 
@@ -85,6 +109,7 @@ class Decisions(Resource):
         @param limit (int): the page size per fetch, not a cap; iteration yields every match.
         @return (AsyncIterator[DecisionTrace]): every matching decision trace.
         """
+        check_options("decisions.iterate", options, ["actor_entity", "status", "limit"])
         return paginate(self.list, actor_entity=actor_entity, status=status, limit=limit)
 
     async def update(self, id: str, *, clear: Iterable[str] = (), **fields: Any) -> DecisionTrace:

@@ -3,7 +3,7 @@ import type { FalkorDB, FalkorDBOptions, Graph, GraphReply, QueryParams } from "
 import { connectionReason, errorMessage, StoreError, TransientError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
-import type { CypherResult, JsonValue } from "../models.js";
+import { type CypherResult, checkResultDepth, type JsonValue } from "../models.js";
 import type { GraphStore } from "../protocols.js";
 import { checkOptions, keysOf } from "../validate.js";
 import { autoCommit, CypherPrimitives, graphProperties, WRITE_COUNTER_NAMES } from "./cypherPrimitives.js";
@@ -71,6 +71,7 @@ function isGraphEntity(value: Record<string, unknown>): boolean {
  */
 function toJson(value: unknown): unknown {
   if (value === null || value === undefined) return null;
+  if (typeof value === "number" && !Number.isFinite(value)) return null;
   if (typeof value === "bigint")
     return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value;
   if (Array.isArray(value)) return value.map(toJson);
@@ -158,6 +159,7 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
       const v = Math.trunc(Number(res.stats?.[js] ?? 0));
       if (v) counters[py] = v;
     }
+    checkResultDepth(rows);
     return { columns, rows, counters, warnings: [] };
   }
 

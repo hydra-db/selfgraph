@@ -761,7 +761,7 @@ class CypherPrimitives(CypherRunner):
         query = (
             f"MATCH (a:{from_label})-[r]->(b{blabel}) WHERE {' AND '.join(where)} "
             f"RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t "
-            f"ORDER BY {order} SKIP $skip LIMIT $limit"
+            f"ORDER BY {order}, from_e, to_e, t SKIP $skip LIMIT $limit"
         )
         res = await self._run(query, params)
         return [_edge_row(r) for r in res.rows]

@@ -13,11 +13,14 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from ._cypher_guard import blank_lexical_tokens
 from ._maintenance import scan_entities, scan_relations
 from ._ops import DECISION_CLEARABLE, PREFERENCE_CLEARABLE, invalidated_note, parse_time, require_changes
 from ._serde import EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES
+from ._unicode import casefold
 from .client import SelfGraph
 from .errors import (
+    MALFORMED_USERINFO_ESCAPE,
     STORE_KUZU_HINT,
     NotFoundError,
     StoreError,
@@ -30,7 +33,7 @@ from .errors import (
     surface_hint,
 )
 from .extraction.prompts import check_prompts
-from .ids import _require_namespace
+from .ids import _MAX_JSON_DEPTH, _require_clean_json, _require_namespace
 from .llm.base import check_llm_config
 from .models import (
     LLM_CONCURRENCY,
@@ -44,6 +47,7 @@ from .models import (
     Relation,
     as_input,
     check_options,
+    conflicting_prefix,
 )
 from .protocols import GraphStore
 from .resolution import require_resolver
@@ -82,8 +86,6 @@ _IGNORED_BY_STORE = {"kuzu": ("auth", "database")}
 _FALKOR_SCHEMES = ("redis", "rediss", "falkor", "falkors")
 _FALKOR_ADDRESS = "host:port or a redis://, rediss://, falkor://, or falkors:// URL"
 _PARAM_REF = re.compile(r"\$(\w+)")
-_LINE_TERMINATORS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
-_BLANK = "\x00"
 _Hinted = TypeVar("_Hinted", InsertResult, PruneResult)
 
 
@@ -129,6 +131,21 @@ def settings_from_env(**overrides: Any) -> GraphSettings:
     return GraphSettings(**values)
 
 
+def _stdin_utf8() -> str:
+    """Read stdin as strict UTF-8, whatever error handler the locale chose.
+
+    `sys.stdin` decodes with the locale's handler, which is surrogateescape on
+    macOS, so invalid bytes would arrive as lone surrogates instead of raising
+    and the caller could not report them as bad input.
+
+    @return (str): the decoded text.
+    """
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read().encode("utf-8", "surrogateescape").decode("utf-8")
+    return buffer.read().decode("utf-8")
+
+
 def read_text(path: str) -> str:
     """Read a UTF-8 text file, or stdin when the path is '-'.
 
@@ -136,7 +153,14 @@ def read_text(path: str) -> str:
     @return (str): the text.
     """
     try:
-        return sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+        if path == "-":
+            return _stdin_utf8()
+        return Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(
+            f"cannot read {path!r}: not valid UTF-8; save the file as UTF-8 and try again",
+            field="path",
+        ) from exc
     except OSError as exc:
         raise ValidationError(f"cannot read {path!r}: {exc.strerror or exc}") from exc
 
@@ -150,26 +174,41 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not a JSON value")
 
 
-def parse_json(text: str, where: str = "") -> Any:
+def parse_json(text: str, where: str = "", field: str | None = None) -> Any:
     """Parse strict JSON text, naming where it came from in the error.
+
+    A document nested past `_MAX_JSON_DEPTH` raises instead of returning a value, so an
+    error cannot leak downstream as data. The depth counts the parsed value itself, not
+    the wrapper the caller typed, so `{"k": <deep>}` and `<deep>` agree.
 
     @param text (str): the JSON text.
     @param where (str): appended to "invalid JSON" in the error, e.g. " in 'graph.json'".
+    @param field (str | None): the argument or key at fault, when one is.
     @return (Any): the parsed value.
     """
     try:
-        return json.loads(text, parse_constant=_reject_constant)
+        value = json.loads(text, parse_constant=_reject_constant)
     except ValueError as exc:
-        raise ValidationError(f"invalid JSON{where}: {exc}") from exc
+        raise ValidationError(f"invalid JSON{where}: {exc}", field=field) from exc
+    try:
+        _require_clean_json("JSON", value, safe_ints=False)
+    except ValidationError as exc:
+        if "nested too deeply" not in str(exc):
+            raise
+        raise ValidationError(
+            f"invalid JSON{where}: nested too deeply; keep it under {_MAX_JSON_DEPTH} levels", field=field
+        ) from exc
+    return value
 
 
-def read_json(path: str) -> Any:
+def read_json(path: str, field: str = "path") -> Any:
     """Read and parse a JSON file, or stdin when the path is '-'.
 
     @param path (str): the file path, or '-'.
+    @param field (str): the argument or key at fault, when the JSON inside is too deep.
     @return (Any): the parsed JSON.
     """
-    return parse_json(read_text(path), f" in {path!r}")
+    return parse_json(read_text(path), f" in {path!r}", field)
 
 
 def _json_setting(value: Any, what: str) -> Any:
@@ -182,71 +221,8 @@ def _json_setting(value: Any, what: str) -> Any:
     if not isinstance(value, str):
         return value
     if value.lstrip().startswith("{"):
-        return parse_json(value, f" in the inline {what}")
-    return read_json(value)
-
-
-def blank_lexical_tokens(query: str) -> str:
-    """Blank string literals, backtick identifiers, and comments with one char scan that matches engine lexing.
-
-    Quoted strings use backslash escaping; a backtick identifier escapes a backtick by doubling it; a line
-    comment ends at any engine line terminator (not only newline); a block comment ends at the first '*/'. An
-    unterminated token leaves the rest of the query visible so a hidden write keyword is still scanned, which
-    makes the guard fail closed rather than desynchronise on a mis-modelled token boundary.
-
-    @param query (str): the raw Cypher statement.
-    @return (str): the query with each lexical token replaced by one NUL character.
-    """
-    out: list[str] = []
-    i, n = 0, len(query)
-    while i < n:
-        ch = query[i]
-        if ch in "'\"":
-            j = i + 1
-            while j < n:
-                if query[j] == "\\":
-                    j += 2
-                    continue
-                if query[j] == ch:
-                    j += 1
-                    break
-                j += 1
-            else:
-                break
-            out.append(_BLANK)
-            i = j
-        elif ch == "`":
-            j = i + 1
-            while j < n:
-                if query[j] == "`":
-                    if j + 1 < n and query[j + 1] == "`":
-                        j += 2
-                        continue
-                    j += 1
-                    break
-                j += 1
-            else:
-                break
-            out.append(_BLANK)
-            i = j
-        elif ch == "/" and i + 1 < n and query[i + 1] == "*":
-            end = query.find("*/", i + 2)
-            if end == -1:
-                break
-            out.append(_BLANK)
-            i = end + 2
-        elif ch == "/" and i + 1 < n and query[i + 1] == "/":
-            j = i + 2
-            while j < n and query[j] not in _LINE_TERMINATORS:
-                j += 1
-            out.append(_BLANK)
-            i = j
-        else:
-            out.append(ch)
-            i += 1
-    if i < n:
-        out.append(query[i:])
-    return "".join(out)
+        return parse_json(value, f" in the inline {what}", what)
+    return read_json(value, what)
 
 
 _PATTERN_NAMES = re.compile(
@@ -281,7 +257,7 @@ def _squash(text: str) -> str:
     @param text (str): the text.
     @return (str): the squashed text.
     """
-    return " ".join(text.split()).casefold()
+    return casefold(" ".join(text.split()))
 
 
 async def _cypher_notes(graph: SelfGraph, query: str) -> list[str]:
@@ -455,6 +431,38 @@ def _falkor_address(uri: str) -> tuple[Any, int | None, bool]:
     return parsed, port, scheme in ("rediss", "falkors")
 
 
+def _url_unquote(text: str) -> str:
+    """Decode the percent escapes of a URL user or password, rejecting a malformed escape as the TypeScript SDK does.
+
+    @param text (str): the user or password as written in the URL.
+    @return (str): the decoded text; raises ValidationError for a % not followed by two hex digits or escapes that
+        are not UTF-8, without quoting the text.
+    """
+    from urllib.parse import unquote
+
+    if re.search(r"%(?![0-9A-Fa-f]{2})", text):
+        raise ValidationError(MALFORMED_USERINFO_ESCAPE, code="invalid_setting", field="uri")
+    try:
+        return unquote(text, errors="strict")
+    except UnicodeDecodeError:
+        raise ValidationError(MALFORMED_USERINFO_ESCAPE, code="invalid_setting", field="uri") from None
+
+
+def _falkor_credentials(uri: str, auth: Any) -> tuple[str | None, str | None]:
+    """The user name and password a FalkorDB store logs in with: auth, else the URL's, percent-decoded.
+
+    @param uri (str): the address.
+    @param auth (Any): the auth setting.
+    @return (tuple[str | None, str | None]): the user name and password, None when empty.
+    """
+    parsed, _, _ = _falkor_address(uri)
+    if auth:
+        username, password = parse_auth(auth, None)
+    else:
+        username, password = _url_unquote(parsed.username or ""), _url_unquote(parsed.password or "")
+    return username or None, password or None
+
+
 def _falkor_store(uri: str, settings: GraphSettings) -> GraphStore:
     """A FalkorDB store from host:port or a redis:// style URL; auth, else the URL credentials, logs in.
 
@@ -462,16 +470,10 @@ def _falkor_store(uri: str, settings: GraphSettings) -> GraphStore:
     @param settings (GraphSettings): the resolved auth and database settings.
     @return (GraphStore): the store.
     """
-    from urllib.parse import unquote
-
+    parsed, port, tls = _falkor_address(uri)
+    username, password = _falkor_credentials(uri, settings.auth)
     from .stores.falkordb import FalkorDBStore
 
-    parsed, port, tls = _falkor_address(uri)
-    if settings.auth:
-        username, password = parse_auth(settings.auth, None)
-    else:
-        username = unquote(parsed.username) if parsed.username else None
-        password = unquote(parsed.password) if parsed.password else None
     credentials: dict[str, Any] = {k: v for k, v in (("username", username), ("password", password)) if v}
     if tls:
         credentials["ssl"] = True
@@ -570,6 +572,14 @@ def _build_llm(settings: GraphSettings) -> LLMConfig | None:
         raise ValidationError(
             f"an LLM needs a provider; pass {setting_hint('llm_provider')}, or a provider-prefixed "
             "model such as openai/gpt-4o-mini",
+            code="invalid_setting",
+            field="llm_provider",
+        )
+    prefix = conflicting_prefix(provider, settings.llm_model, settings.llm_base_url)
+    if prefix is not None:
+        raise ValidationError(
+            f"llm_provider {provider!r} conflicts with model prefix {prefix!r}; "
+            f"pass {setting_hint('llm_provider')} matching the model",
             code="invalid_setting",
             field="llm_provider",
         )

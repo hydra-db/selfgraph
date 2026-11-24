@@ -100,3 +100,31 @@ def test_entity_types_that_are_not_hydradb_labels_still_write():
     types, labelled = run(go())
     assert types == {"big-co:acme": "Big Co", "शहर:delhi": "शहर", "person:ada": "Person", "big-co.v2:bot": "Big-Co.v2"}
     assert labelled
+
+
+@pytest.mark.parametrize("operation", ["node", "edge", "update"])
+def test_json_blobs_use_the_full_hydradb_row_budget(operation):
+    store, ns = make_store(), unique_ns("blob")
+    blob = '{"text":"' + "x" * (1100 * 1024) + '"}'
+
+    async def go():
+        await store.initialize()
+        await store.upsert_node(ns, "Source", "x:a", _props(ns, "x:a"))
+        await store.upsert_node(ns, "Source", "x:b", _props(ns, "x:b"))
+        props = {"id": "e:blob", "ns": ns, "revision": 1, "is_current": True, "properties_json": blob}
+        if operation == "node":
+            await store.upsert_node(ns, "Source", "x:a", {**_props(ns, "x:a"), "properties_json": blob})
+            assert (await store.get_node(ns, "Source", "x:a"))["properties_json"] == blob
+            query = "MATCH (n:Source {ns: $ns, sid: 'x:a'}) RETURN n.properties_json AS duplicate"
+        else:
+            initial = {**props, "properties_json": "{}"} if operation == "update" else props
+            assert await store.create_edge(ns, "LINK", "Source", "x:a", "Source", "x:b", initial)
+            if operation == "update":
+                await store.update_current_edge(ns, "e:blob", {"properties_json": blob})
+            assert (await store.get_current_edge(ns, "e:blob"))["props"]["properties_json"] == blob
+            query = "MATCH (:Source {ns: $ns})-[r:RELATES]->() RETURN r.properties_json AS duplicate"
+        assert (await store.run_cypher(query, {"ns": ns})).rows == [{"duplicate": None}]
+        await store.delete_node(ns, "Source", "x:a")
+        await store.delete_node(ns, "Source", "x:b")
+
+    run(go())

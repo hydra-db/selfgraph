@@ -68,6 +68,7 @@ __all__ = [
     "MergeRecord",
     "UnmergeResult",
     "SourceDiff",
+    "SourceVersion",
     "TermCoverage",
     "AnswerabilityReport",
     "LintIssue",
@@ -220,8 +221,7 @@ def _unknown_key(model: "type[InputModel]", value: Any, label: str, path: str = 
     if not isinstance(value, Mapping):
         return None
     keys = [field.alias or name for name, field in model.model_fields.items()]
-    accepted = set(keys) | set(model.model_fields)
-    unknown = sorted(str(k) for k in value if k not in accepted)
+    unknown = sorted(str(k) for k in value if k not in keys)
     if unknown:
         where = f"{label}.{path}" if path else label
         return ValidationError(
@@ -286,7 +286,7 @@ class TopInputModel(InputModel):
         try:
             super().__init__(**data)
         except PydanticValidationError as exc:
-            raise validation_error(f"invalid {self.input_label}", exc) from exc
+            raise validation_error(f"invalid {self.input_label}", exc) from None
 
 
 M = TypeVar("M", bound=BaseModel)
@@ -305,7 +305,7 @@ def as_input(model: type[M], value: Any, what: str) -> M | None:
     try:
         return model.model_validate(value)
     except PydanticValidationError as exc:
-        raise validation_error(f"invalid {what}", exc) from exc
+        raise validation_error(f"invalid {what}", exc) from None
 
 
 def _issue_message(err: Mapping[str, Any]) -> str:
@@ -315,6 +315,8 @@ def _issue_message(err: Mapping[str, Any]) -> str:
     @return (str): the message, such as "field required" or "expected string".
     """
     kind, ctx = err["type"], err.get("ctx") or {}
+    if kind == "int_from_float":
+        return "expected integer"
     if kind == "missing":
         return "field required"
     base = kind.removesuffix("_type").removesuffix("_parsing")
@@ -428,16 +430,6 @@ class Relation(BaseModel):
     certifications: list[Certification] = Field(default_factory=list)
 
 
-class GraphDiff(BaseModel):
-    since: datetime
-    until: datetime
-    relations_added: list[Relation] = Field(default_factory=list)
-    relations_retired: list[Relation] = Field(default_factory=list)
-    relations_revised: list[Relation] = Field(default_factory=list)
-    entities_created: list[Entity] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=lambda: ["Deletes and merges are not visible."])
-
-
 class Preference(BaseModel):
     id: str
     revision: int
@@ -491,6 +483,7 @@ class MergeRewrite(BaseModel):
     rewritten: dict[str, JsonValue] = Field(default_factory=dict)
     existed: bool = False
     dropped: bool = False
+    evidence: list[Evidence] = Field(default_factory=list)
 
 
 class MergeRecord(BaseModel):
@@ -514,6 +507,34 @@ class SourceDiff(BaseModel):
     kept: list[str] = Field(default_factory=list)
     added: list[str] = Field(default_factory=list)
     retired: list[str] = Field(default_factory=list)
+
+
+class SourceVersion(BaseModel):
+    id: str
+    source_id: str
+    media_type: str
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    event_time: datetime | None = None
+    created_at: datetime
+
+
+class GraphDiff(BaseModel):
+    since: datetime
+    until: datetime
+    relations_added: list[Relation] = Field(default_factory=list)
+    relations_retired: list[Relation] = Field(default_factory=list)
+    relations_revised: list[Relation] = Field(default_factory=list)
+    entities_created: list[Entity] = Field(default_factory=list)
+    relations_certified: list[Relation] = Field(default_factory=list)
+    relations_uncertified: list[Relation] = Field(default_factory=list)
+    preferences_added: list[Preference] = Field(default_factory=list)
+    preferences_revised: list[Preference] = Field(default_factory=list)
+    decisions_created: list[DecisionTrace] = Field(default_factory=list)
+    decisions_updated: list[DecisionTrace] = Field(default_factory=list)
+    entities_merged: list[MergeRecord] = Field(default_factory=list)
+    entities_unmerged: list[MergeRecord] = Field(default_factory=list)
+    source_versions_added: list[SourceVersion] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=lambda: ["Deletes and entity edits are not visible."])
 
 
 class InsertResult(BaseModel):
@@ -610,6 +631,20 @@ class CypherResult(BaseModel):
     counters: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
+    @field_validator("rows", mode="before")
+    @classmethod
+    def _result_depth(cls, rows: Any) -> Any:
+        """Bound result cell nesting. @param rows (Any): rows. @return (Any): checked rows."""
+        pending = [(value, 0) for row in rows for value in row.values()]
+        while pending:
+            value, depth = pending.pop()
+            if isinstance(value, dict | list | tuple):
+                if depth >= 254:
+                    raise ValidationError("run_cypher result exceeds the maximum nesting depth of 254", field="rows")
+                items = value.values() if isinstance(value, dict) else value
+                pending.extend((item, depth + 1) for item in items)
+        return rows
+
 
 class EntityInput(InputModel):
     input_label: ClassVar[str] = "entity"
@@ -664,14 +699,25 @@ def _facts_time(value: Any) -> Any:
 FactsTime = Annotated[datetime | None, BeforeValidator(_facts_time)]
 
 
+def _evidence_offset(value: Any) -> Any:
+    """Reject nonnumeric evidence offsets before integer validation.
+
+    @param value (Any): the raw offset.
+    @return (Any): the numeric offset or None.
+    """
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int | float)):
+        raise ValueError("expected number")
+    return value
+
+
 class EvidenceInput(InputModel):
     input_label: ClassVar[str] = "evidence"
 
     source_id: str
     chunk_id: str | None = None
     quote: str | None = None
-    start_offset: int | None = None
-    end_offset: int | None = None
+    start_offset: Annotated[int | None, BeforeValidator(_evidence_offset)] = None
+    end_offset: Annotated[int | None, BeforeValidator(_evidence_offset)] = None
     confidence: StrictFloat | None = None
 
     _clean_source_id = _check(_require_no_control, "evidence source_id", "source_id")
@@ -783,6 +829,23 @@ _KNOWN_PROVIDERS = _DIRECT_PROVIDERS | {
 _SAME_PROVIDER = {"google": "gemini"}
 
 
+def conflicting_prefix(provider: str, model: str, base_url: str | None) -> str | None:
+    """Find a known provider prefix on a first-party provider's model that names another provider, such as gemini/x.
+
+    Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed
+    models, so only a first-party provider without a base_url is checked, and only against a known prefix.
+
+    @param provider (str): the configured provider.
+    @param model (str): the configured model.
+    @param base_url (str | None): the configured base URL.
+    @return (str | None): the conflicting prefix as written in the model, or None when there is no conflict.
+    """
+    prefix, sep, _ = model.partition("/")
+    own, other = provider.lower(), prefix.lower()
+    known = sep and not base_url and own in _DIRECT_PROVIDERS and other in _KNOWN_PROVIDERS
+    return prefix if known and _SAME_PROVIDER.get(own, own) != _SAME_PROVIDER.get(other, other) else None
+
+
 class LLMConfig(TopInputModel):
     input_label: ClassVar[str] = "llm config"
 
@@ -799,15 +862,10 @@ class LLMConfig(TopInputModel):
     def _matching_prefix(self) -> "LLMConfig":
         """Reject a first-party provider's model prefixed with another provider, such as anthropic with gemini/x.
 
-        Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed
-        models, so only a first-party provider without a base_url is checked, and only against a known prefix.
-
         @return (LLMConfig): the config; raises ValidationError on a conflict.
         """
-        prefix, sep, _ = self.model.partition("/")
-        own, other = self.provider.lower(), prefix.lower()
-        known = sep and not self.base_url and own in _DIRECT_PROVIDERS and other in _KNOWN_PROVIDERS
-        if known and _SAME_PROVIDER.get(own, own) != _SAME_PROVIDER.get(other, other):
+        prefix = conflicting_prefix(self.provider, self.model, self.base_url)
+        if prefix is not None:
             raise ValidationError(
                 f"provider {self.provider!r} conflicts with model prefix {prefix!r}",
                 code="invalid_setting",

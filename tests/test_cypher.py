@@ -1,5 +1,17 @@
+import json
+
 import pytest
-from helpers import DriverError, create_entities, new_graph, run, skip_on_falkordb, skip_on_generic
+from helpers import (
+    FALKORDB,
+    DriverError,
+    create_entities,
+    fresh_graph,
+    mcp_session,
+    new_graph,
+    run,
+    skip_on_falkordb,
+    skip_on_generic,
+)
 
 from selfgraph import StoreError, TransientError
 from selfgraph.stores.cypher import _translate_cypher_error
@@ -98,3 +110,37 @@ def test_syntax_error_is_not_a_conflict():
     with pytest.raises(StoreError) as err:
         run(new_graph().run_cypher("RETURN"))
     assert not isinstance(err.value, TransientError)
+
+
+def test_run_cypher_path_properties():
+    g = fresh_graph("path")
+    run(
+        g.run_cypher(
+            "CREATE (a:PathTest {ns:$ns, id:'1', _lock:1})-[:REL {w:2, _lock:1}]->(b:PathTest {ns:$ns, id:'2'})",
+            {"ns": g.namespace},
+        )
+    )
+    path = {"nodes": [{"ns": g.namespace, "id": "1"}, {"ns": g.namespace, "id": "2"}], "relationships": [{"w": 2}]}
+    query = "MATCH p=(a:PathTest {ns:$ns})-[:REL]->(b:PathTest) RETURN p, [p] AS nested"
+    assert run(g.run_cypher(query, {"ns": g.namespace})).rows == [{"p": path, "nested": [path]}]
+    query = "MATCH p=(a:PathTest {ns:$ns, id:'1'})-[*0..0]->(b) RETURN p"
+    assert run(g.run_cypher(query, {"ns": g.namespace})).rows == [
+        {"p": {"nodes": [path["nodes"][0]], "relationships": []}}
+    ]
+
+
+@pytest.mark.skipif(not FALKORDB, reason="FalkorDB non-finite result encoding")
+def test_run_cypher_non_finite_json():
+    query = (
+        "RETURN 1.0/0.0 AS positive, -1.0/0.0 AS negative, 0.0/0.0 AS nan, {values: [1.0/0.0, 0.0/0.0, 2.5]} AS nested"
+    )
+    expected = [{"positive": None, "negative": None, "nan": None, "nested": {"values": [None, None, 2.5]}}]
+    result = run(new_graph().run_cypher(query))
+    assert result.rows == expected
+    json.dumps(result.rows, allow_nan=False)
+    with mcp_session("nonfinite") as server:
+        result = run(server.build_server().call_tool("run_cypher", {"query": query}))
+        assert not result.is_error
+        assert result.structured_content["rows"] == expected
+        assert json.loads(result.content[0].text) == result.structured_content
+        json.dumps(result.structured_content, allow_nan=False)

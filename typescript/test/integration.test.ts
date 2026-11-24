@@ -22,11 +22,30 @@ import {
 import { pyRepr } from "../src/internal/py.js";
 import { childEdgeId, LABELS } from "../src/labels.js";
 import { Extraction, parseOrThrow } from "../src/models.js";
+import * as ops from "../src/ops.js";
 import { HUB_DEGREE } from "../src/retrieval.js";
 import { boltError, openDriver, parseAuth, queryError } from "../src/stores/bolt.js";
 import { uniqueLabels } from "../src/stores/cypher.js";
 import { kuzuError } from "../src/stores/kuzu.js";
-import { forEachStore, freshGraphs, KUZU_SPEC, type StoreSpec, uniqueNs } from "./helpers.js";
+import {
+  ANN_AT_ACME,
+  forEachStore,
+  freshGraphs,
+  interruptWrite,
+  KUZU_SPEC,
+  type StoreSpec,
+  uniqueNs,
+} from "./helpers.js";
+
+const concurrentWrite = (error: unknown): boolean =>
+  error instanceof TransientError && String(error.cause).includes("concurrent write");
+const revisions = async (versions: Promise<readonly { revision: number; is_current: boolean }[]>) =>
+  (await versions).map((v) => [v.revision, v.is_current]);
+
+const NOTE_WORDS = (
+  "zebra quartz walnut falcon ember lotus marble nectar orchid pepper " +
+  "raven saffron tundra velvet willow yarrow cobalt dahlia fennel garnet"
+).split(" ");
 
 const NO_DELETES = {
   deleted_entities: 0,
@@ -281,26 +300,29 @@ function suite(spec: StoreSpec) {
     },
   );
 
-  it.each(["batch", "stored"])("still merges matching preference ids (%s)", async (restate) => {
+  it("still merges matching preference ids", async () => {
     const g = fresh();
     await g.entities.create("Ada", "Person");
     await g.entities.create("Tea", "Drink");
-    const pref = { id: "preference:fav", subject_entity: "person:ada", key: "drink", value_entity: "drink:tea" };
-    let batch = [
-      { ...pref, strength: 0.2 },
-      { ...pref, strength: 0.9 },
+    const pref = { subject_entity: "person:ada", key: "drink", value_entity: "drink:tea" };
+    await g.preferences.create("person:ada", "drink", "drink:tea", { id: "preference:stored", strength: 0.2 });
+    const batch = [
+      { ...pref, id: "preference:stored", strength: 0.9 },
+      { ...pref, id: "preference:fresh", strength: 0.2 },
+      { ...pref, id: "preference:fresh", strength: 0.9 },
     ];
-    if (restate === "stored") {
-      await g.preferences.create("person:ada", "drink", "drink:tea", { id: "preference:fav", strength: 0.2 });
-      batch = [{ ...pref, strength: 0.9 }];
-    }
 
     const result = await g.insert.facts({ preferences: batch }, { source_id: "restated" });
 
-    expect(result.preferences.map((p) => p.id)).toEqual(["preference:fav"]);
-    const preference = await g.preferences.get("preference:fav");
-    expect([preference?.subject_entity, preference?.key, preference?.strength]).toEqual(["person:ada", "drink", 0.9]);
-    expect(await g.preferences.versions("preference:fav")).toHaveLength(2);
+    expect(result.preferences.map((p) => p.id)).toEqual(["preference:stored", "preference:fresh"]);
+    for (const [pid, versions] of [
+      ["preference:stored", 2],
+      ["preference:fresh", 1],
+    ] as const) {
+      const preference = await g.preferences.get(pid);
+      expect([preference?.subject_entity, preference?.key, preference?.strength]).toEqual(["person:ada", "drink", 0.9]);
+      expect(await g.preferences.versions(pid)).toHaveLength(versions);
+    }
   });
 
   it.runIf(spec.name === "kuzu")("batches relation ID preflight reads", async () => {
@@ -334,6 +356,34 @@ function suite(spec: StoreSpec) {
     }
   });
 
+  it("rejects a non-boolean include_invalidated or newest_first with the Python text", async () => {
+    const g = fresh();
+    await g.entities.create("X", "T", { id: "t:x" });
+    await g.entities.create("Y", "T", { id: "t:y" });
+    const rel = await g.relations.create("t:x", "KNOWS", "t:y");
+    for (const [flag, kind] of [
+      ["false", "string"],
+      ["no", "string"],
+      [0, "number"],
+      [1, "number"],
+    ] as const) {
+      const listed = new ValidationError(`include_invalidated must be a boolean, got ${kind}`, {
+        field: "include_invalidated",
+      });
+      await expect(g.relations.list({ include_invalidated: flag as never })).rejects.toThrow(listed);
+      await expect(g.relations.list({ include_invalidated: flag as never })).rejects.toMatchObject({
+        code: "invalid_argument",
+        field: "include_invalidated",
+      });
+      const order = new ValidationError(`newest_first must be a boolean, got ${kind}`, { field: "newest_first" });
+      await expect(g.relations.versions(rel.id, { newest_first: flag as never })).rejects.toThrow(order);
+      await expect(g.preferences.versions("preference:missing", { newest_first: flag as never })).rejects.toThrow(
+        order,
+      );
+    }
+    expect((await g.relations.list({ include_invalidated: false })).items.map((r) => r.id)).toEqual([rel.id]);
+  });
+
   it("reports a bad stance or status with the Python text, after the id check", async () => {
     const g = fresh();
     await g.entities.create("X", "T", { id: "t:x" });
@@ -352,6 +402,22 @@ function suite(spec: StoreSpec) {
     await expect(g.decisions.update("decision:nope", { status: "weird" as never })).rejects.toBeInstanceOf(
       NotFoundError,
     );
+  });
+
+  const dottedCapitalI = [
+    ["İ\u0327", "Person"],
+    ["Ada", "İ\u0327"],
+  ];
+  it.each(dottedCapitalI)("finds a dotted capital I and cedilla entity by its id: %s / %s", async (name, type) => {
+    const g = fresh();
+    const e = await g.entities.create(name, type);
+    expect((await g.entities.get(e.id))!.id).toBe(e.id);
+    expect((await g.entities.update(e.id, { properties: { k: 1 } })).properties).toEqual({ k: 1 });
+    const rel = await g.relations.create(e.id, "KNOWS", e.id);
+    expect([rel.from_entity, rel.to_entity]).toEqual([e.id, e.id]);
+    expect((await g.insert.facts({ entities: [{ type, name }] })).entities.map((x) => x.id)).toEqual([e.id]);
+    expect((await g.entities.delete(e.id)).deleted_entities).toBe(1);
+    expect(await g.entities.get(e.id)).toBeNull();
   });
 
   it("canonicalizes explicit entity ids on every input path", async () => {
@@ -574,6 +640,185 @@ function suite(spec: StoreSpec) {
     await expect(graph.preferences.update(pid, { strength: 2 })).rejects.toBeInstanceOf(ValidationError);
     expect((await graph.preferences.list("person:jane-doe", { stance: "disinterest" })).items).toHaveLength(1);
     expect((await graph.preferences.list({ key: "database" })).items).toHaveLength(2);
+  });
+
+  it.runIf(!spec.transactional)("completes a relation left without a current version", async () => {
+    const rows = [
+      [{ set_properties: { role: "manager" } }, { role: "manager" }],
+      [{ set_properties: { role: "eng" } }, { role: "eng" }],
+      [{ set_properties: { team: "core" } }, { role: "eng", team: "core" }],
+      [{ remove_properties: ["role"] }, {}],
+    ] as const;
+    for (const [changes, expected] of rows) {
+      const g = fresh();
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", { properties: { role: "eng" } });
+      await interruptWrite(g, () => g.relations.update(rel.id, { set_properties: { role: "cto" } }));
+      expect(await g.relations.get(rel.id)).toBeNull();
+      expect(await revisions(g.relations.versions(rel.id))).toEqual([[1, false]]);
+
+      const updated = await g.relations.update(rel.id, { remove_properties: [], ...changes });
+
+      expect([updated.revision, updated.is_current, updated.properties]).toEqual([2, true, expected]);
+      expect(await g.relations.get(rel.id)).toEqual(updated);
+      expect((await g.relations.versions(rel.id)).map((v) => [v.revision, v.is_current, v.properties])).toEqual([
+        [2, true, expected],
+        [1, false, { role: "eng" }],
+      ]);
+      expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([rel.id]);
+    }
+  });
+
+  it.runIf(!spec.transactional)("completes a preference left without a current version", async () => {
+    const rows = [
+      [{ strength: 0.9 }, 0.9],
+      [{ strength: 0.5 }, 0.5],
+      [{ clear: ["strength"] }, null],
+    ] as const;
+    for (const [changes, expected] of rows) {
+      const g = fresh();
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      const pref = await g.preferences.create("person:ann", "employer", "company:acme", { strength: 0.5 });
+      await interruptWrite(g, () => g.preferences.update(pref.id, { remove_properties: [], strength: 1 }));
+      expect(await g.preferences.get(pref.id)).toBeNull();
+      expect(await revisions(g.preferences.versions(pref.id))).toEqual([[1, false]]);
+
+      const updated = await g.preferences.update(pref.id, { remove_properties: [], ...changes });
+
+      expect([updated.revision, updated.is_current, updated.strength]).toEqual([2, true, expected]);
+      expect(await g.preferences.get(pref.id)).toEqual(updated);
+      expect((await g.preferences.versions(pref.id)).map((v) => [v.revision, v.is_current, v.strength])).toEqual([
+        [2, true, expected],
+        [1, false, 0.5],
+      ]);
+      expect((await g.preferences.list("person:ann")).items.map((p) => p.id)).toEqual([pref.id]);
+    }
+  });
+
+  it.runIf(!spec.transactional)("completes a preference left without a current version on insert", async () => {
+    const g = fresh();
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
+    const pref = await g.preferences.create("person:ann", "employer", "company:acme", {
+      strength: 0.5,
+      properties: { a: 1 },
+    });
+    await interruptWrite(g, () => g.preferences.update(pref.id, { strength: 1 }));
+    const facts = { subject_entity: "person:ann", key: "employer", value_entity: "company:acme" };
+
+    const [inserted] = (await g.insert.facts({ preferences: [{ ...facts, properties: { b: 2 } }] })).preferences;
+
+    expect([inserted!.revision, inserted!.is_current, inserted!.strength]).toEqual([2, true, 0.5]);
+    expect(await g.preferences.get(pref.id)).toEqual(inserted);
+    expect((await g.preferences.versions(pref.id)).map((v) => [v.revision, v.is_current, v.properties])).toEqual([
+      [2, true, { a: 1, b: 2 }],
+      [1, false, { a: 1 }],
+    ]);
+  });
+
+  it.runIf(!spec.transactional)("waits for a relation write still running in its transaction", async () => {
+    for (const by of ["update", "insert", "recovery"] as const) {
+      const g = fresh();
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", { properties: { role: "eng" } });
+      const ends = { from_entity: rel.from_entity, type: rel.type, to_entity: rel.to_entity };
+      if (by === "recovery") {
+        await interruptWrite(g, () => g.relations.update(rel.id, { set_properties: { role: "lead" } }));
+      }
+      const write =
+        by === "insert"
+          ? () => g.insert.facts({ relations: [{ ...ends, properties: { role: "cto" } }] })
+          : () => g.relations.update(rel.id, { set_properties: { role: "cto" } });
+      await interruptWrite(g, write, {
+        method: by === "insert" ? "createEdges" : "createEdge",
+        whileStuck: async () => {
+          await expect(g.relations.update(rel.id, { set_properties: { team: "core" } })).rejects.toSatisfy(
+            concurrentWrite,
+          );
+          await expect(g.insert.facts({ relations: [{ ...ends, properties: { team: "core" } }] })).rejects.toSatisfy(
+            concurrentWrite,
+          );
+          expect(await revisions(g.relations.versions(rel.id))).toEqual([[1, false]]);
+        },
+      });
+
+      const updated = await g.relations.update(rel.id, { set_properties: { team: "core" } });
+
+      expect([updated.revision, updated.is_current, updated.properties]).toEqual([
+        2,
+        true,
+        { role: "eng", team: "core" },
+      ]);
+      expect(await revisions(g.relations.versions(rel.id))).toEqual([
+        [2, true],
+        [1, false],
+      ]);
+    }
+  });
+
+  it.runIf(!spec.transactional)("waits for a preference write still running in its transaction", async () => {
+    for (const by of ["update", "insert", "recovery"] as const) {
+      const g = fresh();
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      const pref = await g.preferences.create("person:ann", "employer", "company:acme", { strength: 0.5 });
+      const facts = { subject_entity: "person:ann", key: "employer", value_entity: "company:acme" };
+      if (by === "recovery") await interruptWrite(g, () => g.preferences.update(pref.id, { strength: 0.7 }));
+      const write =
+        by === "insert"
+          ? () => g.insert.facts({ preferences: [{ ...facts, strength: 1 }] })
+          : () => g.preferences.update(pref.id, { strength: 1 });
+      await interruptWrite(g, write, {
+        whileStuck: async () => {
+          await expect(g.preferences.update(pref.id, { strength: 0.9 })).rejects.toSatisfy(concurrentWrite);
+          await expect(g.insert.facts({ preferences: [{ ...facts, strength: 0.9 }] })).rejects.toSatisfy(
+            concurrentWrite,
+          );
+          expect(await revisions(g.preferences.versions(pref.id))).toEqual([[1, false]]);
+        },
+      });
+
+      const updated = await g.preferences.update(pref.id, { strength: 0.9 });
+
+      expect([updated.revision, updated.is_current, updated.strength]).toEqual([2, true, 0.9]);
+      expect(await revisions(g.preferences.versions(pref.id))).toEqual([
+        [2, true],
+        [1, false],
+      ]);
+    }
+  });
+
+  it.runIf(!spec.transactional)("lets the first of two updates complete an interrupted relation", async () => {
+    const g = fresh();
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
+    const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", { properties: { role: "eng" } });
+    await interruptWrite(g, () => g.relations.update(rel.id, { set_properties: { role: "cto" } }));
+    const go: (() => void)[] = [];
+    const original = g.store.lockNode.bind(g.store);
+    const spy = vi.spyOn(g.store, "lockNode").mockImplementation(async (...args) => {
+      if (go.length < 2) await new Promise<void>((resolve) => go.push(resolve));
+      return original(...args);
+    });
+    try {
+      const [first, second] = await g.store.transaction(async () => {
+        const first = g.relations.update(rel.id, { set_properties: { team: "core" } });
+        await vi.waitFor(() => expect(go).toHaveLength(1));
+        const second = g.relations.update(rel.id, { set_properties: { level: 3 } });
+        await vi.waitFor(() => expect(go).toHaveLength(2));
+        go[0]!();
+        const done = await first;
+        go[1]!();
+        return [done, await second] as const;
+      });
+
+      expect([first.revision, first.properties]).toEqual([2, { role: "eng", team: "core" }]);
+      expect([second.revision, second.properties]).toEqual([3, { role: "eng", team: "core", level: 3 }]);
+      expect(await revisions(g.relations.versions(rel.id))).toEqual([
+        [3, true],
+        [2, false],
+        [1, false],
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("rejects a bad reference before writing anything", async () => {
@@ -899,6 +1144,39 @@ function suite(spec: StoreSpec) {
     });
   }
 
+  it.each([
+    ["who are the engineers", "which engineer", "engineer:bob"],
+    ["list all companies", "list a company", "company:acme"],
+    ["who owns payments", "who owns a payment", "service:payment"],
+    ["show the libraries", "show the library", "document:libraries"],
+  ])("seeds a plural and singular word alike and agrees with checkAnswerable: %s", async (plural, singular, seed) => {
+    const g = fresh();
+    await g.insert.facts({
+      entities: [
+        { id: "engineer:bob", type: "Engineer", name: "Bob Ray" },
+        { id: "company:acme", type: "Company", name: "Acme" },
+        { id: "service:payment", type: "Service", name: "Payment API" },
+        { id: "document:libraries", type: "Document", name: "Libraries Index" },
+        { id: "person:nathan", type: "Person", name: "Nathan" },
+      ],
+      relations: [{ from_entity: "engineer:bob", type: "OWNS", to_entity: "service:payment" }],
+    });
+    const results = [await g.retrieve(plural), await g.retrieve(singular)];
+    expect(results.map((r) => r.seeds.map((s) => s.id))).toEqual([[seed], [seed]]);
+    expect(results[0]!.context).toBe(results[1]!.context);
+    expect(results[0]!.context).not.toBe("");
+    for (const query of [plural, singular]) expect((await g.checkAnswerable(query)).verdict).toBe("answerable");
+    expect((await g.retrieve("what did hans say")).seeds).toEqual([]);
+  });
+
+  it("ranks a passage by the plural form of a query word", async () => {
+    const g = fresh();
+    await g.insert.text("Ann reads one novel.", { source_id: "a" });
+    await g.insert.text("Ann reads one poem.", { source_id: "b" });
+    const passages = (await g.retrieve("Ann poems")).context.split("\n").filter((l) => l.startsWith("SOURCE | "));
+    expect(passages[0]).toBe("SOURCE | Ann reads one poem.");
+  });
+
   describe("retrieval context", () => {
     const ENTITIES = [
       { type: "Person", name: "Ann" },
@@ -1191,6 +1469,52 @@ function suite(spec: StoreSpec) {
       expect(ppr.subgraph.entities.map((e) => e.id)).toEqual(expect.arrayContaining([r.from_entity, r.to_entity]));
     }
     await expect(graph.retrieve("x", { depth: 1.5 })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  const noteGraph = async (eventTimes: Record<string, string> = {}): Promise<SelfGraph> => {
+    const g = fresh();
+    for (const [i, word] of NOTE_WORDS.entries()) {
+      const event_time = eventTimes[word];
+      await g.insert.text(`Ann collects ${word} items.`, { source_id: `note-${i}`, ...(event_time && { event_time }) });
+    }
+    return g;
+  };
+
+  const passages = (context: string): string[] => context.split("\n").filter((line) => line.startsWith("SOURCE | "));
+
+  it.each(["bfs", "dfs", "ppr"] as const)("ranks every source before keeping passages with %s", async (strategy) => {
+    const g = await noteGraph();
+    for (const word of NOTE_WORDS) {
+      const found = passages((await g.retrieve(`Ann ${word}`, { strategy })).context);
+      expect(found[0]).toBe(`SOURCE | Ann collects ${word} items.`);
+    }
+  });
+
+  it("ranks only current sources among all of them", async () => {
+    const g = await noteGraph({ ember: "2031-01-01T00:00:00Z", pepper: "2031-01-01T00:00:00Z" });
+    await g.insert.text("Ann collects cypress items.", { source_id: "note-3", replace_source: true });
+    for (const word of [...NOTE_WORDS, "cypress"]) {
+      const { context } = await g.retrieve(`Ann ${word}`, { as_of: new Date(Date.UTC(2029, 0, 1)) });
+      const gone = ["falcon", "ember", "pepper"].includes(word);
+      expect(context.includes(`collects ${word} items`)).toBe(!gone);
+      if (!gone) expect(passages(context)[0]).toBe(`SOURCE | Ann collects ${word} items.`);
+    }
+  });
+
+  it("keeps distinct passages when many sources repeat one text", async () => {
+    const g = fresh();
+    const others = NOTE_WORDS.slice(1, 6);
+    for (let i = 0; i < 20; i++) await g.insert.text("Ann collects zebra items.", { source_id: `copy-${i}` });
+    for (const word of others) await g.insert.text(`Ann collects ${word} items.`, { source_id: `other-${word}` });
+    const batches = ops.batches;
+    const spy = vi.spyOn(ops, "batches").mockImplementation((items) => batches(items, 4));
+    try {
+      const found = passages((await g.retrieve("Ann zebra")).context);
+      expect(found[0]).toBe("SOURCE | Ann collects zebra items.");
+      expect(found.slice(1).sort()).toEqual(others.map((word) => `SOURCE | Ann collects ${word} items.`).sort());
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it.each(["depth", "k", "max_nodes", "budget_tokens"] as const)(
@@ -1980,6 +2304,15 @@ describe("property values", () => {
         relations: [{ from_entity: e.id, type: "R", to_entity: "company:acme", properties: { " ": 1 } }],
       }),
     ).rejects.toThrow("properties keys cannot be empty");
+    for (const bad of [{ "": "v" }, { "  ": "v" }] as Array<Record<string, string>>) {
+      await expect(g.entities.create("B", "T", { external_ids: bad })).rejects.toMatchObject({
+        message: "external_ids keys cannot be empty or whitespace",
+        field: "external_ids",
+      });
+      await expect(g.entities.update(e.id, { external_ids: bad })).rejects.toThrow(
+        "external_ids keys cannot be empty or whitespace",
+      );
+    }
     await expect(g.relations.update(rel.id, { set_properties: { "": 1 } })).rejects.toThrow(
       "set_properties keys cannot be empty",
     );

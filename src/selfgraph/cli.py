@@ -3,16 +3,26 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import errno
 import logging
 import os
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, NoReturn, get_args
 
 from . import _ops
-from .errors import WARNING_HINTS, NotFoundError, PromptTemplateError, SelfGraphError, ValidationError, surface_hint
+from .errors import (
+    WARNING_HINTS,
+    NotFoundError,
+    SelfGraphError,
+    ValidationError,
+    internal_error,
+    redact_uris,
+    surface_hint,
+)
 from .models import Stance, Status
 from .resolution import ResolverMode
 from .resources._common import DEFAULT_PAGE_LIMIT
@@ -68,7 +78,27 @@ _LOGGED_WARNINGS = ("basic_extraction", "ner_extraction")
 _SCHEMA_HELP = """schema: print the active schema (--schema FILE), or null
 schema import [--from neo4j] FILE: convert a Neo4j graph schema
 schema export [--to neo4j|ossie]: print the active schema as a Neo4j graph schema or an Apache Ossie ontology"""
-_USAGE_ERRORS = (ValidationError, PromptTemplateError, FileNotFoundError)
+_USAGE_CODES = frozenset(
+    {
+        "invalid_argument",
+        "unknown_key",
+        "invalid_setting",
+        "llm_required",
+        "embedder_required",
+        "schema_required",
+        "schema_violation",
+        "immutable_identity",
+        "unknown_reference",
+        "relation_certified",
+        "relation_invalidated",
+        "merge_reverted",
+        "invalid_cursor",
+        "invalid_resolver_decision",
+        "read_only_query",
+        "cypher_query_limit",
+        "invalid_prompt_template",
+    }
+)
 _EVIDENCE_HELP = (
     "evidence as JSON: {source_id, chunk_id?, quote?, start_offset?, end_offset?, confidence?} or an array of them "
     "(repeatable)"
@@ -77,6 +107,62 @@ _EVIDENCE_HELP = (
 
 class _Text(str):
     pass
+
+
+_FAILED_COMMAND: list[str | None] = [None]
+
+
+class _Parser(argparse.ArgumentParser):
+    """An argument parser whose flag errors carry SelfGraph's code, field, and hint.
+
+    argparse normally prints a usage dump for an invalid `type=` or `choices=`.
+    Those failures are the same invalid_argument the API reports, so they go
+    through `error_text` like every other usage error.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        """Raise a coded error for an invalid flag value instead of printing usage.
+
+        @param message (str): argparse's description of the bad value.
+        @return (NoReturn): never returns; raises ValidationError.
+        """
+        match = _ARGUMENT_ERROR.search(message)
+        flag = match.group(1) if match else None
+        if match and "invalid int value" in message:
+            kind = "an integer"
+        elif match and "invalid float value" in message:
+            kind = "a number"
+        else:
+            kind = None
+        if match and kind is not None:
+            value = message.rsplit(": ", 1)[-1]
+            text = f"{flag} expects {kind}, got {value}"
+        elif match and "invalid choice" in message:
+            _, _, detail = message.partition(": ")
+            value, _, choices = detail.removeprefix("invalid choice: ").partition(" (choose from ")
+            text = f"{flag} got {value}; choose from {_unquote_choices(choices.rstrip(')'))}"
+        elif match:
+            text = message.removeprefix(f"argument {flag}: ")
+        else:
+            text = message
+        field = flag.removeprefix("--").replace("-", "_") if flag else None
+        code = "invalid_setting" if flag in _SETTING_FLAGS else "invalid_argument"
+        _FAILED_COMMAND[0] = self.prog
+        raise ValidationError(text, code=code, field=field)
+
+
+def _unquote_choices(choices: str) -> str:
+    """Drop the quotes argparse puts around each choice, so the text matches the TypeScript CLI.
+
+    @param choices (str): the choices as argparse prints them, such as "'a', 'b'".
+    @return (str): the choices joined by commas, such as "a, b".
+    """
+    return ", ".join(part.strip().strip("'\"") for part in choices.split(","))
+
+
+_ARGUMENT_ERROR = re.compile(r"argument (--[\w-]+):")
+_ARGUMENT_VALUE = re.compile(r"^(?:argument --[\w-]+: )?(?:invalid \w+ value|invalid choice):? ?")
+_SETTING_FLAGS = frozenset({"--store", "--schema-mode", "--resolver", "--contradiction", "--level", "--max-tier"})
 
 
 def _time(field: str) -> Callable[[str], datetime | None]:
@@ -90,7 +176,7 @@ def _time(field: str) -> Callable[[str], datetime | None]:
         try:
             return parse_time(value, field)
         except ValidationError as exc:
-            raise argparse.ArgumentTypeError(str(exc)) from exc
+            raise ValidationError(str(exc), field=field) from exc
 
     return convert
 
@@ -114,7 +200,7 @@ def _kv(pairs: list[str] | None, flag: str, *, text: bool = False) -> dict[str, 
             out[key] = value
             continue
         try:
-            out[key] = parse_json(value)
+            out[key] = parse_json(value, field=key)
         except ValidationError:
             out[key] = value
     return out
@@ -164,21 +250,35 @@ async def _diff(graph, args):
     lines = [f"Changes ({result.since.isoformat()}, {result.until.isoformat()}]"]
     lines += [f"Note: {limitation}" for limitation in result.limitations]
     lines += [f"+ entity {e.id}" for e in result.entities_created]
-    lines += [
-        f"+ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
-        for r in result.relations_added
-    ]
-    lines += [
-        f"~ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
-        for r in result.relations_revised
-    ]
+    for mark, relations in (("+", result.relations_added), ("~", result.relations_revised)):
+        lines += [
+            f"{mark} relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
+            for r in relations
+        ]
     lines += [
         f"- relation {r.id}: {r.from_entity} -[{r.type}]-> {r.to_entity} invalidated_by={r.invalidated_by}"
         for r in result.relations_retired
     ]
+    for action, relations in (("certified", result.relations_certified), ("uncertified", result.relations_uncertified)):
+        lines += [f"* {action} relation {r.id} revision {r.revision}" for r in relations]
+    for mark, preferences in (("+", result.preferences_added), ("~", result.preferences_revised)):
+        lines += [
+            f"{mark} preference {p.id} revision {p.revision}: {p.subject_entity} {p.key} -> {p.value_entity}"
+            for p in preferences
+        ]
+    for mark, decisions in (("+", result.decisions_created), ("~", result.decisions_updated)):
+        lines += [f"{mark} decision {d.id}: {d.title}" for d in decisions]
+    lines += [f"+ merge {m.id}: {m.absorbed_id} into {m.survivor_id}" for m in result.entities_merged]
+    lines += [f"- merge {m.id}: {m.absorbed_id} out of {m.survivor_id}" for m in result.entities_unmerged]
+    lines += [f"+ source {v.source_id} version {v.id}" for v in result.source_versions_added]
     lines.append(
         f"{len(result.entities_created)} entities created, {len(result.relations_added)} relations added, "
-        f"{len(result.relations_revised)} revised, {len(result.relations_retired)} retired"
+        f"{len(result.relations_revised)} revised, {len(result.relations_retired)} retired, "
+        f"{len(result.relations_certified)} certified, {len(result.relations_uncertified)} uncertified, "
+        f"{len(result.preferences_added)} preferences added, {len(result.preferences_revised)} revised, "
+        f"{len(result.decisions_created)} decisions created, {len(result.decisions_updated)} updated, "
+        f"{len(result.entities_merged)} merges, {len(result.entities_unmerged)} unmerges, "
+        f"{len(result.source_versions_added)} source versions added"
     )
     return _Text("\n".join(lines))
 
@@ -207,7 +307,7 @@ def _metadata(items: list[str] | None) -> dict[str, Any] | None:
     out: dict[str, Any] = {}
     for item in items:
         if item.lstrip().startswith("{"):
-            out.update(parse_json(item, " in --metadata"))
+            out.update(parse_json(item, " in --metadata", "metadata"))
         else:
             out.update(_kv([item], "--metadata"))
     return out
@@ -223,7 +323,7 @@ def _evidence(items: list[str] | None) -> list[Any] | None:
         return None
     out: list[Any] = []
     for item in items:
-        value = parse_json(item, " in --evidence")
+        value = parse_json(item, " in --evidence", "evidence")
         out.extend(value if isinstance(value, list) else [value])
     return out
 
@@ -258,7 +358,7 @@ def _inserted(result: Any) -> Any:
 
 
 async def _schema_import(graph, args):
-    data = read_json(args.path)
+    data = read_json(args.path, "path")
     if isinstance(data, dict) and {"entities", "relations"} & data.keys() and not set(_NEO4J_KEYS) & data.keys():
         raise ValidationError(
             f"{args.path!r} looks like a SelfGraph schema, not a Neo4j one; pass it as --schema instead"
@@ -275,10 +375,22 @@ async def _schema_export(graph, args):
 async def _export_obsidian(graph, args):
     folder = Path(args.directory)
     notes = await graph.export_obsidian()
-    for path, text in notes.items():
-        target = folder / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+    try:
+        for path, text in notes.items():
+            target = folder / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        kind = {
+            errno.EEXIST: "file exists",
+            errno.ENOTDIR: "not a directory",
+            errno.EACCES: "permission denied",
+            errno.EPERM: "permission denied",
+            errno.ENOENT: "no such directory",
+        }.get(exc.errno)
+        raise ValidationError(
+            f"cannot write the vault to {str(folder)!r}: {kind or exc.strerror or exc}", field="directory"
+        ) from exc
     return {"directory": str(folder), "notes": len(notes)}
 
 
@@ -413,7 +525,7 @@ def _finish(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="selfgraph",
         description="Build and read a SelfGraph knowledge graph. Connection flags may come before or after the "
         "subcommand.",
@@ -421,7 +533,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-V", "--version", action="version", version=_installed_version())
     _add_globals(parser)
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
     sub.add_parser(
         "init", help="check the connection and create the store's indexes or constraints where the backend has them"
@@ -573,7 +685,7 @@ def build_parser() -> argparse.ArgumentParser:
     async def insert_facts(g, a):
         return _inserted(
             await g.insert.facts(
-                read_json(a.path),
+                read_json(a.path, "path"),
                 source_id=a.source_id,
                 event_time=a.event_time,
                 resolver=a.call_resolver,
@@ -894,16 +1006,16 @@ class _StderrHandler(logging.Handler):
         print(f"selfgraph: {surface_hint(message)}{hint}", file=sys.stderr, flush=True)
 
 
-def _command_path(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+def _command_path(parser: argparse.ArgumentParser, args: argparse.Namespace | None) -> str:
     """Name the subcommand that ran, such as "selfgraph relation certify".
 
     @param parser (argparse.ArgumentParser): the CLI parser.
-    @param args (argparse.Namespace): the parsed command.
+    @param args (argparse.Namespace | None): the parsed command, or None when parsing itself failed.
     @return (str): the command.
     """
     words = ["selfgraph"]
     while sub := next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None):
-        name = getattr(args, sub.dest, None)
+        name = getattr(args, sub.dest, None) if args is not None else None
         if name is None:
             break
         words.append(name)
@@ -951,7 +1063,13 @@ async def _run_with_diagnostics(args: argparse.Namespace, settings: GraphSetting
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except ValidationError as exc:
+        failed = _FAILED_COMMAND[0]
+        _FAILED_COMMAND[0] = None
+        print(error_text(exc, failed or _command_path(parser, None)), file=sys.stderr)
+        return 2
     settings = settings_from_env(**{key: getattr(args, key, None) for key in SETTING_KEYS})
     args.store, args.namespace = store_kind(settings), settings.namespace
     ignored = ignored_settings(settings) if args.command != "version" else []
@@ -973,11 +1091,28 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except (SelfGraphError, FileNotFoundError, RuntimeError) as exc:
+        command = _command_path(parser, args)
         if isinstance(exc, SelfGraphError):
-            print(error_text(exc, _command_path(parser, args)), file=sys.stderr)
-        else:
-            print(f"error: {surface_hint(str(exc)).rstrip()}", file=sys.stderr)
-        return 2 if isinstance(exc, _USAGE_ERRORS) else 1
+            print(error_text(exc, command), file=sys.stderr)
+            return 2 if _is_usage_error(exc) else 1
+        if isinstance(exc, FileNotFoundError):
+            masked = redact_uris(str(exc), settings.uri, settings.llm_base_url)
+            print(f"error: {surface_hint(masked).rstrip()}", file=sys.stderr)
+            return 2
+        print(error_text(internal_error(exc, settings.uri, settings.llm_base_url), command), file=sys.stderr)
+        return 1
+
+
+def _is_usage_error(exc: BaseException) -> bool:
+    """Whether a failed command was given invalid input or settings, which exits with code 2.
+
+    The code decides, not the class: `invalid_setting` is raised as both ValidationError and StoreError, and both must
+    exit 2 so a script telling "fix your settings" from "the server failed" branches on the code.
+
+    @param exc (BaseException): the error that ended the command.
+    @return (bool): True when the command exits 2.
+    """
+    return isinstance(exc, SelfGraphError) and exc.code in _USAGE_CODES
 
 
 if __name__ == "__main__":

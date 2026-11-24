@@ -76,6 +76,38 @@ CANONICAL = {
 }
 
 
+@pytest.mark.parametrize(
+    ("source", "target", "property_description"),
+    [
+        ("node_types", "entities", False),
+        ("relationship_types", "relations", False),
+        ("node_types", "entities", True),
+        ("relationship_types", "relations", True),
+    ],
+)
+def test_neo4j_descriptions_require_strings(source, target, property_description):
+    field = f"{target}[0].{'properties[0].' if property_description else ''}description"
+    for description in (False, 0, {}, [], True, 42, {"text": "bad"}, ["bad"], None, "", "A description", " "):
+        body = {"label": "Person" if source == "node_types" else "KNOWS"}
+        if property_description:
+            body["properties"] = [{"name": "note", "description": description}]
+        else:
+            body["description"] = description
+        data = {source: [body]}
+        if description is not None and not isinstance(description, str):
+            with pytest.raises(ValidationError) as err:
+                Schema.from_neo4j_ontology(data)
+            assert err.value.code == "invalid_argument"
+            assert err.value.field == field
+            assert str(err.value) == f"invalid schema: {field}: expected string"
+        else:
+            schema = Schema.from_neo4j_ontology(data)
+            item = getattr(schema, target)[0]
+            if property_description:
+                item = item.properties[0]
+            assert item.description == (None if description == "" else description)
+
+
 def test_neo4j_ontology_maps_types_patterns_and_constraints(caplog):
     with caplog.at_level(logging.WARNING, logger="selfgraph"):
         schema = Schema.from_neo4j_ontology(NEO4J)
@@ -206,6 +238,20 @@ def test_invalid_neo4j_ontology_and_schema_objects_raise():
     ):
         with pytest.raises(ValidationError):
             Schema.from_neo4j_ontology(bad)
+
+
+def test_constraint_property_names_must_be_a_list():
+    for bad, name in ((1, "number"), (True, "boolean"), (1.5, "number"), ("age", "string")):
+        with pytest.raises(
+            ValidationError, match=rf"constraints\[0\]\.property_names must be a list, got {name}"
+        ) as exc:
+            Schema.from_neo4j_ontology(
+                {
+                    "node_types": ["Person"],
+                    "constraints": [{"type": "EXISTENCE", "node_type": "Person", "property_names": bad}],
+                }
+            )
+        assert exc.value.field == "property_names"
 
 
 def test_cli_and_mcp_convert_schemas(capsys, tmp_path):

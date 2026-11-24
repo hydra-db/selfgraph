@@ -121,7 +121,7 @@ await graph.retrieve("where does Ann work")  # Globex
 await graph.retrieve("where does Ann work", as_of="2021-06-01")  # Acme
 ```
 
-Nothing is deleted. The retired relation keeps its history and records what replaced it. See [contradictions](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md#contradictions). `graph.diff(since, until)` lists the relations added, revised, and retired between two known times ([changes between known times](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md#changes-between-known-times)).
+Nothing is deleted. The retired relation keeps its history and records what replaced it. See [contradictions](https://github.com/hydra-db/selfgraph/blob/main/docs/schema.md#contradictions). `graph.diff(since, until)` lists what the graph stored between two known times: relations added, revised, retired, and certified, preference versions, decision writes, merges and unmerges, and source versions ([changes between known times](https://github.com/hydra-db/selfgraph/blob/main/docs/retrieval.md#changes-between-known-times)).
 
 ## Ontology
 

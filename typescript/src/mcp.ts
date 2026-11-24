@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import { SelfGraph } from "./client.js";
-import { errorMessage, SelfGraphError, surfaceHint, ValidationError, WARNING_HINTS } from "./errors.js";
+import { internalError, SelfGraphError, surfaceHint, ValidationError, WARNING_HINTS } from "./errors.js";
 import { toOssie } from "./export.js";
+import { BLANK, blankLexicalTokens, checkCypherLimits } from "./internal/cypherGuard.js";
 import { Lazy } from "./internal/lazy.js";
 import { loadOptional } from "./internal/optional.js";
 import { PY_WORD_CLASS, PY_WS_CLASS, pyRepr } from "./internal/py.js";
@@ -23,9 +24,7 @@ import { RESOLVER_MODES } from "./resolution.js";
 import { DEFAULT_PAGE_LIMIT } from "./resources/common.js";
 import { RETRIEVE_DEFAULTS, type Strategy } from "./retrieval.js";
 import {
-  BLANK,
   bindParams,
-  blankLexicalTokens,
   checkedCypher,
   checkSettings,
   currentRelation,
@@ -49,24 +48,41 @@ const WRITE_CLAUSE = new RegExp(
 const UNICODE_ESCAPE = /(?<!\\)(?:\\\\)*\\[uU]/u;
 const MAP_KEY = new RegExp(`([{,][${PY_WS_CLASS}]*)[A-Za-z_][${PY_WORD_CLASS}]*([${PY_WS_CLASS}]*:)`, "gu");
 const PROP_OR_LABEL = new RegExp(`[.:][${PY_WS_CLASS}]*[${PY_WORD_CLASS}]+`, "gu");
+const WORD_OR_NUMBER = new RegExp(
+  `(0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+|(?:[0-9]+(?:\\.(?!\\.)[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)|[${PY_WORD_CLASS}]+`,
+  "gu",
+);
 const PARAM = new RegExp(`\\$[${PY_WORD_CLASS}]+`, "gu");
 const READ_OPENERS = new RegExp(`^(MATCH|OPTIONAL|WITH|UNWIND|RETURN|SHOW|EXPLAIN|PROFILE)${WB_END}`, "iu");
 const LEADING_BLANK = new RegExp(`^[${PY_WS_CLASS}\\x00]+`, "u");
 
 /**
- * Report whether run_cypher must reject a query: a unicode escape appears anywhere (Neo4j decodes them before lexing), a backslash or write clause appears outside literals, or a ';'-separated statement does not begin with a known read opener.
+ * Mask map keys, properties, and labels without masking aliases.
+ *
+ * @param query (string): the query after masking literals, comments, and parameters.
+ * @return (string): the query with names masked.
+ */
+function maskCypherNames(query: string): string {
+  return query.replace(MAP_KEY, "$1$2").replace(PROP_OR_LABEL, " ");
+}
+
+/**
+ * Reject Unicode escapes, non-read openers, and executable write keywords in raw MCP Cypher.
  *
  * @param query (string): the raw Cypher statement.
  * @return (boolean): true when the query must be rejected.
  */
 export function isBlockedQuery(query: string): boolean {
   if (UNICODE_ESCAPE.test(query)) return true;
-  const stripped = blankLexicalTokens(query).replace(PARAM, BLANK).replace(MAP_KEY, "$1$2").replace(PROP_OR_LABEL, " ");
-  if (stripped.includes("\\") || WRITE_CLAUSE.test(stripped)) return true;
-  return stripped.split(";").some((statement) => {
-    const head = statement.replace(LEADING_BLANK, "");
-    return head.length > 0 && !READ_OPENERS.test(head);
-  });
+  const stripped = blankLexicalTokens(query).replace(PARAM, BLANK);
+  const words = stripped.replace(WORD_OR_NUMBER, (token: string, number?: string) => (number ? BLANK : token));
+  if (stripped.includes("\\") || WRITE_CLAUSE.test(maskCypherNames(words))) return true;
+  return maskCypherNames(stripped)
+    .split(";")
+    .some((statement) => {
+      const head = statement.replace(LEADING_BLANK, "");
+      return head.length > 0 && !READ_OPENERS.test(head);
+    });
 }
 
 type Shape = Record<string, z.ZodType>;
@@ -643,6 +659,7 @@ export const TOOLS: Tool[] = [
       "literals that differ from a stored entity name only by case or spacing.",
     input: { query: str, params: optObj },
     run: async (g, a) => {
+      checkCypherLimits(a.query);
       if (isBlockedQuery(a.query)) throw new ValidationError(READ_ONLY_MESSAGE, { code: "read_only_query" });
       return checkedCypher(g, a.query, bindParams(a.query, a.params));
     },
@@ -650,7 +667,7 @@ export const TOOLS: Tool[] = [
   tool({
     name: "graph_diff",
     description:
-      "List changes in the known-time window (since, until]; until defaults to now. Deletes and merges are not visible.",
+      "List the history stored in the known-time window (since, until]; deletes and entity edits are not visible.",
     input: { since: str, until: optStr },
     run: (g, a) => g.diff(a.since, a.until),
   }),
@@ -827,11 +844,12 @@ export async function callTool(
       isError: false,
     };
   } catch (exc) {
+    const tool = t?.name ?? String(target);
     if (exc instanceof SelfGraphError) {
-      return { result: errorResult(exc, t?.name ?? String(target), hinted), isError: true };
+      return { result: errorResult(exc, tool, hinted), isError: true };
     }
-    const name = exc instanceof Error ? exc.name : "Error";
-    return { result: { error: `${name}: ${errorMessage(exc)}`, error_type: "InternalError" }, isError: true };
+    const coded = internalError(exc, settings?.uri, settings?.llm_base_url);
+    return { result: errorResult(coded, tool, hinted), isError: true };
   }
 }
 

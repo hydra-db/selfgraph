@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from functools import partial
+from typing import Any
 
 from .. import _maintenance as _m
 from .. import _ops
@@ -10,7 +11,7 @@ from .._serde import aware, json_iso, to_iso
 from .._serde import now as _now
 from ..errors import DECAY_HINT, ValidationError
 from ..ids import normalize_rel_type
-from ..models import DecayResult, DedupeGroup, DedupeResult, DeleteResult, Entity, PruneResult, Relation
+from ..models import DecayResult, DedupeGroup, DedupeResult, DeleteResult, Entity, PruneResult, Relation, check_options
 from ..schema import canonical_entity_type, canonical_relation_type
 from ._common import Resource
 
@@ -39,7 +40,7 @@ def _require_not_future(name: str, at: datetime, action: str) -> None:
 
 class Maintenance(Resource):
     async def decay(
-        self, *, half_life_days: float = 30, now: datetime | str | None = None, dry_run: bool = True
+        self, *, half_life_days: float = 30, now: datetime | str | None = None, dry_run: bool = True, **options: Any
     ) -> DecayResult:
         """Score every entity and current relation by recency and frequency and store it as relevance.
 
@@ -55,6 +56,7 @@ class Maintenance(Resource):
         @param dry_run (bool): compute the scores without writing them; True by default.
         @return (DecayResult): the score per entity and relation id and how many were written.
         """
+        check_options("maintenance.decay", options, ["half_life_days", "now", "dry_run"])
         _m.require_number("half_life_days", half_life_days, positive=True)
         now = _ops.parse_time(now, "now")
         _ops._require_bool("dry_run", dry_run)
@@ -103,6 +105,7 @@ class Maintenance(Resource):
         relation_types: list[str] | None = None,
         include_certified: bool = False,
         dry_run: bool = True,
+        **options: Any,
     ) -> PruneResult:
         """Remove entities and current relations that are below a relevance or older than a time.
 
@@ -130,6 +133,11 @@ class Maintenance(Resource):
             the merge records lost, and delete counts (no deleted block on a dry run); with min_relevance and nothing
             scored yet, a note says to run decay first.
         """
+        check_options(
+            "maintenance.prune",
+            options,
+            ["min_relevance", "older_than", "types", "relation_types", "include_certified", "dry_run"],
+        )
         if min_relevance is not None:
             _m.require_number("min_relevance", min_relevance, upper=1)
         older_than = _ops.parse_time(older_than, "older_than")
@@ -223,7 +231,7 @@ class Maintenance(Resource):
         )
         return result
 
-    async def dedupe_relations(self, *, dry_run: bool = True) -> DedupeResult:
+    async def dedupe_relations(self, *, dry_run: bool = True, **options: Any) -> DedupeResult:
         """Collapse parallel current relations with the same endpoints and type but different ids into one.
 
         The survivor of each group is the lowest id, whichever is newer, and only its version history is
@@ -241,6 +249,7 @@ class Maintenance(Resource):
             duplicate, the groups left alone as certified, the survivor rule, and delete counts (no deleted block on a
             dry run).
         """
+        check_options("maintenance.dedupeRelations", options, ["dry_run"])
         _ops._require_bool("dry_run", dry_run)
         ns = self._c.namespace
         reader = await self._c._reader()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
+from typing import Any
 
 from .. import _ops
 from ..errors import NotFoundError
@@ -24,7 +25,16 @@ class Preferences(Resource):
         strength: float | None = None,
         properties: Mapping[str, JsonValue] | None = None,
         event_time: datetime | str | None = None,
+        **options: Any,
     ) -> Preference:
+        """Create a preference over existing entities.
+
+        @param options (Any): extra option names to reject.
+        @return (Preference): the created preference.
+        """
+        check_options(
+            "preferences.create", options, ["id", "stance", "about_entity", "strength", "properties", "event_time"]
+        )
         return await self._c._write(
             _ops.create_preference,
             subject_entity=subject_entity,
@@ -50,7 +60,14 @@ class Preferences(Resource):
         stance: Stance | None = None,
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
+        **options: Any,
     ) -> Page[Preference]:
+        """List matching records in id order.
+
+        @param options (Any): extra option names to reject.
+        @return (Page): the matching records.
+        """
+        check_options("preferences.list", options, ["key", "stance", "cursor", "limit"])
         return await self._page(
             _ops.list_preferences,
             subject_entity=subject_entity,
@@ -68,6 +85,7 @@ class Preferences(Resource):
         key: str | None = None,
         stance: Stance | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
+        **options: Any,
     ) -> AsyncIterator[Preference]:
         """Yield preferences across pages, following the list cursor.
 
@@ -77,15 +95,18 @@ class Preferences(Resource):
         @param limit (int): the page size per fetch, not a cap; iteration yields every match.
         @return (AsyncIterator[Preference]): every matching preference.
         """
+        check_options("preferences.iterate", options, ["key", "stance", "limit"])
         return paginate(self.list, subject_entity=subject_entity, key=key, stance=stance, limit=limit)
 
-    async def versions(self, id: str, *, newest_first: bool = True) -> list[Preference]:
+    async def versions(self, id: str, *, newest_first: bool = True, **options: Any) -> list[Preference]:
         """List every version of a preference, retired ones included.
 
         @param id (str): the preference id.
         @param newest_first (bool): order newest first when True.
         @return (list[Preference]): the versions; raises NotFoundError when the id has none.
         """
+        check_options("preferences.versions", options, ["newest_first"])
+        _ops._require_bool("newest_first", newest_first)
         _ops._validate_own_id("preference", id)
         reader = await self._c._reader()
         versions = await _ops.list_preference_versions(reader, self._c.namespace, id, newest_first=newest_first)

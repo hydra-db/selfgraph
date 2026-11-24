@@ -6,6 +6,36 @@ import { forEachStore, type StoreSpec, uniqueNs } from "./helpers.js";
 const props = (ns: string, id: string) => ({ id, ns, name: id });
 
 function suite(spec: StoreSpec) {
+  it.each(["node", "edge", "update"])("uses the full HydraDB row budget for JSON blobs: %s", async (operation) => {
+    if (spec.name !== "hydradb") return;
+    const store = spec.make();
+    const ns = uniqueNs("blob");
+    const blob = `{"text":"${"x".repeat(1100 * 1024)}"}`;
+    try {
+      await store.initialize();
+      await store.upsertNode(ns, "Source", "x:a", props(ns, "x:a"));
+      await store.upsertNode(ns, "Source", "x:b", props(ns, "x:b"));
+      const edge = { id: "e:blob", ns, revision: 1, is_current: true, properties_json: blob };
+      let query: string;
+      if (operation === "node") {
+        await store.upsertNode(ns, "Source", "x:a", { ...props(ns, "x:a"), properties_json: blob });
+        expect((await store.getNode(ns, "Source", "x:a"))?.properties_json).toBe(blob);
+        query = "MATCH (n:Source {ns: $ns, sid: 'x:a'}) RETURN n.properties_json AS duplicate";
+      } else {
+        const initial = operation === "update" ? { ...edge, properties_json: "{}" } : edge;
+        expect(await store.createEdge(ns, "LINK", "Source", "x:a", "Source", "x:b", initial)).toBe(true);
+        if (operation === "update") await store.updateCurrentEdge(ns, "e:blob", { properties_json: blob });
+        expect((await store.getCurrentEdge(ns, "e:blob"))?.props.properties_json).toBe(blob);
+        query = "MATCH (:Source {ns: $ns})-[r:RELATES]->() RETURN r.properties_json AS duplicate";
+      }
+      expect((await store.runCypher(query, { ns })).rows).toEqual([{ duplicate: null }]);
+      await store.deleteNode(ns, "Source", "x:a");
+      await store.deleteNode(ns, "Source", "x:b");
+    } finally {
+      await store.close?.();
+    }
+  });
+
   it.runIf(spec.name === "hydradb")("runs a nested transaction's writes on another store", async () => {
     const [outer, inner]: GraphStore[] = [spec.make(), spec.make()];
     const ns = uniqueNs("queue");
@@ -107,6 +137,37 @@ function suite(spec: StoreSpec) {
 }
 
 await forEachStore("HydraDB write queue", suite);
+
+it("filters version read edge properties without index seeks", async () => {
+  const store = new HydraDBStore("bolt://127.0.0.1:1", { auth: ["neo4j", "unused"] });
+  const queries: string[] = [];
+  const driver = store as unknown as { exec: (query: string) => Promise<{ rows: unknown[] }> };
+  driver.exec = async (query) => {
+    queries.push(query);
+    return { rows: [] };
+  };
+  try {
+    await store.matchEdges("versions", { from_label: "Entity", to_label: "Entity", type: "KNOWS", current_only: true });
+    await store.matchEdges("versions", { from_label: "Entity", to_label: "Entity", from_in: ["person:a"] });
+    await store.getCurrentEdge("versions", "relation:a");
+    await store.listEdgeVersions("versions", "relation:a");
+    expect(await store.edgeVersions("versions", "Entity", "Entity", ["relation:b", "relation:a"])).toEqual([]);
+  } finally {
+    await store.close();
+  }
+  expect(queries).toHaveLength(5);
+  const [current, history, byId, versions, batch] = queries;
+  expect(current).toContain("(a:Entity {ns: $ns})");
+  expect(current).toContain("NOT r.`ns` <> $eq0");
+  expect(current).toContain("NOT r.`etype` <> $eq1");
+  expect(current).toContain("NOT r.is_current <> true");
+  expect(history).toContain("a.id IN $fiids_in");
+  expect(history).toContain("NOT r.`ns` <> $eq0");
+  expect(history).not.toContain("r.is_current");
+  expect(byId).toContain("NOT r.`sid` <> $sid");
+  expect(versions).toContain("NOT r.`sid` <> $sid");
+  expect(batch).toContain("NOT (NOT r.sid IN $sids)");
+});
 
 describe("HydraDB write queue failure", () => {
   it("rejects the transaction without an unhandled rejection when a queued write fails", async () => {

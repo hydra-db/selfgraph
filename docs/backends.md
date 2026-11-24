@@ -62,6 +62,12 @@ cluster-only option that a standalone server rejects.
   A store that passes different database options (such as `max_db_size` or
   `buffer_pool_size`) than the database already open on that path raises
   `ValidationError`; omitted options join the open database.
+- For a file-backed database with an explicit `buffer_pool_size`, SelfGraph
+  lowers Kuzu's automatic write-ahead log checkpoint threshold to at most
+  one 1,024th of the pool. This frees committed write buffers sooner during
+  repeated updates without dropping historical versions. In-memory databases
+  cannot reclaim those buffers through disk checkpoints. The Python store
+  honors an explicit `checkpoint_threshold` or `auto_checkpoint` override.
 - Each open Kuzu database reserves 8 TB of virtual memory by default, so a
   process holding many can run out of address space. Pass `max_db_size` (a
   positive integer of bytes), as in `KuzuStore("graph.kuzu", max_db_size=1 << 30)`,
@@ -96,7 +102,8 @@ SelfGraph.connect(store="neo4j", uri="bolt://localhost:7687", auth="neo4j:passwo
 A FalkorDB `uri` is `host:port`, or a `redis://`, `rediss://`, `falkor://`, or
 `falkors://` URL such as `redis://user:password@host:port`. `rediss://` and
 `falkors://` connect over TLS. Any other scheme, such as `bolt://`, is a
-`ValidationError`.
+`ValidationError`. The URL's user and password are percent-decoded, so write a
+literal `%` as `%25`; `auth` takes precedence over them.
 
 ## Concurrency
 
@@ -106,9 +113,9 @@ before writing anything.
 
 | | Transactional (Neo4j, Memgraph) | Auto-commit (HydraDB, Kuzu, FalkorDB) |
 |---|---|---|
-| A failed batch | Rolls back as one unit. | Can leave some of its writes in place. HydraDB runs writes that do not depend on each other concurrently, so they need not be the earlier ones. |
+| A failed batch | Rolls back as one unit. | Can leave some of its writes in place. HydraDB runs writes that do not depend on each other concurrently, so they need not be the earlier ones. An update cut off between retiring a relation's or preference's current version and writing the next leaves no current version, and the next update or insert of it completes the write. One that finds a write of it still running in the same process, in a task that shares its outer transaction, raises `TransientError` instead. |
 | Writers in one process | Serialized per subject node. | One write at a time per graph object. |
-| Writers in separate processes | Each keeps its own version. A loser under heavy contention raises `TransientError` to retry. | Not serialized. Concurrent creates of one id can all report success with one write kept, and concurrent updates collapse to last-writer-wins. |
+| Writers in separate processes | Each keeps its own version. A loser under heavy contention raises `TransientError` to retry. | Not serialized. Concurrent creates of one id can all report success with one write kept, and concurrent updates collapse to last-writer-wins, as when one completes an update another process is still writing. |
 
 Within one process, one concurrent `create` of an id wins and the rest raise
 `ConflictError`. Every backend keeps exactly one current version per relation or
@@ -131,6 +138,10 @@ before each write, so a raise leaves that write undone.
 
 ## Raw Cypher
 
+The SDK, CLI, and MCP reject queries over 65,536 UTF-8 bytes or 32 levels of
+parentheses, brackets, and braces before dispatching to a backend. Delimiters
+inside strings, quoted identifiers, and comments do not count toward depth.
+
 `graph.run_cypher()` sends a statement straight to the backend. It sees the
 physical storage rather than the typed model, so it is not portable across
 backends.
@@ -139,6 +150,21 @@ backends.
 - It can write, as can `selfgraph query`. Only the MCP `run_cypher` tool is
   read-only.
 - `result.counters` is always empty on Kuzu.
+- On Kuzu, both SDKs return a result value in one form, read from its column type. An
+  integer, or a `DECIMAL` of at most 15 digits, is a number while a double holds it exactly,
+  and is its decimal text beyond that (Python: `INT64`, `UINT64`, `INT128`, and wider
+  `DECIMAL` values). A `DATE` is `YYYY-MM-DD`, a timestamp is `YYYY-MM-DDTHH:MM:SS[.ffffff]Z`
+  in UTC, an interval is an ISO 8601 duration such as `P1DT2H3M4.5S` (a month counts as 30
+  days), a `BLOB` is hex, and a `UNION` is the value it holds.
+- The Kuzu Node driver rounds an `INT64` or `UINT64` beyond 2^53, a `DECIMAL` of more than
+  15 digits, and a timestamp or interval to milliseconds before the SDK sees it. The
+  TypeScript SDK raises [`inexact_value`](errors.md#inexact_value) for the first two,
+  naming the column, so `cast(x AS STRING)` it in the query. Timestamps and intervals
+  keep only milliseconds there, and a timestamp before 1970 rounds toward 1970. The driver
+  does not say which member a `UNION` value holds, so TypeScript raises the same code when
+  two members share a driver type, such as `INT64` and `DOUBLE`. A node, relationship, or
+  path reads each property with the type its table declares. A `MAP` key keeps Kuzu's text
+  in TypeScript, which Python matches except for `INTERVAL` and `BLOB` keys.
 - The Kuzu store reopens its connection every 500 statements to free the memory
   Kuzu keeps per statement, so a `CALL` setting or `USE` may not last until a
   later statement. It does not reopen while a raw transaction is open.
@@ -216,6 +242,7 @@ Store failures raise `StoreError`. Common setup mistakes get a plain message:
 | A second `KuzuStore` on an open path with other options | `KuzuStore('<path>') is already open with different options: <option> <open> vs <new>` (`ValidationError`) |
 | A HydraDB row over the write cap | `HydraDB rejects this write at <n> bytes; ...` |
 | A store URI whose user or password has an unencoded `/`, `?`, `#`, `@`, `[` or `]` (brackets around an IPv6 host are fine), or whose user, password or host has a lookalike such as fullwidth `＠` that NFKC turns into one of `/ ? # @ : [ ]` | `the store URI has an unencoded character in its user or password; percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)` (`ValidationError`, raised before any driver reads the URI) |
+| A FalkorDB URL whose user or password has a `%` not followed by two hex digits, or escapes that are not UTF-8 | `the store URI has a malformed percent escape in its user or password; write a literal % as %25 and percent-encode other characters as UTF-8` (`ValidationError`, code `invalid_setting`, field `uri`) |
 
 A URI in these messages, and in the address errors raised before connecting, shows `***` in place of its user and password, as in `redis://***@host:6379`.
 

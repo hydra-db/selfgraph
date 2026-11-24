@@ -1,7 +1,7 @@
 import pytest
-from helpers import HYDRADB, RAW_CYPHER, create_entities, fresh_graph, new_graph, run
+from helpers import AUTO_COMMIT, HYDRADB, RAW_CYPHER, create_entities, fresh_graph, interrupt_write, new_graph, run
 
-from selfgraph import ConflictError, NotFoundError, StoreError, ValidationError
+from selfgraph import ConflictError, NotFoundError, StoreError, TransientError, ValidationError
 
 
 def seed(g):
@@ -166,3 +166,84 @@ def test_an_update_over_the_hydradb_message_limit_keeps_the_current_version():
         run(g.preferences.update(pref.id, properties={"blob": "x" * 1_100_000}))
     current = run(g.preferences.get(pref.id))
     assert (current.revision, current.properties) == (1, {})
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store leaves the gap between retire and create")
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"strength": 0.9}, 0.9),
+        ({"strength": 0.5}, 0.5),
+        ({"clear": ["strength"]}, None),
+    ],
+)
+def test_an_update_completes_a_preference_an_interrupted_update_left_without_a_current_version(
+    monkeypatch, changes, expected
+):
+    g = fresh_graph("interrupted-update")
+    seed(g)
+    pref = run(g.preferences.create("person:soham", "database", "company:hydradb", strength=0.5))
+    interrupt_write(g, g.preferences.update(pref.id, strength=1.0), monkeypatch)
+    assert run(g.preferences.get(pref.id)) is None
+    assert [(v.revision, v.is_current) for v in run(g.preferences.versions(pref.id))] == [(1, False)]
+
+    updated = run(g.preferences.update(pref.id, **changes))
+
+    assert (updated.revision, updated.is_current, updated.strength) == (2, True, expected)
+    assert run(g.preferences.get(pref.id)) == updated
+    history = run(g.preferences.versions(pref.id))
+    assert [(v.revision, v.is_current, v.strength) for v in history] == [(2, True, expected), (1, False, 0.5)]
+    assert [p.id for p in run(g.preferences.list("person:soham")).items] == [pref.id]
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store leaves the gap between retire and create")
+def test_an_insert_completes_a_preference_an_interrupted_update_left_without_a_current_version(monkeypatch):
+    g = fresh_graph("interrupted-update")
+    seed(g)
+    pref = run(g.preferences.create("person:soham", "database", "company:hydradb", strength=0.5, properties={"a": 1}))
+    interrupt_write(g, g.preferences.update(pref.id, strength=1.0), monkeypatch)
+    facts = {"subject_entity": "person:soham", "key": "database", "value_entity": "company:hydradb"}
+
+    [inserted] = run(g.insert.facts({"preferences": [{**facts, "properties": {"b": 2}}]})).preferences
+
+    assert (inserted.revision, inserted.is_current, inserted.strength) == (2, True, 0.5)
+    assert run(g.preferences.get(pref.id)) == inserted
+    history = run(g.preferences.versions(pref.id))
+    assert [(v.revision, v.is_current, v.properties) for v in history] == [
+        (2, True, {"a": 1, "b": 2}),
+        (1, False, {"a": 1}),
+    ]
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store leaves the gap between retire and create")
+@pytest.mark.parametrize("by", ["update", "insert", "recovery"])
+def test_a_preference_update_waits_for_a_write_still_running_in_its_transaction_and_completes_it_once_interrupted(
+    monkeypatch, by
+):
+    monkeypatch.setattr("selfgraph.client._TX_RETRY_BASE_DELAY", 0)
+    g = fresh_graph("live-write")
+    seed(g)
+    pref = run(g.preferences.create("person:soham", "database", "company:hydradb", strength=0.5))
+    facts = {"subject_entity": "person:soham", "key": "database", "value_entity": "company:hydradb"}
+    if by == "recovery":
+        interrupt_write(g, g.preferences.update(pref.id, strength=0.7), monkeypatch)
+    write = (
+        g.insert.facts({"preferences": [{**facts, "strength": 1.0}]})
+        if by == "insert"
+        else g.preferences.update(pref.id, strength=1.0)
+    )
+
+    async def concurrent() -> None:
+        with pytest.raises(TransientError) as caught:
+            await g.preferences.update(pref.id, strength=0.9)
+        assert "concurrent write" in str(caught.value.__cause__)
+        with pytest.raises(TransientError) as caught:
+            await g.insert.facts({"preferences": [{**facts, "strength": 0.9}]})
+        assert "concurrent write" in str(caught.value.__cause__)
+        assert [(v.revision, v.is_current) for v in await g.preferences.versions(pref.id)] == [(1, False)]
+
+    interrupt_write(g, write, monkeypatch, while_stuck=concurrent)
+    updated = run(g.preferences.update(pref.id, strength=0.9))
+
+    assert (updated.revision, updated.is_current, updated.strength) == (2, True, 0.9)
+    assert [(v.revision, v.is_current) for v in run(g.preferences.versions(pref.id))] == [(2, True), (1, False)]

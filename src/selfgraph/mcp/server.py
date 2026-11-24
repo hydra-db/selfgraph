@@ -13,19 +13,18 @@ from pydantic import BeforeValidator, NonNegativeInt, PositiveInt, StrictBool, c
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import core_schema
 
+from .._cypher_guard import _BLANK, blank_lexical_tokens, check_cypher_limits
 from ..client import SelfGraph
-from ..errors import WARNING_HINTS, SelfGraphError, ValidationError, surface_hint
+from ..errors import WARNING_HINTS, SelfGraphError, ValidationError, internal_error, surface_hint
 from ..ids import type_name
 from ..models import Stance, Status, check_options, validation_error
 from ..resources._common import DEFAULT_PAGE_LIMIT
 from ..runtime import (
-    _BLANK,
     _PARAM_REF,
     DECISION_CLEARABLE,
     PREFERENCE_CLEARABLE,
     GraphSettings,
     bind_params,
-    blank_lexical_tokens,
     build_graph,
     check_settings,
     checked_cypher,
@@ -54,23 +53,24 @@ _WRITE_CLAUSE = re.compile(
 _UNICODE_ESCAPE = re.compile(r"(?<!\\)(?:\\\\)*\\[uU]")
 _MAP_KEY = re.compile(r"([{,]\s*)[A-Za-z_]\w*(\s*:)")
 _PROP_OR_LABEL = re.compile(r"[.:]\s*\w+")
+_WORD_OR_NUMBER = re.compile(
+    r"(0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+|(?:[0-9]+(?:\.(?!\.)[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)|\w+"
+)
 _READ_OPENERS = re.compile(r"(MATCH|OPTIONAL|WITH|UNWIND|RETURN|SHOW|EXPLAIN|PROFILE)\b", re.IGNORECASE)
 _LEADING_BLANK = re.compile(r"^[\s\x00]+")
 
 
+def _mask_cypher_names(query: str) -> str:
+    """Mask map keys, properties, and labels without masking aliases.
+
+    @param query (str): the query after masking literals, comments, and parameters.
+    @return (str): the query with names masked.
+    """
+    return _PROP_OR_LABEL.sub(" ", _MAP_KEY.sub(r"\1\2", query))
+
+
 def _is_blocked_query(query: str) -> bool:
-    """Report whether a raw Cypher query is a write, schema, transaction, or admin statement run_cypher must reject.
-
-    Literals, comments, params, map keys, and property or label accesses are blanked first, so a bare reserved
-    word in those positions does not read as a clause. Aliases are not blanked: the word after AS can be a
-    variable named 'as' followed by a real clause, so a write keyword used as an alias must be backtick-quoted.
-    Blanking can only hide a keyword that was never executable, so it over-blocks an exotic read at worst.
-
-    A query is blocked when it holds a unicode escape anywhere (Neo4j decodes them before lexing, so one can
-    spell a keyword or close a literal or comment the guard blanked), when a backslash or a write or schema
-    clause appears outside literals, or when any ';'-separated statement does not begin with a known read
-    opener. The opener check rejects every statement-initial admin, transaction, or DDL command (ANALYZE, FREE,
-    STORAGE, and so on) without enumerating each engine's admin vocabulary.
+    """Reject Unicode escapes, non-read openers, and executable write keywords in raw MCP Cypher.
 
     @param query (str): the raw Cypher statement.
     @return (bool): True when the query must be rejected as not read-only.
@@ -78,10 +78,10 @@ def _is_blocked_query(query: str) -> bool:
     if _UNICODE_ESCAPE.search(query):
         return True
     stripped = _PARAM_REF.sub(_BLANK, blank_lexical_tokens(query))
-    stripped = _PROP_OR_LABEL.sub(" ", _MAP_KEY.sub(r"\1\2", stripped))
-    if "\\" in stripped or _WRITE_CLAUSE.search(stripped):
+    words = _WORD_OR_NUMBER.sub(lambda token: _BLANK if token[1] else token[0], stripped)
+    if "\\" in stripped or _WRITE_CLAUSE.search(_mask_cypher_names(words)):
         return True
-    heads = (_LEADING_BLANK.sub("", statement) for statement in stripped.split(";"))
+    heads = (_LEADING_BLANK.sub("", statement) for statement in _mask_cypher_names(stripped).split(";"))
     return any(head and _READ_OPENERS.match(head) is None for head in heads)
 
 
@@ -94,7 +94,7 @@ def _json_result(result: Any, *, error: bool = False) -> Any:
     """
     from mcp.types import CallToolResult
 
-    text = json.dumps(result, indent=2, ensure_ascii=False)
+    text = json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False)
     structured = result if isinstance(result, dict) else {"result": result}
     return CallToolResult.model_validate(
         {"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": error}
@@ -146,7 +146,9 @@ def _tool(fn: Callable[..., Awaitable[Any]], hinted: set[str]) -> Callable[..., 
         except SelfGraphError as exc:
             return _error_result(exc, fn.__name__, hinted)
         except Exception as exc:  # noqa: BLE001
-            return _json_result({"error": f"{type(exc).__name__}: {exc}", "error_type": "InternalError"}, error=True)
+            uri = _settings.uri if _settings is not None else None
+            base_url = _settings.llm_base_url if _settings is not None else None
+            return _error_result(internal_error(exc, uri, base_url), fn.__name__, hinted)
         if result is None or isinstance(result, list):
             return _json_result(result)
         return _with_warning_hints(result, hinted) if isinstance(result, dict) else result
@@ -777,6 +779,7 @@ async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
     literals that differ from a stored entity name only by case or spacing."""
     if not isinstance(query, str):
         raise ValidationError(f"query must be a string, got {type_name(query)}")
+    check_cypher_limits(query)
     if _is_blocked_query(query):
         raise ValidationError(
             "run_cypher is read-only: it runs a single read that begins with MATCH, OPTIONAL MATCH, WITH, "
@@ -876,11 +879,11 @@ async def maintenance_dedupe_relations(dry_run: StrictBool = True) -> dict[str, 
 
 
 async def graph_diff(since: str, until: str | None = None) -> dict[str, Any]:
-    """List changes in the known-time window (since, until]; until defaults to now. Deletes and merges are not visible.
+    """List the history stored in the known-time window (since, until]; deletes and entity edits are not visible.
 
     @param since (str): exclusive lower bound as an ISO 8601 known time.
     @param until (str | None): inclusive upper bound, or now.
-    @return (dict[str, Any]): relation changes, created entities, and limitations.
+    @return (dict[str, Any]): the change lists per kind, and limitations.
     """
     g = await _graph_handle()
     return to_jsonable(await g.diff(since, until))
@@ -1026,6 +1029,23 @@ def _check_arguments(server: Any, name: str, hinted: set[str]) -> None:
     object.__setattr__(tool, "run", checked_run)
 
 
+def _check_tool_name(server: Any, hinted: set[str]) -> None:
+    """Make the server answer a call to an unregistered tool with a structured invalid_argument error result.
+
+    @param server (Any): the MCP server holding the tools.
+    @param hinted (set[str]): the codes the server's session has seen.
+    @return (None): nothing; the server's call_tool is replaced in place.
+    """
+    call_tool = server.call_tool
+
+    async def checked_call_tool(name: str, arguments: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        if server._tool_manager.get_tool(name) is None:
+            return _error_result(ValidationError(f"unknown tool {name!r}"), name, hinted)
+        return await call_tool(name, arguments, *args, **kwargs)
+
+    server.call_tool = checked_call_tool
+
+
 def build_server(name: str = "selfgraph"):
     """Create an MCP server with every tool registered. Requires selfgraph[mcp].
 
@@ -1051,6 +1071,7 @@ def build_server(name: str = "selfgraph"):
             kwargs["annotations"] = ToolAnnotations(**_annotations(fn.__name__))
         server.tool(**kwargs)(_tool(fn, hinted))
         _check_arguments(server, fn.__name__, hinted)
+    _check_tool_name(server, hinted)
     return server
 
 

@@ -67,7 +67,7 @@ id is derived. This applies on insert and in `entities.create` and
 relation uses `from_entity` and `to_entity`. In Python the field is `from_`, so
 serialize with `schema.model_dump(by_alias=True)` (or
 `model_dump_json(by_alias=True)`) to get the `from` key. A plain `model_dump()`
-writes `from_`.
+writes `from_`, which a schema rejects as an unknown key.
 
 The `types` of an endpoint name entity types the same way entities do: by name or alias,
 ignoring case, with the parent chain followed. An entity typed `Company` matches an
@@ -272,14 +272,20 @@ What bounds the cost:
   same facts asks nothing.
 - At most 20 rivals are listed per call, lowest id first.
 
+Each fact is sent to the LLM as one numbered line. Line breaks and control
+characters in names, types, and property keys or values are escaped there, so
+stored text cannot add a numbered fact to the prompt.
+
 The LLM can decide differently on a rerun. Use `max_count` where the rule is
 known, and keep `llm` for what a schema cannot state.
 
 ### Ranking and retirement
 
 Facts are ranked by effective time (`event_time`, else when the version was
-written), then by higher revision, then by later `created_at`. So a `create`
-without `event_time` takes effect now, and on equal times the later write wins.
+written), and ties are broken by the relation's id, so the order is the same
+every time the same facts are reasserted. So a `create` without `event_time`
+takes effect now, and replaying the same facts keeps the same relation current
+instead of flipping it.
 
 A retired relation keeps its revision and gains four fields:
 

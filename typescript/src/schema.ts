@@ -1,10 +1,10 @@
 import { z } from "zod";
 
 import { ValidationError } from "./errors.js";
-import { canonicalId, entityId, normalizeRelType, normalizeText, relationId, slug } from "./ids.js";
+import { canonicalId, entityId, normalizeRelType, relationId, slug } from "./ids.js";
 import { casefold } from "./internal/casefold.js";
 import { log } from "./internal/log.js";
-import { pyRepr } from "./internal/py.js";
+import { pyRepr, pyStrip } from "./internal/py.js";
 import { L_ENTITY } from "./labels.js";
 import {
   asInput,
@@ -36,8 +36,16 @@ export type SchemaMode = (typeof SCHEMA_MODES)[number];
 export const CONTRADICTION_MODES = ["off", "warn", "supersede", "llm"] as const;
 export type ContradictionMode = (typeof CONTRADICTION_MODES)[number];
 
+const schemaName = z.string().transform((value, ctx) => {
+  if (!value || !pyStrip(value)) {
+    ctx.addIssue({ code: "custom", message: `Must be a non-empty string, got ${pyRepr(value)}` });
+    return z.NEVER;
+  }
+  return value;
+});
+
 export const PropertySpec = z.strictObject({
-  name: z.string(),
+  name: schemaName,
   type: PropertyTypeSchema.default("string"),
   required: z.boolean().default(false),
   description: optString,
@@ -58,7 +66,7 @@ export const Definition = z.strictObject({
 });
 
 export const EntityType = z.strictObject({
-  name: z.string(),
+  name: schemaName,
   description: optString,
   aliases: z.array(z.string()).default([]),
   synonyms: z.array(z.string()).default([]),
@@ -76,7 +84,7 @@ export const RelationEndpoint = z.strictObject({
 });
 
 export const RelationType = z.strictObject({
-  type: z.string(),
+  type: schemaName,
   description: optString,
   aliases: z.array(z.string()).default([]),
   synonyms: z.array(z.string()).default([]),
@@ -271,16 +279,19 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
   }
   const types = new Map<string, number>();
   for (const [i, relation] of schema.relations.entries()) {
-    let rtype: string | null = null;
+    let rtype: string;
     try {
       rtype = normalizeRelType(relation.type);
     } catch (err) {
-      if (!(err instanceof ValidationError)) throw err;
+      if (err instanceof ValidationError) {
+        throw new ValidationError(err.message, { code: err.code, field: `relations[${i}].type` });
+      }
+      throw err;
     }
-    if (rtype !== null && types.has(rtype)) {
+    if (types.has(rtype)) {
       return [["relations", i, "type"], `duplicate relation type ${pyRepr(relation.type)}`];
     }
-    if (rtype !== null) types.set(rtype, i);
+    types.set(rtype, i);
     for (const side of ["from", "to"] as const) {
       if (schema.entities.length) {
         const resolvedTypes: string[] = [];
@@ -370,8 +381,8 @@ export function canonicalEntityRef<T>(eid: T, etype: string, schema: ParsedSchem
   const forms = [etype, canonical, ...(entityIndex(schema).get(canonical)?.aliases ?? [])];
   const at = id.indexOf(":");
   const prefix = id.slice(0, at);
-  const target = slug(normalizeText(canonical));
-  if (prefix !== target && forms.some((form) => slug(normalizeText(form)) === prefix)) {
+  const target = slug(canonical);
+  if (prefix !== target && forms.some((form) => slug(form) === prefix)) {
     return `${target}:${id.slice(at + 1)}` as T;
   }
   return id;
@@ -409,8 +420,9 @@ export function canonicalizeTypes(facts: ParsedExtraction, schema: ParsedSchema 
       ent.id === null ? entityId(canonical, cleanText(ent.name)) : canonicalEntityRef(ent.id, etype, schema);
     const cut = target.indexOf(":");
     const name = ent.id === null ? cleanText(ent.name) : target.slice(cut + 1);
-    const own = ent.id === null || target.slice(0, cut) === slug(normalizeText(canonical));
+    const own = ent.id === null || target.slice(0, cut) === slug(canonical);
     for (const form of own ? [etype, ...(forms.get(canonical) ?? [])] : []) {
+      if (form.includes(":")) continue;
       const alt = ent.id === null ? entityId(form, name) : canonicalId(`${form}:${name}`);
       if (alt !== target && !moved.has(alt)) moved.set(alt, target);
     }

@@ -122,6 +122,9 @@ strict yes/no question, highest similarity first, at most `max_questions` times
 per candidate. It merges on the first yes, with reason `llm` and the similarity
 as confidence. It also merges within one insert.
 
+The question has one line per mention. Line breaks and control characters in
+types, names, and aliases are escaped there, so stored text cannot add a line.
+
 Below the band nothing is asked, so the LLM never merges an entity without a
 lexical candidate. Pairs that fail the [word check](#names-that-never-merge-by-similarity)
 are never asked either. `Bill Gates` and `William Gates` score 0.81, inside the
@@ -205,7 +208,7 @@ A merge record holds:
 - exactly what the merge added to the survivor (`added_aliases`,
   `added_external_ids`, `added_properties`);
 - each rewritten relation, preference, and decision, in its original and
-  rewritten form.
+  rewritten form, with the `evidence` of a relation dropped as a self-loop.
 
 Inserting the same merge again updates the one record. A repeat's aliases,
 external ids, and properties fold into the absorbed input as an upsert of the
@@ -213,8 +216,10 @@ absorbed id would fold them, so unmerging restores them too.
 
 `unmerge` does the following:
 
-- Recreates the absorbed entity, with the survivor's evidence from the merge's
-  sources (restoring its `source_count`) and the merge's `created_at`.
+- Recreates the absorbed entity, with the evidence the merge wrote on the
+  survivor (restoring its `source_count`) and the merge's `created_at`. The
+  survivor drops that evidence and recounts its `source_count`, unless a direct
+  statement or another live merge wrote the same row.
 - Removes from the survivor only what the merge added. Its aliases, external ids,
   and properties end up exactly as they were before.
 - Moves each rewritten object back between its original endpoints, with the
@@ -228,8 +233,12 @@ absorbed id would fold them, so unmerging restores them too.
   Decision steps follow relations the unmerge deletes. A moved decision keeps a step list
   edited after the merge instead of replaying its original steps. A moved relation that a
   [replaced source](inserting.md#replacing-a-source) retired is written back
-  retired, so an unmerge never brings back a withdrawn fact. One a contradiction
-  retired comes back current, since the conflict came from the merged identity.
+  retired, so an unmerge never brings back a withdrawn fact. A relation that
+  existed before the merge goes back to the revision it had when only the merge
+  wrote after it, nothing certified it, and no other live merge or statement
+  backs it. A survivor relation a removed relation retired is current again.
+  One a contradiction retired comes back current, since the conflict came from
+  the merged identity.
 - Refuses, with `ValidationError` and before writing anything, when a relation
   it would move is [certified](trust.md#certification). The mark verified the
   merged endpoints, so uncertify the relation first.

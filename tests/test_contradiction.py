@@ -131,6 +131,24 @@ def test_supersede_retires_the_older_relation_in_place():
     assert run(collect(g.relations.iterate(include_invalidated=True))) == [r.id for r in listed]
 
 
+@pytest.mark.parametrize("flag", ["false", "no", 0, 1])
+def test_list_and_versions_flags_must_be_booleans(flag):
+    g = graph(contradiction="supersede")
+    insert(g, works_at("acme", 2020))
+    insert(g, works_at("globex", 2023))
+    kind = type(flag).__name__.replace("str", "string").replace("int", "number")
+    with pytest.raises(ValidationError, match=rf"^include_invalidated must be a boolean, got {kind}$") as err:
+        run(g.relations.list(include_invalidated=flag))
+    assert (err.value.code, err.value.field) == ("invalid_argument", "include_invalidated")
+    with pytest.raises(ValidationError, match=rf"^include_invalidated must be a boolean, got {kind}$"):
+        run(collect(g.relations.iterate(include_invalidated=flag)))
+    with pytest.raises(ValidationError, match=rf"^newest_first must be a boolean, got {kind}$"):
+        run(g.relations.versions(ACME, newest_first=flag))
+    with pytest.raises(ValidationError, match=rf"^newest_first must be a boolean, got {kind}$"):
+        run(g.preferences.versions("preference:missing", newest_first=flag))
+    assert [r.id for r in run(g.relations.list(include_invalidated=False)).items] == [GLOBEX]
+
+
 def test_supersede_resolves_conflicts_within_a_batch_in_input_order():
     g = graph(contradiction="supersede")
     result = insert(g, works_at("acme", 2020), works_at("globex", 2023))
@@ -763,6 +781,79 @@ def test_moving_a_fact_later_keeps_older_facts_until_max_count_newer_ones_have_s
     assert (valid_at(g, 2016), valid_at(g, 2019)) == ({ACME, GLOBEX}, {GLOBEX, initech})
 
 
+@pytest.mark.parametrize("how_move", ["insert", "update"])
+@pytest.mark.parametrize("how_fact", ["insert", "update"])
+def test_fact_inside_earlier_stretch_of_moved_relation_is_retired_at_arrival(how_move, how_fact):
+    g = fresh_graph("contra", schema=SPEC, contradiction="supersede")
+    run(g.insert.facts({"entities": PEOPLE}))
+    insert(g, works_at("acme", 2012))
+    backdate(g, how_move, {**works_at("acme"), "event_time": utc(2016)})
+    if how_fact == "insert":
+        insert(g, works_at("globex", 2014))
+    else:
+        run(g.relations.create("person:ann", "WORKS_AT", "company:globex", event_time=utc(2014)))
+    [globex] = run(g.relations.versions(GLOBEX))
+    assert (globex.is_current, globex.invalidated_by, globex.invalidated_at) == (False, ACME, utc(2014))
+    assert (valid_at(g, 2013), valid_at(g, 2015), valid_at(g, 2017)) == ({ACME}, {ACME}, {ACME})
+
+
+def test_fact_dated_before_multiple_higher_ranked_relations_retires_at_earliest_max_count_valid():
+    spec = {**SPEC, "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"], "max_count": 2}}]}
+    g = fresh_graph("contra", schema=spec, contradiction="supersede")
+    companies = [{"type": "Company", "name": f"Co{i}"} for i in range(5)]
+    run(g.insert.facts({"entities": [*PEOPLE, *companies]}))
+    co = [ids.relation_id("person:ann", "WORKS_AT", f"company:co{i}") for i in range(5)]
+    run(g.relations.create("person:ann", "WORKS_AT", "company:co0", event_time=utc(2016)))
+    run(
+        g.insert.facts(
+            {
+                "relations": [
+                    {
+                        "from_entity": "person:ann",
+                        "type": "WORKS_AT",
+                        "to_entity": "company:co1",
+                        "event_time": utc(2017),
+                    }
+                ]
+            }
+        )
+    )
+    run(
+        g.insert.facts(
+            {
+                "relations": [
+                    {
+                        "from_entity": "person:ann",
+                        "type": "WORKS_AT",
+                        "to_entity": "company:co2",
+                        "event_time": utc(2013),
+                    }
+                ]
+            }
+        )
+    )
+    run(g.relations.create("person:ann", "WORKS_AT", "company:co3", event_time=utc(2015)))
+    run(g.relations.update(co[1], set_properties={"p": 1}))
+    run(
+        g.insert.facts(
+            {
+                "relations": [
+                    {
+                        "from_entity": "person:ann",
+                        "type": "WORKS_AT",
+                        "to_entity": "company:co2",
+                        "event_time": utc(2019),
+                    }
+                ]
+            }
+        )
+    )
+    run(g.relations.create("person:ann", "WORKS_AT", "company:co4", event_time=utc(2012)))
+    [co4] = run(g.relations.versions(co[4]))
+    assert (co4.is_current, co4.invalidated_at) == (False, utc(2015))
+    assert valid_at(g, 2015, 7) == {co[2], co[3]}
+
+
 def test_an_insert_that_moves_a_fact_reports_what_it_stored():
     g = graph(contradiction="supersede")
     insert(g, works_at("acme", 2020))
@@ -827,3 +918,20 @@ def test_a_relation_capped_at_both_ends_is_reinstated_only_when_neither_end_disp
     else:
         assert (held.is_current, held.invalidated_by) == (True, None)
     assert (valid_at(g, 2019), valid_at(g, 2023)) == ({ann_globex}, {ann_acme})
+
+
+@pytest.mark.parametrize("dated", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_same_time_batch_replay_is_idempotent(dated, reverse):
+    g = fresh_graph("same-time-replay", schema=SPEC, contradiction="supersede")
+    facts = {"entities": PEOPLE, "relations": [works_at("acme"), works_at("globex")]}
+    if reverse:
+        facts["relations"].reverse()
+    kwargs = {"event_time": "2024-01-01"} if dated else {}
+    run(g.insert.facts(facts, **kwargs))
+    before = sorted((r.id, r.revision, r.is_current) for r in run(g.relations.list(include_invalidated=True)).items)
+    assert sum(current for _, _, current in before) == 1
+    for _ in range(50):
+        run(g.insert.facts(facts, **kwargs))
+        after = sorted((r.id, r.revision, r.is_current) for r in run(g.relations.list(include_invalidated=True)).items)
+        assert after == before

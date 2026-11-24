@@ -2,13 +2,15 @@ import asyncio
 import importlib.util
 import json
 import logging
+from unittest.mock import AsyncMock
 
 import pytest
-from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, error_links, mcp_session, preference_update_recorder, run
+from helpers import AB_FACTS, HYDRADB, KUZU, RAW_CYPHER, error_links, mcp_session, preference_update_recorder, run
 
 import selfgraph
 import selfgraph.mcp.server as srv
 from selfgraph.errors import HINTS, WARNING_HINTS, SelfGraphError, ValidationError
+from selfgraph.models import CypherResult
 
 _HAS_MCP = importlib.util.find_spec("mcp") is not None
 needs_mcp = pytest.mark.skipif(not _HAS_MCP, reason="mcp is not installed")
@@ -176,6 +178,38 @@ def test_run_cypher_guard_rejects_bypasses():
             run(srv.run_cypher(query))
     for query in READS:
         assert not srv._is_blocked_query(query), query
+
+
+def test_run_cypher_guard_recognizes_adjacent_keyword_tokens():
+    for fragment in ("42SET", ".5SET", "1.SET", "1.5e+2SET", "'text'SET", "/* text */SET", "]SET"):
+        assert srv._is_blocked_query(f"RETURN {fragment}"), fragment
+    for fragment in ("offset42SET", "n.set", "{set: 42}", "'42SET'", ".5e+2"):
+        assert not srv._is_blocked_query(f"RETURN {fragment}"), fragment
+
+
+def test_raw_cypher_limits_before_store_dispatch():
+    store = AsyncMock()
+    store.run_cypher.return_value = CypherResult()
+    graph = selfgraph.SelfGraph(store=store)
+    prefix = "RETURN 1 // "
+    exact_bytes = prefix + "é" * ((65_536 - len(prefix)) // 2)
+    for query, limit in (
+        (exact_bytes + "é", "maximum length of 65536 UTF-8 bytes"),
+        ("RETURN " + "([{item:" * 11 + "1" + "}])" * 11, "maximum nesting depth of 32"),
+    ):
+        with pytest.raises(ValidationError, match=limit) as exc:
+            run(graph.run_cypher(query))
+        assert (exc.value.code, exc.value.field) == ("cypher_query_limit", "query")
+    store.initialize.assert_not_called()
+    store.run_cypher.assert_not_called()
+    ignored = "([{ " * 33
+    for query in (
+        exact_bytes,
+        "RETURN " + "(" * 32 + "1" + ")" * 32,
+        f"RETURN '{ignored}' AS `{ignored}` /* {ignored} */",
+    ):
+        assert run(graph.run_cypher(query)) == CypherResult()
+        store.run_cypher.assert_awaited_with(query, None)
 
 
 def test_event_time_and_metadata_reach_the_sdk_and_empty_updates_fail():
@@ -354,6 +388,25 @@ def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, ar
     }
 
 
+@needs_mcp
+def test_unknown_tool_is_a_structured_invalid_argument_error(server):
+    assert tool_failure(server, "list_entitys", {}) == {
+        "error": "unknown tool 'list_entitys'",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "retryable": False,
+        **error_links("invalid_argument"),
+        "tool": "list_entitys",
+    }
+    assert tool_failure(server, "nonexistent_tool", {"a": 1}) == {
+        "error": "unknown tool 'nonexistent_tool'",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "retryable": False,
+        "tool": "nonexistent_tool",
+    }
+
+
 def test_a_session_gets_each_code_hint_once_and_each_new_warning_code_hint(server):
     schema = {"entities": [{"name": "Person"}]}
     first = run(
@@ -395,6 +448,19 @@ def test_run_cypher_needs_every_parameter_and_ids_need_their_prefix():
         ):
             with pytest.raises(ValidationError, match=f"{kind} id must start with '{kind}:'"):
                 run(call)
+
+
+def test_run_cypher_rejects_an_empty_kuzu_param_with_the_parameter_field(server):
+    if not KUZU:
+        pytest.skip("the empty-container error is Kuzu-specific")
+    failure = tool_failure(server, "run_cypher", {"query": "RETURN $x AS x", "params": {"x": []}})
+    assert {key: failure[key] for key in ("error", "error_type", "code", "field", "tool")} == {
+        "error": "parameter 'x' is an empty list, which Kuzu cannot type; pass a non-empty list",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "field": "x",
+        "tool": "run_cypher",
+    }
 
 
 def test_facts_evidence_versions_dry_runs_and_decision_steps():
@@ -478,3 +544,19 @@ def test_proto_keys_are_rejected_by_mcp():
                     {"entities": [{"name": "Ann", "type": "Person", "properties": {"nested": [{"__proto__": "x"}]}}]}
                 )
             )
+
+
+@needs_mcp
+def test_unexpected_tool_errors_come_back_coded_and_mask_credentials(monkeypatch):
+    uri = "bolt://user:store-secret@db.example:7687"
+    base_url = "https://proxy:llm-secret@llm.example/v1"
+    monkeypatch.setattr(srv, "_settings", srv.GraphSettings(store="neo4j", uri=uri, llm_base_url=base_url))
+
+    async def insert_facts(**kwargs):
+        raise RuntimeError(f"driver blew up talking to {uri} and {base_url}")
+
+    error = run(srv._tool(insert_facts, set())()).structured_content
+    assert (error["error_type"], error["code"]) == ("InternalError", "internal_error")
+    assert "store-secret" not in error["error"] and "llm-secret" not in error["error"]
+    assert "bolt://***@db.example:7687" in error["error"]
+    assert "https://***@llm.example/v1" in error["error"]

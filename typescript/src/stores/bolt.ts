@@ -29,7 +29,7 @@ import {
   ValidationError,
 } from "../errors.js";
 import { isPlainObject, pyRepr } from "../internal/py.js";
-import type { CypherResult, JsonValue } from "../models.js";
+import { type CypherResult, checkResultDepth, type JsonValue } from "../models.js";
 import { type CounterName, graphProperties, WRITE_COUNTER_NAMES } from "./cypherPrimitives.js";
 
 const COUNTER_NAMES: ReadonlyArray<readonly [CounterName, string]> = [
@@ -297,5 +297,6 @@ export async function recordsToResult(pending: Result): Promise<CypherResult> {
   const updates = result.summary.counters.updates();
   const counters: Record<string, number> = {};
   for (const [js, py] of COUNTER_NAMES) if (updates[js]) counters[py] = updates[js];
+  checkResultDepth(rows);
   return { columns, rows, counters, warnings: [] };
 }

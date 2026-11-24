@@ -46,8 +46,14 @@ NAMES = [
     "AT&T",
     "x​y",
     "a﻿b",
+    "Ac\u200dme",
+    "Ac\u00adme",
+    "Ac\u2060me",
+    "\u200b",
     "Tab\tSeparated\x1cName",
     "İstanbul",
+    "İ\u0327",
+    "İ\u0327stanbul Holdings Ltd",
     "ΣΊΣΥΦΟΣ",
     "",
     "   ",
@@ -82,6 +88,7 @@ TYPES = [
     "Work",
     " Bank ",
     "U\u0308ber",
+    "İ\u0327",
 ]
 REL_TYPES = [
     "works at",
@@ -123,6 +130,8 @@ ENTITY_ID_INPUTS = [
     "doc:A:B",
     "Big Company:Acme, Inc.",
     "İstanbul:ΣΊΣΥΦΟΣ",
+    "PERSON:İ\u0327",
+    "İ\u0327:Ada",
     "no-colon",
     ":x",
     "x:",
@@ -183,6 +192,8 @@ TEXTS = [
 
 PROPS = [
     {},
+    {"role": "author", "2": "b", "10": "c", "\U00010000": "astral", "\ue000": "bmp"},
+    {"\ue000": "bmp", "\U00010000": "astral", "10": "c", "2": "b", "role": "author"},
     {
         "since": 2020,
         "role": "CTO",
@@ -268,6 +279,10 @@ CYPHER = [
     "SHOW TRANSACTIONS YIELD transactionId AS t TERMINATE TRANSACTIONS t YIELD transactionId AS z RETURN z",
     "RETURN 1; ANALYZE GRAPH",
     "RETURN 1; MATCH (n) RETURN n;",
+    "RETURN 42SET",
+    "RETURN .5SET",
+    "RETURN 1.SET",
+    "RETURN offset42SET",
     "",
     "   ",
     "foo",
@@ -372,6 +387,15 @@ FOLD_TEXTS = [
     "n x y Z 3 a_b c-d",
     "K Kelvin\u212a Å\u212b",
     "ŉ ǰ ΐ",
+]
+PINNED = [
+    "王\U0002ebf0",
+    "王\U000323b0",
+    "王\U00031350",
+    "Таня \U00001c89а",
+    "Ɤama",
+    "\U00002c2f\U0000a7c0",
+    "ΟΔΥΣΣΕΥΣ Σ",
 ]
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 EVIDENCE_KEY = ("source_id", "source_version", "chunk_id", "quote", "start_offset", "end_offset")
@@ -1157,6 +1181,7 @@ RELEVANCE_CASES = [
     (["2024-02-29T12:34:56.789+00:00", "2025-06-01T08:00:00.123456+00:00"], "2026-11-08T10:00:00+00:00", 400, 12),
     (["2020-01-01T00:00:00+00:00"], "2026-11-08T10:00:00.5+00:00", 3000, 1000000),
     ([None, "2026-11-08T09:59:59.999+00:00"], "2026-11-08T10:00:00+00:00", 365, 2),
+    (["2020-01-01T00:00:00+00:00"], "2020-01-01T00:00:00+00:00", 0.25, 999999999),
 ]
 
 NEO4J_SCHEMAS = [
@@ -1211,9 +1236,11 @@ def main():
     out = {
         "slug": {t: attempt(ids.slug, t) for t in TYPES + NAMES},
         "mark_ranges": _marks.MARK_RANGES,
+        "format_ranges": _marks.FORMAT_RANGES,
         "is_mark": {ch: ids._is_mark(ch) for ch in MARK_CHARS},
-        "entity_id": [[t, n, attempt(ids.entity_id, t, n)] for t in TYPES for n in NAMES],
-        "normalize_rel_type": {t: ids.normalize_rel_type(t) for t in REL_TYPES if t.strip(" !")},
+        "entity_id": [[t, n, attempt(ids.entity_id, t, n)] for t in TYPES for n in NAMES]
+        + [["Person", n, ids.entity_id("Person", n)] for n in PINNED],
+        "normalize_rel_type": {t: ids.normalize_rel_type(t) for t in REL_TYPES + PINNED if t.strip(" !")},
         "canonical_entity_id": [[e, attempt(ids.canonical_entity_id, e)] for e in ENTITY_ID_INPUTS],
         "relation_id": [
             ["person:jane", t, "company:acme", ids.relation_id("person:jane", t, "company:acme")]
@@ -1257,7 +1284,7 @@ def main():
         "datetimes": [dt_case(dt) for dt in DATETIMES],
         "from_iso": {s: _serde.to_iso(_serde.from_iso(s)) for s in ISO_INPUTS},
         "format_props": [[p, _format_props(p)] for p in PROPS],
-        "tokens": {t: sorted(_tokens(t)) for t in TEXTS + FOLD_TEXTS},
+        "tokens": {t: sorted(_tokens(t)) for t in TEXTS + FOLD_TEXTS + PINNED},
         "fold": {t: _fold(t) for t in FOLD_TEXTS},
         "grep": [
             [sorted(_tokens(q)), _fold(t), _grep_score(_tokens(q), _fold(t))]

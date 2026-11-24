@@ -3,11 +3,12 @@ import { LLM_HINT } from "../errors.js";
 import { log } from "../internal/log.js";
 import { MARK_CLASS } from "../internal/marks.js";
 import { PY_WS_CLASS, pySplit, pySplitLines, pyStrip } from "../internal/py.js";
+import { lower, WORD_CLASS } from "../internal/unicode.js";
 import { insertWarning, type ParsedDocument, type ParsedExtraction } from "../models.js";
 import type { Extractor } from "../protocols.js";
 import { assembleExtraction, FALLBACK_TYPE, type RawEntity, type RawRelation, WarningSink } from "./extractor.js";
 
-const WORD = `[\\p{L}\\p{N}${MARK_CLASS}_&.'\\-]`;
+const WORD = `[${WORD_CLASS}${MARK_CLASS}&.'\\-]`;
 const UPPER = `[${UPPERCASE.map((cp) => `\\u{${cp.toString(16)}}`).join("")}]`;
 const CAP = new RegExp(`${UPPER}${WORD}*(?:[${PY_WS_CLASS}]+${UPPER}${WORD}*)*`, "gu");
 const SENT = new RegExp(`(?<=[.!?])[${PY_WS_CLASS}]+`, "u");
@@ -27,7 +28,7 @@ function regexExtract(text: string): { entities: RawEntity[]; relations: RawRela
   for (const sentence of text.split(SENT)) {
     const found = pySplitLines(sentence).flatMap((line) => Array.from(line.matchAll(CAP), (m) => m[0]));
     const raw = found.map((n) => pyStrip(pySplit(n).join(" "), ".,;:!?"));
-    const names = [...new Set(raw.filter((n) => n && !STOPNAMES.has(n.toLowerCase())))];
+    const names = [...new Set(raw.filter((n) => n && !STOPNAMES.has(lower(n))))];
     entities.push(...names.map((name) => ({ type: FALLBACK_TYPE, name })));
     for (let i = 0; i + 1 < names.length; i++) {
       relations.push({ from_name: names[i]!, type: "RELATED_TO", to_name: names[i + 1]! });

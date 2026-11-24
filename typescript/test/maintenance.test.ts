@@ -22,6 +22,11 @@ describe("relevance formula", () => {
   it("decays by half-life and rises with frequency", () => {
     expect(relevanceScore([T0], days(10), 7, 2)).toBe(0.309582);
   });
+
+  it("never reaches 1.0", () => {
+    expect(relevanceScore([T0], T0, 30, 999_998)).toBe(0.999999);
+    expect(relevanceScore([T0], T0, 0.25, 999_999_999)).toBe(0.999999);
+  });
 });
 
 async function cascading(g: SelfGraph): Promise<void> {
@@ -261,6 +266,7 @@ function suite(spec: StoreSpec) {
   it("plans a prune, then applies it in batches with the same cascades as deleting one by one", async () => {
     const one = open();
     await cascading(one);
+    await one.preferences.create("person:keep", "pick", "temp:y", { about_entity: "temp:x" });
     const counts = { ...NO_DELETES };
     for (const eid of ["temp:x", "temp:y"]) {
       const removed = await one.entities.delete(eid);
@@ -268,6 +274,7 @@ function suite(spec: StoreSpec) {
     }
     const batched = open();
     await cascading(batched);
+    await batched.preferences.create("person:keep", "pick", "temp:y", { about_entity: "temp:x" });
     const cutoff = later(0.0005);
     const plan = await batched.maintenance.prune({ older_than: cutoff, types: ["Temp"] });
     expect([plan.dry_run, plan.entity_ids, plan.deleted]).toEqual([true, ["temp:x", "temp:y"], undefined]);
@@ -283,7 +290,7 @@ function suite(spec: StoreSpec) {
       deleted_entities: 2,
       deleted_relation_versions: 3,
       deleted_decisions: 1,
-      deleted_preference_versions: 1,
+      deleted_preference_versions: 2,
       restored_relations: 0,
     });
     const state = await cascadeState(one);

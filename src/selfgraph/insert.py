@@ -17,6 +17,7 @@ from .models import (
     JsonValue,
     ParsedDocument,
     as_input,
+    check_options,
 )
 from .resolution import EntityResolver, ResolverMode
 from .schema import ContradictionMode, Schema, SchemaMode, as_schema, require_schema_for_mode
@@ -53,6 +54,7 @@ class Insert:
         resolver: EntityResolver | ResolverMode | None = None,
         contradiction: ContradictionMode | None = None,
         replace_source: bool = False,
+        **options: Any,
     ) -> InsertResult:
         """Extract an ontology from text and merge it into the graph, recording the text as a source version.
 
@@ -65,6 +67,22 @@ class Insert:
         @param replace_source (bool): treat the text as a replacement of source_id's earlier versions.
         @return (InsertResult): what was inserted, with source_diff when replace_source is set.
         """
+        check_options(
+            "insert.text",
+            options,
+            [
+                "source_id",
+                "event_time",
+                "metadata",
+                "instructions",
+                "prompts",
+                "schema",
+                "schema_mode",
+                "resolver",
+                "contradiction",
+                "replace_source",
+            ],
+        )
         if resolver is not None:
             self._c._resolver_for(resolver)
         if not isinstance(text, str):
@@ -126,6 +144,7 @@ class Insert:
         schema_mode: SchemaMode | None = None,
         resolver: EntityResolver | ResolverMode | None = None,
         contradiction: ContradictionMode | None = None,
+        **options: Any,
     ) -> InsertResult:
         """Merge ready facts into the graph as idempotent upserts.
 
@@ -143,6 +162,9 @@ class Insert:
             or None for the graph's mode.
         @return (InsertResult): the inserted entities, relations, preferences, decisions, and merges.
         """
+        check_options(
+            "insert.facts", options, ["source_id", "event_time", "schema", "schema_mode", "resolver", "contradiction"]
+        )
         _require_optional_text("source_id", source_id)
         if facts is None:
             raise ValidationError("invalid facts: expected object")

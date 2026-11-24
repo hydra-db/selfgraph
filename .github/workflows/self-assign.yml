@@ -1,0 +1,40 @@
+name: self-assign
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  take:
+    if: ${{ !github.event.issue.pull_request && startsWith(github.event.comment.body, '/take') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const who = context.payload.comment.user.login;
+            const MAX = 10;
+            const reply = body => github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body });
+
+            if (issue.state !== 'open') return reply(`@${who} this issue is closed.`);
+            if (!issue.labels.some(l => l.name === 'approved-for-pr'))
+              return reply(`@${who} this issue isn't approved yet. A maintainer has to approve it before anyone can take it.`);
+            if (issue.assignees.some(a => a.login === who)) return;
+            if (issue.assignees.length)
+              return reply(`@${who} this is already assigned to @${issue.assignees.map(a => a.login).join(', @')}.`);
+
+            const mine = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'open', assignee: who, per_page: 100 });
+            const held = mine.filter(i => !i.pull_request);
+            if (held.length >= MAX)
+              return reply(`@${who} you already have ${held.length} open assigned issues (max ${MAX}): ${held.map(i => '#' + i.number).join(', ')}. Finish or drop one first.`);
+
+            await github.rest.issues.addAssignees({ owner, repo, issue_number: issue.number, assignees: [who] });
+            const { data } = await github.rest.issues.get({ owner, repo, issue_number: issue.number });
+            if (!data.assignees.some(a => a.login === who))
+              return reply(`@${who} GitHub refused the assignment. A maintainer will assign you by hand.`);
+            await reply(`Assigned to @${who}. Open a PR with \`Closes #${issue.number}\` when you're ready.`);

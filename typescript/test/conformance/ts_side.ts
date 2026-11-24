@@ -1,10 +1,13 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
+import { createHash } from "node:crypto";
 
-import { kv } from "../../src/cli.js";
+import { exitCodeFor, kv } from "../../src/cli.js";
+import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
 import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
   FalkorDBStore,
+  fromNeo4jOntology,
   fromTables,
   ids,
   KuzuStore,
@@ -16,21 +19,26 @@ import {
   toOssie,
   ValidationError,
 } from "../../src/index.js";
+import { casefold } from "../../src/internal/casefold.js";
 import { setLogger } from "../../src/internal/log.js";
 import { comparePy } from "../../src/internal/py.js";
 import { jsonIso } from "../../src/internal/time.js";
-import { callTool } from "../../src/mcp.js";
+import { ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, lower, upper } from "../../src/internal/unicode.js";
+import { callTool, isBlockedQuery } from "../../src/mcp.js";
 import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
-import { parseJson } from "../../src/runtime.js";
+import { buildLlm, DEFAULT_SETTINGS, falkorCredentials, parseJson } from "../../src/runtime.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { requireIdentifier } from "../../src/stores/cypherPrimitives.js";
+import { parseDoc } from "../../src/stores/docRows.js";
 import { expandTokens, schemaForms } from "../../src/terms.js";
 import { parseTime } from "../../src/validate.js";
 import { STORE_SPECS } from "../helpers.js";
 import { diffWindows } from "./diff.js";
 
 const LENIENT_EVENT_TIMES = [
+  "9999-12-31T23:59:59-14:00",
+  "0001-01-01T00:00:00+14:00",
   "2021",
   "0000",
   "0001",
@@ -129,6 +137,9 @@ const TABLES = [
   { name: "movies" },
   { name: "order_statuses" },
   { name: "Companies", columns: [{ name: "customer_id", references: "Customers" }] },
+  { name: "ﬂights" },
+  { name: "ǆungla" },
+  { name: "ß" },
 ];
 
 const NEO4J_LOSS_SPEC = {
@@ -299,7 +310,57 @@ const UNKNOWN_KEY_CASES: Array<["facts" | "schema", unknown]> = [
   ["schema", { relations: [{ type: "X", to: { min_count: -1e20 } }] }],
   ["schema", { relations: [{ type: "X", from: { min_count: 2 ** 53, max_count: 5 } }] }],
   ["schema", { relations: [{ type: "X", from: { max_count: 2 ** 53, min_count: 1.5 } }] }],
+  ["schema", { relations: [{ type: "X", from_: { types: ["A"], max_count: 1 } }] }],
+  ["schema", { relations: [{ type: "X", from: { types: ["A"] }, from_: { types: ["B"] } }] }],
 ];
+
+const FALKOR_CREDENTIAL_CASES: Array<[string, string | null]> = [
+  ["redis://default:100%@127.0.0.1:1", null],
+  ["redis://u:p%ff@h:1", null],
+  ["redis://u%zz:p@h:1", null],
+  ["redis://us%C3%A9r:p%40ss%3Aw0rd@h:1", null],
+  ["redis://:onlypass@h:1", null],
+  ["h:6379", null],
+  ["redis://u:bad%@h:1", "v:ok"],
+];
+
+/**
+ * Read the FalkorDB login from URLs with valid, malformed, and overridden credentials.
+ *
+ * @return (unknown[]): each case's user name and password, or the error code, field, and message.
+ */
+function falkorCredentialCases(): unknown[] {
+  return FALKOR_CREDENTIAL_CASES.map(([uri, auth]) => {
+    try {
+      return falkorCredentials(uri, auth);
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      return [exc.code, exc.field, exc.message];
+    }
+  });
+}
+
+const LLM_PREFIX_CASES: Array<[string, string]> = [
+  ["openai", "anthropic/claude"],
+  ["anthropic", "gemini/x"],
+  ["gemini", "google/x"],
+];
+
+/**
+ * Build the LLM from provider and model settings whose prefixes conflict or match.
+ *
+ * @return (unknown[]): each case's built provider, or the error code, field, and message as the CLI words it.
+ */
+function llmPrefixErrors(): unknown[] {
+  return LLM_PREFIX_CASES.map(([llm_provider, llm_model]) => {
+    try {
+      return buildLlm({ ...DEFAULT_SETTINGS, llm_provider, llm_model })?.provider;
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      return [exc.code, exc.field, surfaceHint(exc.message)];
+    }
+  });
+}
 
 /**
  * Parse a value with an unknown key and return the error message.
@@ -412,12 +473,76 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
   ];
   const warnings: InsertWarning[] = [];
   const extraction = assembleExtraction(
-    [],
+    [{ type: "Person", name: "Jane", aliases: ["J", "bad\u0000alias"] }],
     rows.map((row) => ({ from_name: "Jane", type: "WORKS_AT", to_name: "Acme", ...row })),
     [],
     [],
     warnings,
   );
+  return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
+}
+
+const RESOLVED_NAME_ENTITIES = [
+  { type: "Person", name: "Acme!" },
+  { type: "Company", name: "Acme Corp" },
+  { type: "Organization", name: "Beta" },
+  { type: "Company", name: "Beta Ltd" },
+  { type: "Place", name: "Café" },
+  { type: "Person", name: "Anchor" },
+];
+
+const RESOLVED_NAMES = [
+  "ACME.",
+  "The Acme Inc",
+  "Acme",
+  "Beta Inc",
+  "The Beta",
+  "Café",
+  "CAFÉ",
+  "Gamma Inc",
+  "gamma",
+  "GAMMA INC.",
+  "Cafe\u0301",
+];
+
+/**
+ * Resolve surface-variant names against registered entities, where ties and type classes decide the winner.
+ *
+ * @return ({ extraction: unknown; warnings: unknown }): the assembled facts and the warnings for the names that match several entity types.
+ */
+function resolvedExtractedNames(): { extraction: unknown; warnings: unknown } {
+  const warnings: InsertWarning[] = [];
+  const extraction = assembleExtraction(
+    RESOLVED_NAME_ENTITIES,
+    RESOLVED_NAMES.map((name, i) => ({ from_name: name, type: `R${i}`, to_name: "Anchor" })),
+    [],
+    [],
+    warnings,
+  );
+  return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
+}
+
+/**
+ * Assemble extracted entities where some are blank or invalid, with a relation to each, and their warnings.
+ *
+ * @return ({ extraction: unknown; warnings: unknown }): the assembled facts and the warnings for the dropped entities.
+ */
+function droppedExtractedEntities(): { extraction: unknown; warnings: unknown } {
+  const entities = [
+    { type: "Person", name: "Ann" },
+    { type: "Person", name: "" },
+    { type: "Person", name: "  " },
+    { type: " ", name: "Bob" },
+    { type: "Person", name: "Cy\u0007" },
+    { type: "Company", name: "Acme" },
+  ];
+  const relations = ["Acme", "Bob", "Cy\u0007", "Zed"].map((to_name) => ({
+    from_name: "Ann",
+    type: "WORKS_AT",
+    to_name,
+  }));
+  const warnings: InsertWarning[] = [];
+  const extraction = assembleExtraction(entities, relations, [], [], warnings);
   return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
 }
 
@@ -428,19 +553,28 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
  */
 export function schemaWarnings(): {
   warnings: Array<Array<{ code: string; message: string }>>;
+  integer_properties: Array<Array<{ code: string; message: string }>>;
   unknown_keys: string[];
+  schema_types: string[];
   alias_errors: string[];
+  consistency_errors: Array<{ code: string; field: string | null; message: string }>;
+  neo4j_description_errors: Array<{ code: string; field: string | null; message: string }>;
+  unit_range_errors: Array<{ code: string; field: string | null; message: string }>;
   own_keys: Array<Array<{ code: string; message: string }>>;
   parents: unknown[];
   endpoint_types: unknown[];
   tables: unknown;
   tables_errors: string[];
+  qualified_tables: unknown;
   term_forms: unknown;
   terms: unknown[];
   shared_term_forms: unknown;
   shared_synonym_term_forms: unknown;
   shared_terms: string[][];
+  greek_tokens: string[][];
   datetime_errors: string[];
+  falkor_credentials: unknown[];
+  llm_prefix_errors: unknown[];
   iso_times: string[];
   terms_subtypes: unknown[];
   neo4j_dropped: string;
@@ -448,7 +582,56 @@ export function schemaWarnings(): {
   json_constants: { flags: unknown[]; documents: unknown[] };
   lenient_event_times: Array<string | null>;
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
+  resolved_extracted_names: { extraction: unknown; warnings: unknown };
+  dropped_extracted_entities: { extraction: unknown; warnings: unknown };
+  credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
+  const consistencyErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  const neo4jDescriptionErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  const unitRangeErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  for (const confidence of [1e16, -1e-7, -1e20]) {
+    try {
+      parseOrThrow(
+        Extraction,
+        {
+          relations: [{ from_entity: "t:a", type: "R", to_entity: "t:b", evidence: [{ source_id: "s", confidence }] }],
+        },
+        "facts",
+      );
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      unitRangeErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+    }
+  }
+  for (const source of ["node_types", "relationship_types"]) {
+    for (const propertyDescription of [false, true]) {
+      for (const description of [false, 0, {}, []]) {
+        const body: Record<string, unknown> = { label: source === "node_types" ? "Person" : "KNOWS" };
+        if (propertyDescription) body.properties = [{ name: "note", description }];
+        else body.description = description;
+        try {
+          fromNeo4jOntology({ [source]: [body] });
+        } catch (exc) {
+          if (!(exc instanceof ValidationError)) throw exc;
+          neo4jDescriptionErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+        }
+      }
+    }
+  }
+  for (const spec of [
+    { entities: [{ name: "Person" }, { name: "Person" }] },
+    { entities: [{ name: "Employee", parent: "Persn" }] },
+    { entities: [{ name: "Person" }], relations: [{ type: "WORKS_AT", to: { types: ["Company"] } }] },
+    { relations: [{ type: "KNOWS" }, { type: "knows" }] },
+    { relations: [{ type: "X", from: { max_count: 0 } }] },
+  ]) {
+    try {
+      parseOrThrow(Schema, spec, "schema");
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      consistencyErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+    }
+  }
   const terms = Schema.parse(TERMS_SPEC);
   const sharedSchema = Schema.parse(SHARED_DEFINITION_SPEC);
   const subSchema = Schema.parse({
@@ -471,6 +654,17 @@ export function schemaWarnings(): {
         message: w.message,
       })),
     ),
+    integer_properties: [-0, 1, 1.5, Number.MAX_SAFE_INTEGER].map((value) =>
+      validateAgainstSchema(
+        Extraction.parse({ entities: [{ type: "Item", name: "x", properties: { n: value } }] }),
+        Schema.parse({
+          entities: [{ name: "Item", properties: [{ name: "n", type: "integer" }] }],
+        }),
+      ).map((w) => ({ code: w.code, message: w.message })),
+    ),
+    consistency_errors: consistencyErrors,
+    neo4j_description_errors: neo4jDescriptionErrors,
+    unit_range_errors: unitRangeErrors,
     alias_errors: [
       { entities: [{ name: "Person" }, { name: "Company", aliases: ["Person"] }] },
       {
@@ -480,6 +674,7 @@ export function schemaWarnings(): {
         ],
       },
       { entities: [{ name: "Straße" }, { name: "Company", aliases: ["STRASSE"] }] },
+      ...["!!!", "___", " - / ", "💥"].map((type) => ({ relations: [{ type }] })),
       { relations: [{ type: "WORKS_AT" }, { type: "OWNS", aliases: ["works at"] }] },
       { relations: [{ type: "OWNS", aliases: ["works-at"] }, { type: "WORKS_AT" }] },
       {
@@ -555,8 +750,16 @@ export function schemaWarnings(): {
       }
     }),
     unknown_keys: UNKNOWN_KEY_CASES.map(([kind, value]) => unknownKeyError(kind, value)),
+    schema_types: ["false", 0, 1].flatMap((value) =>
+      [
+        { entities: [{ name: "T", certified: value }] },
+        { entities: [{ name: "T", properties: [{ name: "p", required: value }] }] },
+        { relations: [{ type: "R", certified: value }] },
+      ].map((spec) => unknownKeyError("schema", spec)),
+    ),
     tables: toJsonable(fromTables(TABLES, { name: "sales" })),
     tables_errors: tablesReferenceErrors(),
+    qualified_tables: toJsonable(fromTables([{ name: "sales.users" }, { name: "support.users" }])),
     neo4j_dropped: neo4jExportWarnings(),
     ossie: ossieExport(),
     json_constants: jsonConstants(),
@@ -572,10 +775,15 @@ export function schemaWarnings(): {
         Object.fromEntries(named),
       ]),
     ),
+    greek_tokens: ["μαΐου", "ΜΑΪ́ΟΥ", "αΰπνία", "ΑΫ́ΠΝΊΑ", "ŉ ǰ ΐ"].flatMap((text) =>
+      ["NFC", "NFD"].map((form) => [...tokens(text.normalize(form))].sort(comparePy)),
+    ),
     shared_terms: ["employment state", "project state", "status"].map((q) =>
       [...expandTokens(tokens(q), sharedSchema, tokens)].sort(comparePy),
     ),
     terms: TERM_QUESTIONS.map((q) => [...expandTokens(tokens(q), terms, tokens)].sort(comparePy)),
+    falkor_credentials: falkorCredentialCases(),
+    llm_prefix_errors: llmPrefixErrors(),
     datetime_errors: ["0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-02:00"].map((text) => {
       try {
         parseTime(text, "event_time");
@@ -597,10 +805,71 @@ export function schemaWarnings(): {
       [...expandTokens(tokens(q), subSchema, tokens)].sort(comparePy),
     ),
     repeated_extracted_relations: repeatedExtractedRelations(),
+    resolved_extracted_names: resolvedExtractedNames(),
+    dropped_extracted_entities: droppedExtractedEntities(),
     lenient_event_times: LENIENT_EVENT_TIMES.map((value) => {
       const parsed = lenientTime(value);
       return parsed === null ? null : jsonIso(parsed);
     }),
+    credential_masking: credentialMasking(),
+  };
+}
+
+/**
+ * Mask store and LLM credentials the way the error helpers do, for byte-for-byte parity with Python.
+ *
+ * @return ({ mask: string; redact: string; redact_many: string; internal: string }): the masked URI, one and two URIs redacted from a message, and the wrapped internal error text.
+ */
+function credentialMasking(): { mask: string; redact: string; redact_many: string; internal: string } {
+  const uri = "bolt://user:store-secret@db.example:7687";
+  const base = "https://proxy:llm-secret@llm.example/v1";
+  return {
+    mask: maskUri(uri),
+    redact: redactUri(`driver error reaching ${uri}`, uri),
+    redact_many: redactUris(`call to ${uri} and ${base} failed`, uri, base),
+    internal: internalError(new Error(`boom at ${uri} and ${base}`), uri, base).message,
+  };
+}
+
+const PINNED_UNICODE_TEXTS = [
+  "王\u{2ebf0}",
+  "王\u{2ebf1}",
+  "王\u{323b0}",
+  "王\u{31350}",
+  "Таня \u{1c89}а",
+  "Ɤama",
+  "\u{2c2f}\u{a7c0}",
+  "ΟΔΥΣΣΕΥΣ Σ",
+  "Straße ǰ İstanbul",
+];
+
+/**
+ * Derive ids, relation types, and tokens from code points that differ across Unicode versions.
+ *
+ * @return ({ digest: string; entity_ids: string[]; relation_types: string[]; lowered: string[]; tokens: string[][] }): the entity ids, relation types, lowercased texts, and tokens of each text, and one digest of the lowercase, uppercase, and casefold mapping and the letter, alphanumeric, and decimal class of every code point.
+ */
+export function pinnedUnicode(): {
+  digest: string;
+  entity_ids: string[];
+  relation_types: string[];
+  lowered: string[];
+  tokens: string[][];
+} {
+  let every = "";
+  for (let cp = 0; cp < 0x110000; cp++) {
+    if (cp < 0xd800 || cp > 0xdfff) every += `${String.fromCodePoint(cp)}\n`;
+  }
+  const digest = createHash("sha256");
+  for (const mapped of [lower(every), upper(every), casefold(every)]) digest.update(mapped);
+  for (const body of [LETTER_CLASS, ALNUM_CLASS, DECIMAL_CLASS]) {
+    digest.update((every.match(new RegExp(`[${body}]`, "gu")) ?? []).join(""));
+  }
+  return {
+    digest: digest.digest("hex"),
+    entity_ids: PINNED_UNICODE_TEXTS.flatMap((text) => ["Person", "Company"].map((kind) => ids.entityId(kind, text))),
+    relation_types: PINNED_UNICODE_TEXTS.map((text) => ids.normalizeRelType(text)),
+    lowered: PINNED_UNICODE_TEXTS.map(lower),
+    tokens: PINNED_UNICODE_TEXTS.map((text) => [...tokens(text)].sort(comparePy)),
   };
 }
 
@@ -675,6 +944,11 @@ export const FACTS = {
 const JOINED = { from_entity: "company:acme", type: "JOINED", to_entity: "person:jane-doe" };
 const LIKES = { subject_entity: "person:jane-doe", key: "employer", value_entity: "company:acme" };
 const FACTS_TYPE_CASES: unknown[] = [
+  ...["start_offset", "end_offset"].flatMap((offset) =>
+    ["2", true, false].map((value) => ({
+      relations: [{ ...JOINED, evidence: [{ source_id: "s", [offset]: value }] }],
+    })),
+  ),
   { relations: [{ ...JOINED, event_time: "2021" }] },
   { relations: [{ ...JOINED, event_time: 2021 }] },
   { relations: [{ ...JOINED, event_time: true }] },
@@ -693,6 +967,17 @@ export const TEXT =
   "Grace Hopper joined Remington Rand. Grace Hopper wrote COBOL. Zoë Ångström met Ada Lovelace in 北京.";
 
 /**
+ * The exit code each error code gets, so both SDKs compare one table.
+ *
+ * @return (Array<[string, number]>): [code, 2 for invalid input or settings, 1 otherwise], sorted by code.
+ */
+export function exitCodes(): Array<[string, number]> {
+  return Object.keys(HINTS)
+    .sort()
+    .map((code) => [code, exitCodeFor(new SelfGraphError("", { code: code as keyof typeof HINTS }))]);
+}
+
+/**
  * A store pointed at the same database the Python side uses for a backend.
  *
  * @param name (string): the backend name.
@@ -704,8 +989,158 @@ export function conformanceStore(name: string, kuzuPath: string): GraphStore {
     return new FalkorDBStore("localhost", Number(process.env.SG_FALKOR_PORT ?? 6380), {
       graph: "selfgraph_conformance",
     });
-  if (name === "kuzu") return new KuzuStore(kuzuPath);
+  if (name === "kuzu") return new KuzuStore(kuzuPath, { buffer_pool_size: 128 << 20 });
   return STORE_SPECS.find((s) => s.name === name)!.make();
+}
+
+export const STATEMENT_QUERIES = [
+  "RETURN 1 AS a; MATCH (n:N) DETACH DELETE n",
+  "CREATE (:N {pk:'x'}); CREATE (:N {pk:'y'})",
+  "RETURN 'a; b' AS s",
+  "MATCH (n:N) RETURN count(*) AS c ; // trailing",
+];
+
+export const VALUE_QUERIES: Record<string, string[]> = {
+  agree: [
+    "CREATE NODE TABLE P(pk INT64 PRIMARY KEY, d DATE, ts TIMESTAMP, iv INTERVAL, dec DECIMAL(5,2), l DATE[], u UNION(a INT64, b STRING), s STRUCT(x INT64, y DATE))",
+    "CREATE REL TABLE Q(FROM P TO P, w DECIMAL(5,2), at DATE)",
+    "CREATE NODE TABLE W(pk INT64 PRIMARY KEY, big INT64, u UNION(a INT64, b DOUBLE))",
+    "CREATE (:P {pk: 1, d: date('2024-01-02'), ts: timestamp('2024-01-01 12:34:56.789'), iv: interval('1 day'), dec: cast('1.5' AS DECIMAL(5,2)), l: [date('2024-01-03')], u: union_value(b := 'x'), s: {x: 1, y: date('2024-01-03')}})",
+    "CREATE (:P {pk: 2})",
+    "MATCH (a:P {pk: 1}), (b:P {pk: 2}) CREATE (a)-[:Q {w: cast('2.5' AS DECIMAL(5,2)), at: date('2024-01-02')}]->(b)",
+    "CREATE (:W {pk: 1, big: 9007199254740993, u: union_value(b := 1.5)})",
+    "MATCH (p:P) RETURN p ORDER BY p.pk",
+    "MATCH ()-[q:Q]->() RETURN q",
+    "MATCH p = (a:P)-[:Q*1..1]->(b:P) RETURN p",
+    "MATCH (a:P)-[:Q]->(b:P) RETURN [a, b] AS pair",
+    "MATCH (p:P {pk: 1}) RETURN p.u AS u, p.s AS s, p.l AS l",
+    "RETURN to_json({a: 1}) AS v, [to_json(1)] AS w",
+    "RETURN union_value(a := NULL) AS v",
+    "RETURN {`a, b`: 1, b: 2} AS a, {`f(`: 1, g: 2} AS b",
+    "RETURN map([timestamp('2024-01-01 12:34:56.789')], [1]) AS a, map([1.5], [1]) AS b, map([cast('2024-01-01 12:34:56+05:30' AS TIMESTAMP_TZ)], [1]) AS c",
+    "RETURN map([cast('-0.05' AS DECIMAL(5,2))], [1]) AS v",
+    "RETURN 123 AS a, 9007199254740991 AS b, -9007199254740991 AS c, 0 AS d",
+    "RETURN cast(5 AS INT8) AS a, cast(250 AS UINT8) AS b, cast(5 AS INT16) AS c, cast(5 AS INT32) AS d, cast(5 AS UINT16) AS e, cast(5 AS UINT32) AS f, cast(5 AS UINT64) AS g, cast(1.5 AS FLOAT) AS h",
+    "RETURN 2.5 AS a, true AS b, 'x' AS c, cast('abc' AS BLOB) AS d, uuid('123e4567-e89b-12d3-a456-426614174000') AS e",
+    "RETURN cast(12 AS INT128) AS a, cast('170141183460469231731687303715884105727' AS INT128) AS b",
+    "RETURN cast('1.50' AS DECIMAL(5,2)) AS a, cast('0' AS DECIMAL(5,2)) AS b, cast('5' AS DECIMAL(38,0)) AS c, cast('-0.5' AS DECIMAL(5,2)) AS d, cast('0.0000001' AS DECIMAL(10,7)) AS e, cast('1234567890123.45' AS DECIMAL(17,2)) AS f, cast('-1.05' AS DECIMAL(5,2)) AS g",
+    "RETURN date('2024-01-02') AS a, timestamp('2024-01-01 12:34:56.789') AS b, timestamp('2024-01-01 12:34:56') AS c, timestamp('1969-12-31 23:59:59.999') AS d",
+    "RETURN cast('2024-01-01 12:34:56+05:30' AS TIMESTAMP_TZ) AS a, cast('2024-01-01 12:34:56.789' AS TIMESTAMP_NS) AS b, cast('2024-01-01 12:34:56.789' AS TIMESTAMP_MS) AS c, cast('2024-01-01 12:34:56' AS TIMESTAMP_SEC) AS d",
+    "RETURN interval('1 year 2 months 3 days 4 hours') AS a, interval('1 day') AS b, interval('1500 milliseconds') AS c, interval('0 days') AS d, timestamp('2024-01-01') - timestamp('2024-01-02 00:00:01.5') AS e",
+    "RETURN union_value(a := 1) AS a, union_value(b := date('2024-01-02')) AS b",
+    "RETURN {a: 1, b: interval('1 day'), c: union_value(x := 's'), d: [date('2024-01-02')], e: cast('1.50' AS DECIMAL(5,2))} AS v",
+    "RETURN {`x, y`: date('2024-01-01'), `a b`: 1} AS v",
+    "RETURN [[date('2024-01-02')], []] AS a, cast([1, 2] AS INT64[2]) AS b, [[union_value(a := 1)]] AS c",
+    "RETURN map([1, 2], [date('2024-01-02'), date('2024-01-03')]) AS a, map(['k'], [interval('1 day')]) AS b",
+    "RETURN map([true], [1]) AS a, map([uuid('123e4567-e89b-12d3-a456-426614174000')], [1]) AS b, map([timestamp('2024-01-01 12:34:56.789123')], [1]) AS c, map([cast('0.0000001' AS DECIMAL(10,7))], [1]) AS d",
+    "RETURN cast(NULL AS DECIMAL(5,2)) AS a, cast(NULL AS INT64) AS b, cast(NULL AS DATE) AS c, cast(NULL AS INTERVAL) AS d, cast(NULL AS TIMESTAMP) AS e, [1, NULL] AS f, NULL AS g",
+    "MATCH (k:K) RETURN k ORDER BY k.pk",
+    "MATCH ()-[r:R]->() RETURN r.revision AS revision, r.is_current AS current",
+    "RETURN cast('-0.05' AS DECIMAL(5,2)) AS v",
+    "RETURN [cast('-0.001' AS DECIMAL(5,3))] AS v",
+  ],
+  wide: [
+    "RETURN 9007199254740993 AS v",
+    "RETURN -9223372036854775808 AS v",
+    "RETURN cast(18446744073709551615 AS UINT64) AS v",
+    "RETURN cast('123456789012345678.5' AS DECIMAL(38,1)) AS v",
+    "RETURN cast('99999999999999999999999999999999999999' AS DECIMAL(38,0)) AS v",
+    "RETURN cast('1.50' AS DECIMAL(38,20)) AS v",
+    "RETURN [1, 9007199254740993] AS v",
+    "RETURN {a: 9007199254740993} AS v",
+    "RETURN map([1], [9007199254740993]) AS v",
+    "RETURN union_value(a := 9007199254740993) AS v",
+    "MATCH (w:W) RETURN w",
+    "MATCH (w:W) RETURN w.u AS v",
+  ],
+  subsecond: [
+    "RETURN timestamp('2024-01-01 12:34:56.789123') AS v",
+    "RETURN timestamp('1969-12-31 23:59:59.999999') AS v",
+    "RETURN cast('2024-01-01 12:34:56.789123456' AS TIMESTAMP_NS) AS v",
+    "RETURN interval('1 microsecond') AS v",
+  ],
+};
+
+/**
+ * Run each VALUE_QUERIES entry through a fresh Kuzu store and report its rows, or its error and code.
+ *
+ * @param path (string): a fresh Kuzu database path.
+ * @return (Promise<Record<string, unknown[]>>): the outcomes of each query group, in query order.
+ */
+export async function kuzuValues(path: string): Promise<Record<string, unknown[]>> {
+  const store = new KuzuStore(path);
+  const graph = new SelfGraph(store, { namespace: "c" });
+  await graph.initialize();
+  await graph.entities.create("A", "T", { id: "t:a" });
+  await graph.entities.create("B", "T", { id: "t:b" });
+  await graph.relations.create("t:a", "KNOWS", "t:b");
+  const outcomes: Record<string, unknown[]> = {};
+  for (const [group, queries] of Object.entries(VALUE_QUERIES)) {
+    outcomes[group] = [];
+    for (const query of queries) {
+      try {
+        outcomes[group]!.push({ rows: (await store.runCypher(query)).rows });
+      } catch (exc) {
+        if (!(exc instanceof SelfGraphError)) throw exc;
+        outcomes[group]!.push({ error: exc.message, code: exc.code });
+      }
+    }
+  }
+  await graph.close();
+  await KuzuStore.closeDatabase(path);
+  return outcomes;
+}
+
+/**
+ * Run each STATEMENT_QUERIES entry through a fresh Kuzu store and report its outcome and the surviving node ids.
+ *
+ * @param path (string): a fresh Kuzu database path.
+ * @return (Promise<{ outcomes: unknown[]; ids: unknown[] }>): each query's rows or {error, code}, then the node ids.
+ */
+export async function kuzuStatements(path: string): Promise<{ outcomes: unknown[]; ids: unknown[] }> {
+  const store = new KuzuStore(path);
+  const graph = new SelfGraph(store, { namespace: "c" });
+  await graph.initialize();
+  await graph.entities.create("A", "T", { id: "t:a" });
+  await graph.entities.create("B", "T", { id: "t:b" });
+  const outcomes: unknown[] = [];
+  for (const query of STATEMENT_QUERIES) {
+    try {
+      outcomes.push({ rows: (await store.runCypher(query)).rows });
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      outcomes.push({ error: exc.message, code: exc.code });
+    }
+  }
+  const ids = (await store.runCypher("MATCH (n:N) RETURN n.id AS id ORDER BY id")).rows.map((r) => r.id);
+  await graph.close();
+  await KuzuStore.closeDatabase(path);
+  return { outcomes, ids };
+}
+
+/**
+ * The error each server URI raises from KuzuStore, as code, field, and message.
+ *
+ * @return (Array<[string | undefined, string | undefined, string] | "no error">): one entry per URI.
+ */
+export function kuzuSchemeErrors(): Array<[string | undefined, string | undefined, string] | "no error"> {
+  const uris = [
+    "bolt://u:hunter2@h:1",
+    "memgraph://h:1",
+    "redis://h:1",
+    "falkors://h:1",
+    "hydradb://h:1",
+    "https://u:hunter2@h:1",
+  ];
+  return uris.map((uri) => {
+    try {
+      new KuzuStore(uri);
+      return "no error";
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      return [exc.code, exc.field, exc.message];
+    }
+  });
 }
 
 const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
@@ -718,6 +1153,30 @@ const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
   ["create_preference", { subject_entity: "t:a", key: "k", value_entity: "t:b", strength: "0.5" }],
   ["create_decision", { title: "t", steps: null }],
 ];
+
+/**
+ * Bind empty containers that Kuzu cannot type and report the error both SDKs raise.
+ *
+ * @return (Promise<Record<string, object | string>>): the error fields for a top-level list, a top-level map, a nested list, and a nested map.
+ */
+export async function kuzuParamErrors(): Promise<Record<string, object | string>> {
+  const store = new KuzuStore("");
+  const calls = {
+    list: { x: [] },
+    map: { x: {} },
+    nested_list: { x: { a: [] } },
+    nested_map: { x: { a: {} } },
+    sorted_map: { x: { 2: [], 1: {} } },
+  };
+  return Object.fromEntries(
+    await Promise.all(
+      Object.entries(calls).map(async ([name, params]) => [
+        name,
+        await errorOf(() => store.runCypher("RETURN $x AS x", params)),
+      ]),
+    ),
+  );
+}
 
 /**
  * Call MCP tools with text, boolean, and null arguments the servers must reject before running the tool.
@@ -775,6 +1234,8 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
   const dec = ids.decisionId("person:jane-doe", "Pick HydraDB");
   const bad = new Opaque() as never;
   return {
+    cypher_query_length: await errorOf(() => graph.runCypher(`RETURN 1 // ${"é".repeat(32_768)}`)),
+    cypher_keyword_boundary: { blocked: isBlockedQuery("RETURN 42SET") },
     proto_value_type: await errorOf(() =>
       graph.insert.facts({
         entities: [{ type: "Person", name: "Proto", external_ids: JSON.parse('{"__proto__":1}') }],
@@ -855,6 +1316,92 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
 }
 
 /**
+ * Count the preference versions deleted with a preference's value entity, in each delete order and in a prune.
+ *
+ * @param graph (SelfGraph): the graph whose store hosts the isolated cases.
+ * @return (Promise<Record<string, number[]>>): deleted_preference_versions of each delete, by case.
+ */
+async function preferenceDeleteCounts(graph: SelfGraph): Promise<Record<string, number[]>> {
+  const out: Record<string, number[]> = {};
+  const cases = [
+    ["about_first", ["topic:x", "company:y"]],
+    ["value_first", ["company:y", "topic:x"]],
+    ["prune", []],
+  ] as const;
+  for (const [name, order] of cases) {
+    const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_pref_delete_${name}` });
+    await g.insert.facts({
+      entities: [
+        { type: "Person", name: "A" },
+        { type: "Company", name: "Y" },
+        { type: "Topic", name: "X" },
+      ],
+      preferences: [{ subject_entity: "person:a", key: "pick", value_entity: "company:y", about_entity: "topic:x" }],
+    });
+    const counts: number[] = [];
+    for (const eid of order) counts.push((await g.entities.delete(eid)).deleted_preference_versions);
+    if (!order.length) {
+      const later = new Date(Date.now() + 30_000);
+      const done = await g.maintenance.prune({ older_than: later, types: ["Company", "Topic"], dry_run: false });
+      counts.push(done.deleted!.deleted_preference_versions);
+    }
+    out[name] = counts;
+  }
+  return out;
+}
+
+/**
+ * Replay one insert whose inputs repeat a relation id and a preference id, and read every version after each run.
+ *
+ * @param graph (SelfGraph): the graph whose store hosts the isolated case.
+ * @return (Promise<unknown[]>): the relation and preference versions after each of three runs.
+ */
+async function repeatedIdReplays(graph: SelfGraph): Promise<unknown[]> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_repeated_ids` });
+  await g.insert.facts({
+    entities: [
+      { type: "Person", name: "Ann" },
+      { type: "Food", name: "Pizza" },
+      { type: "Food", name: "Pasta" },
+    ],
+    relations: [{ from_entity: "person:ann", type: "LIKES", to_entity: "food:pasta", properties: { w: 1 } }],
+    preferences: [{ subject_entity: "person:ann", key: "food", value_entity: "food:pizza" }],
+  });
+  const rel = { from_entity: "person:ann", type: "LIKES", to_entity: "food:pasta" };
+  const pref = { subject_entity: "person:ann", key: "food", value_entity: "food:pizza" };
+  const facts = {
+    relations: [
+      { ...rel, properties: { w: 2, v: 1 }, event_time: "2020-01-01T00:00:00Z" },
+      { ...rel, properties: { w: null, u: 3 } },
+    ],
+    preferences: [
+      { ...pref, strength: 0.9, about_entity: "food:pasta", properties: { a: 1 } },
+      { ...pref, strength: 0.1, properties: { a: null, b: 2 } },
+    ],
+  };
+  const rid = ids.relationId("person:ann", "LIKES", "food:pasta");
+  const pid = ids.preferenceId("person:ann", "preference", "food", "food:pizza");
+  const runs: unknown[] = [];
+  for (let i = 0; i < 3; i++) {
+    await g.insert.facts(facts);
+    runs.push({
+      relation: (await g.relations.versions(rid)).map((v) => [
+        v.revision,
+        v.properties,
+        v.event_time ? jsonIso(v.event_time) : null,
+      ]),
+      preference: (await g.preferences.versions(pid)).map((v) => [
+        v.revision,
+        v.strength,
+        v.about_entity,
+        v.properties,
+      ]),
+    });
+  }
+  return runs;
+}
+
+/**
  * Read inserted facts through helpers given noncanonical entity references.
  *
  * @param graph (SelfGraph): the graph whose store hosts the isolated case.
@@ -887,6 +1434,47 @@ async function canonicalFactIds(graph: SelfGraph): Promise<Record<string, unknow
 
 export async function write(graph: SelfGraph): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
+  const storedErrors: unknown[] = [];
+  for (const doc of ["x", "{}", "[]", "null"]) {
+    try {
+      parseDoc({ doc, stored_id: "person:ada", stored_ns: "conformance" });
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      storedErrors.push([exc.code, exc.field, exc.message, exc.hint]);
+    }
+  }
+  out.stored_errors = storedErrors;
+  try {
+    await graph.relations.certify("relation:missing", { by: "a\ud83dlonely" });
+  } catch (exc) {
+    if (!(exc instanceof SelfGraphError)) throw exc;
+    out.surrogate_error = [exc.code, exc.field, exc.message, exc.hint];
+  }
+
+  const { checkResultDepth } = await import("../../src/models.js");
+  const depthErrors: unknown[] = [];
+  for (const kind of ["list", "map"]) {
+    let value: unknown = 1;
+    for (let depth = 0; depth < 255; depth++) value = kind === "list" ? [value] : { a: value };
+    try {
+      checkResultDepth([{ x: value }]);
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      depthErrors.push([exc.code, exc.field, exc.message]);
+    }
+  }
+  out.result_depth_errors = depthErrors;
+  const errors: unknown[] = [];
+  for (const type of [":a", "a:b", "Person:"]) {
+    try {
+      ids.entityId(type, "X");
+      errors.push("accepted");
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      errors.push([exc.code, exc.field, exc.message]);
+    }
+  }
+  out.entity_type_errors = errors;
   out.facts = toJsonable(await graph.insert.facts(FACTS, { source_id: "spec" }));
   out.text = toJsonable(
     await graph.insert.text(TEXT, { source_id: "notes", metadata: { author: "conformance", n: 1, f: 0.5 } }),
@@ -993,6 +1581,23 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     out.facts_none = exc.message;
   }
   out.mcp_arguments = await mcpArgumentErrors();
+  const flagErrors: string[] = [];
+  for (const flag of ["false", 0]) {
+    for (const call of [
+      () => graph.relations.list({ include_invalidated: flag as never }),
+      () => graph.relations.versions("relation:missing", { newest_first: flag as never }),
+      () => graph.preferences.versions("preference:missing", { newest_first: flag as never }),
+    ]) {
+      try {
+        await call();
+        flagErrors.push("accepted");
+      } catch (exc) {
+        if (!(exc instanceof ValidationError)) throw exc;
+        flagErrors.push(exc.message);
+      }
+    }
+  }
+  out.flag_errors = flagErrors;
   const factsTypes: string[] = [];
   for (const facts of FACTS_TYPE_CASES) {
     try {
@@ -1141,7 +1746,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   });
   const originalStep = ids.relationId("person:bob", "USES", "tool:hammer");
   const editedMerge = await editedGraph.insert.facts({
-    entities: [{ type: "Person", name: "Bob" }],
+    entities: [{ type: "Person", name: "Bob", aliases: ["Bobby"], properties: { k: 1 } }],
     relations: [
       { from_entity: "person:bob", type: "USES", to_entity: "tool:hammer" },
       { from_entity: "person:ada", type: "CHECKED", to_entity: "tool:hammer" },
@@ -1152,12 +1757,21 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     ids.relationId("person:ada", "CHECKED", "tool:hammer"),
     ids.relationId("person:robert", "USES", "tool:hammer"),
   ];
-  await editedGraph.decisions.update(editedMerge.decisions[0]!.id, { steps: editedSteps });
+  await editedGraph.decisions.update(editedMerge.decisions[0]!.id, {
+    steps: editedSteps,
+    outcome_entity: "person:ada",
+    alternative_entities: ["tool:hammer"],
+  });
+  await editedGraph.entities.update("person:robert", { aliases: ["Bobby"], properties: { k: 2 } });
   const editedUndo = await editedGraph.entities.unmerge(editedMerge.merges[0]!.id);
   const editedRead = (await editedGraph.decisions.get(ids.decisionId("person:bob", "Pick")))!;
   out.unmerge_edited_steps = {
     returned: editedUndo.decisions[0]!.steps.map((s) => s.relation_id),
     stored: editedRead.steps.map((s) => s.relation_id),
+    outcome: editedRead.outcome_entity,
+    alternatives: editedRead.alternative_entities,
+    aliases: editedUndo.survivor!.aliases,
+    properties: editedUndo.survivor!.properties,
   };
   const repeatedMerges: Record<string, unknown> = {};
   const first = {
@@ -1196,22 +1810,66 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   out.repeated_merges = repeatedMerges;
   const reciprocal = new SelfGraph(graph.store, { namespace: `${graph.namespace}_reciprocal`, resolver: "default" });
   await reciprocal.entities.create("Robert", "Person", { aliases: ["Bob"] });
-  for (const [source, target] of [
-    ["person:bob", "person:robert"],
-    ["person:robert", "person:bob"],
-    ["person:bob", "person:robert"],
-  ] as const) {
-    await reciprocal.insert.facts({
-      entities: [{ type: "Person", name: "Bob" }],
-      relations: [{ from_entity: source, type: "KNOWS", to_entity: target }],
-    });
+  for (const [n, [source, target]] of (
+    [
+      ["person:bob", "person:robert"],
+      ["person:robert", "person:bob"],
+      ["person:bob", "person:robert"],
+    ] as const
+  ).entries()) {
+    await reciprocal.insert.facts(
+      {
+        entities: [{ type: "Person", name: "Bob" }],
+        relations: [{ from_entity: source, type: "KNOWS", to_entity: target }],
+      },
+      { source_id: `s${n}` },
+    );
   }
   const reciprocalRecord = (await reciprocal.entities.merges("person:robert")).items[0]!;
   const reciprocalRestored = await reciprocal.entities.unmerge(reciprocalRecord.id);
   out.reciprocal_merge = {
     rewrites: reciprocalRecord.rewrites.length,
     relations: reciprocalRestored.relations.map((r) => r.id).sort(),
+    counts: reciprocalRestored.relations.map((r) => [r.revision, r.source_count]).sort(),
+    dropped: reciprocalRecord.rewrites
+      .filter((rw) => rw.dropped)
+      .map((rw) => rw.evidence.map((ev) => ev.source_id).sort())
+      .sort(),
   };
+  const unmerged = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}_unmerge_supersede`,
+    resolver: "default",
+    schema: USES_SPEC,
+    contradiction: "supersede",
+  });
+  const stated = [
+    ["robert", "a", 2020],
+    ["robert", "b", 2021],
+    ["bob", "c", 2022],
+  ].map(([who, tool, year]) => ({
+    from_entity: `person:${who}`,
+    type: "USES",
+    to_entity: `tool:${tool}`,
+    event_time: `${year}-01-01`,
+  }));
+  const people = [
+    { type: "Person", name: "Robert", aliases: ["Bob"] },
+    ...["a", "b", "c"].map((n) => ({ type: "Tool", name: n })),
+  ];
+  await unmerged.insert.facts({ entities: people, relations: stated.slice(0, 2) });
+  const joiner = { type: "Person", name: "Bob" };
+  const superseding = (await unmerged.insert.facts({ entities: [joiner], relations: stated.slice(2) })).merges[0]!;
+  await unmerged.insert.facts({ relations: [{ ...stated[1]!, event_time: "2023-01-01" }] });
+  await unmerged.entities.unmerge(superseding.id);
+  const unmergedVersions: Record<string, unknown> = {};
+  for (const r of (await unmerged.relations.list({ include_invalidated: true, limit: 100 })).items) {
+    unmergedVersions[r.id] = (await unmerged.relations.versions(r.id)).map((v) => [
+      v.revision,
+      v.is_current,
+      v.invalidated_by,
+    ]);
+  }
+  out.unmerge_supersede = unmergedVersions;
   const mixed = new SelfGraph(graph.store, { namespace: `${graph.namespace}_mixed_case`, resolver: "fuzzy" });
   await mixed.insert.facts({ entities: [{ type: "Person", name: "Jane Doe", aliases: ["JD"] }] });
   const mixedFuzzy = await mixed.insert.facts({
@@ -1337,6 +1995,24 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   );
   out.retrieval_overflow = await overflow(graph);
   out.retrieval_ppr_ties = await pprTies(graph);
+  out.retrieval_passage_ranking = await passageRanking(graph);
+  out.retrieval_plural_seeds = await pluralSeeds(graph);
+  const propertyOrder = new SelfGraph(graph.store, { namespace: `${graph.namespace}_property_order` });
+  await propertyOrder.insert.facts({
+    entities: [
+      { type: "Person", name: "Ada" },
+      { type: "Machine", name: "Engine" },
+    ],
+    relations: [
+      {
+        from_entity: "person:ada",
+        type: "WORKED_ON",
+        to_entity: "machine:engine",
+        properties: { role: "author", "2": "b", "10": "c", "\u{10000}": "astral", "\ue000": "bmp" },
+      },
+    ],
+  });
+  out.retrieval_property_order = (await propertyOrder.retrieve("Ada")).context;
   out.vault_names = await vaultNames(graph);
   try {
     await graph.insert.facts(
@@ -1464,7 +2140,23 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     relations: replayed.relations.map((r) => [r.id, r.revision, r.is_current]),
     warnings: replayed.warnings.map((w) => w.code),
   };
-  await graph.insert.text("Mira knows Niko.", { source_id: "diff-source" });
+  const marked = new SelfGraph(graph.store, { namespace: `${graph.namespace}_diff_certify` });
+  await marked.insert.facts({
+    entities: [
+      { type: "Person", name: "Ann" },
+      { type: "Person", name: "Bob" },
+    ],
+  });
+  const knows = await marked.relations.create("person:ann", "KNOWS", "person:bob");
+  await marked.relations.certify(knows.id, { by: "alice" });
+  await marked.relations.certify(knows.id, { by: "bob" });
+  await marked.relations.uncertify(knows.id);
+  const marks = await marked.diff("1900-01-01", "2100-01-01");
+  out.diff_certifications = [marks.relations_certified, marks.relations_uncertified].map((relations) =>
+    relations.map((r) => [r.id, r.revision, r.certifications.map((c) => [c.by, c.until !== null])]),
+  );
+  const metadata = JSON.parse('{"__proto__":"literal","nested":[{"__proto__":{"kept":true},"sibling":"kept"}]}');
+  await graph.insert.text("Mira knows Niko.", { source_id: "diff-source", metadata });
   await graph.insert.text("Mira knows Omar.", { source_id: "diff-source", replace_source: true });
   const extraNs = `${graph.namespace}:extra`;
   await graph.store.upsertNodes(
@@ -1501,6 +2193,8 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     entity: String(largeEntity?.properties.blob ?? "").length,
     relation: String(largeRelation?.properties.blob ?? "").length,
   };
+  out.preference_delete_counts = await preferenceDeleteCounts(graph);
+  out.repeated_id_replays = await repeatedIdReplays(graph);
   return out;
 }
 
@@ -1583,6 +2277,60 @@ async function pprTies(graph: SelfGraph): Promise<{ entities: string[]; context:
   for (const [a, b] of pairs) await g.relations.create(`thing:${a}`, "LINKS", `thing:${b}`);
   const ranked = await g.retrieve("Sol", { strategy: "ppr", max_nodes: 4 });
   return { entities: ranked.subgraph.entities.map((e) => e.id), context: ranked.context };
+}
+
+/**
+ * Retrieve from twenty sources behind one entity by each source's own word and by a word all of them share.
+ *
+ * @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+ * @return (Promise<{ tied: string; ranked: Record<string, string> }>): the context of the tied query and of each ranked one.
+ */
+async function passageRanking(graph: SelfGraph): Promise<{ tied: string; ranked: Record<string, string> }> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_passages` });
+  for (let i = 0; i < 20; i++) await g.insert.text(`Ann collects word${i} items.`, { source_id: `note-${i}` });
+  const ranked: Record<string, string> = {};
+  for (const word of ["word3", "word4", "word9"]) ranked[word] = (await g.retrieve(`Ann ${word}`)).context;
+  return { tied: (await g.retrieve("Ann")).context, ranked };
+}
+
+/**
+ * Retrieve by plural and singular words that name an entity's type, name, or a non-Latin word.
+ *
+ * @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+ * @return (Promise<Record<string, { seeds: string[]; context: string; verdict: string }>>): for each query, the seed ids, the context, and the checkAnswerable verdict.
+ */
+async function pluralSeeds(
+  graph: SelfGraph,
+): Promise<Record<string, { seeds: string[]; context: string; verdict: string }>> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_plural` });
+  await g.insert.facts({
+    entities: [
+      { id: "engineer:bob", type: "Engineer", name: "Bob Ray" },
+      { id: "company:acme", type: "Company", name: "Acme" },
+      { id: "service:payment", type: "Service", name: "Payment API" },
+      { id: "page:status", type: "Page", name: "Status" },
+      { id: "place:daisies", type: "Place", name: "Ромашки" },
+    ],
+    relations: [{ from_entity: "engineer:bob", type: "OWNS", to_entity: "service:payment" }],
+  });
+  const queries = [
+    "who are the engineers",
+    "list all companies",
+    "who owns payments",
+    "which engineer",
+    "statuses",
+    "ромашки",
+  ];
+  const out: Record<string, { seeds: string[]; context: string; verdict: string }> = {};
+  for (const query of queries) {
+    const result = await g.retrieve(query);
+    out[query] = {
+      seeds: result.seeds.map((s) => s.id),
+      context: result.context,
+      verdict: (await g.checkAnswerable(query)).verdict,
+    };
+  }
+  return out;
 }
 
 async function vaultNames(graph: SelfGraph): Promise<string[]> {
@@ -1958,6 +2706,102 @@ export async function unmerge(graph: SelfGraph): Promise<Record<string, unknown>
  * @return (Promise<Record<string, unknown>>): each relation's versions, newest first, and the warning codes of each insert.
  */
 export async function supersede(graph: SelfGraph): Promise<Record<string, unknown>> {
+  const clearing = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}-uncertify`,
+    schema: SUPERSEDE_SCHEMA,
+    contradiction: "supersede",
+  });
+  await clearing.initialize();
+  await clearing.insert.facts({
+    entities: [
+      { type: "Person", name: "Ann" },
+      { type: "Company", name: "One" },
+      { type: "Company", name: "Two" },
+    ],
+  });
+  const older = await clearing.relations.create("person:ann", "WORKS_AT", "company:one", { event_time: "2020-01-01" });
+  await clearing.relations.certify(older.id, { by: "alice" });
+  const newer = await clearing.relations.create("person:ann", "WORKS_AT", "company:two", { event_time: "2023-01-01" });
+  const result = await clearing.relations.uncertify(older.id);
+  strictEqual(result.is_current, false);
+  strictEqual(result.invalidated_by, newer.id);
+  deepStrictEqual(
+    (await clearing.relations.list()).items.map((r) => r.id),
+    [newer.id],
+  );
+  for (const side of ["from", "to"] as const) {
+    const strict = new SelfGraph(graph.store, {
+      namespace: `${graph.namespace}-strict-${side}`,
+      schema: { entities: SUPERSEDE_SCHEMA.entities, relations: [{ type: "WORKS_AT", [side]: { max_count: 1 } }] },
+      schema_mode: "strict",
+      contradiction: "warn",
+    });
+    await strict.initialize();
+    await strict.insert.facts({
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Person", name: "Bob" },
+        { type: "Company", name: "One" },
+        { type: "Company", name: "Two" },
+      ],
+    });
+    const old = await strict.relations.create("person:ann", "WORKS_AT", "company:one", { event_time: "2020-01-01" });
+    await strict.relations.certify(old.id, { by: "alice" });
+    const rival = await strict.relations.create(
+      side === "from" ? "person:ann" : "person:bob",
+      "WORKS_AT",
+      side === "from" ? "company:two" : "company:one",
+      { event_time: "2023-01-01", contradiction: "supersede" },
+    );
+    const replay = await strict.insert.facts({
+      relations: [
+        { from_entity: rival.from_entity, type: rival.type, to_entity: rival.to_entity, event_time: rival.event_time },
+      ],
+    });
+    strictEqual(replay.relations[0]!.revision, rival.revision);
+    const messages: string[] = [];
+    const previous = setLogger((message) => messages.push(message));
+    try {
+      await strict.relations.uncertify(old.id);
+      strictEqual(
+        messages.some((message) => message.includes("schema warning [contradiction]")),
+        true,
+      );
+    } finally {
+      setLogger(previous);
+    }
+  }
+  const replay = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}-replay`,
+    schema: SUPERSEDE_SCHEMA,
+    contradiction: "supersede",
+  });
+  await replay.initialize();
+  for (const dated of [false, true]) {
+    const facts = {
+      entities: [
+        { type: "Person", name: `Replay${dated}` },
+        { type: "Company", name: "One" },
+        { type: "Company", name: "Two" },
+      ],
+      relations: ["one", "two"].map((name) => ({
+        from_entity: ids.entityId("Person", `Replay${dated}`),
+        type: "WORKS_AT",
+        to_entity: `company:${name}`,
+      })),
+    };
+    const options = dated ? { event_time: "2024-01-01" } : {};
+    await replay.insert.facts(facts, options);
+    const snapshot = async () =>
+      (await replay.relations.list({ include_invalidated: true })).items
+        .map((r) => [r.id, r.revision, r.is_current])
+        .sort();
+    const before = await snapshot();
+    for (let i = 0; i < 2; i++) {
+      await replay.insert.facts(facts, options);
+      deepStrictEqual(await snapshot(), before);
+    }
+  }
   await graph.insert.facts({
     entities: [
       ...["Ann", "Bob"].map((name) => ({ type: "Person", name })),
@@ -2152,6 +2996,25 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
   );
   const held = await graph.retrieve("Kim", { as_of: new Date(Date.UTC(2023, 0, 1)) });
   const moved_later_valid = held.subgraph.relations.map((r) => r.id).sort();
+  const mia = [
+    { type: "Person", name: "Mia" },
+    { type: "Company", name: "Aperture" },
+    { type: "Company", name: "BlackMesa" },
+  ];
+  await graph.insert.facts({ entities: mia });
+  await graph.insert.facts({ relations: [link("mia", "aperture", 2012)] });
+  const apertureMia = ids.relationId("person:mia", "WORKS_AT", "company:aperture");
+  await graph.relations.update(apertureMia, { event_time: new Date(Date.UTC(2016, 0, 1)) });
+  await graph.insert.facts({ relations: [link("mia", "blackmesa", 2014)] });
+  const blackmesaMia = ids.relationId("person:mia", "WORKS_AT", "company:blackmesa");
+  const moved_earlier_gap = (await graph.relations.versions(blackmesaMia)).map((v) => [
+    v.revision,
+    v.is_current,
+    v.invalidated_by,
+    v.invalidated_at ? jsonIso(v.invalidated_at) : null,
+  ]);
+  const heldMia = await graph.retrieve("Mia", { as_of: new Date(Date.UTC(2015, 0, 1)) });
+  const moved_earlier_gap_valid = heldMia.subgraph.relations.map((r) => r.id).sort();
   await graph.insert.facts({
     entities: [
       { type: "Person", name: "Lee" },
@@ -2186,6 +3049,8 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
     certified_update,
     moved_later,
     moved_later_valid,
+    moved_earlier_gap,
+    moved_earlier_gap_valid,
     certified_history,
   };
 }

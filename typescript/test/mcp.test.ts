@@ -1,7 +1,14 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { HINTS, WARNING_HINTS } from "../src/errors.js";
-import { DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
+import {
+  buildGraph,
+  DEFAULT_SETTINGS,
+  type GraphSettings,
+  type GraphStore,
+  SelfGraph,
+  toNeo4jOntology,
+} from "../src/index.js";
 import {
   buildServer,
   callTool,
@@ -77,6 +84,21 @@ async function mcpError(name: string, args: Record<string, unknown>): Promise<{ 
   return result as { error: string; error_type: string };
 }
 
+it("graph_diff keeps proto and nested source metadata keys", async () => {
+  const namespace = "mcp_diff_proto";
+  const text = '{"__proto__":"literal","nested":[{"__proto__":{"kept":true},"sibling":"kept"}]}';
+  await close();
+  const g = buildGraph({ ...DEFAULT_SETTINGS, store: "kuzu", uri, namespace });
+  try {
+    await g.insert.text("Ann works at Acme.", { source_id: "proto", metadata: JSON.parse(text) });
+  } finally {
+    await g.close();
+  }
+  await configure({ namespace });
+  const result = await mcpOk<{ source_versions_added: { metadata: unknown }[] }>("graph_diff", { since: "1900-01-01" });
+  expect(result.source_versions_added.map((v) => JSON.stringify(v.metadata))).toEqual([text]);
+});
+
 it("graph_diff returns stored changes and validates the window", async () => {
   await configure({ namespace: "mcp_diff" });
   await mcpOk("create_entity", { name: "Ann", type: "Person" });
@@ -85,11 +107,20 @@ it("graph_diff returns stored changes and validates the window", async () => {
     until: "2100-01-01",
   });
   expect(result.entities_created.map((e) => e.id)).toEqual(["person:ann"]);
-  expect(result.limitations).toEqual(["Deletes and merges are not visible."]);
+  expect(result.limitations).toEqual(["Deletes and entity edits are not visible."]);
   expect((await callTool("graph_diff", { since: "2100-01-01", until: "1900-01-01" })).isError).toBe(true);
 });
 
 describe("MCP run_cypher guard", () => {
+  it("recognizes adjacent keyword tokens", () => {
+    for (const fragment of ["42SET", ".5SET", "1.SET", "1.5e+2SET", "'text'SET", "/* text */SET", "]SET"]) {
+      expect(isBlockedQuery(`RETURN ${fragment}`), fragment).toBe(true);
+    }
+    for (const fragment of ["offset42SET", "n.set", "{set: 42}", "'42SET'", ".5e+2"]) {
+      expect(isBlockedQuery(`RETURN ${fragment}`), fragment).toBe(false);
+    }
+  });
+
   it("rejects INSERT, unicode escapes, bare keyword aliases, and chained admin statements", async () => {
     for (const q of BYPASSES) expect(isBlockedQuery(q), q).toBe(true);
     for (const q of READS) expect(isBlockedQuery(q), q).toBe(false);
@@ -109,6 +140,35 @@ describe("MCP run_cypher guard", () => {
       tool: "update_relation",
     });
   });
+});
+
+it("enforces raw Cypher limits before store dispatch", async () => {
+  const result = { columns: [], rows: [], counters: {}, warnings: [] };
+  const store = { initialize: vi.fn().mockResolvedValue(undefined), runCypher: vi.fn().mockResolvedValue(result) };
+  const graph = new SelfGraph(store as unknown as GraphStore);
+  const prefix = "RETURN 1 // ";
+  const exactBytes = prefix + "é".repeat((65_536 - prefix.length) / 2);
+  for (const [query, limit] of [
+    [`${exactBytes}é`, "maximum length of 65536 UTF-8 bytes"],
+    [`RETURN ${"([{item:".repeat(11)}1${"}])".repeat(11)}`, "maximum nesting depth of 32"],
+  ] as const) {
+    await expect(graph.runCypher(query)).rejects.toMatchObject({
+      message: `query exceeds the ${limit}`,
+      code: "cypher_query_limit",
+      field: "query",
+    });
+  }
+  expect(store.initialize).not.toHaveBeenCalled();
+  expect(store.runCypher).not.toHaveBeenCalled();
+  const ignored = "([{ ".repeat(33);
+  for (const query of [
+    exactBytes,
+    `RETURN ${"(".repeat(32)}1${")".repeat(32)}`,
+    `RETURN '${ignored}' AS \`${ignored}\` /* ${ignored} */`,
+  ]) {
+    await expect(graph.runCypher(query)).resolves.toEqual(result);
+    expect(store.runCypher).toHaveBeenLastCalledWith(query, undefined);
+  }
 });
 
 /**
@@ -451,6 +511,25 @@ describe("MCP tools over Kuzu", () => {
     await configure();
     expect(await mcpOk("get_schema", {})).toBeNull();
   });
+});
+
+it("wraps an unexpected tool error as a coded, credential-masked internal error", async () => {
+  const baseUrl = "https://proxy:llm-secret@llm.example/v1";
+  await configure({ namespace: "mcp_internal", llm_base_url: baseUrl });
+  const tool = {
+    name: "insert_facts",
+    input: {},
+    run: () => {
+      throw new Error(`driver blew up talking to ${baseUrl}`);
+    },
+  };
+  const { result, isError } = await callTool(tool as never, {});
+  const error = result as { error: string; error_type: string; code: string };
+  expect(isError).toBe(true);
+  expect(error.error_type).toBe("InternalError");
+  expect(error.code).toBe("internal_error");
+  expect(error.error).not.toContain("llm-secret");
+  expect(error.error).toContain("https://***@llm.example/v1");
 });
 
 it("rejects proto keys before MCP argument parsing drops them", async () => {

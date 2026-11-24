@@ -120,6 +120,11 @@ ANY_ENDS = {"entities": [{"name": "Person"}, {"name": "Company"}], "relations": 
             ),
             [],
         ),
+        (TYPES_SPEC, _o(_e("thing:c", "Thing", i=3.0)), []),
+        (TYPES_SPEC, _o(_e("thing:d", "Thing", i=-0.0)), []),
+        (TYPES_SPEC, _o(_e("thing:e", "Thing", i=1e21)), ["property_type_mismatch"]),
+        (TYPES_SPEC, _o(_e("thing:f", "Thing", i=-1e20)), ["property_type_mismatch"]),
+        (TYPES_SPEC, _o(_e("thing:g", "Thing", i=float(2**53 - 1))), []),
         (TYPES_SPEC, _o(_e("thing:x", "Thing", b="yes", f="big", i=True, s=5, j=42)), ["property_type_mismatch"] * 4),
     ],
     ids=[
@@ -131,6 +136,11 @@ ANY_ENDS = {"entities": [{"name": "Person"}, {"name": "Company"}], "relations": 
         "empty-schema",
         "empty-endpoint",
         "valid-property-types",
+        "whole-float-is-integer",
+        "negative-zero-is-integer",
+        "unsafe-whole-float-rejected",
+        "unsafe-negative-whole-float-rejected",
+        "largest-safe-whole-float-accepted",
         "bad-property-types",
     ],
 )
@@ -269,6 +279,12 @@ def test_invalid_schema_and_mode_raise_validation_error():
             {"entities": [{"name": "A"}], "relations": [{"type": "R", "to": {"types": ["A", "B"]}}]},
             "relations[0].to.types[1]: unknown type 'B'",
         ),
+        ({"entities": [{"name": "  "}]}, "entities[0].name: must be a non-empty string, got '  '"),
+        (
+            {"entities": [{"name": "Person", "properties": [{"name": " "}]}]},
+            "entities[0].properties[0].name: must be a non-empty string, got ' '",
+        ),
+        ({"relations": [{"type": "  "}]}, "relations[0].type: must be a non-empty string, got '  '"),
         ({"relations": [{"type": "R", "from": {"max_count": 0}}]}, "relations[0].from.max_count: must be >= 1"),
         ({"relations": [{"type": "R", "to": {"min_count": -1}}]}, "relations[0].to.min_count: must be >= 0"),
         ({"relations": [{"type": "R", "from": {"max_count": 1.5}}]}, "relations[0].from.max_count: expected integer"),
@@ -295,6 +311,42 @@ def test_inconsistent_schemas_are_rejected_with_a_path(spec, message):
     with pytest.raises(ValidationError) as direct:
         Schema(**spec)
     assert str(direct.value) == f"invalid schema: {message}"
+
+
+@pytest.mark.parametrize(
+    ("spec", "field"),
+    [
+        ({"entities": [{"name": "Person"}, {"name": "Person"}]}, "entities[1].name"),
+        ({"entities": [{"name": "Person"}, {"name": "Company", "aliases": ["Person"]}]}, "entities[1].aliases[0]"),
+        ({"entities": [{"name": "Person", "parent": "Unknown"}]}, "entities[0].parent"),
+        ({"entities": [{"name": "Person", "parent": "Person"}]}, "entities[0].parent"),
+        ({"relations": [{"type": "KNOWS"}, {"type": "knows"}]}, "relations[1].type"),
+        ({"relations": [{"type": "KNOWS"}, {"type": "OWNS", "aliases": ["knows"]}]}, "relations[1].aliases[0]"),
+        *(
+            (
+                {"entities": [{"name": "Person"}], "relations": [{"type": "R", side: {"types": ["Unknown"]}}]},
+                f"relations[0].{side}.types[0]",
+            )
+            for side in ("from", "to")
+        ),
+        *(
+            ({"relations": [{"type": "R", side: counts}]}, f"relations[0].{side}.{key}")
+            for side in ("from", "to")
+            for counts, key in (
+                ({"max_count": 0}, "max_count"),
+                ({"min_count": -1}, "min_count"),
+                ({"min_count": 2, "max_count": 1}, "min_count"),
+            )
+        ),
+    ],
+)
+def test_schema_consistency_errors_identify_the_field(spec, field):
+    for build in (as_schema, Schema.model_validate, lambda data: Schema(**data)):
+        with pytest.raises(ValidationError) as err:
+            build(spec)
+        assert err.value.code == "invalid_argument"
+        assert err.value.field == field
+        assert str(err.value).startswith(f"invalid schema: {field}: ")
 
 
 @pytest.mark.parametrize(
@@ -800,6 +852,14 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
         (
             lambda: as_schema({"relations": [{"type": "X", "from": {"type": ["A"]}}]}),
             "unknown key 'type' in schema.relations[0].from; did you mean 'types'?",
+        ),
+        (
+            lambda: as_schema({"relations": [{"type": "X", "from_": {"types": ["A"], "max_count": 1}}]}),
+            "unknown key 'from_' in schema.relations[0]; did you mean 'from'?",
+        ),
+        (
+            lambda: as_schema({"relations": [{"type": "X", "from": {"types": ["A"]}, "from_": {"types": ["B"]}}]}),
+            "unknown key 'from_' in schema.relations[0]; did you mean 'from'?",
         ),
         (
             lambda: new_graph(instructions={"entites": "x"}),

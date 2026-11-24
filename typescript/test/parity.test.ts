@@ -25,7 +25,7 @@ import {
 } from "../src/ids.js";
 import { setLogger } from "../src/index.js";
 import { log } from "../src/internal/log.js";
-import { MARK_RANGES } from "../src/internal/marks.js";
+import { FORMAT_RANGES, MARK_RANGES } from "../src/internal/marks.js";
 import { comparePy, pyFloatRepr, pyJsonDumps, pyRepr, utf8 } from "../src/internal/py.js";
 import { epochMicros, fromIso, jsonIso, parseIso, pyStrDate, toIso } from "../src/internal/time.js";
 import { lint, relevanceScore } from "../src/maintenance.js";
@@ -60,6 +60,16 @@ function attempt<T>(fn: () => T): T | { error: string } {
   }
 }
 
+it.each([":a", "a:b", "Person:"])("rejects entity type %s", (type) => {
+  expect(() => entityId(type, "X")).toThrowError(
+    expect.objectContaining({
+      code: "invalid_argument",
+      field: "type",
+      message: `entity type ${pyRepr(type)} cannot contain ':', which separates an entity id's type and name`,
+    }),
+  );
+});
+
 describe("ids match Python byte for byte", () => {
   it.each([
     [" Person : Jane  Doe ", "person:jane-doe"],
@@ -70,6 +80,19 @@ describe("ids match Python byte for byte", () => {
     expect(preferenceId(raw, "preference", "k", raw)).toBe(preferenceId(canonical, "preference", "k", canonical));
     expect(decisionId(raw, "Pick")).toBe(decisionId(canonical, "Pick"));
     expect(profileId(raw)).toBe(profileId(canonical));
+  });
+
+  const dottedCapitalI = [
+    ["Person", "İ\u0327"],
+    ["İ\u0327", "Ada"],
+    ["Company", "İ\u0327stanbul Holdings Ltd"],
+  ];
+  it.each(dottedCapitalI)("derives a dotted capital I id that is its own canonical id: %s / %s", (type, name) => {
+    const eid = entityId(type, name);
+    expect(eid).toBe(eid.normalize("NFC"));
+    expect(canonicalEntityId(eid)).toBe(eid);
+    expect(canonicalEntityId(eid.toUpperCase())).toBe(eid);
+    expect(slug(slug(type))).toBe(slug(type));
   });
 
   it("slug, entity, relation, preference, decision, evidence, and source ids, with bad input rejected", () => {
@@ -100,6 +123,12 @@ describe("ids match Python byte for byte", () => {
       decisionId(null, "Cafe\u0301"),
       decisionId(null, "Café"),
     ]).toEqual(fx.nfc_ids);
+  });
+
+  it("drops format characters inside a name before deriving its id", () => {
+    expect(FORMAT_RANGES).toBe(fx.format_ranges);
+    for (const name of ["Ac\u200bme", "Ac\u200dme", "Ac\u00adme", "Ac\u2060me", "Ac\ufeffme"])
+      expect(entityId("Person", name), JSON.stringify(name)).toBe("person:acme");
   });
 
   it("relation types, control and surrogate characters, and quoted labels", () => {
@@ -157,6 +186,29 @@ describe("json.dumps and datetime parity", () => {
 describe("extraction, chunking, and retrieval helpers match Python", () => {
   it("character chunking, with code point offsets across emoji", () => {
     expect(chunkByChars(fx.chunks.text, 200, 40)).toEqual(fx.chunks.by_chars);
+  });
+
+  it("character chunking starts after leading whitespace and keeps a fitting word whole", () => {
+    const texts = [
+      ["\nSupercalifragilistic rest", 20],
+      [" aaaaaaaa ", 9],
+      [" abcdefghij klm", 8],
+      ["\n\n  abc def", 5],
+    ] as const;
+    for (const [text, size] of texts) {
+      const chunks = chunkByChars(text, size, 0);
+      expect(
+        chunks.map((chunk) => chunk.text),
+        JSON.stringify([text, size]),
+      ).toEqual(chunks.map((chunk) => Array.from(text).slice(chunk.start_offset, chunk.end_offset).join("")));
+      for (const chunk of chunks) expect(chunk.text.length).toBeLessThanOrEqual(size);
+    }
+    expect(chunkByChars("\nSupercalifragilistic rest", 20, 0).map((chunk) => chunk.text)).toEqual([
+      "Supercalifragilistic",
+      "rest",
+    ]);
+    expect(chunkByChars(" aaaaaaaa ", 9, 0).map((chunk) => chunk.text)).toEqual(["aaaaaaaa "]);
+    expect(chunkByChars(" abcdefghij klm", 8, 0).map((chunk) => chunk.text)).toEqual(["abcdefgh", "ij klm"]);
   });
 
   it("token chunking and counting with cl100k_base", async () => {
@@ -362,7 +414,7 @@ describe("contradiction and as-of rules match Python", () => {
       const tracker = new Contradictions(caps, c.mode, c.existing.map(dates) as unknown as Relation[]);
       const got = c.admits.map(([rid, rtype, from, to, iso]) => {
         const at = parseIso(iso);
-        const warnings = tracker.admit(rid, rtype, from, to, [epochMicros(at), 1, epochMicros(at)], at);
+        const warnings = tracker.admit(rid, rtype, from, to, [epochMicros(at)], at);
         const [ended, settled] = tracker.settle();
         const retired = Object.fromEntries([...ended].map(([old, [by, when]]) => [old, [by, toIso(when)]]));
         return [retired, [...warnings, ...settled].map((w) => [w.code, w.message])];

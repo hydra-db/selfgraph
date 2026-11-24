@@ -4,6 +4,7 @@ import { needsLlm, StoreError, ValidationError } from "./errors.js";
 import { obsidianVault } from "./export.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { Insert } from "./insert.js";
+import { checkCypherLimits } from "./internal/cypherGuard.js";
 import { pyStrip } from "./internal/py.js";
 import { epochMicros } from "./internal/time.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
@@ -243,7 +244,7 @@ export class SelfGraph {
   }
 
   /**
-   * Run one raw Cypher statement verbatim as an unguarded escape hatch: it can write, ignores the namespace, and bypasses id derivation, versioning, and provenance.
+   * Run one raw Cypher statement subject to size and nesting limits, without restricting writes or namespaces.
    *
    * @param query (string): the Cypher statement.
    * @param params (Record<string, JsonValue> | null): the query parameters.
@@ -251,17 +252,18 @@ export class SelfGraph {
    */
   async runCypher(query: string, params?: Record<string, JsonValue> | null): Promise<CypherResult> {
     if (typeof query !== "string") throw new ValidationError(`query must be a string, got ${typeName(query)}`);
+    checkCypherLimits(query);
     if (!pyStrip(query)) throw new ValidationError("query cannot be empty");
     requireJsonMapping("params", params, false);
     return this.graph.read((store) => store.runCypher(query, params));
   }
 
   /**
-   * List stored changes in the known-time window (since, until]. Deletes and merges are not visible.
+   * List the history stored in the known-time window (since, until], defaulting until to now.
    *
    * @param since (DateTimeInput): exclusive lower bound, with no offset read as UTC.
    * @param until (DateTimeInput | null): inclusive upper bound, or now.
-   * @return (GraphDiff): stored creations, revisions, retirements, and limitations.
+   * @return (GraphDiff): entities created; relations added, revised, retired, certified, and uncertified; preferences added and revised; decisions created and updated; merges and unmerges; source versions added.
    */
   async diff(since: DateTimeInput, until?: DateTimeInput | null): Promise<GraphDiff> {
     const start = parseTime(since, "since");

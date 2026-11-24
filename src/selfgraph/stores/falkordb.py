@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -30,6 +31,11 @@ def _to_json(value: Any) -> Any:
     props = getattr(value, "properties", None)
     if props is not None:
         return graph_properties(props.items(), _to_json)
+    nodes, edges = getattr(value, "nodes", None), getattr(value, "edges", None)
+    if callable(nodes) and callable(edges):
+        return {"nodes": [_to_json(n) for n in nodes()], "relationships": [_to_json(e) for e in edges()]}
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     if isinstance(value, dict):
         return {k: _to_json(v) for k, v in value.items()}
     if isinstance(value, list | tuple):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
+from typing import Any
 
 from .. import _ops
 from .._serde import now
@@ -25,6 +26,7 @@ class Relations(Resource):
         event_time: datetime | str | None = None,
         evidence: Iterable[EvidenceInput] = (),
         contradiction: ContradictionMode | None = None,
+        **options: Any,
     ) -> Relation:
         """Create a relation, or reassert one a contradiction invalidated, as a new current version.
 
@@ -42,6 +44,7 @@ class Relations(Resource):
             graph's mode; warnings go to the selfgraph logger.
         @return (Relation): the created relation; raises ConflictError when the id already exists.
         """
+        check_options("relations.create", options, ["id", "properties", "event_time", "evidence", "contradiction"])
         return await self._c._create_relation(
             contradiction,
             from_entity=from_entity,
@@ -72,6 +75,7 @@ class Relations(Resource):
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
         include_invalidated: bool = False,
+        **options: Any,
     ) -> Page[Relation]:
         """List current relations, optionally filtered by endpoints and type.
 
@@ -83,6 +87,10 @@ class Relations(Resource):
         @param include_invalidated (bool): also list relations a contradiction invalidated.
         @return (Page[Relation]): relations ordered by id.
         """
+        check_options(
+            "relations.list", options, ["from_entity", "type", "to_entity", "cursor", "limit", "include_invalidated"]
+        )
+        _ops._require_bool("include_invalidated", include_invalidated)
         rtype = canonical_relation_type(type, self._c.schema) if isinstance(type, str) and type.strip() else type
         return await self._page(
             _ops.list_relations,
@@ -103,6 +111,7 @@ class Relations(Resource):
         to_entity: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
         include_invalidated: bool = False,
+        **options: Any,
     ) -> AsyncIterator[Relation]:
         """Yield every relation across pages, following the list cursor.
 
@@ -113,6 +122,9 @@ class Relations(Resource):
         @param include_invalidated (bool): also yield relations a contradiction invalidated.
         @return (AsyncIterator[Relation]): every matching relation.
         """
+        check_options(
+            "relations.iterate", options, ["from_entity", "type", "to_entity", "limit", "include_invalidated"]
+        )
         return paginate(
             self.list,
             from_entity=from_entity,
@@ -162,7 +174,9 @@ class Relations(Resource):
             caps=self._c._caps(),
         )
 
-    async def evidence(self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page[Evidence]:
+    async def evidence(
+        self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT, **options: Any
+    ) -> Page[Evidence]:
         """List the evidence records supporting a relation across all its versions.
 
         @param id (str): the relation id.
@@ -170,16 +184,19 @@ class Relations(Resource):
         @param limit (int): page size.
         @return (Page[Evidence]): evidence ordered by evidence id; raises NotFoundError for an unknown relation.
         """
+        check_options("relations.evidence", options, ["cursor", "limit"])
         _ops._validate_own_id("relation", id)
         return await self._page(_ops.list_evidence, id, kind="relation", cursor=cursor, limit=limit)
 
-    async def versions(self, id: str, *, newest_first: bool = True) -> list[Relation]:
+    async def versions(self, id: str, *, newest_first: bool = True, **options: Any) -> list[Relation]:
         """List every version of a relation, retired ones included.
 
         @param id (str): the relation id.
         @param newest_first (bool): order newest first when True.
         @return (list[Relation]): the versions; raises NotFoundError when the id has none.
         """
+        check_options("relations.versions", options, ["newest_first"])
+        _ops._require_bool("newest_first", newest_first)
         _ops._validate_own_id("relation", id)
         reader = await self._c._reader()
         versions = await _ops.list_relation_versions(reader, self._c.namespace, id, newest_first=newest_first)
@@ -187,7 +204,7 @@ class Relations(Resource):
             raise NotFoundError("Relation", id, namespace=self._c.namespace)
         return versions
 
-    async def certify(self, id: str, *, by: str) -> Relation:
+    async def certify(self, id: str, *, by: str, **options: Any) -> Relation:
         """Mark the current version of a relation as verified, in place, without a new version.
 
         A certified relation stays current when a supersede contradiction or insert.text(replace_source=True) would
@@ -198,17 +215,21 @@ class Relations(Resource):
         @param by (str): who verified it.
         @return (Relation): the current version with certified_at and certified_by set.
         """
+        check_options("relations.certify", options, ["by"])
         _ops._validate_own_id("relation", id)
         return await self._c._write(_ops.certify_relation, id, by, now())
 
     async def uncertify(self, id: str) -> Relation:
-        """Remove the certification of the current version of a relation.
+        """Remove certification and settle endpoint limits, including retries after a failed settlement.
 
         @param id (str): the relation id.
-        @return (Relation): the current version without certification.
+        @return (Relation): the stored version after removing certification and settling endpoint limits.
         """
         _ops._validate_own_id("relation", id)
-        return await self._c._write(_ops.certify_relation, id, None, now())
+        mode, caps = self._c._contradiction_for(None, self._c._schema)
+        return await self._c._write(
+            _ops.certify_relation, id, None, now(), "supersede" if mode == "llm" else mode, caps
+        )
 
     async def delete(self, id: str) -> DeleteResult:
         """Delete a relation, all its versions, and any decision trace that uses it as a step.

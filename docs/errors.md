@@ -122,6 +122,13 @@ ask the user to.
 `run_cypher` runs a single read. Write through the typed tools instead. Do not
 reword the query to get a write past the guard.
 
+#### `cypher_query_limit`
+
+Shorten the Cypher statement or reduce its delimiter nesting before trying again.
+
+Raw Cypher is limited to 65,536 UTF-8 bytes and 32 nested delimiters. The
+error identifies which limit the `query` exceeded.
+
 ### Graph state
 
 #### `not_found`
@@ -208,10 +215,27 @@ placeholder other than `{text}` and `{instructions}`.
 
 ### Store
 
+Raw Cypher result cells may contain at most 254 nested lists or maps. A deeper
+result raises `invalid_argument` with field `rows` and message
+`run_cypher result exceeds the maximum nesting depth of 254` in both SDKs.
+
 #### `query_failed`
 
 The backend rejected a query. The message keeps the engine's reason. Check any
 Cypher you passed yourself.
+
+#### `inexact_value`
+
+The Kuzu driver cannot return a result value exactly. Cast the column in the
+query to a type it returns exactly, such as `cast(x AS STRING)` for an integer
+beyond 2^53 or a wide DECIMAL, or `cast(x AS DOUBLE)` for a negative DECIMAL
+between -0.1 and 0. Do not drop the column to make the call pass.
+
+The Kuzu Node driver rounds an `INT64` or `UINT64` beyond 2^53 and a `DECIMAL`
+with more than 15 digits before the SDK sees the value, so TypeScript raises
+this code for them instead of returning a rounded number, and for a `UNION`
+whose members share a driver type. Python returns them exactly. Both SDKs raise
+it for a negative `DECIMAL` between -0.1 and 0, which Kuzu 0.11.3 cannot return.
 
 #### `write_conflict`
 
@@ -223,6 +247,10 @@ duplicate anything.
 
 The server timed out or was too busy to take the query. Run the same call again
 after a moment.
+
+#### `invalid_stored_data`
+
+A stored node or edge is malformed. Repair the document identified by the message in its namespace before reading it again.
 
 #### `graph_closed`
 
@@ -264,6 +292,12 @@ such as `neo4j`.
 
 A single node or edge row is larger than HydraDB accepts in one message. Split
 large property values or text. Do not cut data without asking the user.
+
+#### `internal_error`
+
+An unexpected error reached the CLI or MCP boundary and was not mapped to a
+specific code. The message keeps the original error with any credentials masked.
+Report it with the message if it persists.
 
 ## Messages
 

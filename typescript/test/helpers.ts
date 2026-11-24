@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterAll, afterEach, describe, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, vi } from "vitest";
 import { version } from "../package.json";
 import { type ErrorCode, HINTS } from "../src/errors.js";
 import {
@@ -80,7 +80,7 @@ export const STORE_SPECS: StoreSpec[] = [
   {
     name: "kuzu",
     transactional: false,
-    make: () => new KuzuStore(KUZU_PATH),
+    make: () => new KuzuStore(KUZU_PATH, { buffer_pool_size: 128 << 20 }),
   },
   {
     name: "hydradb",
@@ -204,6 +204,56 @@ export const ANN_AT_ACME = {
     { from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:acme", event_time: "2020-01-01T00:00:00Z" },
   ],
 };
+
+/**
+ * Fail a write after it has retired the current version and before it creates the next one, as a timeout or crash
+ * between the two writes does.
+ *
+ * @param g (SelfGraph): the graph on an auto-commit store.
+ * @param write (() => Promise<unknown>): the write to interrupt.
+ * @param options ({ method?: "createEdge" | "createEdges"; whileStuck?: () => Promise<void> }): the store method that
+ *   blocks, where createEdges writes the first row, and what runs in the write's outer transaction while it is cut off.
+ * @return (Promise<void>): resolves once the write has failed.
+ */
+export async function interruptWrite(
+  g: SelfGraph,
+  write: () => Promise<unknown>,
+  options: { method?: "createEdge" | "createEdges"; whileStuck?: () => Promise<void> } = {},
+): Promise<void> {
+  const { method = "createEdge", whileStuck } = options;
+  const store = g.store as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const original = store[method]!.bind(g.store);
+  let reached!: () => void;
+  const stuck = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let cut!: (error: Error) => void;
+  const failed = new Promise<never>((_, reject) => {
+    cut = reject;
+  });
+  const spy = vi.spyOn(store, method).mockImplementation(async (...args: unknown[]) => {
+    if (spy.mock.calls.length > 1) return original(...args);
+    if (method === "createEdges") await original(...args.slice(0, -1), (args.at(-1) as unknown[]).slice(0, 1));
+    reached();
+    return failed;
+  });
+  const interrupted = async () => {
+    const done = expect(write()).rejects.toThrow("interrupted");
+    try {
+      await Promise.race([stuck, done]);
+      expect(spy).toHaveBeenCalled();
+      await whileStuck?.();
+    } finally {
+      cut(new Error("interrupted"));
+      await done;
+    }
+  };
+  try {
+    await (whileStuck ? g.store.transaction(interrupted) : interrupted());
+  } finally {
+    spy.mockRestore();
+  }
+}
 
 /**
  * Build a WORKS_AT relation input, dated to January 1 of a year when one is given.
