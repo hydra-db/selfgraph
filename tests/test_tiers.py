@@ -678,6 +678,27 @@ def test_from_tables_rejects_non_string_references_with_a_validation_error(refer
     assert str(exc.value) == f"tables[0].columns[0].references: unknown table {shown}"
 
 
+@pytest.mark.parametrize(
+    "columns, shown",
+    [
+        (5, "number"),
+        (True, "boolean"),
+        (5.5, "number"),
+        ("age", "string"),
+    ],
+)
+def test_from_tables_rejects_non_list_columns_with_a_validation_error(columns, shown):
+    with pytest.raises(ValidationError) as exc:
+        Schema.from_tables([{"name": "orders", "columns": columns}])
+    assert str(exc.value) == f"tables[0].columns must be a list of column mappings, got {shown}"
+    assert exc.value.field == "columns"
+
+
+def test_from_tables_accepts_a_tuple_of_columns():
+    schema = Schema.from_tables([{"name": "orders", "columns": ({"name": "id"},)}])
+    assert [p.name for p in schema.entities[0].properties] == ["id"]
+
+
 def test_from_tables_maps_only_integer_sql_types_to_integer():
     types = [
         "int",

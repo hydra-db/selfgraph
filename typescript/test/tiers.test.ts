@@ -631,6 +631,22 @@ function suite(spec: StoreSpec): void {
     expect(() => fromTables({} as never)).toThrow(/tables must be a list of table mappings/);
   });
 
+  it("fromTables rejects non-list columns with a validation error", () => {
+    expect(() => fromTables([{ name: "orders", columns: 5 }])).toThrow(
+      "tables[0].columns must be a list of column mappings, got number",
+    );
+    expect(() => fromTables([{ name: "orders", columns: "age" }])).toThrow(
+      "tables[0].columns must be a list of column mappings, got string",
+    );
+    try {
+      fromTables([{ name: "orders", columns: 5 }]);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).field).toBe("columns");
+    }
+  });
+
   it("fromTables maps only integer SQL types to integer", () => {
     const types = [
       "int",
