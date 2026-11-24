@@ -29,7 +29,7 @@ from selfgraph import (
     ValidationError,
     _maintenance,
 )
-from selfgraph._export import obsidian_vault
+from selfgraph._export import _stem, obsidian_vault
 from selfgraph.retrieval import HUB_DEGREE, _ppr_rank, answerability
 from selfgraph.runtime import checked_cypher, cypher_names
 from selfgraph.stores.cypher import Neo4jStore
@@ -425,6 +425,18 @@ def test_obsidian_vault_cuts_long_names_without_splitting_a_character():
         assert "\ufffd" not in path
     assert "B" * 199 + ".md" in notes
     assert "\u00e9" * 100 + ".md" in notes
+
+
+def test_obsidian_vault_strips_leading_and_trailing_dots():
+    for name, stem in [(". .NET", "NET"), ("Acme. .", "Acme"), ("v1. .", "v1")]:
+        assert _stem(name) == stem
+        assert _stem(_stem(name)) == stem
+    assert _stem(". " * 8000 + "NET") == "NET"
+    assert _stem("NET" + " . " * 8000) == "NET"
+    g = fresh_graph("vault_dots")
+    run(g.insert.facts({"entities": [{"type": "Product", "name": name} for name in [". .NET", "Acme. .", "v1. ."]]}))
+    notes = sorted(path for path in run(g.export_obsidian()) if "/" not in path)
+    assert notes == ["Acme.md", "NET.md", "v1.md"]
 
 
 def test_obsidian_vault_numbers_names_that_collide_after_the_cut():

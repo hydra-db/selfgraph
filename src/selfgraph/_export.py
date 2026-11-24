@@ -27,6 +27,8 @@ _OSSIE_TYPES = {
 _UNSAFE = re.compile(r'[\\/:*?"<>|#^\[\]\x00-\x1f]')
 _STEM_MAX_BYTES = 200
 
+_STEM_TRIM = " \t\n\x0b\x0c\r\x1c\x1d\x1e\x1f\x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000."  # noqa: E501
+
 
 def _left_out(kind: str, name: str, fields: dict[str, Any]) -> None:
     """Log the set fields of a schema term that an Ossie document has no place for.
@@ -140,7 +142,7 @@ def _stem(text: str) -> str:
     @param text (str): the name.
     @return (str): the file name without extension, or "" when nothing usable is left.
     """
-    stem = _UNSAFE.sub("-", text).strip().strip(".").strip()
+    stem = _UNSAFE.sub("-", text).strip(_STEM_TRIM)
     raw = stem.encode("utf-8")
     if len(raw) <= _STEM_MAX_BYTES:
         return stem
