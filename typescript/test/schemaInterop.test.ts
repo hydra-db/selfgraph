@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { fromNeo4jOntology, toNeo4jOntology, ValidationError } from "../src/index.js";
-import { Schema } from "../src/schema.js";
+import { asSchema, Schema } from "../src/schema.js";
 import { captureWarnings } from "./helpers.js";
 
 const NEO4J = {
@@ -69,6 +69,17 @@ const CANONICAL = {
   ],
 };
 
+const personNode = (body: Record<string, unknown> = {}): Record<string, unknown> => ({ label: "Person", ...body });
+
+const thrown = (run: () => unknown): ValidationError => {
+  try {
+    run();
+  } catch (err) {
+    return err as ValidationError;
+  }
+  return expect.unreachable("expected a ValidationError");
+};
+
 describe("Neo4j graph schema interop", () => {
   it.each([
     ["node_types", "entities", false],
@@ -96,6 +107,85 @@ describe("Neo4j graph schema interop", () => {
         expect(item.description).toBe(description === "" ? null : description);
       }
     }
+  });
+
+  it.each([
+    [
+      {
+        node_types: [
+          personNode({ properties: [{ name: "name", required: true }] }),
+          personNode({ properties: [{ name: "age" }] }),
+        ],
+      },
+      { entities: [{ name: "Person" }, { name: "Person" }] },
+      "entities[1].name",
+    ],
+    [
+      {
+        node_types: [
+          personNode({ properties: [{ name: "age" }] }),
+          personNode({ properties: [{ name: "name", required: true }] }),
+        ],
+      },
+      { entities: [{ name: "Person" }, { name: "Person" }] },
+      "entities[1].name",
+    ],
+    [
+      {
+        relationship_types: [
+          { label: "KNOWS", properties: [{ name: "since", required: true }] },
+          { label: "KNOWS", properties: [{ name: "note" }] },
+        ],
+      },
+      { relations: [{ type: "KNOWS" }, { type: "KNOWS" }] },
+      "relations[1].type",
+    ],
+    [{ node_types: ["Person", "Person"] }, { entities: [{ name: "Person" }, { name: "Person" }] }, "entities[1].name"],
+    [{ node_types: ["A", "B", "A"] }, { entities: [{ name: "A" }, { name: "B" }, { name: "A" }] }, "entities[2].name"],
+    [{ nodeTypes: ["Person", "Person"] }, { entities: [{ name: "Person" }, { name: "Person" }] }, "entities[1].name"],
+    [
+      { node_types: ["Person", "Person"], relationship_types: ["KNOWS", "KNOWS"] },
+      { entities: [{ name: "Person" }, { name: "Person" }], relations: [{ type: "KNOWS" }, { type: "KNOWS" }] },
+      "entities[1].name",
+    ],
+    [
+      {
+        node_types: ["Person"],
+        relationship_types: ["KNOWS", "KNOWS"],
+        patterns: [["Person", "KNOWS", "Person"]],
+      },
+      { relations: [{ type: "KNOWS" }, { type: "KNOWS" }] },
+      "relations[1].type",
+    ],
+    [
+      {
+        node_types: [personNode({ properties: [{ name: "name" }] }), personNode()],
+        constraints: [{ type: "EXISTENCE", node_type: "Person", property_names: ["name"] }],
+      },
+      { entities: [{ name: "Person" }, { name: "Person" }] },
+      "entities[1].name",
+    ],
+    [
+      { node_types: ["__proto__", "__proto__"] },
+      { entities: [{ name: "__proto__" }, { name: "__proto__" }] },
+      "entities[1].name",
+    ],
+    [
+      { relationship_types: ["constructor", "constructor"] },
+      { relations: [{ type: "constructor" }, { type: "constructor" }] },
+      "relations[1].type",
+    ],
+  ])("rejects duplicate labels like the direct schema (%j)", (ontology, direct, field) => {
+    const viaDirect = thrown(() => asSchema(direct as never));
+    const viaImport = thrown(() => fromNeo4jOntology(ontology));
+    expect(viaImport.code).toBe("invalid_argument");
+    expect(viaImport.field).toBe(field);
+    expect([viaImport.code, viaImport.field, viaImport.message, viaImport.hint]).toEqual([
+      viaDirect.code,
+      viaDirect.field,
+      viaDirect.message,
+      viaDirect.hint,
+    ]);
   });
 
   it("maps types, patterns, and constraints, and lists what it drops", async () => {

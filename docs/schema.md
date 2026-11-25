@@ -374,6 +374,9 @@ The format it reads:
 - Import also reads the camelCase keys (`nodeTypes`, `relationshipTypes`,
   `nodeType`, `relationshipType`, `propertyNames`, `propertyName`). The
   snake_case key wins when both are present.
+- Each label appears once per kind. A repeated label in `node_types` or
+  `relationship_types` raises the same `ValidationError` as a schema built
+  directly, such as `entities[1].name: duplicate entity type 'Person'`.
 
 | Neo4j | SelfGraph |
 |-------|-----------|

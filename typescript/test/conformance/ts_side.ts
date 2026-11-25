@@ -710,6 +710,7 @@ export function schemaWarnings(): {
   alias_errors: string[];
   consistency_errors: Array<{ code: string; field: string | null; message: string }>;
   neo4j_description_errors: Array<{ code: string; field: string | null; message: string }>;
+  neo4j_duplicate_errors: Array<{ code: string | null; field: string | null; message: string }>;
   unit_range_errors: Array<{ code: string; field: string | null; message: string }>;
   own_keys: Array<Array<{ code: string; message: string }>>;
   parents: unknown[];
@@ -772,6 +773,23 @@ export function schemaWarnings(): {
       }
     }
   }
+  const neo4jDuplicateErrors: Array<{ code: string | null; field: string | null; message: string }> = [];
+  for (const ontology of [
+    { node_types: [{ label: "Person", properties: [{ name: "name", required: true }] }, "Person"] },
+    { relationship_types: ["KNOWS", "KNOWS"], patterns: [["Person", "KNOWS", "Person"]] },
+    { node_types: ["A", "B", "A"], relationship_types: ["KNOWS", "KNOWS"] },
+    { node_types: ["__proto__", "__proto__"] },
+    { node_types: ["Person", "person"] },
+    { relationship_types: ["WORKS_AT", "works at"] },
+  ]) {
+    try {
+      fromNeo4jOntology(ontology);
+      neo4jDuplicateErrors.push({ code: null, field: null, message: "no error" });
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      neo4jDuplicateErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+    }
+  }
   for (const spec of [
     { entities: [{ name: "Person" }, { name: "Person" }] },
     { entities: [{ name: "Employee", parent: "Persn" }] },
@@ -818,6 +836,7 @@ export function schemaWarnings(): {
     ),
     consistency_errors: consistencyErrors,
     neo4j_description_errors: neo4jDescriptionErrors,
+    neo4j_duplicate_errors: neo4jDuplicateErrors,
     unit_range_errors: unitRangeErrors,
     alias_errors: [
       { entities: [{ name: "Person" }, { name: "Company", aliases: ["Person"] }] },
