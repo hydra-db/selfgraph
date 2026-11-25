@@ -143,6 +143,112 @@ def test_neo4j_ontology_maps_types_patterns_and_constraints(caplog):
         assert key in dropped[0]
 
 
+def _person(**body):
+    """Build a Neo4j node type labelled Person.
+
+    @param body (Any): the other keys of the node type.
+    @return (dict): the node type.
+    """
+    return {"label": "Person", **body}
+
+
+@pytest.mark.parametrize(
+    ("ontology", "direct", "field"),
+    [
+        (
+            {
+                "node_types": [
+                    _person(properties=[{"name": "name", "required": True}]),
+                    _person(properties=[{"name": "age"}]),
+                ]
+            },
+            {"entities": [{"name": "Person"}, {"name": "Person"}]},
+            "entities[1].name",
+        ),
+        (
+            {
+                "node_types": [
+                    _person(properties=[{"name": "age"}]),
+                    _person(properties=[{"name": "name", "required": True}]),
+                ]
+            },
+            {"entities": [{"name": "Person"}, {"name": "Person"}]},
+            "entities[1].name",
+        ),
+        (
+            {
+                "relationship_types": [
+                    {"label": "KNOWS", "properties": [{"name": "since", "required": True}]},
+                    {"label": "KNOWS", "properties": [{"name": "note"}]},
+                ]
+            },
+            {"relations": [{"type": "KNOWS"}, {"type": "KNOWS"}]},
+            "relations[1].type",
+        ),
+        (
+            {"node_types": ["Person", "Person"]},
+            {"entities": [{"name": "Person"}, {"name": "Person"}]},
+            "entities[1].name",
+        ),
+        (
+            {"node_types": ["A", "B", "A"]},
+            {"entities": [{"name": "A"}, {"name": "B"}, {"name": "A"}]},
+            "entities[2].name",
+        ),
+        (
+            {"nodeTypes": ["Person", "Person"]},
+            {"entities": [{"name": "Person"}, {"name": "Person"}]},
+            "entities[1].name",
+        ),
+        (
+            {"node_types": ["Person", "Person"], "relationship_types": ["KNOWS", "KNOWS"]},
+            {"entities": [{"name": "Person"}, {"name": "Person"}], "relations": [{"type": "KNOWS"}, {"type": "KNOWS"}]},
+            "entities[1].name",
+        ),
+        (
+            {
+                "node_types": ["Person"],
+                "relationship_types": ["KNOWS", "KNOWS"],
+                "patterns": [["Person", "KNOWS", "Person"]],
+            },
+            {"relations": [{"type": "KNOWS"}, {"type": "KNOWS"}]},
+            "relations[1].type",
+        ),
+        (
+            {
+                "node_types": [_person(properties=[{"name": "name"}]), _person()],
+                "constraints": [{"type": "EXISTENCE", "node_type": "Person", "property_names": ["name"]}],
+            },
+            {"entities": [{"name": "Person"}, {"name": "Person"}]},
+            "entities[1].name",
+        ),
+        (
+            {"node_types": ["__proto__", "__proto__"]},
+            {"entities": [{"name": "__proto__"}, {"name": "__proto__"}]},
+            "entities[1].name",
+        ),
+        (
+            {"relationship_types": ["constructor", "constructor"]},
+            {"relations": [{"type": "constructor"}, {"type": "constructor"}]},
+            "relations[1].type",
+        ),
+    ],
+)
+def test_neo4j_import_rejects_duplicate_labels_like_the_direct_schema(ontology, direct, field):
+    with pytest.raises(ValidationError) as err:
+        Schema.model_validate(direct)
+    with pytest.raises(ValidationError) as imported:
+        Schema.from_neo4j_ontology(ontology)
+    assert imported.value.code == "invalid_argument"
+    assert imported.value.field == field
+    assert (imported.value.code, imported.value.field, str(imported.value), imported.value.hint) == (
+        err.value.code,
+        err.value.field,
+        str(err.value),
+        err.value.hint,
+    )
+
+
 def test_round_trip_preserves_the_mapped_subset_and_camel_case_keys_read(caplog):
     with caplog.at_level(logging.WARNING, logger="selfgraph"):
         schema = Schema.from_neo4j_ontology(CANONICAL)

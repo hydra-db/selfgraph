@@ -707,6 +707,21 @@ def schema_warnings():
                     Schema.from_neo4j_ontology({source: [body]})
                 except ValidationError as exc:
                     neo4j_description_errors.append({"code": exc.code, "field": exc.field, "message": str(exc)})
+    neo4j_duplicate_errors = []
+    for ontology in [
+        {"node_types": [{"label": "Person", "properties": [{"name": "name", "required": True}]}, "Person"]},
+        {"relationship_types": ["KNOWS", "KNOWS"], "patterns": [["Person", "KNOWS", "Person"]]},
+        {"node_types": ["A", "B", "A"], "relationship_types": ["KNOWS", "KNOWS"]},
+        {"node_types": ["__proto__", "__proto__"]},
+        {"node_types": ["Person", "person"]},
+        {"relationship_types": ["WORKS_AT", "works at"]},
+    ]:
+        try:
+            Schema.from_neo4j_ontology(ontology)
+        except ValidationError as exc:
+            neo4j_duplicate_errors.append({"code": exc.code, "field": exc.field, "message": str(exc)})
+        else:
+            neo4j_duplicate_errors.append({"code": None, "field": None, "message": "no error"})
     for spec in [
         {"entities": [{"name": "Person"}, {"name": "Person"}]},
         {"entities": [{"name": "Employee", "parent": "Persn"}]},
@@ -797,6 +812,7 @@ def schema_warnings():
         "alias_errors": alias_errors,
         "consistency_errors": consistency_errors,
         "neo4j_description_errors": neo4j_description_errors,
+        "neo4j_duplicate_errors": neo4j_duplicate_errors,
         "unit_range_errors": unit_range_errors,
         "own_keys": [
             [{"code": w.code, "message": w.message} for w in validate_against_schema(facts, own_key_schema)]

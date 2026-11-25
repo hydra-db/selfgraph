@@ -190,19 +190,23 @@ def from_neo4j(data: Mapping[str, Any]) -> dict[str, Any]:
     data = _mapping(data, "neo4j ontology")
     dropped: list[str] = []
     _extra(data, _TOP_KEYS, "", dropped)
-    nodes: dict[str, dict[str, Any]] = {}
-    for i, raw in enumerate(_items(data, "node_types", "neo4j ontology")):
-        body = _import_type(raw, f"node_types[{i}]", dropped)
-        nodes[body["label"]] = body
-    rels: dict[str, dict[str, Any]] = {}
-    for i, raw in enumerate(_items(data, "relationship_types", "neo4j ontology")):
-        body = _import_type(raw, f"relationship_types[{i}]", dropped)
-        rels[body["label"]] = body
+    nodes = [
+        _import_type(raw, f"node_types[{i}]", dropped)
+        for i, raw in enumerate(_items(data, "node_types", "neo4j ontology"))
+    ]
+    rels = [
+        _import_type(raw, f"relationship_types[{i}]", dropped)
+        for i, raw in enumerate(_items(data, "relationship_types", "neo4j ontology"))
+    ]
+    node_bodies = {body["label"]: body for body in nodes}
+    rel_bodies = {body["label"]: body for body in rels}
     ends: dict[str, tuple[list[str], list[str]]] = {}
     pairs: dict[str, set[tuple[str, str]]] = {}
     for i, raw in enumerate(_items(data, "patterns", "neo4j ontology")):
         source, rel, target = _pattern(raw, f"patterns[{i}]")
-        rels.setdefault(rel, {"label": rel, "description": None, "aliases": [], "properties": []})
+        if rel not in rel_bodies:
+            rel_bodies[rel] = {"label": rel, "description": None, "aliases": [], "properties": []}
+            rels.append(rel_bodies[rel])
         froms, tos = ends.setdefault(rel, ([], []))
         froms.extend([source] if source not in froms else [])
         tos.extend([target] if target not in tos else [])
@@ -212,19 +216,19 @@ def from_neo4j(data: Mapping[str, Any]) -> dict[str, Any]:
             dropped.append(f"patterns for {rel} widened to every source and target pair")
     for i, raw in enumerate(_items(data, "constraints", "neo4j ontology")):
         constraint = _mapping(raw, f"constraints[{i}]")
-        _require(nodes if constraint.get("node_type") else rels, constraint, f"constraints[{i}]", dropped)
+        _require(node_bodies if constraint.get("node_type") else rel_bodies, constraint, f"constraints[{i}]", dropped)
     if dropped:
         _log.warning("neo4j ontology: dropped what SelfGraph does not model: %s", ", ".join(dropped))
     entities = [
         {"name": b["label"], "description": b["description"], "aliases": b["aliases"], "properties": b["properties"]}
-        for b in nodes.values()
+        for b in nodes
     ]
     relations = []
-    for label, b in rels.items():
-        froms, tos = ends.get(label, ([], []))
+    for b in rels:
+        froms, tos = ends.get(b["label"], ([], []))
         relations.append(
             {
-                "type": label,
+                "type": b["label"],
                 "description": b["description"],
                 "aliases": b["aliases"],
                 "from": {"types": froms},

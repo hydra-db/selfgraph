@@ -319,6 +319,38 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       "relations[1].type",
       "relations[0].from.max_count",
     ]);
+    expect(warnings.neo4j_duplicate_errors).toEqual([
+      {
+        code: "invalid_argument",
+        field: "entities[1].name",
+        message: "invalid schema: entities[1].name: duplicate entity type 'Person'",
+      },
+      {
+        code: "invalid_argument",
+        field: "relations[1].type",
+        message: "invalid schema: relations[1].type: duplicate relation type 'KNOWS'",
+      },
+      {
+        code: "invalid_argument",
+        field: "entities[2].name",
+        message: "invalid schema: entities[2].name: duplicate entity type 'A'",
+      },
+      {
+        code: "invalid_argument",
+        field: "entities[1].name",
+        message: "invalid schema: entities[1].name: duplicate entity type '__proto__'",
+      },
+      {
+        code: "invalid_argument",
+        field: "entities[1].name",
+        message: "invalid schema: entities[1].name: duplicate entity type 'person'",
+      },
+      {
+        code: "invalid_argument",
+        field: "relations[1].type",
+        message: "invalid schema: relations[1].type: duplicate relation type 'works at'",
+      },
+    ]);
     expect(warnings.ossie.warnings).toContain("the OneToMany multiplicity of relation LEADS are left out");
   });
 
