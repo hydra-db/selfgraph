@@ -347,7 +347,7 @@ function suite(spec: StoreSpec) {
         execute.mock.calls
           .filter(([query]) => query.includes("r.sid IN $ids"))
           .map(([, params]) => (Array.isArray(params?.ids) ? params.ids.length : 0)),
-      ).toEqual([256, 1]);
+      ).toEqual([256, 1, 256, 1]);
       expect(
         execute.mock.calls.filter(([query]) => query.includes("r.sid = $sid") && query.includes("RETURN r.doc")),
       ).toEqual([]);
@@ -1992,6 +1992,13 @@ describe("store setup errors", () => {
 
   it("skips Bolt constraint DDL when the constraints exist or the check keeps conflicting", async () => {
     const memgraphRows = async (query: string) => {
+      if (query === "SHOW INDEX INFO") {
+        return {
+          columns: [],
+          rows: LABELS.map((label) => ({ "index type": "label+property", label, property: "id" })),
+          counters: {},
+        };
+      }
       if (query === "SHOW CONSTRAINTS") {
         throw new StoreError("Cypher query failed", {
           cause: Object.assign(new Error("parsing error at SHOW"), { code: "x" }),

@@ -9,6 +9,7 @@ from typing import Any
 
 from neo4j.graph import Node, Path, Relationship
 
+from .._ops import _batches
 from ..errors import (
     STORE_CLOSED_MESSAGE,
     StoreError,
@@ -334,8 +335,10 @@ class CypherRunner:
 
 
 class AutoCommitStore(CypherRunner):
+    lock_refreshes_reads = False
+
     async def lock_node(self, ns: str, label: str, id: str) -> None:
-        """No-op: writes are already serialized per store by transaction.
+        """No-op: writes are already serialized per store by transaction, so a read after it sees nothing new.
 
         @param ns (str): namespace.
         @param label (str): node label.
@@ -400,6 +403,9 @@ async def records_to_result(result) -> CypherResult:
 
 
 class CypherPrimitives(CypherRunner):
+    _node_page_maps = False
+    _counted_node_delete = False
+
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
         """Fetch a node's properties by label and id.
 
@@ -421,6 +427,23 @@ class CypherPrimitives(CypherRunner):
         """
         res = await self._run(f"MATCH (n:{label} {{id:$id, ns:$ns}}) RETURN n.id AS id", {"id": id, "ns": ns})
         return bool(res.rows)
+
+    async def nodes_exist(self, ns: str, label: str, ids: list[str]) -> set[str]:
+        """Report existing ids by label and namespace in bounded queries.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param ids (list[str]): candidate node ids.
+        @return (set[str]): present ids.
+        """
+        found: set[str] = set()
+        for batch in _batches(list(dict.fromkeys(ids)), 256):
+            res = await self._run(
+                f"MATCH (n:{label}) WHERE n.ns=$ns AND n.id IN $ids RETURN n.id AS id",
+                {"ns": ns, "ids": batch},
+            )
+            found.update(row["id"] for row in res.rows)
+        return found
 
     async def lock_node(self, ns: str, label: str, id: str) -> None:
         """Take a write lock on a node to serialize concurrent read-modify-write updates.
@@ -550,8 +573,15 @@ class CypherPrimitives(CypherRunner):
         where_any_of("n", any_of, where, params)
         where_after("n.id", id_gt, where, params)
         ob = require_identifier(order_by, "order_by")
-        query = f"MATCH (n:{label}) WHERE {' AND '.join(where)} RETURN n ORDER BY n.{ob} SKIP $skip LIMIT $limit"
+        project = self._node_page_maps and order_by == "id"
+        page = "WITH n" if project else "RETURN n"
+        projection = " RETURN properties(n) AS n" if project else ""
+        query = (
+            f"MATCH (n:{label}) WHERE {' AND '.join(where)} {page} ORDER BY n.{ob} SKIP $skip LIMIT $limit{projection}"
+        )
         res = await self._run(query, params)
+        if project:
+            return [graph_properties(r["n"].items(), lambda value: value) for r in res.rows]
         return [r["n"] for r in res.rows]
 
     async def delete_node(self, ns: str, label: str, id: str) -> None:
@@ -586,6 +616,11 @@ class CypherPrimitives(CypherRunner):
         where = ["n.ns = $ns"]
         params: dict[str, Any] = {"ns": ns}
         where_equals("n", equals, where, params)
+        if self._counted_node_delete:
+            result = await self._run(
+                f"MATCH (n:{label}) WHERE {' AND '.join(where)} DETACH DELETE n RETURN count(n) AS n", params
+            )
+            return count_of(result.rows)
         count = await self._run(f"MATCH (n:{label}) WHERE {' AND '.join(where)} RETURN count(n) AS n", params)
         n = count_of(count.rows)
         if n:
@@ -637,7 +672,7 @@ class CypherPrimitives(CypherRunner):
         """
         res = await self._run(
             "MATCH (a)-[r {id:$id, ns:$ns}]->(b) WHERE r.is_current = true "
-            "RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t",
+            "RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t LIMIT 1",
             {"id": id, "ns": ns},
         )
         return _edge_row(res.rows[0]) if res.rows else None
@@ -712,10 +747,8 @@ class CypherPrimitives(CypherRunner):
         @param id (str): edge id.
         @return (int): the number deleted.
         """
-        n = await self.count_edges(ns, id)
-        if n:
-            await self._run("MATCH ()-[r {id:$id, ns:$ns}]->() DELETE r", {"id": id, "ns": ns})
-        return n
+        res = await self._run("MATCH ()-[r {id:$id, ns:$ns}]->() DELETE r RETURN count(r) AS n", {"id": id, "ns": ns})
+        return count_of(res.rows)
 
     async def match_edges(
         self,

@@ -64,3 +64,39 @@ def test_run_cypher_refuses_a_negative_decimal_kuzu_cannot_return(store, query):
         run(store.run_cypher(query))
     assert raised.value.code == "inexact_value"
     assert str(raised.value) == "Kuzu cannot return a negative DECIMAL between -0.1 and 0"
+
+
+def test_prepared_queries_bind_new_values_and_release_old_connections(store, tmp_path):
+    async def check():
+        query = "RETURN $value AS value"
+        for value in (1, 20, -3):
+            assert (await store._run(query, {"value": value})).rows == [{"value": value}]
+        first = store._conn
+        store._statements = 500
+        assert (await store._run(query, {"value": 4})).rows == [{"value": 4}]
+        assert store._conn is not first
+        assert store._plans_conn is store._conn
+        second = KuzuStore(str(tmp_path / "values.kuzu"))
+        try:
+            plan = store._plans[query]
+            await second.run_cypher("CREATE NODE TABLE CacheInvalidation(id INT64, PRIMARY KEY(id))")
+            assert (await store._run(query, {"value": 5})).rows == [{"value": 5}]
+            assert store._plans[query] is not plan
+        finally:
+            await second.close()
+        await store.close()
+        assert not store._plans
+
+    run(check())
+
+
+def test_prepared_query_retention_is_bounded(store):
+    async def check():
+        for index in range(80):
+            result = await store._run(f"RETURN $value + {index} AS value", {"value": 2})
+            assert result.rows == [{"value": index + 2}]
+        assert len(store._plans) <= 64
+        await store.run_cypher("RETURN 0 AS value")
+        assert not store._plans
+
+    run(check())

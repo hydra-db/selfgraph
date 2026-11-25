@@ -87,6 +87,9 @@ export interface GraphPrimitives {
    * @param id (string): the node id.
    */
   lockNode(ns: string, label: string, id: string): Promise<void>;
+  lockAndGetNode?(ns: string, label: string, id: string): Promise<Props | null>;
+  lockNodes?(ns: string, label: string, ids: readonly string[]): Promise<void>;
+  readonly lockRefreshesReads?: boolean;
   upsertNode(ns: string, label: string, id: string, props: Props, options?: UpsertNodeOptions): Promise<void>;
   /**
    * Merge many nodes of one label by id and set their properties, optionally adding a second label to each.
@@ -97,6 +100,14 @@ export interface GraphPrimitives {
    * @param options (UpsertNodeOptions): an additional label for every node.
    */
   upsertNodes(ns: string, label: string, rows: readonly NodeRow[], options?: UpsertNodeOptions): Promise<void>;
+  /**
+   * Upsert nodes the caller read as absent, for a store that can skip work for absent nodes.
+   * @param ns (string): the namespace.
+   * @param label (string): the primary label matched on.
+   * @param rows (readonly NodeRow[]): (node id, properties) pairs.
+   * @param options (UpsertNodeOptions): an additional label for every node.
+   */
+  upsertNewNodes?(ns: string, label: string, rows: readonly NodeRow[], options?: UpsertNodeOptions): Promise<void>;
   removeNodeLabel(ns: string, label: string, id: string, dropLabel: string): Promise<void>;
   matchNodes(ns: string, label: string, options?: MatchNodesOptions): Promise<Props[]>;
   deleteNode(ns: string, label: string, id: string): Promise<void>;
@@ -167,6 +178,14 @@ export interface GraphPrimitives {
    * @return (Props[]): the matching entities' properties.
    */
   entitiesMatching?(ns: string, keys: Iterable<string>): Promise<Props[]>;
+  /**
+   * Report which of some node ids exist under one label, for a store that seeks many ids in one read.
+   * @param ns (string): the namespace.
+   * @param label (string): the node label.
+   * @param ids (readonly string[]): the node ids.
+   * @return (Set<string>): the ids nodeExists would report present.
+   */
+  nodesExist?(ns: string, label: string, ids: readonly string[]): Promise<Set<string>>;
   /**
    * Read every version of some edges by edge id, for a store that seeks edges by id cheaply; null asks the caller to read them another way.
    *

@@ -166,6 +166,16 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
   /** Create the graph key up front so concurrent first writes do not race on its creation. */
   async initialize(): Promise<void> {
     await this._run("CREATE (n:_SgInit) DELETE n");
+    try {
+      await this._run("CREATE INDEX ON :Evidence(target_id)");
+    } catch (exc) {
+      if (
+        !(exc instanceof StoreError) ||
+        exc.message !== "FalkorDB query failed: Attribute 'target_id' is already indexed"
+      ) {
+        throw exc;
+      }
+    }
   }
 
   async close(): Promise<void> {

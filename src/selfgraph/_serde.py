@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import Any
 
 from .errors import ValidationError, stored_data_error
@@ -149,6 +149,9 @@ def _parse_iso(text: str) -> datetime:
     )
 
 
+_cached_iso = lru_cache(maxsize=1024)(_parse_iso)
+
+
 def from_iso(value: Any) -> datetime | None:
     """Parse an ISO 8601 datetime, honoring a trailing Z/z as UTC.
 
@@ -157,7 +160,7 @@ def from_iso(value: Any) -> datetime | None:
     """
     if value is None or isinstance(value, datetime):
         return value
-    return _parse_iso(value)
+    return _cached_iso(value) if isinstance(value, str) and len(value) <= 40 else _parse_iso(value)
 
 
 def _dumps(value: Any) -> str:

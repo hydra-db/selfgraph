@@ -199,8 +199,9 @@ const same = (alias: string, key: string, param: string): string =>
   `NOT ${alias}.\`${requireIdentifier(key)}\` <> $${param}`;
 
 const BY_SID = `MATCH ()-[r:${EDGE} {sid: $sid}]->() WHERE ${same("r", "ns", "ns")}`;
-const READ_EDGES = `MATCH (a {ns: $ns})-[r:${EDGE}]->() WHERE ${same("r", "ns", "ns")}`;
-const READ_BY_SID = `${READ_EDGES} AND ${same("r", "sid", "sid")}`;
+const DELETE_BY_ID = "UNWIND $rows AS row MATCH (n {id: row.id}) DETACH DELETE n";
+const SET_BY_SID = `UNWIND $rows AS row MATCH ()-[r:${EDGE} {sid: row.sid}]->() WHERE ${same("r", "ns", "ns")}`;
+const SEEK_BY_SID = `MATCH (a)-[r:${EDGE} {sid: $sid}]->() WHERE a.id IN $sources AND ${same("r", "ns", "ns")}`;
 
 /**
  * A node pattern carrying the equality filters in its property map, so the engine seeks on them.
@@ -639,6 +640,33 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   }
 
   /**
+   * Report which of some node ids exist under one label, seeking their keys in bounded batches.
+   * @param ns (string): the namespace.
+   * @param label (string): the node label.
+   * @param ids (readonly string[]): the node ids.
+   * @return (Set<string>): the ids nodeExists would report present.
+   */
+  async nodesExist(ns: string, label: string, ids: readonly string[]): Promise<Set<string>> {
+    const byKey = new Map<string, string[]>();
+    const keys: bigint[] = [];
+    for (const id of ids) {
+      const iid = surrogateKey(ns, id);
+      const same = byKey.get(String(iid));
+      if (same) same.push(id);
+      else {
+        byKey.set(String(iid), [id]);
+        keys.push(iid);
+      }
+    }
+    const found = new Set<string>();
+    for (const batch of batches(keys.sort(compareKeys), SEEK_BATCH)) {
+      const res = await this._run(`MATCH (n:${label}) WHERE n.id IN $iids RETURN n.id AS id`, { iids: batch }, batch);
+      for (const row of res.rows) for (const id of byKey.get(String(row.id)) ?? []) found.add(id);
+    }
+    return found;
+  }
+
+  /**
    * Reject node upserts that would not fit in one HydraDB Bolt message, before any write.
    *
    * @param ns (string): the namespace.
@@ -679,6 +707,42 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     rows: readonly NodeRow[],
     options: UpsertNodeOptions = {},
   ): Promise<void> {
+    await this.upsertRows(ns, label, rows, options, true);
+  }
+
+  /**
+   * Upsert nodes with an idempotent extra-label write instead of a label probe.
+   * @param ns (string): the namespace.
+   * @param label (string): the node label.
+   * @param rows (readonly NodeRow[]): (id, encoded properties) pairs, as upsertNodes takes them.
+   * @param options (UpsertNodeOptions): an additional label for every node.
+   * @return (void): nothing.
+   */
+  async upsertNewNodes(
+    ns: string,
+    label: string,
+    rows: readonly NodeRow[],
+    options: UpsertNodeOptions = {},
+  ): Promise<void> {
+    await this.upsertRows(ns, label, rows, options, false);
+  }
+
+  /**
+   * Upsert nodes with their key rows first, then clear the columns their properties unset.
+   * @param ns (string): the namespace.
+   * @param label (string): the node label.
+   * @param rows (readonly NodeRow[]): (id, encoded properties) pairs.
+   * @param options (UpsertNodeOptions): an additional label for every node.
+   * @param probeLabels (boolean): read which nodes lack the extra label and write it only to those, else write it to every node.
+   * @return (void): nothing.
+   */
+  private async upsertRows(
+    ns: string,
+    label: string,
+    rows: readonly NodeRow[],
+    options: UpsertNodeOptions,
+    probeLabels: boolean,
+  ): Promise<void> {
     if (options.extra_label != null) quoteLabel(options.extra_label);
     for (const [, props] of rows) requireKeys(props);
     const cleared = new Map<string, [string[], bigint[]]>();
@@ -715,6 +779,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       out,
       indexRows.map((r) => r.id as bigint),
       options.extra_label,
+      probeLabels,
     );
     for (const [keys, params] of held) {
       await this._run(`MATCH (n:${label}) WHERE n.id IN $iids REMOVE ${removes("n", keys)}`, params);
@@ -723,11 +788,11 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   /**
    * Upsert node rows by surrogate id with one UNWIND statement per batch of rows sharing a column set.
-   *
    * @param label (string): the node label.
    * @param rows (Props[]): the rows, each with its surrogate id and the columns to set.
    * @param needs (readonly bigint[]): ids that must be written first, such as the entities' key rows, so a failed write never leaves an entity stored without them.
    * @param extraLabel (string | null | undefined): an optional secondary label.
+   * @param probeLabels (boolean): read which nodes lack the extra label and write it only to those, else write it to every node.
    * @return (void): nothing.
    */
   private async mergeRows(
@@ -735,6 +800,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     rows: Props[],
     needs: readonly bigint[] = [],
     extraLabel?: string | null,
+    probeLabels = true,
   ): Promise<void> {
     extraLabel = engineLabel(extraLabel);
     const labels = extraLabel === null ? [label] : [label, extraLabel];
@@ -742,6 +808,18 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     const afterAll = label === L_EVIDENCE || label === L_MERGE;
     for (const batch of byColumns(rows)) {
       const ids = batch.map((r) => r.id as bigint);
+      let missingLabels: bigint[] = [];
+      if (extraLabel !== null && !probeLabels) {
+        missingLabels = ids;
+      } else if (extraLabel !== null) {
+        const found = await this._run(
+          `MATCH (n:${quoteLabel(extraLabel)}) WHERE n.id IN $iids RETURN n.id AS id`,
+          { iids: ids },
+          ids,
+        );
+        const labelled = new Set(found.rows.map((row) => String(row.id)));
+        missingLabels = ids.filter((id) => !labelled.has(String(id)));
+      }
       await this.write(
         `UNWIND $rows AS row MERGE (n {id: row.id}) SET n:${label}, ${sets("n", batch[0]!, ["id"])}`,
         { rows: batch },
@@ -750,12 +828,12 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
         marks,
         afterAll,
       );
-      if (extraLabel !== null) {
+      if (missingLabels.length) {
         await this.write(
-          `MATCH (n:${label}) WHERE n.id IN $iids SET n:${quoteLabel(extraLabel)}`,
-          { iids: ids },
-          ids,
-          ids,
+          `UNWIND $rows AS row MATCH (n:${label} {id: row.id}) SET n:${quoteLabel(extraLabel!)}`,
+          { rows: missingLabels.map((id) => ({ id })) },
+          missingLabels,
+          missingLabels,
           marks,
           afterAll,
         );
@@ -884,8 +962,23 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   async deleteNodes(ns: string, label: string, ids: readonly string[]): Promise<void> {
     for (const batch of batches(ids, DELETE_BATCH)) {
       const iids = batch.map((id) => surrogateKey(ns, id));
-      await this._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", { iids });
-      await this.dropKeys(label, iids);
+      let keys: bigint[] = [];
+      if (label === L_ENTITY) {
+        const found = await this._run(
+          `MATCH (k:${KEY}) WHERE k.eid IN $iids AND ${same("k", "ns", "ns")} RETURN k.id AS id LIMIT $limit`,
+          { iids, ns, limit: DELETE_BATCH },
+        );
+        keys = found.rows.map((row) => BigInt(row.id as bigint));
+      }
+      for (const doomed of batches([...iids, ...keys], DELETE_BATCH)) {
+        await this._run(DELETE_BY_ID, { rows: doomed.map((id) => ({ id })) });
+      }
+      if (keys.length === DELETE_BATCH) {
+        await this._run(`MATCH (k:${KEY}) WHERE k.eid IN $iids AND ${same("k", "ns", "ns")} DETACH DELETE k`, {
+          iids,
+          ns,
+        });
+      }
     }
   }
 
@@ -961,6 +1054,17 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       cleared.set(keys.join("\u0000"), group);
     });
     for (const [joined, ends] of cleared) {
+      const ids = ends.map((row) => row.id as bigint);
+      const have = joined
+        .split("\u0000")
+        .map((key) => `r.\`${requireIdentifier(key)}\` IS NOT NULL`)
+        .join(" OR ");
+      const found = await this._run(
+        `MATCH (a:${fromLabel})-[r:${EDGE}]->() WHERE a.id IN $sources ` + `AND (${have}) RETURN r.sid AS sid LIMIT 1`,
+        { ids, sources: [...new Set(ends.map((row) => row.f as bigint))] },
+        [...ids, ...ends.map((row) => row.f as bigint)],
+      );
+      if (!found.rows.length) continue;
       await this._run(
         `UNWIND $rows AS row MATCH (a:${fromLabel} {id: row.f})-[r:${EDGE} {id: row.id}]->` +
           `(b:${toLabel} {id: row.t}) REMOVE ${removes("r", joined.split("\u0000"))}`,
@@ -983,9 +1087,18 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     }
   }
 
+  private async sidSources(ns: string, id: string): Promise<Props> {
+    const result = await this._run(
+      `MATCH (a)-[r:${EDGE} {sid: $sid}]->() WHERE ${same("r", "ns", "ns")} RETURN a.id AS source`,
+      { ns, sid: id },
+      [sidKey(ns, id)],
+    );
+    return { ns, sid: id, sources: [...new Set(result.rows.map((row) => row.source))] };
+  }
+
   async getCurrentEdge(ns: string, id: string): Promise<EdgeRow | null> {
     const res = await this._run(
-      `${READ_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et`,
+      `${BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et`,
       { ns, sid: id },
       [sidKey(ns, id)],
     );
@@ -995,16 +1108,15 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async listEdgeVersions(ns: string, id: string): Promise<EdgeRow[]> {
     const res = await this._run(
-      `${READ_BY_SID} RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
-      { ns, sid: id },
+      `${SEEK_BY_SID} RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
+      await this.sidSources(ns, id),
       [sidKey(ns, id)],
     );
     return res.rows.map(edgeRow);
   }
 
   /**
-   * Read every version of a bounded set of edge ids in one namespace scan.
-   *
+   * Read every version after seeking source vertices by a bounded set of edge ids.
    * @param ns (string): the namespace.
    * @param fromLabel (string | null): the source node label the edges must have, or null for any.
    * @param toLabel (string | null): the destination node label the edges must have, or null for any.
@@ -1019,6 +1131,13 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   ): Promise<EdgeRow[] | null> {
     if (ids.length > SEEK_BATCH) return null;
     if (ids.length === 0) return [];
+    const seeds = await this._run(
+      `MATCH (a)-[r:${EDGE}]->() WHERE r.sid IN $sids AND ${same("r", "ns", "ns")} RETURN a.id AS source`,
+      { ns, sids: ids },
+      ids.map((sid) => sidKey(ns, sid)),
+    );
+    const sources = [...new Set(seeds.rows.map((row) => row.source))];
+    if (!sources.length) return [];
     const labels: Props = {};
     if (fromLabel !== null) labels.fl = fromLabel;
     if (toLabel !== null) labels.tl = toLabel;
@@ -1026,9 +1145,10 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       .map((k) => ` AND ${same("r", k, k)}`)
       .join("");
     const res = await this._run(
-      `${READ_EDGES} AND NOT (NOT r.sid IN $sids)${where} ` +
+      `MATCH (a)-[r:${EDGE}]->() WHERE a.id IN $sources AND ${same("r", "ns", "ns")} ` +
+        `AND NOT (NOT r.sid IN $sids)${where} ` +
         "RETURN r.sid AS sid, r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et",
-      { ns, sids: ids, ...labels },
+      { ns, sids: ids, sources, ...labels },
       ids.map((sid) => sidKey(ns, sid)),
     );
     const byId = new Map<string, EdgeRow[]>();
@@ -1052,20 +1172,19 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       params[`s_${k}`] = v;
     }
     guardSizes(params);
+    params.rows = [{ sid: id }];
+    delete params.sid;
     const keys = unset(merged);
-    if (keys.length) await this._run(`${BY_SID} AND r.is_current = true REMOVE ${removes("r", keys)}`, { ns, sid: id });
-    await this._run(`${BY_SID} AND r.is_current = true SET ${assignments.join(", ")}`, params);
-  }
-
-  private async countEdges(ns: string, id: string): Promise<number> {
-    const res = await this._run(`${READ_BY_SID} RETURN count(*) AS n`, { ns, sid: id });
-    return toCount(res.rows);
+    const remove = keys.length ? ` REMOVE ${removes("r", keys)}` : "";
+    await this._run(`${SET_BY_SID} AND r.is_current = true${remove} SET ${assignments.join(", ")}`, params);
   }
 
   async deleteEdges(ns: string, id: string): Promise<number> {
-    const n = await this.countEdges(ns, id);
-    if (n) await this._run(`${BY_SID} DELETE r`, { ns, sid: id });
-    return n;
+    const res = await this._run(
+      `MATCH (a)-[r:${EDGE} {sid: $sid}]->() WHERE a.id IN $sources AND ${same("r", "ns", "ns")} DELETE r RETURN count(r) AS n`,
+      await this.sidSources(ns, id),
+    );
+    return toCount(res.rows);
   }
 
   async matchEdges(ns: string, options: MatchEdgesOptions): Promise<EdgeRow[]> {
@@ -1124,7 +1243,29 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       params[`eq${i}`] = value;
     });
     if (current_only) where.push("NOT r.is_current <> true");
-    whereAfter("r.sid", id_gt, where, params);
+    if (id_gt != null) {
+      where.push("NOT r.sid <= $id_gt");
+      params.id_gt = id_gt;
+    }
+    if (!fromAnchored && !toAnchored) {
+      const seek = sortedEntries(equals).find(
+        ([key, value]) => key !== "ns" && ["string", "number", "boolean"].includes(typeof value),
+      );
+      if (seek) {
+        const [key, value] = seek;
+        const seeds = await this._run(
+          `MATCH (a)-[r:${EDGE} {\`${requireIdentifier(key)}\`: $seek}]->() WHERE ${same("r", "ns", "ns")} RETURN a.id AS source LIMIT $seek_limit`,
+          { ns, seek: value, seek_limit: SEEK_BATCH + 1 },
+        );
+        if (seeds.rows.length <= SEEK_BATCH) {
+          const sources = [...new Set(seeds.rows.map((row) => row.source))];
+          if (!sources.length) return [];
+          apat = `a:${from_label}`;
+          where.unshift("a.id IN $sources");
+          params.sources = sources;
+        }
+      }
+    }
     const res = await this._run(
       `MATCH (${apat})-[r:${EDGE}]->(${bpat}) WHERE ${where.join(" AND ")} ` +
         "RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`sid` AS __ob, r.revision AS __rev " +

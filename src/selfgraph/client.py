@@ -724,17 +724,21 @@ class SelfGraph:
                     event_time=default_event_time,
                 )
 
-            for ent in canonical.entities:
-                await _ops.preserve_entity_writes(
-                    tx,
-                    ns,
-                    ent.id or entity_id(ent.type, ent.name),
-                    {
-                        "aliases": [*ent.aliases, ent.name],
-                        "properties": ent.properties,
-                        "external_ids": ent.external_ids,
-                    },
-                )
+            await _ops.preserve_entity_writes(
+                tx,
+                ns,
+                [
+                    (
+                        ent.id or entity_id(ent.type, ent.name),
+                        {
+                            "aliases": [*ent.aliases, ent.name],
+                            "properties": ent.properties,
+                            "external_ids": ent.external_ids,
+                        },
+                    )
+                    for ent in canonical.entities
+                ],
+            )
             entities = await _ops.upsert_entities(
                 tx,
                 ns,

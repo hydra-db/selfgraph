@@ -20,7 +20,7 @@ HydraDBStore("bolt://127.0.0.1:17687", auth=("neo4j", "<token>"))
 | `CypherStore` | Any Bolt and openCypher database, Memgraph included. Creates the id uniqueness constraints on `initialize()`. | core |
 | `FalkorDBStore` | FalkorDB over its Redis protocol. | `falkordb` |
 | `KuzuStore` | Embedded Kuzu, in process, no server. | `kuzu` |
-| `HydraDBStore` | HydraDB 0.4.0 or newer. | core |
+| `HydraDBStore` | HydraDB 0.5.0 or newer. | core |
 
 Neo4j and Memgraph are tested on Bolt.
 
@@ -64,7 +64,7 @@ cluster-only option that a standalone server rejects.
   `ValidationError`; omitted options join the open database.
 - For a file-backed database with an explicit `buffer_pool_size`, SelfGraph
   lowers Kuzu's automatic write-ahead log checkpoint threshold to at most
-  one 1,024th of the pool. This frees committed write buffers sooner during
+  one 512th of the pool. This frees committed write buffers sooner during
   repeated updates without dropping historical versions. In-memory databases
   cannot reclaim those buffers through disk checkpoints. The Python store
   honors an explicit `checkpoint_threshold` or `auto_checkpoint` override.
@@ -247,3 +247,21 @@ Store failures raise `StoreError`. Common setup mistakes get a plain message:
 A URI in these messages, and in the address errors raised before connecting, shows `***` in place of its user and password, as in `redis://***@host:6379`.
 
 More connection messages are in [Errors](errors.md#connections).
+
+### Optional store primitives
+
+Stores may implement `nodes_exist` (`nodesExist` in TypeScript) to check a bounded
+group of node ids without decoding documents. Validation falls back to singular
+checks when this primitive is unavailable or fails.
+
+`upsert_new_nodes` (`upsertNewNodes`) is an upsert hint for groups read as absent.
+It must preserve ordinary upsert behavior, including key and label repair.
+
+Transaction writers may implement `lock_nodes` (`lockNodes`) to acquire locks in
+the supplied order, and `lock_and_get_node` (`lockAndGetNode`) to return properties
+after acquiring a lock. Stores whose lock is a no-op declare
+`lock_refreshes_reads = False` (`lockRefreshesReads = false`); other stores keep
+the read after locking.
+
+For FalkorDB's optional native RESP parser, install `selfgraph[falkordb-fast]`.
+The regular `falkordb` extra remains available without it.

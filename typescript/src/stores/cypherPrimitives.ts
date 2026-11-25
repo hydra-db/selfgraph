@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { STORE_CLOSED_MESSAGE, StoreError, ValidationError } from "../errors.js";
 import { comparePy, pyRepr, pyStrip } from "../internal/py.js";
 import type { CypherResult, CypherRow, JsonValue } from "../models.js";
+import { batches } from "../ops.js";
 import {
   DEFAULT_MATCH_LIMIT,
   type EdgeRow,
@@ -221,6 +222,7 @@ abstract class CypherRunner {
 type AbstractConstructor<T> = abstract new (...args: any[]) => T;
 
 export interface AutoCommit {
+  readonly lockRefreshesReads: boolean;
   lockNode(ns: string, label: string, id: string): Promise<void>;
   transaction<T>(this: GraphPrimitives, fn: (tx: GraphPrimitives) => Promise<T>): Promise<T>;
   writeQueueKey(): object;
@@ -230,14 +232,14 @@ const inWrite = new AsyncLocalStorage<boolean>();
 const writeQueues = new WeakMap<object, Promise<unknown>>();
 
 /**
- * Make a store auto-commit: a transaction runs its writes directly on the store, one transaction at a time per store,
- * since an auto-commit backend cannot isolate a read-modify-write; lockNode is a no-op.
- *
+ * Make a store auto-commit: a transaction runs its writes directly on the store, one transaction at a time per store,.
  * @param Base (B): the class to extend.
  * @return (B & AbstractConstructor<AutoCommit>): the auto-commit subclass.
  */
 export function autoCommit<B extends AbstractConstructor<object>>(Base: B): B & AbstractConstructor<AutoCommit> {
   abstract class AutoCommitted extends Base implements AutoCommit {
+    readonly lockRefreshesReads = false;
+
     async lockNode(_ns: string, _label: string, _id: string): Promise<void> {}
 
     /**
@@ -266,6 +268,8 @@ export function autoCommit<B extends AbstractConstructor<object>>(Base: B): B & 
 export abstract class AutoCommitStore extends autoCommit(CypherRunner) {}
 
 export abstract class CypherPrimitives extends CypherRunner implements GraphPrimitives {
+  protected readonly nodePageMaps: boolean = false;
+  protected readonly countedNodeDelete: boolean = false;
   async getNode(ns: string, label: string, id: string): Promise<Props | null> {
     const res = await this._run(`MATCH (n:${label} {id:$id, ns:$ns}) RETURN n`, { id, ns });
     const row = res.rows[0];
@@ -275,6 +279,18 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
   async nodeExists(ns: string, label: string, id: string): Promise<boolean> {
     const res = await this._run(`MATCH (n:${label} {id:$id, ns:$ns}) RETURN n.id AS id`, { id, ns });
     return res.rows.length > 0;
+  }
+
+  async nodesExist(ns: string, label: string, ids: readonly string[]): Promise<Set<string>> {
+    const found = new Set<string>();
+    for (const batch of batches([...new Set(ids)], 256)) {
+      const res = await this._run(`MATCH (n:${label}) WHERE n.ns=$ns AND n.id IN $ids RETURN n.id AS id`, {
+        ns,
+        ids: batch,
+      });
+      for (const row of res.rows) found.add(row.id as string);
+    }
+    return found;
   }
 
   /**
@@ -364,9 +380,11 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     whereEquals("n", equals, where, params);
     whereAnyOf("n", any_of, where, params);
     whereAfter("n.id", id_gt, where, params);
-    const query = `MATCH (n:${label}) WHERE ${where.join(" AND ")} RETURN n ORDER BY n.id SKIP $skip LIMIT $limit`;
+    const page = this.nodePageMaps ? "WITH n" : "RETURN n";
+    const projection = this.nodePageMaps ? " RETURN properties(n) AS n" : "";
+    const query = `MATCH (n:${label}) WHERE ${where.join(" AND ")} ${page} ORDER BY n.id SKIP $skip LIMIT $limit${projection}`;
     const res = await this._run(query, params);
-    return res.rows.map((r) => r.n as Props);
+    return res.rows.map((r) => (this.nodePageMaps ? graphProperties(r.n as Props) : (r.n as Props)));
   }
 
   async deleteNode(ns: string, label: string, id: string): Promise<void> {
@@ -382,6 +400,13 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     const where = ["n.ns = $ns"];
     const params: Props = { ns };
     whereEquals("n", equals, where, params);
+    if (this.countedNodeDelete) {
+      const result = await this._run(
+        `MATCH (n:${label}) WHERE ${where.join(" AND ")} DETACH DELETE n RETURN count(n) AS n`,
+        params,
+      );
+      return toCount(result.rows);
+    }
     const count = await this._run(`MATCH (n:${label}) WHERE ${where.join(" AND ")} RETURN count(n) AS n`, params);
     const n = toCount(count.rows);
     if (n) await this._run(`MATCH (n:${label}) WHERE ${where.join(" AND ")} DETACH DELETE n`, params);
@@ -417,7 +442,7 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
   async getCurrentEdge(ns: string, id: string): Promise<EdgeRow | null> {
     const res = await this._run(
       "MATCH (a)-[r {id:$id, ns:$ns}]->(b) WHERE r.is_current = true " +
-        "RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t",
+        "RETURN r, a.id AS from_e, b.id AS to_e, type(r) AS t LIMIT 1",
       { id, ns },
     );
     const row = res.rows[0];
@@ -465,15 +490,9 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     await this._run("MATCH ()-[r {id:$id, ns:$ns}]->() WHERE r.is_current = true SET r += $props", { id, ns, props });
   }
 
-  private async countEdges(ns: string, id: string): Promise<number> {
-    const res = await this._run("MATCH ()-[r {id:$id, ns:$ns}]->() RETURN count(r) AS n", { id, ns });
-    return toCount(res.rows);
-  }
-
   async deleteEdges(ns: string, id: string): Promise<number> {
-    const n = await this.countEdges(ns, id);
-    if (n) await this._run("MATCH ()-[r {id:$id, ns:$ns}]->() DELETE r", { id, ns });
-    return n;
+    const res = await this._run("MATCH ()-[r {id:$id, ns:$ns}]->() DELETE r RETURN count(r) AS n", { id, ns });
+    return toCount(res.rows);
   }
 
   async matchEdges(ns: string, options: MatchEdgesOptions): Promise<EdgeRow[]> {

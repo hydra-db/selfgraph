@@ -28,6 +28,10 @@ def _to_json(value: Any) -> Any:
     @param value (Any): the value to convert.
     @return (Any): the plain-JSON equivalent.
     """
+    if value is None or type(value) in (str, int, bool):
+        return value
+    if type(value) is float:
+        return value if math.isfinite(value) else None
     props = getattr(value, "properties", None)
     if props is not None:
         return graph_properties(props.items(), _to_json)
@@ -107,6 +111,11 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
         @return (None): nothing.
         """
         await self._run("CREATE (n:_SgInit) DELETE n")
+        try:
+            await self._run("CREATE INDEX ON :Evidence(target_id)")
+        except StoreError as exc:
+            if str(exc) != "FalkorDB query failed: Attribute 'target_id' is already indexed":
+                raise
 
     async def close(self) -> None:
         """Close the underlying connection; later calls fail with StoreError."""
