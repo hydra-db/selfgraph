@@ -125,3 +125,13 @@ def test_399_unknown_store_option_is_coded():
         "unknown option 'max_db_sise' for KuzuStore; did you mean 'max_db_size'? "
         "(valid options: buffer_pool_size, max_db_size, compression, read_only)"
     )
+
+
+@pytest.mark.parametrize(("value", "rendered"), [(10**400, "inf"), (-(10**400), "-inf"), (2.0, "2")])
+def test_330_range_errors_render_numbers_like_typescript(value, rendered):
+    with SyncSelfGraph(make_store()) as graph:
+        a = graph.entities.create("a", "T")
+        b = graph.entities.create("b", "T")
+        with pytest.raises(ValidationError) as exc:
+            graph.preferences.create(a.id, "k", b.id, strength=value)
+        assert str(exc.value) == f"preference strength must be between 0 and 1, got {rendered}"

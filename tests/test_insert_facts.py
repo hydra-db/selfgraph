@@ -1,7 +1,7 @@
 import pytest
 from helpers import KUZU, fresh_graph, new_graph, run, t_entities
 
-from selfgraph import Extraction, ValidationError, preference_id, relation_id
+from selfgraph import Extraction, ValidationError, entity_id, preference_id, relation_id
 
 PAYLOAD = {
     "entities": [
@@ -30,6 +30,32 @@ def test_insert_facts_dict():
     rel = res.relations[0]
     assert rel.source_count == 1
     assert [e.source_id for e in run(g.relations.evidence(rel.id)).items] == ["meeting-42"]
+
+
+def test_484_plus_and_sharp_names_stay_separate_entities():
+    g = new_graph()
+    langs = ["C++", "C#", "C", "F#"]
+    run(
+        g.insert.facts(
+            {
+                "entities": [{"type": "Person", "name": "Ann"}, {"type": "Person", "name": "Bob"}]
+                + [{"type": "Language", "name": n} for n in langs],
+                "relations": [
+                    {"from_entity": "person:ann", "type": "USES", "to_entity": entity_id("Language", "C++")},
+                    {"from_entity": "person:bob", "type": "USES", "to_entity": entity_id("Language", "C#")},
+                ],
+            }
+        )
+    )
+    found = {e.id: (e.name, e.aliases) for e in run(g.entities.list(type="Language")).items}
+    assert found == {
+        "language:c-plus-plus": ("C++", []),
+        "language:c-sharp": ("C#", []),
+        "language:c": ("C", []),
+        "language:f-sharp": ("F#", []),
+    }
+    used = {r.from_entity: r.to_entity for r in run(g.relations.list(type="USES")).items}
+    assert used == {"person:ann": "language:c-plus-plus", "person:bob": "language:c-sharp"}
 
 
 def test_insert_is_upsert_idempotent_and_keeps_updated_at():

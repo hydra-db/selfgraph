@@ -1,5 +1,5 @@
 import pytest
-from helpers import HYDRADB, create_entities, fresh_graph, make_store, run, unique_ns
+from helpers import AUTO_COMMIT, HYDRADB, create_entities, fresh_graph, make_store, run, unique_ns
 
 from selfgraph import EvidenceInput, Extraction, NotFoundError, SyncSelfGraph, ValidationError, relation_id
 
@@ -194,3 +194,83 @@ def test_relation_evidence_for_the_inserted_source_replaces_the_bare_record():
     other = dict(rel, evidence=[{"source_id": "elsewhere", "quote": "q"}])
     run(g.insert.facts({**FACTS, "relations": [other]}, source_id="doc2"))
     assert sorted(e.source_id for e in run(g.relations.evidence(REL)).items) == ["doc", "doc2", "elsewhere"]
+
+
+def _fail_next_evidence_write(g, monkeypatch):
+    """Make the next write of evidence records fail, as a dropped connection does, and leave later writes alone.
+
+    @param g (SelfGraph): the graph on an auto-commit store.
+    @param monkeypatch (Any): the pytest monkeypatch fixture.
+    @return (None): nothing.
+    """
+    original = g.store.upsert_nodes
+
+    async def fail(ns, label, rows, **kw):
+        """Write a batch of nodes, failing the first evidence one.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param rows (list): the rows to write.
+        @param kw (Any): the store's other options.
+        @return (None): nothing.
+        """
+        if label == "Evidence":
+            monkeypatch.setattr(g.store, "upsert_nodes", original)
+            raise RuntimeError("connection lost")
+        return await original(ns, label, rows, **kw)
+
+    monkeypatch.setattr(g.store, "upsert_nodes", fail)
+
+
+_RETRY_GAP = "only an auto-commit store leaves the gap between the count and the evidence"
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason=_RETRY_GAP)
+@pytest.mark.parametrize("earlier", [0, 1, 2])
+def test_an_insert_retried_after_its_evidence_write_failed_counts_each_source_once(monkeypatch, earlier):
+    g = fresh_graph("ev")
+    for i in range(earlier):
+        run(g.insert.facts(FACTS, source_id=f"earlier-{i}"))
+    _fail_next_evidence_write(g, monkeypatch)
+    with pytest.raises(RuntimeError, match="connection lost"):
+        run(g.insert.facts(FACTS, source_id="retried"))
+    retried = run(g.insert.facts(FACTS, source_id="retried"))
+    expected = earlier + 1
+    assert [e.source_count for e in retried.entities] == [expected, expected]
+    assert [r.source_count for r in retried.relations] == [expected]
+    assert run(g.entities.get("person:ada")).source_count == expected
+    assert run(g.relations.get(REL)).source_count == expected
+    assert len(_all(g.entities.evidence, "person:ada")) == expected
+    assert len(_all(g.relations.evidence, REL)) == expected
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason=_RETRY_GAP)
+@pytest.mark.parametrize("earlier", [0, 2])
+def test_a_relation_only_insert_retried_after_its_evidence_write_failed_counts_each_source_once(monkeypatch, earlier):
+    g = fresh_graph("ev")
+    run(g.insert.facts(FACTS, source_id="base"))
+    for i in range(earlier):
+        run(g.insert.facts({"relations": FACTS["relations"]}, source_id=f"earlier-{i}"))
+    _fail_next_evidence_write(g, monkeypatch)
+    with pytest.raises(RuntimeError, match="connection lost"):
+        run(g.insert.facts({"relations": FACTS["relations"]}, source_id="retried"))
+    retried = run(g.insert.facts({"relations": FACTS["relations"]}, source_id="retried"))
+    expected = earlier + 2
+    assert [r.source_count for r in retried.relations] == [expected]
+    assert run(g.relations.get(REL)).source_count == expected
+    assert len(_all(g.relations.evidence, REL)) == expected
+    assert run(g.entities.get("person:ada")).source_count == 1
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason=_RETRY_GAP)
+def test_a_relation_update_retried_after_its_evidence_write_failed_counts_each_source_once(monkeypatch):
+    g = fresh_graph("ev")
+    run(g.insert.facts(FACTS, source_id="s1"))
+    evidence = [EvidenceInput(source_id="s2", quote="works there")]
+    _fail_next_evidence_write(g, monkeypatch)
+    with pytest.raises(RuntimeError, match="connection lost"):
+        run(g.relations.update(REL, evidence=evidence))
+    retried = run(g.relations.update(REL, evidence=evidence))
+    assert retried.source_count == 2
+    assert run(g.relations.get(REL)).source_count == 2
+    assert len(_all(g.relations.evidence, REL)) == 2

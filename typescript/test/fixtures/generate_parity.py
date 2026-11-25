@@ -139,7 +139,7 @@ ENTITY_ID_INPUTS = [
 ]
 MARK_CHARS = "a \u093e\u0301\u0e34\U0001e94a\ufe0f\u20e3\U000e0100\u200d\u0898\u0897"
 BAD_STRINGS = ["tab\there", "nul\x00", "del\x7f", "c1\x85", "lone\ud800"]
-LABELS = ["Entity", "Big Company", "has`tick", "_x9", "9x", "Ünicode"]
+LABELS = ["Entity", "Big Company", "has`tick", "_x9", "9x", "Ünicode", "a\n", "Person\n", "a\t", "Person\t", "a\x01"]
 
 JSON_VALUES = [
     {"b": 1, "a": [1, 2.5, None, True], "c": {"z": "é", "y": "🚀"}},

@@ -1,10 +1,12 @@
 import itertools
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from helpers import create_entities, fresh_graph, new_graph, run, skip_on_generic
+from helpers import AUTO_COMMIT, create_entities, cut_store_write, fresh_graph, new_graph, run, skip_on_generic
 
 from selfgraph import NotFoundError
+from selfgraph._serde import L_STEP, L_TRACE
 
 
 def build(g):
@@ -151,3 +153,72 @@ def test_deleting_a_preference_does_not_count_the_about_cleanup_version():
     assert len(run(g.preferences.versions(pid))) == AUTHORED + 1
     assert run(g.preferences.delete(pid)).deleted_preference_versions == AUTHORED
     assert run(g.preferences.get(pid)) is None
+
+
+def decision_graph():
+    g = fresh_graph("cut-delete")
+    create_entities(g, "Org:Acme", "Org:Beta", "Org:Gamma", "Person:Bob")
+    first = run(g.relations.create("org:acme", "OWNS", "org:beta"))
+    second = run(g.relations.create("org:acme", "OWNS", "org:gamma"))
+    run(g.decisions.create("Buy", id="decision:d1", steps=[first.id, second.id], actor_entity="person:bob"))
+    return g, first
+
+
+def delete_target(g, first, target):
+    if target == "relation":
+        return g.relations.delete(first.id)
+    return g.entities.delete("org:beta")
+
+
+def left_after(g):
+    return {
+        "decisions": [d.id for d in run(g.decisions.list()).items],
+        "step_nodes": sorted(n["id"] for n in run(g.store.match_nodes(g.namespace, L_STEP))),
+        "relations": sorted(r.id for r in run(g.relations.list()).items),
+        "entities": sorted(e.id for e in run(g.entities.list()).items),
+    }
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store keeps the writes before a cut")
+@pytest.mark.parametrize("target", ["relation", "entity"])
+def test_a_delete_cut_off_at_any_write_leaves_no_decision_behind_after_a_retry(monkeypatch, target):
+    g, first = decision_graph()
+    with cut_store_write(g, monkeypatch) as writes:
+        run(delete_target(g, first, target))
+    whole = left_after(g)
+    assert whole["decisions"] == [] and whole["step_nodes"] == []
+    for cut in range(len(writes)):
+        g, first = decision_graph()
+        with cut_store_write(g, monkeypatch, cut), pytest.raises(ConnectionError):
+            run(delete_target(g, first, target))
+        with suppress(NotFoundError):
+            run(delete_target(g, first, target))
+        assert left_after(g) == whole, f"cut at write {cut}: {writes[cut]}"
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store keeps the writes before a cut")
+@pytest.mark.parametrize("target", ["relation", "entity"])
+def test_a_retry_after_the_trace_node_is_gone_removes_its_steps_and_counts_the_decision(monkeypatch, target):
+    g, first = decision_graph()
+    trace_gone = []
+
+    def cutting(real):
+        async def wrapped(ns, label, *rest):
+            if label == L_STEP and trace_gone:
+                raise ConnectionError("connection lost")
+            await real(ns, label, *rest)
+            if label == L_TRACE:
+                trace_gone.append(label)
+
+        return wrapped
+
+    with monkeypatch.context() as patch:
+        patch.setattr(g.store, "delete_node", cutting(g.store.delete_node))
+        patch.setattr(g.store, "delete_nodes", cutting(g.store.delete_nodes))
+        with pytest.raises(ConnectionError):
+            run(delete_target(g, first, target))
+    assert run(g.decisions.get("decision:d1")) is None
+    assert left_after(g)["step_nodes"] != []
+
+    assert run(delete_target(g, first, target)).deleted_decisions == 1
+    assert left_after(g)["step_nodes"] == []

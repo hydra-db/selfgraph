@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -14,6 +15,7 @@ from ..errors import (
     TransientError,
     ValidationError,
     connection_reason,
+    escape_controls,
     mask_uri,
     redact_uri,
     require_encoded_userinfo,
@@ -43,6 +45,19 @@ _SYNTAX_MARKERS = ("syntax", "parsing error", "parse error")
 _BOLT_SCHEMES = ("bolt", "bolt+s", "bolt+ssc", "neo4j", "neo4j+s", "neo4j+ssc")
 _DETAIL_CHARS = 120
 INTERNAL_PROPERTIES = frozenset({"_lock"})
+
+
+class _DecodeErrorLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Drop the driver's own log line for a response it could not decode, which query_error reports instead.
+
+        @param record (logging.LogRecord): the driver log record.
+        @return (bool): False when an error record has a UnicodeDecodeError among its arguments, else True.
+        """
+        return record.levelno < logging.ERROR or not any(isinstance(arg, UnicodeDecodeError) for arg in record.args)
+
+
+_DECODE_ERROR_LOG_FILTER = _DecodeErrorLogFilter()
 
 
 def parse_auth(auth: Any, default_user: str | None = "neo4j") -> tuple[str | None, str] | None:
@@ -95,6 +110,7 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
         raise StoreError(
             f"{mask_uri(uri)!r} is not a Bolt URI; use bolt://host:port", code="invalid_setting", field="uri"
         )
+    logging.getLogger("neo4j.io").addFilter(_DECODE_ERROR_LOG_FILTER)
     kwargs.setdefault("connection_timeout", BOLT_CONNECT_TIMEOUT)
     kwargs.setdefault("connection_acquisition_timeout", BOLT_CONNECT_TIMEOUT)
     try:
@@ -162,19 +178,22 @@ def query_error(
 ) -> StoreError:
     """Map a Bolt query error to a connection StoreError, a TransientError for a retryable race, or a StoreError.
 
-    @param exc (BaseException): the driver exception.
+    @param exc (BaseException): the driver exception; a UnicodeDecodeError stands for the server's message, read with
+        replacement characters.
     @param uri (str): the Bolt URI, for connection errors.
     @param database (str | None): the database name, for a missing-database error.
     @param engine (str): the engine name for the message.
     @param transient (Callable[[str], bool]): whether the lowercased error code and message is a retryable race.
     @return (StoreError): the library error to raise.
     """
+    if isinstance(exc, UnicodeDecodeError):
+        exc = ValueError(exc.object.decode("utf-8", "replace"))
     connection = bolt_error(exc, uri, database)
     if connection is not None:
         return connection
     if transient(f"{getattr(exc, 'code', '') or ''} {exc}".lower()):
         return TransientError(f"{engine} transaction conflict: {exc}")
-    return StoreError(f"{engine} query failed: {syntax_detail(exc) or exc}")
+    return StoreError(f"{engine} query failed: {escape_controls(str(syntax_detail(exc) or exc))}")
 
 
 _IN_WRITE: ContextVar[bool] = ContextVar("selfgraph_in_write", default=False)

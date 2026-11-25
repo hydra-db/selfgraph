@@ -945,3 +945,100 @@ def test_issue_362_drops_only_bad_extracted_alias(alias):
     ]
     with pytest.raises(ValidationError, match="entity alias cannot contain"):
         EntityInput(type="Company", name="Acme", aliases=[alias])
+
+
+ANN = {"type": "Person", "name": "Ann"}
+ACME = {"type": "Company", "name": "Acme"}
+CHOSE = {"from_name": "Ann", "type": "CHOSE", "to_name": "Acme"}
+FRESH_STEP = {"from_name": "Zed", "type": "CHOSE", "to_name": "Pizza"}
+
+
+def extract_items(kind, rows, entities=(ANN, ACME), relations=()):
+    llm = FakeLLM(
+        {
+            "_EntitiesOut": {"entities": list(entities)},
+            "_RelationsOut": {"relations": list(relations)},
+            f"_{kind.title()}Out": {kind: rows},
+        }
+    )
+    g = fresh_graph("issue-342", llm=llm)
+    result = run(g.insert.text("x"))
+    stored = {
+        "entities": sorted(e.id for e in run(g.entities.list()).items),
+        "relations": [(r.from_entity, r.type, r.to_entity) for r in run(g.relations.list()).items],
+        "decisions": [d.title for d in run(g.decisions.list()).items],
+        "preferences": [(p.subject_entity, p.key, p.value_entity) for p in run(g.preferences.list()).items],
+    }
+    return result, stored
+
+
+@pytest.mark.parametrize("title", ["", "   ", "Pick\x07it"])
+@pytest.mark.parametrize("actor", [None, "Ann", "Nobody"])
+def test_issue_342_dropped_decision_writes_nothing_it_named(title, actor):
+    row = {"title": title, "actor_name": actor, "outcome_name": "Fresh Outcome", "steps": [CHOSE, FRESH_STEP]}
+    result, stored = extract_items("decisions", [row])
+    assert stored == {
+        "entities": ["company:acme", "person:ann"],
+        "relations": [],
+        "decisions": [],
+        "preferences": [],
+    }
+    assert [e.id for e in result.entities] == ["person:ann", "company:acme"]
+    assert result.relations == []
+    assert result.decisions == []
+    assert [w.code for w in result.warnings] == ["extraction_partial_failure"]
+    assert result.warnings[0].message.startswith("dropped an extracted decision: ")
+
+
+def test_issue_342_dropped_decision_keeps_what_other_items_wrote():
+    rows = [
+        {"title": "", "actor_name": "Newcomer", "steps": [CHOSE, FRESH_STEP]},
+        {"title": "Pick Acme", "actor_name": "Zed", "steps": [FRESH_STEP]},
+    ]
+    result, stored = extract_items("decisions", rows)
+    assert stored["entities"] == ["company:acme", "person:ann", "thing:pizza", "thing:zed"]
+    assert stored["relations"] == [("thing:zed", "CHOSE", "thing:pizza")]
+    assert stored["decisions"] == ["Pick Acme"]
+    assert [len(d.steps) for d in result.decisions] == [1]
+    assert len(result.warnings) == 1
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"subject_name": "Zed", "key": "food", "value_name": "Pizza", "strength": 5.0},
+        {"subject_name": "Zed", "key": "food", "value_name": "Pizza", "strength": -0.1},
+        {"subject_name": "Zed", "key": "", "value_name": "Pizza"},
+        {"subject_name": "Zed", "key": "food", "value_name": ""},
+        {"subject_name": "Zed", "key": "food", "value_name": "Pizza", "about_name": "Dinner", "strength": 2.0},
+    ],
+)
+def test_issue_342_dropped_preference_writes_nothing_it_named(row):
+    result, stored = extract_items("preferences", [row])
+    assert stored["entities"] == ["company:acme", "person:ann"]
+    assert stored["preferences"] == []
+    assert [e.id for e in result.entities] == ["person:ann", "company:acme"]
+    assert result.preferences == []
+
+
+def test_issue_342_dropped_preference_keeps_what_other_items_wrote():
+    rows = [
+        {"subject_name": "Zed", "key": "food", "value_name": "Pizza", "strength": 5.0},
+        {"subject_name": "Zed", "key": "drink", "value_name": "Tea", "strength": 0.5},
+        {"subject_name": "Ann", "key": "food", "value_name": "Pizza", "strength": 7.0},
+    ]
+    result, stored = extract_items("preferences", rows)
+    assert stored["entities"] == ["company:acme", "person:ann", "thing:tea", "thing:zed"]
+    assert stored["preferences"] == [("thing:zed", "drink", "thing:tea")]
+    assert len(result.warnings) == 2
+
+
+def test_issue_342_dropped_preference_does_not_block_the_one_a_relation_states():
+    soup = {"type": "Food", "name": "Soup", "aliases": []}
+    likes = {"from_name": "Ann", "type": "PREFERS", "to_name": "Soup", "event_time": None}
+    row = {"subject_name": "Ann", "key": "taste", "value_name": "Soup", "strength": 9.0}
+    result, stored = extract_items("preferences", [row], entities=(ANN, ACME, soup), relations=[likes])
+    assert stored["preferences"] == [("person:ann", "food", "food:soup")]
+    assert stored["relations"] == []
+    assert len(result.warnings) == 1
+    assert result.warnings[0].message.startswith("dropped an extracted preference: ")

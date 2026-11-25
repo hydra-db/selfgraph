@@ -215,6 +215,14 @@ def test_alias_merge_and_type_gating_with_and_without_schema():
     assert run(g.insert.facts({"entities": [{"type": "Manager", "name": "Ken"}]})).merges == []
 
 
+def test_484_fuzzy_keeps_plus_and_sharp_names_apart():
+    assert max(name_similarity(a, b) for a, b in [("C++", "C#"), ("C++", "C"), ("C#", "C")]) < 0.92
+    g = fresh_graph("res", resolver="fuzzy")
+    res = run(g.insert.facts({"entities": [{"type": "Language", "name": n} for n in ("C++", "C#", "C")]}))
+    assert res.merges == []
+    assert _ids(g) == ["language:c", "language:c-plus-plus", "language:c-sharp"]
+
+
 def test_within_batch_needs_fuzzy():
     batch = {
         "entities": [IBM_SEED, {"type": "Company", "name": "Big Blue", "external_ids": {"ticker": "IBM"}}],

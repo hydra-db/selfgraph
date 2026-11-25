@@ -10,9 +10,12 @@ import { ids, KuzuStore, SelfGraph } from "../src/index.js";
 import type { Schema } from "../src/schema.js";
 import {
   conformanceStore,
+  cutDecisionDeletes,
+  cutDecisionUpdates,
   dump,
   exitCodes,
   kuzuParamErrors,
+  kuzuReadOnly,
   kuzuSchemeErrors,
   kuzuStatements,
   kuzuValues,
@@ -20,6 +23,7 @@ import {
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
+  tokenChunks,
   unmerge,
   write,
 } from "./conformance/ts_side.js";
@@ -40,9 +44,13 @@ function py(
     | "exit_codes"
     | "pinned_unicode"
     | "kuzu_statements"
+    | "kuzu_cut_update"
+    | "kuzu_cut_delete"
     | "kuzu_values"
     | "kuzu_scheme_errors"
-    | "kuzu_params",
+    | "kuzu_params"
+    | "kuzu_read_only"
+    | "token_chunks",
   store: string,
   ns: string,
 ): unknown {
@@ -195,6 +203,26 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     },
   );
 
+  it.skipIf(!live.get("kuzu"))(
+    "reads a stored graph read-only and survives a failed read-only open the same way in both languages",
+    async () => {
+      const result = await kuzuReadOnly();
+      expect(result).toEqual(py("kuzu_read_only", "-", "-"));
+      expect(result).toEqual({
+        ids: ["company:acme", "person:ann"],
+        context: expect.stringContaining("Ann -[WORKS_AT]-> Acme"),
+        empty_database_code: "query_failed",
+        write_after_failed_open: true,
+      });
+    },
+  );
+
+  it("counts tokens and splits chunks the same around a NEL or a byte order mark in both languages", async () => {
+    const result = await tokenChunks();
+    expect(result).toEqual(py("token_chunks", "-", "-"));
+    expect(result[2]).toEqual({ tokens: 2, chunks: [[0, 3]] });
+  });
+
   it("derives ids, relation types, and tokens from the pinned Unicode tables in both languages", () => {
     const pinned = pinnedUnicode();
     expect(pinned.entity_ids.slice(0, 4)).toEqual(["person:王", "company:王", "person:王", "company:王"]);
@@ -217,6 +245,33 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     });
     expect(py("kuzu_statements", "-", "-")).toEqual(result);
   });
+
+  it.skipIf(!live.get("kuzu"))(
+    "keeps the steps of a decision update cut off at any write in both languages",
+    async () => {
+      const result = await cutDecisionUpdates(tempKuzu("selfgraph-conf-cut-"));
+      for (const run of Object.values(result)) {
+        expect(run.whole.rationale).toBe("new");
+        expect(run.failed_cuts).toEqual([]);
+      }
+      expect(py("kuzu_cut_update", "-", "-")).toEqual(result);
+    },
+    180_000,
+  );
+
+  it.skipIf(!live.get("kuzu"))(
+    "leaves no decision behind when a delete is cut off at any write in both languages",
+    async () => {
+      const result = await cutDecisionDeletes(tempKuzu("selfgraph-conf-cut-"));
+      for (const run of Object.values(result)) {
+        expect(run.whole.decisions).toEqual([]);
+        expect(run.whole.step_nodes).toEqual([]);
+        expect(run.failed_cuts).toEqual([]);
+      }
+      expect(py("kuzu_cut_delete", "-", "-")).toEqual(result);
+    },
+    180_000,
+  );
 
   it.skipIf(!live.get("kuzu"))("returns the same run_cypher values in both languages", async () => {
     const fromTs = await kuzuValues(tempKuzu("selfgraph-conf-values-"));
@@ -285,6 +340,20 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       const moved = fromTs as { moved_later: unknown[][]; moved_later_valid: string[] };
       expect(moved.moved_later).toEqual([[1, false, nakatomi, "2022-01-01T00:00:00Z"]]);
       expect(moved.moved_later_valid).toEqual([nakatomi]);
+      const parallel = (fromTs as { parallel_retirement: Record<string, Record<string, unknown[]>> })
+        .parallel_retirement;
+      expect(parallel.chronological!["relation:old"]).toEqual([1, false, "relation:new", "2020-02-15T00:00:00Z"]);
+      expect(parallel.other_end_unread!["relation:f0"]).toEqual([1, false, "relation:f3", "2020-11-15T00:00:00Z"]);
+      const apertureMia = ids.relationId("person:mia", "WORKS_AT", "company:aperture");
+      const gap = fromTs as { moved_earlier_gap: unknown[][]; moved_earlier_gap_valid: string[] };
+      expect(gap.moved_earlier_gap).toEqual([[1, false, apertureMia, "2014-01-01T00:00:00Z"]]);
+      expect(gap.moved_earlier_gap_valid).toEqual([apertureMia]);
+      const reasserted = fromTs as {
+        reasserted_earlier: Record<string, unknown[][]>;
+        reasserted_earlier_valid: string[];
+      };
+      expect(reasserted.reasserted_earlier.x![0]).toEqual([3, false, "relation:y", "2020-08-28T00:00:00Z"]);
+      expect(reasserted.reasserted_earlier_valid).toEqual(["relation:y"]);
     });
 
     it.skipIf(!live.get(store))(`${store}: unmerging a merge with no source agrees in both languages`, async () => {
@@ -324,6 +393,20 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
 
         const tsReadsTs = await ts(store, nsTs, (g) => dump(g, nsTs));
         const pyReadsTs = py("dump", store, nsTs);
+        for (const snapshot of [pyReadsPy, tsReadsPy, tsReadsTs, pyReadsTs]) {
+          expect((snapshot as { symbol_entity_ids: { ids: string[] } }).symbol_entity_ids.ids).toEqual([
+            "language:c-plus-plus",
+            "language:c-sharp",
+            "language:c",
+            "language:f-sharp",
+            "language:disney-plus",
+            "language:disney",
+            "language:a-plus-b",
+            "language:sharp-1",
+            "language:plus",
+            "language:c-plus-plus",
+          ]);
+        }
         if (store === "kuzu") {
           for (const snapshot of [pyReadsPy, tsReadsPy, tsReadsTs, pyReadsTs]) {
             expect(snapshot).toMatchObject({

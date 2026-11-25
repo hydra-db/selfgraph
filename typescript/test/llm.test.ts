@@ -448,6 +448,112 @@ describe("extraction name resolution", () => {
 });
 
 describe("LLM extraction through the AI SDK", () => {
+  const ANN = { type: "Person", name: "Ann", aliases: [] };
+  const ACME = { type: "Company", name: "Acme", aliases: [] };
+  const CHOSE = { from_name: "Ann", type: "CHOSE", to_name: "Acme" };
+  const FRESH_STEP = { from_name: "Zed", type: "CHOSE", to_name: "Pizza" };
+
+  const extractItems = async (
+    kind: "decisions" | "preferences",
+    rows: unknown[],
+    entities: unknown[] = [ANN, ACME],
+    relations: unknown[] = [],
+  ) => {
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const field = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        const replies: Record<string, unknown[]> = { entities, relations, [kind]: rows };
+        return { [field]: replies[field] ?? [] } as never;
+      },
+    };
+    const g = open({ llm });
+    const result = await g.insert.text("x");
+    const stored = {
+      entities: (await g.entities.list()).items.map((e) => e.id).sort(),
+      relations: (await g.relations.list()).items.map((r) => [r.from_entity, r.type, r.to_entity]),
+      decisions: (await g.decisions.list()).items.map((d) => d.title),
+      preferences: (await g.preferences.list()).items.map((p) => [p.subject_entity, p.key, p.value_entity]),
+    };
+    return { result, stored };
+  };
+
+  describe("issue 342 dropped items write nothing", () => {
+    const decision = (title: string, actor_name: string | null) => ({
+      title,
+      actor_name,
+      outcome_name: "Fresh Outcome",
+      alternative_names: [],
+      steps: [CHOSE, FRESH_STEP],
+    });
+
+    for (const title of ["", "   ", "Pick\u0007it"]) {
+      for (const actor of [null, "Ann", "Nobody"]) {
+        it(`drops a decision titled ${JSON.stringify(title)} by ${actor} with everything it named`, async () => {
+          const { result, stored } = await extractItems("decisions", [decision(title, actor)]);
+          expect(stored).toEqual({
+            entities: ["company:acme", "person:ann"],
+            relations: [],
+            decisions: [],
+            preferences: [],
+          });
+          expect(result.entities.map((e) => e.id)).toEqual(["person:ann", "company:acme"]);
+          expect(result.relations).toEqual([]);
+          expect(result.decisions).toEqual([]);
+          expect(result.warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
+          expect(result.warnings[0]!.message.startsWith("dropped an extracted decision: ")).toBe(true);
+        });
+      }
+    }
+
+    it("keeps what other decisions wrote", async () => {
+      const { result, stored } = await extractItems("decisions", [
+        decision("", "Newcomer"),
+        { title: "Pick Acme", actor_name: "Zed", alternative_names: [], steps: [FRESH_STEP] },
+      ]);
+      expect(stored.entities).toEqual(["company:acme", "person:ann", "thing:pizza", "thing:zed"]);
+      expect(stored.relations).toEqual([["thing:zed", "CHOSE", "thing:pizza"]]);
+      expect(stored.decisions).toEqual(["Pick Acme"]);
+      expect(result.decisions.map((d) => d.steps.length)).toEqual([1]);
+      expect(result.warnings).toHaveLength(1);
+    });
+
+    it.each([
+      { subject_name: "Zed", key: "food", value_name: "Pizza", strength: 5.0 },
+      { subject_name: "Zed", key: "food", value_name: "Pizza", strength: -0.1 },
+      { subject_name: "Zed", key: "", value_name: "Pizza" },
+      { subject_name: "Zed", key: "food", value_name: "" },
+      { subject_name: "Zed", key: "food", value_name: "Pizza", about_name: "Dinner", strength: 2.0 },
+    ])("drops preference %j with everything it named", async (row) => {
+      const { result, stored } = await extractItems("preferences", [{ stance: "preference", ...row }]);
+      expect(stored.entities).toEqual(["company:acme", "person:ann"]);
+      expect(stored.preferences).toEqual([]);
+      expect(result.entities.map((e) => e.id)).toEqual(["person:ann", "company:acme"]);
+      expect(result.preferences).toEqual([]);
+    });
+
+    it("keeps what other preferences wrote", async () => {
+      const { result, stored } = await extractItems("preferences", [
+        { subject_name: "Zed", stance: "preference", key: "food", value_name: "Pizza", strength: 5.0 },
+        { subject_name: "Zed", stance: "preference", key: "drink", value_name: "Tea", strength: 0.5 },
+        { subject_name: "Ann", stance: "preference", key: "food", value_name: "Pizza", strength: 7.0 },
+      ]);
+      expect(stored.entities).toEqual(["company:acme", "person:ann", "thing:tea", "thing:zed"]);
+      expect(stored.preferences).toEqual([["thing:zed", "drink", "thing:tea"]]);
+      expect(result.warnings).toHaveLength(2);
+    });
+
+    it("does not let a dropped preference block the one a relation states", async () => {
+      const soup = { type: "Food", name: "Soup", aliases: [] };
+      const likes = { from_name: "Ann", type: "PREFERS", to_name: "Soup", event_time: null };
+      const row = { subject_name: "Ann", stance: "preference", key: "taste", value_name: "Soup", strength: 9.0 };
+      const { result, stored } = await extractItems("preferences", [row], [ANN, ACME, soup], [likes]);
+      expect(stored.preferences).toEqual([["person:ann", "food", "food:soup"]]);
+      expect(stored.relations).toEqual([]);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]!.message.startsWith("dropped an extracted preference: ")).toBe(true);
+    });
+  });
+
   it.each([false, true])("issue 343 keeps same-name entities with different types (typed: %s)", async (typed) => {
     const llm: LLMClient = {
       async generate({ output }) {

@@ -1,5 +1,5 @@
 import pytest
-from helpers import create_entities, fresh_graph, new_graph, run, skip_on_generic
+from helpers import AUTO_COMMIT, create_entities, cut_store_write, fresh_graph, new_graph, run, skip_on_generic
 
 from selfgraph import ConflictError, NotFoundError, ValidationError, ids
 from selfgraph._serde import L_ENTITY, L_STEP, L_TRACE
@@ -317,3 +317,59 @@ def test_listing_decisions_keeps_every_step_when_a_page_holds_more_than_a_thousa
         run(g.decisions.create(f"D{i}", steps=[rel.id] * 400, id=f"decision:d{i}"))
     traces = run(g.decisions.list(limit=10)).items
     assert [[s.order for s in t.steps] for t in traces] == [list(range(400))] * 3
+
+
+def trace_state(g, tid):
+    ns = g.namespace
+    edges = [
+        edge
+        for ends in ((L_STEP, L_ENTITY), (L_TRACE, L_STEP), (L_TRACE, L_ENTITY), (L_ENTITY, L_TRACE))
+        for edge in run(g.store.match_edges(ns, from_label=ends[0], to_label=ends[1]))
+    ]
+    return {
+        "decision": run(g.decisions.get(tid)).model_dump(exclude={"created_at", "updated_at"}),
+        "step_nodes": sorted(node["id"] for node in run(g.store.match_nodes(ns, L_STEP))),
+        "links": sorted((e["type"], e["from_id"], e["to_id"]) for e in edges),
+    }
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store keeps the writes before a cut")
+@pytest.mark.parametrize("steps", [None, [1], [0, 1, 2], [1, 0]])
+def test_a_decision_update_cut_off_at_any_write_keeps_its_steps_after_a_retry(monkeypatch, steps):
+    def build():
+        g = fresh_graph("cut-update")
+        create_entities(g, "Company:HydraDB", "Company:Neo4j", "Feature:Temporal", "Team:Core")
+        rels = [
+            run(g.relations.create(*ends))
+            for ends in (
+                ("company:hydradb", "REQUIRES", "feature:temporal"),
+                ("team:core", "SELECTED", "company:hydradb"),
+                ("team:core", "REJECTED", "company:neo4j"),
+            )
+        ]
+        run(
+            g.decisions.create(
+                "Pick",
+                id="decision:d1",
+                steps=[rels[0].id, rels[1].id],
+                actor_entity="team:core",
+                outcome_entity="company:hydradb",
+                alternative_entities=["company:neo4j"],
+                rationale="old",
+            )
+        )
+        picked = {} if steps is None else {"steps": [rels[i].id for i in steps]}
+        return g, {"rationale": "new", **picked}
+
+    g, change = build()
+    with cut_store_write(g, monkeypatch) as writes:
+        run(g.decisions.update("decision:d1", **change))
+    whole = trace_state(g, "decision:d1")
+    assert whole["decision"]["rationale"] == "new"
+    assert len(whole["decision"]["steps"]) == (2 if steps is None else len(steps))
+    for cut in range(len(writes)):
+        g, change = build()
+        with cut_store_write(g, monkeypatch, cut), pytest.raises(ConnectionError):
+            run(g.decisions.update("decision:d1", **change))
+        run(g.decisions.update("decision:d1", **change))
+        assert trace_state(g, "decision:d1") == whole, f"cut at write {cut}: {writes[cut]}"

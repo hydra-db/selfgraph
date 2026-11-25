@@ -23,6 +23,7 @@ from .ids import (
     _has_surrogate,
     _reject_proto_keys,
     _require_clean_json,
+    _require_json_depth,
     _require_no_control,
     _require_unit,
     normalize_rel_type,
@@ -245,12 +246,15 @@ def _unknown_key(model: "type[InputModel]", value: Any, label: str, path: str = 
     return None
 
 
-def _check(check: Callable[[str, Any], None], label: str, *fields: str) -> Any:
+def _check(
+    check: Callable[[str, Any], None], label: str, *fields: str, mode: Literal["before", "after"] = "after"
+) -> Any:
     """Build a pydantic field validator that runs a label-taking check and passes the value through.
 
     @param check (Callable[[str, Any], None]): the check, raising ValidationError on a bad value.
     @param label (str): the field label for the error message.
     @param fields (str): the fields to validate.
+    @param mode (Literal["before", "after"]): run the check on the raw input or on the parsed value.
     @return (Any): the field validator.
     """
 
@@ -258,7 +262,7 @@ def _check(check: Callable[[str, Any], None], label: str, *fields: str) -> Any:
         check(label, value)
         return value
 
-    return field_validator(*fields)(run)
+    return field_validator(*fields, mode=mode)(run)
 
 
 class InputModel(BaseModel):
@@ -627,7 +631,7 @@ class DedupeResult(_PlanResult):
 
 class CypherResult(BaseModel):
     columns: list[str] = Field(default_factory=list)
-    rows: list[dict[str, JsonValue]] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
     counters: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
@@ -676,6 +680,7 @@ class EntityInput(InputModel):
 
     _proto_keys = field_validator("external_ids", "properties", mode="before")(_reject_proto_keys)
     _clean_json = _check(_require_clean_json, "entity property and external id", "external_ids", "properties")
+    _json_depth = _check(_require_json_depth, "entity property and external id", "properties", mode="before")
 
 
 def _facts_time(value: Any) -> Any:
@@ -762,6 +767,7 @@ class RelationInput(InputModel):
 
     _proto_keys = field_validator("properties", mode="before")(_reject_proto_keys)
     _clean_json = _check(_require_clean_json, "relation property", "properties")
+    _json_depth = _check(_require_json_depth, "relation property", "properties", mode="before")
 
 
 class PreferenceInput(InputModel):
@@ -780,6 +786,7 @@ class PreferenceInput(InputModel):
     _clean_key = _check(_require_no_control, "preference key", "key")
     _proto_keys = field_validator("properties", mode="before")(_reject_proto_keys)
     _clean_json = _check(_require_clean_json, "preference property", "properties")
+    _json_depth = _check(_require_json_depth, "preference property", "properties", mode="before")
 
 
 class DecisionTraceInput(InputModel):

@@ -213,6 +213,56 @@ def interrupt_write(
     run(interrupted())
 
 
+STORE_WRITES = (
+    "upsert_node",
+    "upsert_nodes",
+    "create_edge",
+    "create_edges",
+    "delete_node",
+    "delete_nodes",
+    "delete_nodes_by",
+    "delete_edges",
+    "delete_edges_touching_by_type",
+)
+
+
+@contextmanager
+def cut_store_write(g: SelfGraph, monkeypatch: Any, cut: int | None = None) -> Iterator[list[str]]:
+    """Count the store writes made in the block and fail the one at an index, as a lost connection does.
+
+    @param g (SelfGraph): the graph on an auto-commit store.
+    @param monkeypatch (Any): the pytest monkeypatch fixture.
+    @param cut (int | None): the index of the write to fail, or None to only count.
+    @return (Iterator[list[str]]): the names of the writes made so far, the failed one included.
+    """
+    calls: list[str] = []
+
+    def counting(name: str) -> Callable[..., Awaitable[Any]]:
+        """Wrap one store write so it is counted and raises when it is the one to cut.
+
+        @param name (str): the store method.
+        @return (Callable[..., Awaitable[Any]]): the wrapped method.
+        """
+        original = getattr(g.store, name)
+
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            """Count the write, then fail it or run it.
+
+            @return (Any): what the store method returns.
+            """
+            calls.append(name)
+            if len(calls) - 1 == cut:
+                raise ConnectionError("connection lost")
+            return await original(*args, **kwargs)
+
+        return wrapped
+
+    with monkeypatch.context() as patch:
+        for name in STORE_WRITES:
+            patch.setattr(g.store, name, counting(name))
+        yield calls
+
+
 def utc(year: int, month: int = 1, day: int = 1) -> datetime:
     return datetime(year, month, day, tzinfo=timezone.utc)
 

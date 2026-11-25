@@ -547,6 +547,19 @@ function suite(spec: StoreSpec) {
     }
   });
 
+  it("484 keeps + and # names apart when fuzzy", async () => {
+    for (const [a, b] of [
+      ["C++", "C#"],
+      ["C++", "C"],
+      ["C#", "C"],
+    ] as const)
+      expect(nameSimilarity(a, b), `${a} ${b}`).toBeLessThan(0.92);
+    const g = open({ resolver: "fuzzy" });
+    const res = await g.insert.facts({ entities: ["C++", "C#", "C"].map((name) => ({ type: "Language", name })) });
+    expect(res.merges).toEqual([]);
+    expect(await ids(g)).toEqual(["language:c", "language:c-plus-plus", "language:c-sharp"]);
+  });
+
   it("merges within one batch only when fuzzy", async () => {
     const batch: Extraction = {
       entities: [

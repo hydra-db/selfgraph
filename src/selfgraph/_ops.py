@@ -264,7 +264,8 @@ def parse_time(value: Any, field: str) -> datetime | None:
         parsed = _parse_iso(value)
     except ValueError as exc:
         raise ValidationError(
-            f"invalid {field}: {value!r} is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)"
+            f"invalid {field}: {value!r} is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)",
+            field=field,
         ) from exc
     _require_datetime(field, parsed)
     return parsed
@@ -476,7 +477,9 @@ def _require_str_mapping(name: str, value: Any) -> None:
     @return (None): nothing; raises ValidationError when not a string-to-string mapping.
     """
     _require_mapping(name, value)
-    for item in value.values():
+    for key, item in value.items():
+        if not key.strip():
+            raise ValidationError(f"{name} keys cannot be empty or whitespace", field=name)
         if not isinstance(item, str):
             raise ValidationError(f"{name} must map strings to strings")
 
@@ -717,10 +720,12 @@ async def _plan_evidence(
     new_targets: set[str],
     via: list[list[str]] | None = None,
 ) -> tuple[list[tuple[str, dict]], dict[str, int]]:
-    """Find which evidence records are not stored yet and how many distinct sources each target gains.
+    """Find which evidence records are not stored yet and how many distinct sources each target then holds.
 
-    Records are looked up by id first; only a target missing a record is then checked for any record from that
-    source. A target with no stored version has no stored evidence, so targets in new_targets skip both lookups.
+    Records are looked up by id first; only a target missing a record is then read for the sources it already has.
+    The count is the distinct sources the target's evidence will hold, not an increment on the stored count, so a
+    write retried after one that stopped between the count and the evidence ends on the same number. A target with
+    no stored version has no stored evidence, so targets in new_targets skip both lookups.
     Each record also lists the statements that wrote it (see evidence_via), so an unmerge moves exactly the rows a
     merge carried; a stored record that gains a statement is rewritten with its original created_at.
 
@@ -729,7 +734,8 @@ async def _plan_evidence(
     @param items (list[tuple[str, Evidence]]): (target id, evidence) pairs to record.
     @param new_targets (set[str]): targets known to have no stored evidence.
     @param via (list[list[str]] | None): each item's statements, as via_of gives them; None for all direct.
-    @return (tuple[list[tuple[str, dict]], dict[str, int]]): the records to write, and the sources gained per target.
+    @return (tuple[list[tuple[str, dict]], dict[str, int]]): the records to write, and the source count of each target
+        that gains a source.
     """
     pending: dict[str, tuple[str, Evidence, dict[str, None]]] = {}
     for i, (target, ev) in enumerate(items):
@@ -739,17 +745,12 @@ async def _plan_evidence(
         pending.setdefault(evid, (target, ev, {}))[2].update(dict.fromkeys([DIRECT] if via is None else via[i]))
     known = [evid for evid, (target, *_) in pending.items() if target not in new_targets]
     stored = await _nodes_by_id(runner, ns, L_EVIDENCE, known)
-    by_source: dict[str, dict[str, None]] = {}
-    for evid in known:
-        if evid not in stored:
-            target, ev, _ = pending[evid]
-            by_source.setdefault(ev.source_id, {})[target] = None
-    seen: set[tuple[str, str]] = set()
-    for source_id, targets in by_source.items():
-        rows = await _nodes_where(runner, ns, L_EVIDENCE, "target_id", list(targets), equals={"source_id": source_id})
-        seen |= {(props["target_id"], source_id) for props in rows}
+    unstored = _dedup_list(pending[evid][0] for evid in known if evid not in stored)
+    sources_of: dict[str, set[str]] = {}
+    for props in await _nodes_where(runner, ns, L_EVIDENCE, "target_id", unstored):
+        sources_of.setdefault(props["target_id"], set()).add(props["source_id"])
     records: list[tuple[str, dict]] = []
-    gained: dict[str, int] = {}
+    counts: dict[str, int] = {}
     for evid, (target, ev, statements) in pending.items():
         if evid in stored:
             held = evidence_via(stored[evid])
@@ -761,10 +762,11 @@ async def _plan_evidence(
         if list(statements) != [DIRECT]:
             props["via"] = list(statements)
         records.append((evid, props))
-        if (target, ev.source_id) not in seen:
-            seen.add((target, ev.source_id))
-            gained[target] = gained.get(target, 0) + 1
-    return records, gained
+        sources = sources_of.setdefault(target, set())
+        if ev.source_id not in sources:
+            sources.add(ev.source_id)
+            counts[target] = len(sources)
+    return records, counts
 
 
 async def _write_evidence(runner: Any, ns: str, records: list[tuple[str, dict]], known: datetime) -> None:
@@ -1094,7 +1096,7 @@ async def upsert_entities(
     for eid in eids:
         await runner.lock_node(ns, L_ENTITY, eid)
     stored = {eid: decode_entity(p) for eid, p in (await _nodes_by_id(runner, ns, L_ENTITY, eids)).items()}
-    records, gained = await _plan_evidence(
+    records, counts = await _plan_evidence(
         runner,
         ns,
         [(eid, ev) for eid in eids for ev in evidence],
@@ -1107,7 +1109,7 @@ async def upsert_entities(
     out: list[Entity] = []
     for eid, etype, ename, ent in keyed:
         prev = current.get(eid)
-        sources = (prev.source_count if prev is not None else 0) + gained.pop(eid, 0)
+        sources = counts.pop(eid, prev.source_count if prev is not None else 0)
         if prev is None:
             props = encode_entity_props(
                 ns=ns,
@@ -1376,51 +1378,72 @@ async def list_entities(
     return [decode_entity(r) for r in found[skip : skip + limit]]
 
 
-async def _delete_steps(runner: Any, ns: str, tid: str) -> None:
-    for step in await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP):
-        await runner.delete_node(ns, L_STEP, step["id"])
+async def _delete_trace_quietly(runner: Any, ns: str, tid: str, found: Collection[str] = ()) -> bool:
+    """Delete a decision's steps no lookup can find, then its trace node, then the steps the lookup found.
 
-
-async def _delete_trace_quietly(runner: Any, ns: str, tid: str) -> bool:
-    """Delete a decision trace and its steps when it still exists.
+    A cut-off delete then leaves either a trace the lookup still reaches through the steps it found, or a trace with
+    no steps that an actor or outcome lookup reaches.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param tid (str): trace id.
-    @return (bool): True when a trace was removed.
+    @param found (Collection[str]): ids of the trace's steps the lookup that found it returned.
+    @return (bool): True when a trace node or a found step was removed.
     """
-    if not await runner.node_exists(ns, L_TRACE, tid):
-        return False
-    await _delete_steps(runner, ns, tid)
-    await runner.delete_node(ns, L_TRACE, tid)
-    return True
+    existed = await runner.node_exists(ns, L_TRACE, tid)
+    if existed:
+        hidden = [
+            s["id"] for s in await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP) if s["id"] not in found
+        ]
+        await runner.delete_nodes(ns, L_STEP, hidden)
+        await runner.delete_node(ns, L_TRACE, tid)
+    await runner.delete_nodes(ns, L_STEP, sorted(found))
+    return existed or bool(found)
 
 
-async def _traces_touching_relations(runner: Any, ns: str, rids: list[str]) -> set[str]:
-    """Find decision traces that use any of some relations as one of their steps.
+async def _delete_traces(runner: Any, ns: str, traces: Mapping[str, Collection[str]]) -> int:
+    """Delete decision traces in id order, each with the ids of its steps a lookup found.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param traces (Mapping[str, Collection[str]]): each trace id and its found step ids.
+    @return (int): how many traces had a node or a found step removed.
+    """
+    return sum([await _delete_trace_quietly(runner, ns, tid, traces[tid]) for tid in sorted(traces)])
+
+
+async def _traces_touching_relations(runner: Any, ns: str, rids: list[str]) -> dict[str, set[str]]:
+    """Find decision traces that use any of some relations as one of their steps, with the steps that matched.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param rids (list[str]): relation ids.
-    @return (set[str]): owning trace ids.
+    @return (dict[str, set[str]]): each owning trace id and the ids of its matching steps.
     """
-    return {_ids.trace_of_step(s["id"]) for s in await _nodes_where(runner, ns, L_STEP, "relation_id", rids)}
+    found: dict[str, set[str]] = {}
+    for step in await _nodes_where(runner, ns, L_STEP, "relation_id", rids):
+        found.setdefault(_ids.trace_of_step(step["id"]), set()).add(step["id"])
+    return found
 
 
-async def _traces_touching_entities(runner: Any, ns: str, eids: list[str]) -> set[str]:
+async def _traces_touching_entities(runner: Any, ns: str, eids: list[str]) -> dict[str, set[str]]:
     """Find decision traces that reference any of some entities as actor, outcome, or step endpoint.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param eids (list[str]): entity ids.
-    @return (set[str]): referencing trace ids.
+    @return (dict[str, set[str]]): each referencing trace id and the ids of its steps that matched, none when only the
+        trace node does.
     """
-    tids: set[str] = set()
+    found: dict[str, set[str]] = {}
     for label, keys in ((L_TRACE, ("actor_entity", "outcome_entity")), (L_STEP, ("from_entity", "to_entity"))):
         for key in keys:
-            nodes = await _nodes_where(runner, ns, label, key, eids)
-            tids |= {n["id"] if label == L_TRACE else _ids.trace_of_step(n["id"]) for n in nodes}
-    return tids
+            for node in await _nodes_where(runner, ns, label, key, eids):
+                if label == L_TRACE:
+                    found.setdefault(node["id"], set())
+                else:
+                    found.setdefault(_ids.trace_of_step(node["id"]), set()).add(node["id"])
+    return found
 
 
 async def _repoint_steps(runner: Any, ns: str, tids: Iterable[str], moved: Mapping[str, str]) -> None:
@@ -1551,13 +1574,15 @@ async def delete_entities(
     seen = {(edge["props"]["id"], _revision(edge)) for edge in versions}
     rids = _dedup_list(rid for rid, _ in seen)
     counts["deleted_relation_versions"] = len(seen)
-    trace_ids = await _traces_touching_entities(runner, ns, eids) | await _traces_touching_relations(runner, ns, rids)
-    counts["deleted_decisions"] = sum([await _delete_trace_quietly(runner, ns, tid) for tid in sorted(trace_ids)])
+    traces = await _traces_touching_entities(runner, ns, eids)
+    for tid, steps in (await _traces_touching_relations(runner, ns, rids)).items():
+        traces.setdefault(tid, set()).update(steps)
+    counts["deleted_decisions"] = await _delete_traces(runner, ns, traces)
     considered: dict[str, set[str]] = {}
     for edge in await _edges_into(runner, ns, L_TRACE, L_ENTITY, "to_in", eids, type=R_CONSIDERED):
         considered.setdefault(edge["from_id"], set()).add(edge["to_id"])
     for tid, alternatives in sorted(considered.items()):
-        trace = None if tid in trace_ids else await get_trace(runner, ns, tid)
+        trace = None if tid in traces else await get_trace(runner, ns, tid)
         if trace is not None:
             remaining = [a for a in trace.alternative_entities if a not in alternatives]
             if remaining != list(trace.alternative_entities):
@@ -2143,20 +2168,127 @@ class Contradictions:
         self._starts[version.id] = _run_start(found)
         return (effective_time(version),)
 
-    def _displaced_at(self, newer: list[tuple[tuple, str]], limit: int, old: str) -> datetime:
-        """When newer relations displaced an older one: once limit of them began if not before it, else at the limit-th.
+    def _fact_windows(
+        self,
+        rid: str,
+        retired: Mapping[str, tuple[str, datetime]] | None = None,
+    ) -> list[tuple[datetime, datetime | None]]:
+        """Validity intervals of a relation by its recorded revisions and retirements.
+
+        @param rid (str): the relation id.
+        @param retired (Mapping[str, tuple[str, datetime]] | None): pending retirements from the current settle run.
+        @return (list[tuple[datetime, datetime | None]]): list of (start, end) intervals where the relation was valid.
+        """
+        versions = self._versions.get(rid)
+        if not versions:
+            start = self._starts.get(rid)
+            if start is None:
+                return []
+            item = (retired.get(rid) if retired else None) or self._ended.get(rid)
+            return [(start, aware(item[1]) if item is not None else None)]
+        item = (retired.get(rid) if retired else None) or self._ended.get(rid)
+        check_versions = versions
+        if item is not None:
+            last = versions[-1]
+            if last.invalidated_at != item[1] or last.invalidated_by != item[0]:
+                check_versions = versions[:-1] + [
+                    last.model_copy(update={"invalidated_at": item[1], "invalidated_by": item[0]})
+                ]
+        points: set[datetime] = set()
+        for v in check_versions:
+            points.add(effective_time(v))
+            if v.invalidated_at is not None:
+                points.add(aware(v.invalidated_at))
+        sorted_points = sorted(points)
+        windows: list[tuple[datetime, datetime | None]] = []
+        for i, t in enumerate(sorted_points):
+            if version_as_of(check_versions, AsOf(valid=t, known=None)) is not None:
+                end = sorted_points[i + 1] if i + 1 < len(sorted_points) else None
+                if windows and windows[-1][1] == t:
+                    windows[-1] = (windows[-1][0], end)
+                else:
+                    windows.append((t, end))
+        return windows
+
+    def _displaced_at(
+        self,
+        newer: list[tuple[tuple, str]],
+        limit: int,
+        old: str,
+        windows: Mapping[str, list[tuple[datetime, datetime | None]]],
+    ) -> tuple[str, datetime]:
+        """When newer relations displaced an older one: the retiring relation and the earliest displacement time.
 
         @param newer (list[tuple[tuple, str]]): the newer relations' ranks and ids, oldest first.
         @param limit (int): the endpoint's max_count.
         @param old (str): the displaced relation's id.
-        @return (datetime): the displacement time.
+        @param windows (Mapping[str, list[tuple[datetime, datetime | None]]]): validity windows for relations at
+            the endpoint.
+        @return (tuple[str, datetime]): the displacing relation id and the displacement time.
         """
+        by = newer[limit - 1][1]
         at = newer[limit - 1][0][0]
-        start = sorted(self._starts.get(rid, rank[0]) for rank, rid in newer)[limit - 1]
         since = self._starts.get(old)
-        if since is not None and since <= start < at:
-            return start
-        return at
+        if since is None or since >= at:
+            return by, at
+        active_ids: set[str] = set()
+        for _, rid in newer:
+            for s, e in windows.get(rid, ()):
+                if s <= since and (e is None or since < e):
+                    active_ids.add(rid)
+                    break
+        if len(active_ids) >= limit:
+            valid = [rid for _, rid in newer if rid in active_ids]
+            return valid[limit - 1], since
+        events: dict[datetime, list[tuple[int, str]]] = {}
+        for _, rid in newer:
+            for s, e in windows.get(rid, ()):
+                if since < s < at:
+                    events.setdefault(s, []).append((1, rid))
+                if e is not None and since < e < at:
+                    events.setdefault(e, []).append((-1, rid))
+        for t in sorted(events):
+            changes = sorted(events[t], key=lambda x: x[0])
+            for kind, rid in changes:
+                if kind == 1:
+                    active_ids.add(rid)
+                else:
+                    active_ids.discard(rid)
+            if len(active_ids) >= limit:
+                valid = [rid for _, rid in newer if rid in active_ids]
+                return valid[limit - 1], t
+        return by, at
+
+    def _shared_displacement(
+        self,
+        rid: str,
+        by: str,
+        found: tuple[str, datetime],
+        key: tuple[str, str, str],
+        retired: Mapping[str, tuple[str, datetime]],
+    ) -> tuple[str, datetime]:
+        """The earliest displacement of a retired relation across the endpoints its retiring relation shares with it.
+
+        @param rid (str): the retired relation id.
+        @param by (str): the relation that retired it.
+        @param found (tuple[str, datetime]): the displacing relation id and time at the endpoint being settled.
+        @param key (tuple[str, str, str]): the endpoint being settled.
+        @param retired (Mapping[str, tuple[str, datetime]]): pending retirements from the current settle run.
+        @return (tuple[str, datetime]): the displacing relation id and the earliest displacement time.
+        """
+        version = self._versions[rid][-1]
+        for other, limit in _cap_slots(self._caps, version.type, version.from_entity, version.to_entity):
+            facts = {**self._past.get(other, {}), **self._groups.get(other, {})}
+            if other == key or by not in facts:
+                continue
+            newer = self._newer(facts, rid)
+            if len(newer) < limit:
+                continue
+            windows = {fact: self._fact_windows(fact, retired) for fact in facts}
+            displaced = self._displaced_at(newer, limit, rid, windows)
+            if displaced[1] < found[1]:
+                found = displaced
+        return found
 
     def _seat(self, key: tuple[str, str, str], rid: str, rank: tuple) -> None:
         self._groups.setdefault(key, {})[rid] = rank
@@ -2249,6 +2381,7 @@ class Contradictions:
             facts = {**self._past.get(key, {}), **group}
             ranked = sorted(group, key=lambda o: (group[o], o), reverse=True)
             canonical, side, endpoint = key
+            windows = {rid: self._fact_windows(rid, retired) for rid in facts}
             for old in ranked:
                 newer = self._newer(facts, old)
                 if len(newer) < limit:
@@ -2262,22 +2395,24 @@ class Contradictions:
                         )
                     )
                     continue
-                by = newer[limit - 1][1]
-                at = self._displaced_at(newer, limit, old)
+                by, at = self._displaced_at(newer, limit, old, windows)
                 if old not in retired:
                     slots.append(old)
                 if old not in retired or at < retired[old][1]:
                     retired[old] = (by, at)
+                    windows[old] = self._fact_windows(old, retired)
                     why[old] = (key, limit, ranked[limit - 1] if len(ranked) >= limit else by)
             for rid in self._past.get(key, {}):
                 newer = self._newer(facts, rid)
                 ended = retired.get(rid, self._ended.get(rid))
                 if ended is None or len(newer) < limit:
                     continue
-                by = newer[limit - 1][1]
-                at = self._displaced_at(newer, limit, rid)
+                by, at = self._shared_displacement(
+                    rid, ended[0], self._displaced_at(newer, limit, rid, windows), key, retired
+                )
                 if (by, at) != ended and (ended[0] in facts or at < ended[1]):
                     retired[rid] = self._ended[rid] = (by, at)
+                    windows[rid] = self._fact_windows(rid, retired)
         warnings: list[InsertWarning] = []
         for slot in slots:
             if not isinstance(slot, str):
@@ -2380,6 +2515,7 @@ async def _endpoint_edges(
     caps: Mapping[str, RelationCap],
     ends: Iterable[tuple[str, str, str]],
     every: dict[str, list[dict]] | None = None,
+    seen: set[tuple[str, str, str]] | None = None,
 ) -> dict[str, dict]:
     """Read the newest version of every relation at the constrained endpoints of some relations.
 
@@ -2388,10 +2524,12 @@ async def _endpoint_edges(
     @param caps (Mapping[str, RelationCap]): the schema's max_count limits by relation type.
     @param ends (Iterable[tuple[str, str, str]]): (normalized type, source id, destination id) of each relation.
     @param every (dict[str, list[dict]] | None): receives every version read, by relation id, when given.
+    @param seen (set[tuple[str, str, str]] | None): the (side, endpoint, stored type) reads already made, which are
+        skipped and added to.
     @return (dict[str, dict]): each relation's newest edge row by id, in read order.
     """
     found: dict[str, dict] = {}
-    seen: set[tuple[str, str, str]] = set()
+    seen = set() if seen is None else seen
     for rtype, from_entity, to_entity in ends:
         cap = caps.get(rtype)
         for side, _ in cap.limits if cap else ():
@@ -2418,6 +2556,9 @@ async def _contradiction_check(
 ) -> tuple[Contradictions | None, dict[str, dict]]:
     """Prepare the contradiction check for a write, reading the current relations it can conflict with.
 
+    Under supersede it also reads, and locks, the other endpoint of each relation that a relation with the same
+    endpoints retired, since that endpoint can have displaced it earlier.
+
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param contradiction (str): "off", "warn", "supersede", or "strict".
@@ -2428,8 +2569,22 @@ async def _contradiction_check(
     """
     if contradiction == "off" or not caps:
         return None, {}
+    ends = list(ends)
     every: dict[str, list[dict]] = {}
-    found = await _endpoint_edges(runner, ns, caps, ends, every)
+    seen: set[tuple[str, str, str]] = set()
+    found = await _endpoint_edges(runner, ns, caps, ends, every, seen)
+    if contradiction == "supersede":
+        shared = [
+            (e["type"], e["from_id"], e["to_id"])
+            for e in found.values()
+            if not e["props"]["is_current"]
+            and (twin := found.get(e["props"].get("invalidated_by")))
+            and (twin["from_id"], twin["to_id"]) == (e["from_id"], e["to_id"])
+            and len(_cap_slots(caps, e["type"], e["from_id"], e["to_id"])) > 1
+        ]
+        for eid in sorted(set(_relation_lock_ids(caps, shared)) - set(_relation_lock_ids(caps, ends))):
+            await runner.lock_node(ns, L_ENTITY, eid)
+        found = {**found, **await _endpoint_edges(runner, ns, caps, shared, every, seen)}
     current = [_relation_of(e) for e in found.values() if e["props"]["is_current"]]
     history = [
         _relation_of(e)
@@ -2569,10 +2724,12 @@ async def resettle_endpoints(
         for key, _ in _cap_slots(caps, edge["type"], edge["from_id"], edge["to_id"]):
             members.setdefault(key, set()).add(edge["props"]["id"])
     freed = {key for edge in moved for key, _ in _cap_slots(caps, edge["type"], edge["from_id"], edge["to_id"])}
+    moved_ids = {edge["props"]["id"] for edge in moved}
     stale = [
         edge
         for edge in found.values()
-        if not edge["props"]["is_current"]
+        if edge["props"]["id"] not in moved_ids
+        and not edge["props"]["is_current"]
         and edge["props"].get("invalidated_at")
         and any(
             key in freed and edge["props"].get("invalidated_by") in members[key]
@@ -2744,7 +2901,7 @@ async def upsert_relations(
     for rid, edge in stored.items():
         if edge["props"]["is_current"]:
             _found_current(claims[rid])
-    records, gained = await _plan_evidence(
+    records, counts = await _plan_evidence(
         runner,
         ns,
         [(rid, ev) for rid, _, _, evidence in keyed for ev in evidence],
@@ -2774,7 +2931,7 @@ async def upsert_relations(
                 event_time=event_time,
                 created_at=created_at,
                 is_current=True,
-                source_count=gained.pop(rid, 0),
+                source_count=counts.pop(rid, 0),
             )
             edge = {"props": props, "from_id": rel.from_entity, "to_id": rel.to_entity, "type": rtype}
         else:
@@ -2792,7 +2949,7 @@ async def upsert_relations(
                 else None
             )
             effective = aware(event_time or created_at)
-            sources = prev.source_count + gained.pop(rid, 0)
+            sources = counts.pop(rid, prev.source_count)
             merged_properties = _merge_props(prev.properties, rel.properties)
             reassert = _reasserts(prev, effective)
             unchanged = _json_equal(prev.properties, merged_properties) and to_iso(prev.event_time) == to_iso(
@@ -2805,7 +2962,15 @@ async def upsert_relations(
                 and (named is None or effective == prev.invalidated_at)
             ):
                 reassert = False
-            if event_time is not None and to_iso(prev.event_time) != to_iso(event_time):
+            if (
+                event_time is not None
+                and to_iso(prev.event_time) != to_iso(event_time)
+                and (
+                    prev.is_current
+                    or (not reassert and effective < effective_time(prev))
+                    or effective == prev.invalidated_at
+                )
+            ):
                 moved[rid] = None
             if unchanged and not reassert:
                 write = sources != prev.source_count
@@ -2908,7 +3073,9 @@ async def create_relation(
     Creating an invalidated relation again reasserts it as a new current revision with exactly the given properties,
     nothing carried over from the retired one, and adds a "relation_reasserted" warning. Without event_time the
     effective time is the creation time. The new version is written before any relation it supersedes is retired; in
-    supersede mode one older than the current relations it conflicts with is written already invalidated.
+    supersede mode one older than the current relations it conflicts with is written already invalidated. A
+    reassertion in supersede mode then settles its max_count endpoints again (see resettle_endpoints), as an insert
+    that moves the relation does.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -2946,7 +3113,7 @@ async def create_relation(
         if prior.is_current or prior.invalidated_at is None:
             raise ConflictError("Relation", rid)
         _require_same_ends(rid, (prior.from_entity, prior.type, prior.to_entity), (from_entity, rtype, to_entity))
-    records, gained = await _plan_evidence(
+    records, counts = await _plan_evidence(
         runner, ns, [(rid, ev) for ev in evidence], new_targets=set() if prior else {rid}
     )
     created_at = now()
@@ -2958,7 +3125,7 @@ async def create_relation(
         event_time=event_time,
         created_at=created_at,
         is_current=True,
-        source_count=(prior.source_count if prior else 0) + gained.get(rid, 0),
+        source_count=counts.get(rid, prior.source_count if prior else 0),
     )
     tracker, existing = await _contradiction_check(runner, ns, contradiction, caps, [(rtype, from_entity, to_entity)])
     retires = []
@@ -2987,6 +3154,10 @@ async def create_relation(
                 f"{rel.revision} with exactly the given properties",
             )
         )
+    if prior is not None and contradiction == "supersede":
+        edge = {"type": rtype, "from_id": from_entity, "to_id": to_entity, "props": props}
+        await resettle_endpoints(runner, ns, [edge], caps, created_at)
+        rel = _relation_of(await _newest_edge(runner, ns, rid, _is_relation_type))
     return rel
 
 
@@ -3050,8 +3221,8 @@ async def update_relation(
         await schema_check(runner, Extraction(relations=[subject]), Extraction(relations=[stored]))
     new_event_time = event_time if event_time is not None else current.event_time
     created_at = now()
-    records, gained = await _plan_evidence(runner, ns, [(rid, ev) for ev in evidence or []], new_targets=set())
-    sources = current.source_count + gained.get(rid, 0)
+    records, counts = await _plan_evidence(runner, ns, [(rid, ev) for ev in evidence or []], new_targets=set())
+    sources = counts.get(rid, current.source_count)
 
     if (
         current.is_current
@@ -3361,10 +3532,9 @@ async def delete_relation(
     newest = await _newest_edge(runner, ns, rid, _is_relation_type)
     if newest is None:
         raise NotFoundError("Relation", rid, namespace=ns)
-    trace_ids = await _traces_touching_relations(runner, ns, [rid])
+    deleted_decisions = await _delete_traces(runner, ns, await _traces_touching_relations(runner, ns, [rid]))
     n = await runner.delete_edges(ns, rid)
     await _delete_evidence(runner, ns, rid)
-    deleted_decisions = sum([await _delete_trace_quietly(runner, ns, tid) for tid in trace_ids])
     restored = await resettle_endpoints(runner, ns, [newest], caps, now())
     return {
         **_NO_DELETES,
@@ -4100,14 +4270,76 @@ async def _trace_links_intact(runner: Any, ns: str, trace: DecisionTrace) -> boo
     out = await _edges_into(runner, ns, L_TRACE, L_ENTITY, "from_in", [trace.id])
     if sorted((e["type"], e["to_id"]) for e in out) != sorted(named):
         return False
+    return await _step_links_intact(runner, ns, trace)
+
+
+async def _step_links_intact(runner: Any, ns: str, trace: DecisionTrace) -> bool:
+    """Report whether the steps of a stored trace have exactly the FROM and TO links their relations name.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param trace (DecisionTrace): the stored trace, with its steps.
+    @return (bool): True when no step link is missing, extra, or repeated.
+    """
     sids = [_ids.step_id(trace.id, step.order) for step in trace.steps]
-    ends = await _edges_into(runner, ns, L_STEP, L_ENTITY, "from_in", sids) if sids else []
+    ends = await _edges_into(runner, ns, L_STEP, L_ENTITY, "from_in", sids)
     expected = [
         (kind, sid, end)
         for sid, s in zip(sids, trace.steps, strict=True)
         for kind, end in ((R_FROM, s.from_entity), (R_TO, s.to_entity))
     ]
     return sorted((e["type"], e["from_id"], e["to_id"]) for e in ends) == sorted(expected)
+
+
+async def _write_steps(runner: Any, ns: str, tid: str, steps: list[DecisionStep]) -> None:
+    """Write the steps of a decision trace, the new step nodes before the stale ones are deleted.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param tid (str): trace id.
+    @param steps (list[DecisionStep]): the ordered steps to store.
+    @return (None): nothing.
+    """
+    keyed = [(_ids.step_id(tid, step.order), step) for step in steps]
+    sids = [sid for sid, _ in keyed]
+    await runner.upsert_nodes(
+        ns,
+        L_STEP,
+        [
+            (
+                sid,
+                {
+                    "id": sid,
+                    "ns": ns,
+                    "relation_id": step.relation_id,
+                    "order": step.order,
+                    "from_entity": step.from_entity,
+                    "to_entity": step.to_entity,
+                },
+            )
+            for sid, step in keyed
+        ],
+    )
+    linked = {s["id"] for s in await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP)}
+    await runner.create_edges(
+        ns,
+        L_TRACE,
+        L_STEP,
+        [(R_HAS_STEP, tid, sid, {"ns": ns, "order": step.order}) for sid, step in keyed if sid not in linked],
+    )
+    await runner.delete_nodes(ns, L_STEP, sorted(linked - set(sids)))
+    stored: dict[str, list[tuple[str, str]]] = {}
+    for edge in await _edges_into(runner, ns, L_STEP, L_ENTITY, "from_in", sids):
+        stored.setdefault(edge["from_id"], []).append((edge["type"], edge["to_id"]))
+    wanted = {sid: sorted([(R_FROM, step.from_entity), (R_TO, step.to_entity)]) for sid, step in keyed}
+    stale = [sid for sid in sids if sorted(stored.get(sid, [])) != wanted[sid]]
+    for sid in stale:
+        if sid in stored:
+            for kind in (R_FROM, R_TO):
+                await runner.delete_edges_touching_by_type(ns, L_STEP, sid, kind)
+    await runner.create_edges(
+        ns, L_STEP, L_ENTITY, [(kind, sid, end, {"ns": ns}) for sid in stale for kind, end in wanted[sid]]
+    )
 
 
 async def upsert_trace(
@@ -4194,8 +4426,12 @@ async def upsert_trace(
         updated_at=created_at,
     )
     await _precheck_nodes(runner, ns, L_TRACE, [(tid, props)])
+    keep_steps = (
+        existing is not None
+        and [s.relation_id for s in existing.steps] == [s.relation_id for s in steps]
+        and await _step_links_intact(runner, ns, existing)
+    )
     if existing is not None:
-        await _delete_steps(runner, ns, tid)
         for rtype in (R_MADE_DECISION, R_RESULTED_IN, R_CONSIDERED):
             await runner.delete_edges_touching_by_type(ns, L_TRACE, tid, rtype)
     await runner.upsert_node(ns, L_TRACE, tid, props)
@@ -4204,37 +4440,8 @@ async def upsert_trace(
     outcome = [] if outcome_entity is None else [(R_RESULTED_IN, tid, outcome_entity, {"ns": ns})]
     considered = [(R_CONSIDERED, tid, alt, {"ns": ns}) for alt in alternative_entities]
     await runner.create_edges(ns, L_TRACE, L_ENTITY, [*outcome, *considered])
-    keyed = [(_ids.step_id(tid, step.order), step) for step in steps]
-    await runner.upsert_nodes(
-        ns,
-        L_STEP,
-        [
-            (
-                sid,
-                {
-                    "id": sid,
-                    "ns": ns,
-                    "relation_id": step.relation_id,
-                    "order": step.order,
-                    "from_entity": step.from_entity,
-                    "to_entity": step.to_entity,
-                },
-            )
-            for sid, step in keyed
-        ],
-    )
-    await runner.create_edges(
-        ns, L_TRACE, L_STEP, [(R_HAS_STEP, tid, sid, {"ns": ns, "order": step.order}) for sid, step in keyed]
-    )
-    await runner.create_edges(
-        ns,
-        L_STEP,
-        L_ENTITY,
-        [
-            *((R_FROM, sid, step.from_entity, {"ns": ns}) for sid, step in keyed),
-            *((R_TO, sid, step.to_entity, {"ns": ns}) for sid, step in keyed),
-        ],
-    )
+    if not keep_steps:
+        await _write_steps(runner, ns, tid, steps)
     return decode_trace(props, steps)
 
 

@@ -159,6 +159,10 @@ absent `remove_properties` key.
 - A `get_*` tool returns `null` for a missing id, as text and as the structured
   `result`. `get_relation` on a [retired relation](resources.md#relations) fails
   instead.
+- `get_entity`, `get_relation`, `get_preference`, `get_decision`, and `get_schema`
+  always put the object in the structured `result`, found or not
+  (`{"result": {...}}` or `{"result": null}`), in both SDKs. The text content is the
+  bare object or `null`.
 - `relation_versions` and `preference_versions` return the list as one JSON text
   content and as the structured `result`.
 
@@ -233,7 +237,10 @@ code.
 - Arguments that do not match a tool's schema fail as the result above, a
   `ValidationError` with code `invalid_argument` (`unknown_key` for an unknown
   argument), `field`, and one `path: message` line per problem
-  (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`).
+  (`invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'`). Python and TypeScript give the
+  same text and `field` for the same bad argument: a count below its minimum reads
+  `invalid arguments: budget_tokens: must be >= 1`, and a number in a message has no
+  `.0` when it is whole (`min_relevance must be between 0 and 1, got 2`).
 - An unknown argument names the closest one, and lists the tool's arguments when
   there are at most eight.
 - An unknown tool name fails as the result above, a `ValidationError` with code

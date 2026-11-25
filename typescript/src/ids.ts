@@ -28,6 +28,10 @@ const MARK = new RegExp(`^[${MARK_CLASS}]$`, "u");
 const FORMAT = new RegExp(`[${FORMAT_CLASS}]`, "gu");
 const PUNCT = new RegExp(`[^${WORD_CLASS}${PY_WS_CLASS}${MARK_CLASS}]+`, "gu");
 const NON_IDENT = new RegExp(`[^${WORD_CLASS}${MARK_CLASS}]+`, "gu");
+const SYMBOL_WORDS: readonly (readonly [string, string])[] = [
+  ["+", " plus "],
+  ["#", " sharp "],
+];
 const CAMEL = /(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/g;
 const DIGIT_LETTER = /(?<=[0-9])(?=[A-Z])/g;
 const ENTITY_SUFFIXES = new Set([
@@ -139,6 +143,16 @@ export function isOrgType(type: string): boolean {
 }
 
 /**
+ * Spell out the symbols a derived id keeps as words, so C++, C#, and C stay three names.
+ *
+ * @param text (string): the text to spell out.
+ * @return (string): the text with each of those symbols replaced by its word, set apart by spaces.
+ */
+export function spellSymbols(text: string): string {
+  return SYMBOL_WORDS.reduce((out, [symbol, word]) => out.replaceAll(symbol, word), text);
+}
+
+/**
  * Canonicalise an entity name so cross-document surface variants collapse.
  *
  * @param type (string): the entity type, which scopes suffix and article stripping.
@@ -146,7 +160,7 @@ export function isOrgType(type: string): boolean {
  * @return (string): the canonical hyphenated form.
  */
 export function canonicalName(type: string, rawName: string): string {
-  let words = pySplit(normalizeText(lower(pyStrip(rawName.replace(FORMAT, "")))).replace(PUNCT, " "));
+  let words = pySplit(spellSymbols(normalizeText(lower(pyStrip(rawName.replace(FORMAT, ""))))).replace(PUNCT, " "));
   if (isOrgType(type)) {
     if (words.length > 0 && words[0] === "the") words = words.slice(1);
     while (words.length > 1 && ENTITY_SUFFIXES.has(words[words.length - 1]!)) words = words.slice(0, -1);
@@ -165,7 +179,7 @@ export function rejectTypeColon(type: string): void {
 }
 
 /**
- * Derive an entity id "<type>:<canonical-name>", dropping punctuation, keeping combining marks, and, for organisation-like types, dropping a leading article and trailing corporate suffixes.
+ * Derive an entity id "<type>:<canonical-name>", dropping punctuation but spelling out + and #, keeping combining marks, and, for organisation-like types, dropping a leading article and trailing corporate suffixes.
  *
  * @param type (string): the entity type.
  * @param name (string): the entity name.

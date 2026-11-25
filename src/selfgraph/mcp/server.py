@@ -9,15 +9,16 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, Literal
 
-from pydantic import BeforeValidator, NonNegativeInt, PositiveInt, StrictBool, create_model
+from pydantic import BeforeValidator, Field, StrictBool, create_model
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import core_schema
 
 from .._cypher_guard import _BLANK, blank_lexical_tokens, check_cypher_limits
 from ..client import SelfGraph
 from ..errors import WARNING_HINTS, SelfGraphError, ValidationError, internal_error, surface_hint
-from ..ids import type_name
+from ..ids import MAX_SAFE_INTEGER, type_name
 from ..models import Stance, Status, check_options, validation_error
+from ..resolution import ResolverMode
 from ..resources._common import DEFAULT_PAGE_LIMIT
 from ..runtime import (
     _PARAM_REF,
@@ -184,9 +185,9 @@ def _json_number(value: Any) -> Any:
 
 Number = Annotated[float, BeforeValidator(_json_number)]
 OptNumber = Annotated[float | None, BeforeValidator(lambda v: v if v is None else _json_number(v))]
-Integer = Annotated[int, BeforeValidator(_json_number)]
-PositiveInteger = Annotated[PositiveInt, BeforeValidator(_json_number)]
-NonNegativeInteger = Annotated[NonNegativeInt, BeforeValidator(_json_number)]
+Integer = Annotated[int, Field(ge=-MAX_SAFE_INTEGER, le=MAX_SAFE_INTEGER), BeforeValidator(_json_number)]
+PositiveInteger = Annotated[int, Field(ge=1, le=MAX_SAFE_INTEGER), BeforeValidator(_json_number)]
+NonNegativeInteger = Annotated[int, Field(ge=0, le=MAX_SAFE_INTEGER), BeforeValidator(_json_number)]
 
 
 async def configure(settings: GraphSettings | None = None) -> None:
@@ -317,7 +318,7 @@ async def insert_text(
     source_id: str | None = None,
     event_time: str | None = None,
     metadata: dict | None = None,
-    resolver: str | None = None,
+    resolver: ResolverMode | None = None,
     contradiction: ContradictionMode | None = None,
     schema: dict | None = None,
     schema_mode: SchemaMode | None = None,
@@ -362,7 +363,7 @@ async def insert_facts(
     facts: dict,
     source_id: str | None = None,
     event_time: str | None = None,
-    resolver: str | None = None,
+    resolver: ResolverMode | None = None,
     contradiction: ContradictionMode | None = None,
     schema: dict | None = None,
     schema_mode: SchemaMode | None = None,

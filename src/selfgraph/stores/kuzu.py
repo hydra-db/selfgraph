@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Iterable, Mapping
@@ -15,7 +16,7 @@ from typing import Any
 
 from .._ops import _batches
 from .._serde import L_ENTITY, decode_entity
-from ..errors import SelfGraphError, StoreError, ValidationError, mask_uri, split_scheme
+from ..errors import SelfGraphError, StoreError, ValidationError, escape_controls, mask_uri, split_scheme
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult, JsonValue, check_options
 from ..resolution import match_keys
@@ -153,6 +154,9 @@ def _empty_container(value: Any, path: str) -> tuple[str, str] | None:
     return None
 
 
+_WS_RUN = re.compile("[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+")
+
+
 def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
     """Map a Kuzu error to a StoreError, adding what to do for the lock and mmap failures.
 
@@ -166,7 +170,7 @@ def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
             "process at a time",
             code="store_locked",
         )
-    message = f"{prefix}: {' '.join(str(exc).split())}"
+    message = f"{prefix}: {_WS_RUN.sub(' ', escape_controls(str(exc))).strip()}"
     if "Buffer manager exception: Mmap for size" in str(exc):
         message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size"
     return StoreError(message)
@@ -377,6 +381,7 @@ class KuzuStore(AutoCommitStore):
             self._lock = _LOCKS.setdefault(key, _PathLock())
             self._write_lock = _WRITE_LOCKS.setdefault(key, _PathLock())
         self._cache_key = key
+        self._read_only = _DATABASE_OPTIONS[key]["read_only"]
         self._db = db
         self._connect = partial(kuzu.Connection, db)
         try:
@@ -487,8 +492,10 @@ class KuzuStore(AutoCommitStore):
 
     async def initialize(self) -> None:
         """Create the node, relationship, and entity key tables if they do not exist, and index entities stored
-        before the key table.
+        before the key table; a read-only store writes nothing, so it does neither.
         """
+        if self._read_only:
+            return
         for stmt in _SCHEMA:
             await self._run(stmt)
         if count_of((await self._run("MATCH (k:K) RETURN count(*) AS n")).rows):
@@ -561,6 +568,17 @@ class KuzuStore(AutoCommitStore):
         for batch in _batches(stale, _SEEK_BATCH):
             await self._run("MATCH (k:K) WHERE k.pk IN $pks DELETE k", {"pks": batch})
         return list(found.values())
+
+    def _discard(self) -> None:
+        """Close a store no query has run on, without waiting for the path lock, which only queries hold.
+
+        @return (None): nothing.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._conn.close()
+        _release_store(self._cache_key)
 
     async def close(self) -> None:
         """Close the connection, and the database once no other store in this process holds it.

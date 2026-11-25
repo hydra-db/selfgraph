@@ -158,11 +158,15 @@ class SyncSelfGraph:
         return self._run(self._async.export_obsidian())
 
     def __enter__(self) -> SyncSelfGraph:
-        """Initialize the store and return the graph for use in a with block.
+        """Initialize the store and return the graph for use in a with block, closing it when that fails.
 
         @return (SyncSelfGraph): this graph.
         """
-        self.initialize()
+        try:
+            self.initialize()
+        except BaseException:
+            self.close()
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:

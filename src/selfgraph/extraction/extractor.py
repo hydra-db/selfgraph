@@ -355,6 +355,7 @@ class LLMExtractor(_WarningSink):
         registry: dict[str, EntityInput] = {}
         canonical: dict[bool, tuple[str, dict[str, list[EntityInput]]]] = {}
         rejected: set[str] = set()
+        journal: list[tuple[str, EntityInput]] = []
 
         def admit(ent: EntityInput) -> bool:
             try:
@@ -374,6 +375,25 @@ class LLMExtractor(_WarningSink):
             _, names = canonical.setdefault(_ids._is_org_type(ent.type), (ent.type, {}))
             names.setdefault(_ids._canonical_name(ent.type, ent.name), []).append(ent)
             registry[key] = ent
+            journal.append((key, ent))
+
+        def rollback(mark: int) -> None:
+            """Unregister the entities added since a journal position, so a dropped item leaves none behind.
+
+            @param mark (int): the journal length taken before the item resolved its names.
+            @return (None): nothing.
+            """
+            while len(journal) > mark:
+                key, ent = journal.pop()
+                del registry[key]
+                org = _ids._is_org_type(ent.type)
+                names = canonical[org][1]
+                name = _ids._canonical_name(ent.type, ent.name)
+                names[name].pop()
+                if not names[name]:
+                    del names[name]
+                if not names:
+                    del canonical[org]
 
         def matching(name: str) -> list[EntityInput]:
             """List the registered entities whose canonical name equals the canonical form of ``name``.
@@ -493,19 +513,22 @@ class LLMExtractor(_WarningSink):
         preferences: dict[str, PreferenceInput] = {}
         stated: set[tuple[str, str, str]] = set()
         for index, pref in enumerate([*raw_preferences, *promoted]):
+            mark = len(journal)
             subject_id = resolve(pref.subject_name)
             value_id = resolve(pref.value_name)
             if not (subject_id and value_id):
+                rollback(mark)
                 continue
             if index >= len(raw_preferences) and (subject_id, pref.stance, value_id) in stated:
                 continue
-            stated.add((subject_id, pref.stance, value_id))
             try:
                 _validate_strength(pref.strength)
                 pid = _ids.preference_id(subject_id, pref.stance, pref.key, value_id)
             except ValidationError as exc:
+                rollback(mark)
                 _dropped(sink, "preference", exc)
                 continue
+            stated.add((subject_id, pref.stance, value_id))
             if pid not in preferences:
                 preferences[pid] = PreferenceInput(
                     subject_entity=subject_id,
@@ -518,7 +541,16 @@ class LLMExtractor(_WarningSink):
 
         decisions: dict[str, DecisionTraceInput] = {}
         for dec in raw_decisions:
+            mark = len(journal)
             actor_id = resolve(dec.actor_name)
+            try:
+                _require_optional_text("decision summary", dec.summary)
+                _require_optional_text("decision rationale", dec.rationale)
+                tid = _ids.decision_id(actor_id, dec.title)
+            except ValidationError as exc:
+                rollback(mark)
+                _dropped(sink, "decision", exc)
+                continue
             step_ids: list[str] = []
             for step in dec.steps:
                 from_id = resolve(step.from_name, endpoint_types(step.type, "from"))
@@ -528,13 +560,6 @@ class LLMExtractor(_WarningSink):
                         step_ids.append(add_relation(from_id, step.type, to_id, evidence=dec._evidence))
                     except ValidationError as exc:
                         _dropped(sink, "decision step", exc, step.type)
-            try:
-                _require_optional_text("decision summary", dec.summary)
-                _require_optional_text("decision rationale", dec.rationale)
-                tid = _ids.decision_id(actor_id, dec.title)
-            except ValidationError as exc:
-                _dropped(sink, "decision", exc)
-                continue
             if tid not in decisions:
                 decisions[tid] = DecisionTraceInput(
                     title=dec.title,

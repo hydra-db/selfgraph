@@ -5,7 +5,15 @@ import { normalizeRelType } from "./ids.js";
 import { comparePy, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso, toIso } from "./internal/time.js";
 import { STANCES } from "./labels.js";
-import { hasSurrogate, keyHint, rejectProtoKeys, requireCleanJson, requireNoControl, requireUnit } from "./validate.js";
+import {
+  hasSurrogate,
+  keyHint,
+  rejectProtoKeys,
+  requireCleanJson,
+  requireJsonDepth,
+  requireNoControl,
+  requireUnit,
+} from "./validate.js";
 
 export type JsonValue =
   | string
@@ -62,14 +70,15 @@ export const optString = nullable(z.string());
 export const optNumber = nullable(z.number());
 export const optInt = nullable(z.number().int());
 const optDate = nullable(DateTimeInput);
-const props = <V extends z.ZodType<JsonValue>>(label: string, values: V = JsonValue as unknown as V) =>
+const props = <V extends z.ZodType<JsonValue>>(label: string, values?: V) =>
   z.preprocess(
     (value: Record<string, z.input<V>> | undefined) => {
       rejectProtoKeys(value);
+      if (values === undefined) requireJsonDepth(label, value);
       return value;
     },
     z
-      .record(z.string(), values)
+      .record(z.string(), values ?? (JsonValue as unknown as V))
       .default({})
       .transform((value) => {
         requireCleanJson(label, value);

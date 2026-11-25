@@ -142,3 +142,27 @@ def test_333_chunk_with_only_invalid_entities_still_inserts(graph):
     result = run(graph.insert.text("Ann works at Acme."))
     assert {e.id: e.type for e in run(graph.entities.list()).items} == {"thing:ann": "Thing", "thing:acme": "Thing"}
     assert [w.message for w in result.warnings] == [BLANK_NAME, BLANK_TYPE, BLANK_NAME, BLANK_TYPE]
+
+
+def test_484_extracted_plus_and_sharp_names_keep_their_own_entities(graph):
+    graph._llm.responses.update(
+        {
+            "_EntitiesOut": {
+                "entities": [{"type": "Language", "name": n} for n in ("C++", "C#", "C")]
+                + [{"type": "Person", "name": n} for n in ("Ann", "Bob")]
+            },
+            "_RelationsOut": {
+                "relations": [
+                    {"from_name": "Ann", "type": "USES", "to_name": "C++"},
+                    {"from_name": "Bob", "type": "USES", "to_name": "C#"},
+                ]
+            },
+        }
+    )
+    result = run(graph.insert.text("Ann uses C++ and Bob uses C#."))
+    langs = {e.id: (e.name, e.aliases) for e in run(graph.entities.list(type="Language")).items}
+    assert langs == {"language:c-plus-plus": ("C++", []), "language:c-sharp": ("C#", []), "language:c": ("C", [])}
+    assert {r.from_entity: r.to_entity for r in result.relations} == {
+        "person:ann": "language:c-plus-plus",
+        "person:bob": "language:c-sharp",
+    }

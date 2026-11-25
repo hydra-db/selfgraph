@@ -51,13 +51,21 @@ A derived id is `type:name`, both slugged:
 - lowercased and stripped, then NFC-normalized, since lowercasing `İ` gives
   `i` and a combining dot that can land out of order;
 - whitespace runs turned into one hyphen;
-- punctuation, symbols, and emoji dropped from the name. Combining marks, such
-  as the vowel signs of Devanagari or Thai, are part of the word and stay.
+- `+` and `#` spelled out as the words `plus` and `sharp`;
+- other punctuation, symbols, and emoji dropped from the name. Combining marks,
+  such as the vowel signs of Devanagari or Thai, are part of the word and stay.
 
 So `Acme` and `ACME` share an id, `Bob 😀` and `Bob` both become `person:bob`,
 type `Per son` gives `per-son:bob`, and `राम` and `रीमा` stay apart as
-`person:राम` and `person:रीमा`. A name with nothing else left keeps its
+`person:राम` and `person:रीमा`. `C++`, `C#`, and `C` give `language:c-plus-plus`,
+`language:c-sharp`, and `language:c`, and `Disney+` gives `service:disney-plus`,
+so `C++` and `C plus plus` share an id. A name with nothing else left keeps its
 symbols (`person:😀`).
+
+A graph written before `+` and `#` were spelled out holds `C++` under
+`language:c`, and keeps that id. `entities.get(entity_id("Language", "C++"))` now
+looks for `language:c-plus-plus` and finds nothing, while an insert still lands on
+the old entity by name in every mode but `exact`.
 
 Both SDKs take what counts as a letter, a digit, or a combining mark, and the
 lowercase, uppercase, and case-folding mappings, from fixed tables of Unicode
@@ -166,7 +174,8 @@ Page through evidence with `entities.evidence(id, cursor=None, limit=50)` or
 - Each piece of evidence is its own record per entity or relation, source,
   source version, chunk, and quote. Re-inserting a source adds nothing.
 - An entity or relation carries `source_count`, the number of distinct sources
-  behind it.
+  behind it. A write that adds a source sets it from the stored evidence, so
+  retrying a write that failed partway counts each source once.
 - `evidence` returns a `Page` ordered by evidence id and raises `NotFoundError`
   for an unknown id.
 - Evidence passed to `update` adds records. It never replaces them.

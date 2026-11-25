@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { type Evidence, ids, NotFoundError, type Page, type SelfGraph, ValidationError } from "../src/index.js";
 import { forEachStore, freshGraphs, type StoreSpec } from "./helpers.js";
@@ -31,6 +31,21 @@ async function all(
     cursor = page.next_cursor;
   } while (cursor !== null);
   return items;
+}
+
+/**
+ * Make the next write of evidence records fail, as a dropped connection does, and leave later writes alone.
+ *
+ * @param g (SelfGraph): the graph whose store fails.
+ * @return (void): nothing.
+ */
+function failNextEvidenceWrite(g: SelfGraph): void {
+  const original = g.store.upsertNodes.bind(g.store);
+  const spy = vi.spyOn(g.store, "upsertNodes").mockImplementation(async (ns, label, rows, options) => {
+    if (label !== "Evidence") return original(ns, label, rows, options);
+    spy.mockRestore();
+    throw new Error("connection lost");
+  });
 }
 
 function suite(spec: StoreSpec) {
@@ -176,6 +191,49 @@ function suite(spec: StoreSpec) {
       await expect(created).rejects.toThrow(new ValidationError(message));
       await expect(g.relations.update(REL, { evidence: bad as never })).rejects.toThrow(new ValidationError(message));
     }
+  });
+
+  describe.skipIf(spec.transactional)("a write retried after its evidence write failed", () => {
+    it.each([0, 1, 2])("counts an insert once, with %i earlier sources", async (earlier) => {
+      const g = open();
+      for (let i = 0; i < earlier; i++) await g.insert.facts(FACTS, { source_id: `earlier-${i}` });
+      failNextEvidenceWrite(g);
+      await expect(g.insert.facts(FACTS, { source_id: "retried" })).rejects.toThrow("connection lost");
+      const retried = await g.insert.facts(FACTS, { source_id: "retried" });
+      const expected = earlier + 1;
+      expect(retried.entities.map((e) => e.source_count)).toEqual([expected, expected]);
+      expect(retried.relations.map((r) => r.source_count)).toEqual([expected]);
+      expect((await g.entities.get("person:ada"))!.source_count).toBe(expected);
+      expect((await g.relations.get(REL))!.source_count).toBe(expected);
+      expect(await all((id, o) => g.entities.evidence(id, o), "person:ada")).toHaveLength(expected);
+      expect(await all((id, o) => g.relations.evidence(id, o), REL)).toHaveLength(expected);
+    });
+
+    it.each([0, 2])("counts a relation-only insert once, with %i earlier sources", async (earlier) => {
+      const g = open();
+      const relationOnly = { relations: FACTS.relations };
+      await g.insert.facts(FACTS, { source_id: "base" });
+      for (let i = 0; i < earlier; i++) await g.insert.facts(relationOnly, { source_id: `earlier-${i}` });
+      failNextEvidenceWrite(g);
+      await expect(g.insert.facts(relationOnly, { source_id: "retried" })).rejects.toThrow("connection lost");
+      const retried = await g.insert.facts(relationOnly, { source_id: "retried" });
+      const expected = earlier + 2;
+      expect(retried.relations.map((r) => r.source_count)).toEqual([expected]);
+      expect((await g.relations.get(REL))!.source_count).toBe(expected);
+      expect(await all((id, o) => g.relations.evidence(id, o), REL)).toHaveLength(expected);
+      expect((await g.entities.get("person:ada"))!.source_count).toBe(1);
+    });
+
+    it("counts a relation update once", async () => {
+      const g = open();
+      await g.insert.facts(FACTS, { source_id: "s1" });
+      const evidence = [{ source_id: "s2", quote: "works there" }];
+      failNextEvidenceWrite(g);
+      await expect(g.relations.update(REL, { evidence })).rejects.toThrow("connection lost");
+      expect((await g.relations.update(REL, { evidence })).source_count).toBe(2);
+      expect((await g.relations.get(REL))!.source_count).toBe(2);
+      expect(await all((id, o) => g.relations.evidence(id, o), REL)).toHaveLength(2);
+    });
   });
 
   it.runIf(spec.name === "hydradb")(

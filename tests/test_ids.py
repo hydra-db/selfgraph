@@ -55,6 +55,8 @@ def test_quote_label():
     assert ids.quote_label("WORKS_AT") == "WORKS_AT"
     assert ids.quote_label("Graph Database") == "`Graph Database`"
     assert ids.quote_label("we`ird") == "`we``ird`"
+    assert ids.quote_label("a\n") == "`a\n`"
+    assert ids.quote_label("Person\n") == "`Person\n`"
 
 
 def test_explicit_entity_ids_are_canonicalized_like_derived_ones():
@@ -119,9 +121,49 @@ def test_names_without_combining_marks_keep_their_ids():
     assert ids.entity_id("Person", "Bob \U0001f600") == "person:bob"
     assert ids.entity_id("Person", "Bob \u2764\ufe0f") == "person:bob"
     assert ids.entity_id("Thing", "1\ufe0f\u20e3 first") == "thing:1-first"
-    assert ids.entity_id("Language", "C++") == "language:c"
     assert ids.entity_id("Company", "Acme, Inc.") == "company:acme"
     assert ids.normalize_rel_type("Works-At!!") == "WORKS_AT"
+
+
+def test_plus_and_sharp_stay_in_derived_ids():
+    names = ["C++", "C#", "C", "F#", "F", "Disney+", "Disney", "Notepad++", "Notepad"]
+    derived = [ids.entity_id("Language", name) for name in names]
+    assert derived == [
+        "language:c-plus-plus",
+        "language:c-sharp",
+        "language:c",
+        "language:f-sharp",
+        "language:f",
+        "language:disney-plus",
+        "language:disney",
+        "language:notepad-plus-plus",
+        "language:notepad",
+    ]
+    assert len(set(derived)) == len(names)
+
+
+def test_plus_and_sharp_ids_ignore_spacing_and_case():
+    assert {ids.entity_id("Language", name) for name in ["C++", "c ++", "C + +", "C plus plus", "c  PLUS  Plus"]} == {
+        "language:c-plus-plus"
+    }
+    assert {ids.entity_id("Language", name) for name in ["C#", "c #", "C Sharp", "C\u200b#"]} == {"language:c-sharp"}
+    assert ids.entity_id("Service", "Disney+") == ids.entity_id("Service", "Disney Plus")
+
+
+def test_plus_and_sharp_inside_and_around_names():
+    assert ids.entity_id("Thing", "A+B") == "thing:a-plus-b"
+    assert ids.entity_id("Thing", "a#b") == "thing:a-sharp-b"
+    assert ids.entity_id("Thing", "#1") == "thing:sharp-1"
+    assert ids.entity_id("Thing", "+1") == "thing:plus-1"
+    assert ids.entity_id("Thing", "+") == "thing:plus"
+    assert ids.entity_id("Thing", "#") == "thing:sharp"
+    assert ids.entity_id("Thing", "++") == "thing:plus-plus"
+    assert ids.entity_id("Company", "Google+ Inc.") == "company:google-plus"
+    assert ids.entity_id("Company", "The Disney+ Co") == "company:disney-plus"
+    assert ids.entity_id("Company", "AT&T") == "company:at-t"
+    assert ids.entity_id("Person", "Bob 😀") == "person:bob"
+    assert ids.entity_id("Thing", "😀") == "thing:😀"
+    assert ids.entity_id("Thing", "＋") == "thing:＋"
 
 
 def test_combining_marks_follow_one_pinned_table():

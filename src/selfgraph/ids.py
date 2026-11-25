@@ -85,6 +85,24 @@ def _reject_proto_keys(value: Any) -> Any:
     return value
 
 
+def _require_json_depth(name: str, value: object) -> None:
+    """Bound the nesting of a raw JSON value without recursing, so it can run before pydantic walks the value.
+
+    @param name (str): the field name for error messages.
+    @param value (object): the raw input, traversed through mappings and sequences.
+    @return (None): nothing; raises ValidationError past the depth that _require_clean_json allows.
+    """
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > _MAX_JSON_DEPTH:
+            raise ValidationError(f"{name} is nested too deeply; keep it under {_MAX_JSON_DEPTH} levels")
+        if isinstance(item, Mapping):
+            pending.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list | tuple):
+            pending.extend((child, depth + 1) for child in item)
+
+
 def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: bool = True) -> None:
     """Validate a stored JSON value: bounded nesting, clean string keys, and UTF-8-emittable string values.
 
@@ -128,6 +146,21 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
             _require_clean_json(name, item, depth + 1, safe_ints=safe_ints)
     else:
         raise ValidationError(f"{name} cannot hold {type_name(value)} values; use plain JSON")
+
+
+def number_text(value: int | float) -> str:
+    """Render a number the way the TypeScript port does in a message: a whole number in the safe range has no fraction.
+
+    @param value (int | float): the number.
+    @return (str): the text, such as 0, 2.5, or 1e+16.
+    """
+    try:
+        number = float(value)
+    except OverflowError:
+        return "inf" if value > 0 else "-inf"
+    if number.is_integer() and abs(number) <= MAX_SAFE_INTEGER and str(number) != "-0.0":
+        return str(int(number))
+    return repr(number)
 
 
 def type_name(value: object) -> str:
@@ -180,7 +213,7 @@ def _require_unit(label: str, value: object, *, finite: bool = False) -> None:
     if finite and not math.isfinite(value):
         raise ValidationError(f"{label} must be a finite number")
     if not 0.0 <= value <= 1.0:
-        raise ValidationError(f"{label} must be between 0 and 1, got {value}")
+        raise ValidationError(f"{label} must be between 0 and 1, got {number_text(value)}")
 
 
 def _require_namespace(value: object) -> None:
@@ -211,6 +244,7 @@ _MARK = re.compile(f"[{MARK_CLASS}]")
 _FORMAT = re.compile(f"[{FORMAT_CLASS}]")
 _PUNCT = re.compile(rf"[^{WORD_CLASS}\s{MARK_CLASS}]+")
 _NON_IDENT = re.compile(rf"[^{WORD_CLASS}{MARK_CLASS}]+")
+_SYMBOL_WORDS = (("+", " plus "), ("#", " sharp "))
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _DIGIT_LETTER = re.compile(r"(?<=[0-9])(?=[A-Z])")
 _ENTITY_SUFFIXES = frozenset(
@@ -322,6 +356,17 @@ def _is_org_type(type: str) -> bool:
     return slug(normalize_text(type)) in _ORG_TYPES
 
 
+def _spell_symbols(text: str) -> str:
+    """Spell out the symbols a derived id keeps as words, so C++, C#, and C stay three names.
+
+    @param text (str): the text to spell out.
+    @return (str): the text with each of those symbols replaced by its word, set apart by spaces.
+    """
+    for symbol, word in _SYMBOL_WORDS:
+        text = text.replace(symbol, word)
+    return text
+
+
 def _canonical_name(type: str, name: str) -> str:
     """Canonicalise an entity name so cross-document surface variants collapse.
 
@@ -329,7 +374,7 @@ def _canonical_name(type: str, name: str) -> str:
     @param name (str): the raw entity name.
     @return (str): the canonical hyphenated form.
     """
-    words = _PUNCT.sub(" ", normalize_text(lower(_FORMAT.sub("", name).strip()))).split()
+    words = _PUNCT.sub(" ", _spell_symbols(normalize_text(lower(_FORMAT.sub("", name).strip())))).split()
     if _is_org_type(type):
         if words and words[0] == "the":
             words = words[1:]
@@ -593,7 +638,7 @@ def quote_label(name: str) -> str:
     """
     if not name or not name.strip():
         raise ValidationError("label / type names cannot be empty")
-    if _IDENT.match(name):
+    if _IDENT.fullmatch(name):
         return name
     escaped = name.replace("`", "``")
     return f"`{escaped}`"

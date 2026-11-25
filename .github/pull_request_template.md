@@ -2,11 +2,26 @@
 
 ## Summary
 
-## Linked issue
+<!-- Two or three nonempty lines, at most 400 characters in all. Everything else goes in the block below. -->
+
+<details>
+<summary>Implementation details</summary>
+
+### Decisions
+
+None.
+
+### Validation
+
+### Limits
+
+None.
+
+### Linked issue
 
 Closes #
 
-## AI Assistance
+### AI Assistance
 
 <!-- List any AI tools used to prepare this PR (model and reasoning effort), or write "None". Keep this section. -->
 
@@ -14,7 +29,7 @@ Closes #
 |-------|--------|
 | GPT-6 Astra | High |
 
-## Checklist
+### Checklist
 
 - [ ] Implements an issue a maintainer has `/approved`.
 - [ ] Small and scoped to that issue.
@@ -24,3 +39,5 @@ Closes #
 ### Breaking changes
 
 None.
+
+</details>

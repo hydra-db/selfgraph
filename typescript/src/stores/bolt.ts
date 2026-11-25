@@ -20,6 +20,7 @@ import neo4j, {
 import {
   connectionReason,
   errorMessage,
+  escapeControls,
   maskUri,
   redactUri,
   requireEncodedUserinfo,
@@ -158,7 +159,7 @@ export function queryError(
   if (transient(`${errorCode(exc)} ${message}`.toLowerCase())) {
     return new TransientError(`${engine} transaction conflict: ${message}`, { cause: exc });
   }
-  return new StoreError(`${engine} query failed: ${syntaxDetail(exc) ?? message}`, { cause: exc });
+  return new StoreError(`${engine} query failed: ${escapeControls(syntaxDetail(exc) ?? message)}`, { cause: exc });
 }
 
 /**

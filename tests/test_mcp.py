@@ -388,6 +388,74 @@ def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, ar
     }
 
 
+MCP_ERROR_CASES = [
+    ("retrieve", {"query": "x", "k": 0}, "invalid arguments: k: must be >= 1", "k"),
+    ("retrieve", {"query": "x", "max_nodes": -1}, "invalid arguments: max_nodes: must be >= 1", "max_nodes"),
+    ("retrieve", {"query": "x", "budget_tokens": 0}, "invalid arguments: budget_tokens: must be >= 1", "budget_tokens"),
+    ("retrieve", {"query": "x", "k": 9007199254740992}, "invalid arguments: k: must be <= 9007199254740991", "k"),
+    ("list_entities", {"limit": -9007199254740992}, "invalid arguments: limit: must be >= -9007199254740991", "limit"),
+    (
+        "retrieve",
+        {"query": "x", "as_of": "soon"},
+        "invalid as_of: 'soon' is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)",
+        "as_of",
+    ),
+    ("check_answerable", {"question": "x", "depth": 0}, "invalid arguments: depth: must be >= 1", "depth"),
+    ("maintenance_decay", {"half_life_days": 0}, "half_life_days must be greater than 0, got 0", None),
+    ("maintenance_decay", {"half_life_days": -2.0}, "half_life_days must be greater than 0, got -2", None),
+    (
+        "maintenance_decay",
+        {"now": "soon"},
+        "invalid now: 'soon' is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)",
+        "now",
+    ),
+    ("maintenance_prune", {"min_relevance": 2}, "min_relevance must be between 0 and 1, got 2", None),
+    (
+        "maintenance_prune",
+        {"older_than": "soon"},
+        "invalid older_than: 'soon' is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)",
+        "older_than",
+    ),
+    (
+        "insert_facts",
+        {"facts": {}, "resolver": "bogus"},
+        "invalid arguments: resolver: expected 'exact', 'default', 'fuzzy' or 'llm'",
+        "resolver",
+    ),
+    (
+        "insert_text",
+        {"text": "x", "resolver": "bogus"},
+        "invalid arguments: resolver: expected 'exact', 'default', 'fuzzy' or 'llm'",
+        "resolver",
+    ),
+    (
+        "create_preference",
+        {"subject_entity": "t:a", "key": "k", "value_entity": "t:b", "strength": 2},
+        "preference strength must be between 0 and 1, got 2",
+        None,
+    ),
+    (
+        "create_relation",
+        {"from_entity": "t:a", "type": "R", "to_entity": "t:b", "evidence": [{"source_id": "s", "confidence": 2}]},
+        "evidence confidence must be between 0 and 1, got 2",
+        None,
+    ),
+    (
+        "graph_diff",
+        {"since": "soon"},
+        "invalid since: 'soon' is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)",
+        "since",
+    ),
+]
+
+
+@needs_mcp
+@pytest.mark.parametrize(("tool", "args", "message", "field"), MCP_ERROR_CASES)
+def test_330_bad_arguments_give_the_same_error_text_and_field_as_typescript(server, tool, args, message, field):
+    failure = tool_failure(server, tool, args)
+    assert (failure["error"], failure["code"], failure.get("field")) == (message, "invalid_argument", field)
+
+
 @needs_mcp
 def test_unknown_tool_is_a_structured_invalid_argument_error(server):
     assert tool_failure(server, "list_entitys", {}) == {

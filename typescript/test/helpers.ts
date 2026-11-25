@@ -255,6 +255,45 @@ export async function interruptWrite(
   }
 }
 
+export const STORE_WRITES = [
+  "upsertNode",
+  "upsertNodes",
+  "createEdge",
+  "createEdges",
+  "deleteNode",
+  "deleteNodes",
+  "deleteNodesBy",
+  "deleteEdges",
+  "deleteEdgesTouchingByType",
+] as const;
+
+/**
+ * Run a function while counting the store writes it makes, and fail the one at an index, as a lost connection does.
+ *
+ * @param g (SelfGraph): the graph on an auto-commit store.
+ * @param cut (number | null): the index of the write to fail, or null to only count.
+ * @param body (() => Promise<void>): the function to run.
+ * @return (Promise<string[]>): the names of the writes made, the failed one included.
+ */
+export async function countStoreWrites(g: SelfGraph, cut: number | null, body: () => Promise<void>): Promise<string[]> {
+  const store = g.store as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const calls: string[] = [];
+  const spies = STORE_WRITES.map((name) => {
+    const original = store[name]!.bind(g.store);
+    return vi.spyOn(store, name).mockImplementation(async (...args: unknown[]) => {
+      calls.push(name);
+      if (calls.length - 1 === cut) throw new Error("connection lost");
+      return original(...args);
+    });
+  });
+  try {
+    await body();
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
+  return calls;
+}
+
 /**
  * Build a WORKS_AT relation input, dated to January 1 of a year when one is given.
  *

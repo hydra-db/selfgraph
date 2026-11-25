@@ -248,6 +248,7 @@ export function assembleExtraction(
   const registry = new Map<string, RawEntity>();
   const canonical = new Map<boolean, { type: string; names: Map<string, RawEntity[]> }>();
   const rejected = new Set<string>();
+  const journal: Array<[string, RawEntity]> = [];
   const admit = (ent: RawEntity): boolean =>
     admitted(warnings, "entity", () => validateEntityIdentity(ids.entityId(ent.type, ent.name), ent.type, ent.name));
   /**
@@ -265,6 +266,26 @@ export function assembleExtraction(
     if (!names.has(name)) names.set(name, []);
     names.get(name)!.push(ent);
     registry.set(key, ent);
+    journal.push([key, ent]);
+  };
+  /**
+   * Unregister the entities added since a journal position, so a dropped item leaves none behind.
+   *
+   * @param mark (number): the journal length taken before the item resolved its names.
+   * @return (void): nothing.
+   */
+  const rollback = (mark: number): void => {
+    while (journal.length > mark) {
+      const [key, ent] = journal.pop()!;
+      registry.delete(key);
+      const org = ids.isOrgType(ent.type);
+      const { names } = canonical.get(org)!;
+      const name = ids.canonicalName(ent.type, ent.name);
+      const bucket = names.get(name)!;
+      bucket.pop();
+      if (!bucket.length) names.delete(name);
+      if (!names.size) canonical.delete(org);
+    }
   };
   /**
    * List the registered entities whose canonical name equals the canonical form of a name.
@@ -413,18 +434,26 @@ export function assembleExtraction(
   const preferences = new Map<string, Record<string, unknown>>();
   const stated = new Set<string>();
   for (const [index, pref] of [...rawPreferences, ...promoted].entries()) {
+    const mark = journal.length;
     const subjectId = resolve(pref.subject_name);
     const valueId = resolve(pref.value_name);
-    if (!(subjectId && valueId)) continue;
+    if (!(subjectId && valueId)) {
+      rollback(mark);
+      continue;
+    }
     const triple = JSON.stringify([subjectId, pref.stance, valueId]);
     if (index >= rawPreferences.length && stated.has(triple)) continue;
-    stated.add(triple);
     let pid = "";
     const valid = admitted(warnings, "preference", () => {
       validateStrength(pref.strength);
       pid = ids.preferenceId(subjectId, pref.stance, pref.key, valueId);
     });
-    if (valid && !preferences.has(pid)) {
+    if (!valid) {
+      rollback(mark);
+      continue;
+    }
+    stated.add(triple);
+    if (!preferences.has(pid)) {
       preferences.set(pid, {
         subject_entity: subjectId,
         stance: pref.stance,
@@ -438,7 +467,18 @@ export function assembleExtraction(
 
   const decisions = new Map<string, Record<string, unknown>>();
   for (const dec of rawDecisions) {
+    const mark = journal.length;
     const actorId = resolve(dec.actor_name);
+    let tid = "";
+    const valid = admitted(warnings, "decision", () => {
+      requireOptionalText("decision summary", dec.summary);
+      requireOptionalText("decision rationale", dec.rationale);
+      tid = ids.decisionId(actorId, dec.title);
+    });
+    if (!valid) {
+      rollback(mark);
+      continue;
+    }
     const stepIds: string[] = [];
     for (const step of dec.steps ?? []) {
       const fromId = resolve(step.from_name, endpointTypes(step.type, "from"));
@@ -452,13 +492,7 @@ export function assembleExtraction(
         );
       }
     }
-    let tid = "";
-    const valid = admitted(warnings, "decision", () => {
-      requireOptionalText("decision summary", dec.summary);
-      requireOptionalText("decision rationale", dec.rationale);
-      tid = ids.decisionId(actorId, dec.title);
-    });
-    if (valid && !decisions.has(tid)) {
+    if (!decisions.has(tid)) {
       decisions.set(tid, {
         title: dec.title,
         steps: stepIds,

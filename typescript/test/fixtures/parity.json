@@ -4038,7 +4038,12 @@
   "has`tick": "`has``tick`",
   "_x9": "_x9",
   "9x": "`9x`",
-  "\u00dcnicode": "`\u00dcnicode`"
+  "\u00dcnicode": "`\u00dcnicode`",
+  "a\n": "`a\n`",
+  "Person\n": "`Person\n`",
+  "a\t": "`a\t`",
+  "Person\t": "`Person\t`",
+  "a\u0001": "`a\u0001`"
  },
  "dumps_sorted": [
   [
@@ -6490,7 +6495,7 @@
    10,
    45,
    13,
-   40
+   38
   ]
  },
  "extract": [

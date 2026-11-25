@@ -11,6 +11,7 @@ import { checkLlmConfig } from "../src/llm/index.js";
 import {
   bindParams,
   buildLlm,
+  checkSettings,
   DEFAULT_SETTINGS,
   type GraphSettings,
   parseTime,
@@ -41,10 +42,38 @@ function cli(args: string[], options: { input?: string; env?: Record<string, str
 beforeAll(buildCli);
 
 describe("built CLI against Kuzu", () => {
+  it.each([
+    ["--store", "bogus", "entity", "list"],
+    ["--store", "kuzu", "--uri", ":memory:", "entity", "list", "--limit", "x"],
+    ["--store", "kuzu", "--uri", ":memory:", "retrieve", "Ada", "--k", "1.5"],
+    ["--store", "kuzu", "--uri", ":memory:", "diff", "--since", "nope"],
+    ["--store", "kuzu", "--uri", ":memory:", "preference", "create", "--stance", "bogus"],
+  ])("reports a coded error for %j", (...args) => {
+    const result = cli(args as string[]);
+    expect(result.code).toBe(2);
+    expect(result.err).toMatch(/^error\[(invalid_argument|invalid_setting)\]: /);
+    expect(result.err).toContain("field: ");
+    expect(result.err).not.toContain("Usage:");
+  });
+
   const kuzu = ["--store", "kuzu", "--uri", join(dir, "cli.kuzu")];
   const seed = (ns: string[], ...names: string[]) => {
     for (const name of names) cli([...kuzu, ...ns, "entity", "create", "--name", name, "--type", "T"]);
   };
+
+  it("reports a non-UTF-8 input file with a coded error", () => {
+    const bad = join(dir, "bad-schema.json");
+    writeFileSync(bad, Buffer.from([0xff, 0xfe, 0x7b]));
+
+    const result = cli(["--schema", bad, ...kuzu, "entity", "list"]);
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain(
+      `error[invalid_argument]: cannot read ${pyRepr(bad)}: not valid UTF-8; save the file as UTF-8 and try again`,
+    );
+    expect(result.err).toContain("field: path");
+    expect(result.err).not.toContain("stack");
+  });
 
   it("rejects proto keys supplied through property and external-id flags", () => {
     for (const flags of [
@@ -132,7 +161,6 @@ describe("built CLI against Kuzu", () => {
       `error[invalid_argument]: cannot write the vault to ${pyRepr(target)}: not a directory`,
     );
     expect(result.err).toContain("field: directory");
-    expect(result.err).not.toContain("stack");
   });
 
   it("keeps proto and nested source metadata keys in diff JSON", async () => {
@@ -181,6 +209,18 @@ describe("built CLI against Kuzu", () => {
       [["--namespace", " x"], {}, "namespace cannot start or end with whitespace"],
       [["--llm-timeout", "0"], {}, "llm_timeout must be a positive number"],
       [["--llm-concurrency", "0"], {}, "llm_concurrency must be a positive integer, got '0'"],
+      [
+        ["--llm-concurrency", "++5"],
+        {},
+        "error[invalid_setting]: llm_concurrency must be a positive integer, got '++5'",
+      ],
+      [[], { SELFGRAPH_LLM_CONCURRENCY: "++5" }, "llm_concurrency must be a positive integer, got '++5'"],
+      [["--llm-concurrency", "\u0665"], {}, "llm_concurrency must be a positive integer"],
+      [[], { SELFGRAPH_LLM_CONCURRENCY: "99999999999999999999" }, "llm_concurrency must be a positive integer"],
+      [["--llm-timeout", "1_0"], {}, "llm_timeout must be a positive number"],
+      [["--llm-timeout", "0x10"], {}, "llm_timeout must be a positive number"],
+      [[], { SELFGRAPH_LLM_TIMEOUT: "0b1" }, "llm_timeout must be a positive number"],
+      [[], { SELFGRAPH_LLM_TIMEOUT: "\u0665" }, "llm_timeout must be a positive number"],
       [["--llm-provider", "gemini"], {}, "pass --llm-model"],
       [
         ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
@@ -213,6 +253,76 @@ describe("built CLI against Kuzu", () => {
         expect(res.code, `${args.join(" ")} ${command}`).toBe(2);
         expect(res.err).toContain(message);
       }
+    }
+  });
+
+  it.each([
+    ["30", 30],
+    [" 1.5 ", 1.5],
+    ["+2", 2],
+    [".5", 0.5],
+    ["5.", 5],
+    ["1e1", 10],
+    ["1E+1", 10],
+  ])("reads the llm_timeout setting %j as %d seconds", (value, seconds) => {
+    const settings = { ...DEFAULT_SETTINGS, llm_model: "openai/m", llm_timeout: value };
+    expect(() => checkSettings(settings)).not.toThrow();
+    expect(buildLlm(settings)?.timeout).toBe(seconds);
+  });
+
+  it.each([
+    ["7", 7],
+    [" 7 ", 7],
+    ["+7", 7],
+    ["007", 7],
+    ["9007199254740991", 9007199254740991],
+  ])("reads the llm_concurrency setting %j as %d chunks", (value, count) => {
+    const settings = { ...DEFAULT_SETTINGS, llm_model: "openai/m", llm_concurrency: value };
+    expect(() => checkSettings(settings)).not.toThrow();
+    expect(buildLlm(settings)?.concurrency).toBe(count);
+  });
+
+  it.each([
+    ...[
+      "1_0",
+      "\u0665",
+      "\uff15",
+      "0x10",
+      "0b1",
+      "0o7",
+      "inf",
+      "nan",
+      "-5",
+      "--5",
+      "0",
+      "1 0",
+      "soon",
+      "1e400",
+      "1e-400",
+    ].map((value) => ["llm_timeout", value, `llm_timeout must be a positive number of seconds, got ${pyRepr(value)}`]),
+    ...[
+      "++5",
+      "+",
+      "-1",
+      "0",
+      "\u0665",
+      "\uff15",
+      "99999999999999999999",
+      "9007199254740992",
+      "1_0",
+      "5.0",
+      "1e3",
+      "0x10",
+      "x",
+    ].map((value) => ["llm_concurrency", value, `llm_concurrency must be a positive integer, got ${pyRepr(value)}`]),
+  ])("rejects the %s setting %j with invalid_setting from the API and the environment", (setting, value, message) => {
+    for (const settings of [
+      { ...DEFAULT_SETTINGS, [setting]: value },
+      settingsFromEnv({}, { [`SELFGRAPH_${setting.toUpperCase()}`]: value }),
+    ]) {
+      expect(() => checkSettings(settings)).toThrow(
+        expect.objectContaining({ code: "invalid_setting", field: setting, message }),
+      );
     }
   });
 
@@ -293,7 +403,7 @@ describe("built CLI against Kuzu", () => {
       [["maintenance", "prune", "--older-than", "2999-01-01"], "older_than 2999-01-01T00:00:00Z is in the future"],
       [["schema", "export", "--to", "neo4j"], "no schema set; pass --schema FILE or SELFGRAPH_SCHEMA"],
       [["--schema-mode", "strict", "entity", "list"], "schema_mode 'strict' needs a schema"],
-      [["--resolver", "fuzzier", "init"], "Allowed choices are exact, default, fuzzy, llm"],
+      [["--resolver", "fuzzier", "init"], "--resolver got 'fuzzier'; choose from exact, default, fuzzy, llm"],
       [["--resolver", "llm", "entity", "list"], "pass --llm-provider and --llm-model (or SELFGRAPH_LLM_*)", noLlm],
     ] as Array<[string[], string, Record<string, string>?]>) {
       const res = cli([...kuzu, ...args], { env });

@@ -88,6 +88,15 @@ async def _api_settings(store_kind, uri, password, embed):
     return out.getvalue()
 
 
+def _text(stream):
+    """Read everything written to a stream made by _cli.
+
+    @param stream (io.TextIOWrapper): the stream.
+    @return (str): the text.
+    """
+    return stream.buffer.getvalue().decode("utf-8")
+
+
 def _cli(store_kind, uri, password):
     """Run the CLI against the dead store with a marker password and capture both streams.
 
@@ -98,14 +107,14 @@ def _cli(store_kind, uri, password):
     """
     from selfgraph.cli import main
 
-    out, err = io.StringIO(), io.StringIO()
+    out, err = (io.TextIOWrapper(io.BytesIO(), encoding="utf-8", write_through=True) for _ in range(2))
     argv = ["--store", store_kind, "--uri", uri, "--auth", f"neo4j:{password}", "entity", "list"]
     try:
         with redirect_stdout(out), redirect_stderr(err):
             main(argv)
     except Exception as exc:  # noqa: BLE001
-        return out.getvalue() + err.getvalue() + _chain_text(exc)
-    return out.getvalue() + err.getvalue()
+        return _text(out) + _text(err) + _chain_text(exc)
+    return _text(out) + _text(err)
 
 
 async def _mcp(store_kind, uri, password):

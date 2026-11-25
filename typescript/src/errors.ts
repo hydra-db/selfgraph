@@ -468,6 +468,38 @@ export function errorMessage(exc: unknown): string {
 }
 
 /**
+ * Render control characters as backslash escapes, the way repr shows quoted input.
+ *
+ * Engine error text can quote the query, so a raw escape byte in it would run in a
+ * terminal or log viewer. Newline, carriage return, and tab get their short forms;
+ * other C0/C1 controls, DEL, lone surrogates, and bidi/format and zero-width
+ * characters get \\xNN or \\uNNNN.
+ *
+ * @param text (string): the text, such as an engine error message.
+ * @return (string): the text with control characters escaped.
+ */
+export function escapeControls(text: string): string {
+  return Array.from(text, (ch) => {
+    if (ch === "\n") return "\\n";
+    if (ch === "\r") return "\\r";
+    if (ch === "\t") return "\\t";
+    const code = ch.codePointAt(0)!;
+    if (
+      code < 0x20 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      (code >= 0xd800 && code <= 0xdfff) ||
+      (code >= 0x200b && code <= 0x200f) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      code === 0xfeff
+    ) {
+      return code < 0x100 ? `\\x${code.toString(16).padStart(2, "0")}` : `\\u${code.toString(16).padStart(4, "0")}`;
+    }
+    return ch;
+  }).join("");
+}
+
+/**
  * Wrap an unexpected error that reached a boundary as a coded InternalError with every URI's credentials masked.
  *
  * @param exc (unknown): the unmapped error.

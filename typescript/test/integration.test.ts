@@ -2304,6 +2304,15 @@ describe("property values", () => {
         relations: [{ from_entity: e.id, type: "R", to_entity: "company:acme", properties: { " ": 1 } }],
       }),
     ).rejects.toThrow("properties keys cannot be empty");
+    for (const bad of [{ "": "v" }, { "  ": "v" }] as Array<Record<string, string>>) {
+      await expect(g.entities.create("B", "T", { external_ids: bad })).rejects.toMatchObject({
+        message: "external_ids keys cannot be empty or whitespace",
+        field: "external_ids",
+      });
+      await expect(g.entities.update(e.id, { external_ids: bad })).rejects.toThrow(
+        "external_ids keys cannot be empty or whitespace",
+      );
+    }
     await expect(g.relations.update(rel.id, { set_properties: { "": 1 } })).rejects.toThrow(
       "set_properties keys cannot be empty",
     );

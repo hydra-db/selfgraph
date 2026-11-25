@@ -313,8 +313,12 @@ class SelfGraph:
             await close()
 
     async def __aenter__(self) -> SelfGraph:
-        """Initialize the store and return the graph for use in an async with block."""
-        await self.initialize()
+        """Initialize the store and return the graph for use in an async with block, closing it when that fails."""
+        try:
+            await self.initialize()
+        except BaseException:
+            await self.close()
+            raise
         return self
 
     async def __aexit__(self, *exc: object) -> None:

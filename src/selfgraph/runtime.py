@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import os
 import re
 import sys
+import threading
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, TypeVar
@@ -33,7 +36,7 @@ from .errors import (
     surface_hint,
 )
 from .extraction.prompts import check_prompts
-from .ids import _require_namespace
+from .ids import _MAX_JSON_DEPTH, MAX_SAFE_INTEGER, _require_clean_json, _require_namespace
 from .llm.base import check_llm_config
 from .models import (
     LLM_CONCURRENCY,
@@ -131,6 +134,21 @@ def settings_from_env(**overrides: Any) -> GraphSettings:
     return GraphSettings(**values)
 
 
+def _stdin_utf8() -> str:
+    """Read stdin as strict UTF-8, whatever error handler the locale chose.
+
+    `sys.stdin` decodes with the locale's handler, which is surrogateescape on
+    macOS, so invalid bytes would arrive as lone surrogates instead of raising
+    and the caller could not report them as bad input.
+
+    @return (str): the decoded text.
+    """
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read().encode("utf-8", "surrogateescape").decode("utf-8")
+    return buffer.read().decode("utf-8")
+
+
 def read_text(path: str) -> str:
     """Read a UTF-8 text file, or stdin when the path is '-'.
 
@@ -138,7 +156,14 @@ def read_text(path: str) -> str:
     @return (str): the text.
     """
     try:
-        return sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+        if path == "-":
+            return _stdin_utf8()
+        return Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(
+            f"cannot read {path!r}: not valid UTF-8; save the file as UTF-8 and try again",
+            field="path",
+        ) from exc
     except OSError as exc:
         raise ValidationError(f"cannot read {path!r}: {exc.strerror or exc}") from exc
 
@@ -152,26 +177,41 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not a JSON value")
 
 
-def parse_json(text: str, where: str = "") -> Any:
+def parse_json(text: str, where: str = "", field: str | None = None) -> Any:
     """Parse strict JSON text, naming where it came from in the error.
+
+    A document nested past `_MAX_JSON_DEPTH` raises instead of returning a value, so an
+    error cannot leak downstream as data. The depth counts the parsed value itself, not
+    the wrapper the caller typed, so `{"k": <deep>}` and `<deep>` agree.
 
     @param text (str): the JSON text.
     @param where (str): appended to "invalid JSON" in the error, e.g. " in 'graph.json'".
+    @param field (str | None): the argument or key at fault, when one is.
     @return (Any): the parsed value.
     """
     try:
-        return json.loads(text, parse_constant=_reject_constant)
+        value = json.loads(text, parse_constant=_reject_constant)
     except ValueError as exc:
-        raise ValidationError(f"invalid JSON{where}: {exc}") from exc
+        raise ValidationError(f"invalid JSON{where}: {exc}", field=field) from exc
+    try:
+        _require_clean_json("JSON", value, safe_ints=False)
+    except ValidationError as exc:
+        if "nested too deeply" not in str(exc):
+            raise
+        raise ValidationError(
+            f"invalid JSON{where}: nested too deeply; keep it under {_MAX_JSON_DEPTH} levels", field=field
+        ) from exc
+    return value
 
 
-def read_json(path: str) -> Any:
+def read_json(path: str, field: str = "path") -> Any:
     """Read and parse a JSON file, or stdin when the path is '-'.
 
     @param path (str): the file path, or '-'.
+    @param field (str): the argument or key at fault, when the JSON inside is too deep.
     @return (Any): the parsed JSON.
     """
-    return parse_json(read_text(path), f" in {path!r}")
+    return parse_json(read_text(path), f" in {path!r}", field)
 
 
 def _json_setting(value: Any, what: str) -> Any:
@@ -184,8 +224,8 @@ def _json_setting(value: Any, what: str) -> Any:
     if not isinstance(value, str):
         return value
     if value.lstrip().startswith("{"):
-        return parse_json(value, f" in the inline {what}")
-    return read_json(value)
+        return parse_json(value, f" in the inline {what}", what)
+    return read_json(value, what)
 
 
 _PATTERN_NAMES = re.compile(
@@ -478,6 +518,10 @@ def _build_store(settings: GraphSettings) -> GraphStore:
     return HydraDBStore(settings.uri, auth=settings.auth, database=settings.database)
 
 
+_LLM_TIMEOUT_NUMBER = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_LLM_CONCURRENCY_NUMBER = re.compile(r"\+?([0-9]+)")
+
+
 def _llm_timeout(value: float | str | None) -> float:
     """Parse the LLM timeout setting: seconds as a positive number, default 120.
 
@@ -486,9 +530,12 @@ def _llm_timeout(value: float | str | None) -> float:
     """
     if value is None or value == "":
         return LLM_TIMEOUT
+    text = value.strip() if isinstance(value, str) else value
+    if isinstance(text, bool) or (isinstance(text, str) and not _LLM_TIMEOUT_NUMBER.fullmatch(text)):
+        text = math.nan
     try:
-        seconds = float(value)
-    except (TypeError, ValueError):
+        seconds = float(text)
+    except (TypeError, ValueError, OverflowError):
         seconds = math.nan
     if not seconds > 0 or math.isinf(seconds):
         raise ValidationError(
@@ -508,9 +555,11 @@ def _llm_concurrency(value: int | str | None) -> int:
     if value is None or value == "":
         return LLM_CONCURRENCY
     text = value.strip() if isinstance(value, str) else value
-    if isinstance(text, str) and text.lstrip("+").isdecimal():
-        text = int(text)
-    if type(text) is not int or text < 1:
+    if isinstance(text, str):
+        match = _LLM_CONCURRENCY_NUMBER.fullmatch(text)
+        digits = match[1].lstrip("0") if match else None
+        text = int(digits or "0") if digits is not None and len(digits) <= len(str(MAX_SAFE_INTEGER)) else None
+    if type(text) is not int or not 1 <= text <= MAX_SAFE_INTEGER:
         raise ValidationError(
             f"llm_concurrency must be a positive integer, got {value!r}",
             code="invalid_setting",
@@ -621,26 +670,52 @@ def check_settings(settings: GraphSettings) -> GraphSettings:
 
 
 def build_graph(settings: GraphSettings) -> SelfGraph:
-    """Construct a SelfGraph from settings; does not call initialize.
+    """Construct a SelfGraph from settings, closing the store when a later step fails; does not call initialize.
 
     @param settings (GraphSettings): the resolved store, LLM, and schema configuration.
     @return (SelfGraph): the constructed graph.
     """
     settings = check_settings(settings)
     namespace = "default" if settings.namespace is None else settings.namespace
-    return SelfGraph(
-        store=_build_store(settings),
-        llm=_build_llm(settings),
-        instructions=settings.instructions,
-        prompts=settings.prompts,
-        namespace=namespace,
-        schema=settings.schema,
-        schema_mode=settings.schema_mode or "warn",
-        resolver=settings.resolver,
-        contradiction=settings.contradiction,
-        level=settings.level or "balanced",
-        max_tier=settings.max_tier or "max",
-    )
+    store = _build_store(settings)
+    try:
+        return SelfGraph(
+            store=store,
+            llm=_build_llm(settings),
+            instructions=settings.instructions,
+            prompts=settings.prompts,
+            namespace=namespace,
+            schema=settings.schema,
+            schema_mode=settings.schema_mode or "warn",
+            resolver=settings.resolver,
+            contradiction=settings.contradiction,
+            level=settings.level or "balanced",
+            max_tier=settings.max_tier or "max",
+        )
+    except BaseException:
+        _close_unused(store)
+        raise
+
+
+def _close_unused(store: GraphStore) -> None:
+    """Close a store before any query ran on it, synchronously, dropping an error from the close.
+
+    @param store (GraphStore): the store build_graph built.
+    @return (None): nothing.
+    """
+    discard = getattr(store, "_discard", None)
+    if discard is not None:
+        with suppress(Exception):
+            discard()
+        return
+
+    def close() -> None:
+        with suppress(Exception):
+            asyncio.run(store.close())
+
+    closing = threading.Thread(target=close, name="selfgraph-close-store")
+    closing.start()
+    closing.join()
 
 
 async def current_relation(graph: SelfGraph, rid: str, hint: str) -> Relation | None:

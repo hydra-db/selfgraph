@@ -112,6 +112,17 @@ def test_syntax_error_is_not_a_conflict():
     assert not isinstance(err.value, TransientError)
 
 
+def test_non_ascii_raw_cypher_fails_cleanly(caplog):
+    g = new_graph()
+    for query in ("\U0001f600", "RETURN '\U0001f600' +", "\U0001f600" * 40):
+        with pytest.raises(StoreError) as err:
+            run(g.run_cypher(query))
+        assert err.value.code == "query_failed"
+        assert "codec" not in str(err.value)
+    assert not [r for r in caplog.records if r.name == "neo4j.io" and "defunct" in r.getMessage()]
+    assert run(g.run_cypher("RETURN 1 AS x")).rows == [{"x": 1}]
+
+
 def test_run_cypher_path_properties():
     g = fresh_graph("path")
     run(

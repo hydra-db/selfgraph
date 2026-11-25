@@ -17,6 +17,7 @@ export interface Encoder {
 
 const CHARS_PER_TOKEN = 4;
 const WS_CHAR = new RegExp(`^[${PY_WS_CLASS}]$`, "u");
+const AS_SPACE = /[\u0085\ufeff]/g;
 const REPLACED = /^(?:\ufffd|[\ud800-\udfff])$/;
 
 let encoder: Encoder | null | undefined;
@@ -61,8 +62,15 @@ export function setTokenizer(custom: Encoder | null): void {
   loading = Promise.resolve();
 }
 
+/**
+ * Encode text as ordinary text, with U+0085 and U+FEFF as spaces, since the regex engines of the two SDKs disagree on whether they are whitespace.
+ *
+ * @param enc (Encoder): the tokenizer.
+ * @param text (string): the text to encode.
+ * @return (number[]): the tokens.
+ */
 function encode(enc: Encoder, text: string): number[] {
-  return enc.encode(text, [], []);
+  return enc.encode(text.replace(AS_SPACE, " "), [], []);
 }
 
 /**

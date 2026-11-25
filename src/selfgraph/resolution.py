@@ -142,13 +142,13 @@ def jaro_winkler(a: str, b: str) -> float:
 
 
 def token_jaccard(a: str, b: str) -> float:
-    """Score two texts by the Jaccard overlap of their casefolded content tokens.
+    """Score two texts by the Jaccard overlap of their casefolded content tokens, with + and # spelled out as words.
 
     @param a (str): the first text.
     @param b (str): the second text.
     @return (float): the overlap in [0, 1], 0 when either side has no tokens.
     """
-    ta, tb = _tokens(a), _tokens(b)
+    ta, tb = _tokens(_ids._spell_symbols(a)), _tokens(_ids._spell_symbols(b))
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / len(ta | tb)
@@ -170,7 +170,7 @@ def _words(name: str) -> list[str]:
     @param name (str): the entity name.
     @return (list[str]): the folded letter and digit runs, in order.
     """
-    return _ids._word_runs(_fold(name.strip()))
+    return _ids._word_runs(_ids._spell_symbols(_fold(name.strip())))
 
 
 def _distinguishers(words: list[str]) -> tuple[list[str], list[str], list[str]]:
@@ -1632,7 +1632,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str, caps: Mapping[str, Any] |
             event_time=event_time,
         )
         back_id = back.id or _ids.relation_id(back.from_entity, back.type, back.to_entity)
-        touching: set[str] = set()
+        touching: dict[str, set[str]] = {}
         reused = back_id == rw.id and not rw.dropped
         kept = not reused and (rw.existed or bool(split.sources) or _backed_elsewhere(rw, rec, siblings))
         if kept and not rw.existed:

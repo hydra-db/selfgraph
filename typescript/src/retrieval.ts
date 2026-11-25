@@ -743,7 +743,7 @@ async function collectDecisions(
 ): Promise<DecisionTrace[]> {
   if (!relationIds.size) return [];
   const tids = await ops.tracesTouchingRelations(store, ns, [...relationIds].sort(comparePy));
-  const traces = await ops.getTraces(store, ns, [...tids].sort(comparePy));
+  const traces = await ops.getTraces(store, ns, [...tids.keys()].sort(comparePy));
   return traces.filter(
     (t) =>
       asOf === null ||

@@ -325,7 +325,9 @@ A retired relation reads as described in [Relations](resources.md#relations).
 `relations.create`, or an insert with an effective time at or after its
 invalidation, reasserts it as the next revision. That revision is checked
 against what is current now. An insert with an earlier effective time leaves it
-retired, so replaying the same inputs is idempotent.
+retired, so replaying the same inputs is idempotent. Under `supersede`, a
+`relations.create` reassertion settles the relation's `max_count` endpoints
+again, so it ends the same relations an insert of that fact would.
 
 ## CLI and MCP
 

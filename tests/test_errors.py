@@ -24,7 +24,15 @@ from selfgraph import (
     TransientError,
 )
 from selfgraph._serde import decode_entity
-from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason, internal_error
+from selfgraph.errors import (
+    HINTS,
+    WARNING_HINTS,
+    ErrorCode,
+    SelfGraphError,
+    connection_reason,
+    escape_controls,
+    internal_error,
+)
 from selfgraph.llm.base import _fatal
 from selfgraph.mcp.server import run_cypher
 from selfgraph.resolution import ResolutionDecision
@@ -126,7 +134,12 @@ def _unreadable_decimal(monkeypatch, path):
 
     result = types.SimpleNamespace(get_column_names=lambda: ["v"], has_next=lambda: True, get_next=get_next)
     connection = types.SimpleNamespace(execute=lambda query, parameters=None: result)
-    driver = types.SimpleNamespace(Database=lambda path, **options: None, Connection=lambda database: connection)
+
+    class Database:
+        def __init__(self, path, read_only=False, **options):
+            pass
+
+    driver = types.SimpleNamespace(Database=Database, Connection=lambda database: connection)
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "kuzu", driver)
         store = KuzuStore(path)
@@ -338,6 +351,22 @@ def test_settings_fail_with_a_narrow_code(settings, code, field):
     with pytest.raises(SelfGraphError) as exc:
         check_settings(GraphSettings(**settings))
     assert (exc.value.code, exc.value.to_dict().get("field")) == (code, field)
+
+
+def test_query_failed_escapes_control_characters():
+    assert escape_controls("a\x1b[2Jb\nc\td\x00\x7f\x85e") == "a\\x1b[2Jb\\nc\\td\\x00\\x7f\\x85e"
+    assert escape_controls("a\u202eb") == "a\\u202eb"
+    assert escape_controls("a\u200bb\u200cc\u200dd\ufeffe") == "a\\u200bb\\u200cc\\u200dd\\ufeffe"
+    assert escape_controls("a\u2066b\u2069c") == "a\\u2066b\\u2069c"
+    assert escape_controls("hello world") == "hello world"
+    detail = _kuzu_error(RuntimeError("a\tb  c\x85d\u202ee"), "Kuzu query failed")
+    assert str(detail) == "Kuzu query failed: a\\tb c\\x85d\\u202ee"
+    assert "\t" not in str(detail) and "\x85" not in str(detail) and "\u202e" not in str(detail)
+    with pytest.raises(StoreError) as exc:
+        run(new_graph().run_cypher("RETURN (\x1b[2J"))
+    assert exc.value.code == "query_failed"
+    assert "\x1b" not in str(exc.value)
+    assert "\\x1b" in str(exc.value)
 
 
 @pytest.mark.parametrize("kind", ["list", "map"])

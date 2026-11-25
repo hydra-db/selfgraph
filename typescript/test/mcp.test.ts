@@ -500,6 +500,58 @@ describe("MCP tools over Kuzu", () => {
     expect(out.entity.id).toBe("person:bob");
   });
 
+  it("puts the object in result for the tools that can return null, found or not, as the Python server does", async () => {
+    await configure({ namespace: "mcp_395", schema: { entities: [{ name: "T" }] } });
+    await mcpOk("insert_facts", { facts: A_KNOWS_B });
+    const rel = await mcpOk("create_relation", { from_entity: "t:a", type: "KNOWS", to_entity: "t:b" });
+    const pref = await mcpOk("create_preference", { subject_entity: "t:a", key: "likes", value_entity: "t:b" });
+    const dec = await mcpOk("create_decision", { title: "Pick", steps: [rel.id] });
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const server = await buildServer();
+    const client = new Client({ name: "test", version: "0" });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    await client.connect(clientSide);
+    try {
+      const found: Array<[string, Record<string, unknown>, string | null]> = [
+        ["get_entity", { id: "t:a" }, "t:a"],
+        ["get_relation", { id: rel.id }, rel.id],
+        ["get_preference", { id: pref.id }, pref.id],
+        ["get_decision", { id: dec.id }, dec.id],
+        ["get_schema", {}, null],
+        ["get_schema", { format: "neo4j" }, null],
+      ];
+      for (const [name, args, id] of found) {
+        const res = await client.callTool({ name, arguments: args });
+        const text = JSON.parse((res.content as Array<{ text: string }>)[0]!.text);
+        expect(res.isError, name).toBeFalsy();
+        expect(Object.keys(res.structuredContent as object), name).toEqual(["result"]);
+        expect(res.structuredContent, name).toEqual({ result: text });
+        if (id !== null) expect((text as { id: string }).id, name).toBe(id);
+      }
+      for (const [name, id] of [
+        ["get_entity", "x:missing"],
+        ["get_relation", "relation:missing"],
+        ["get_preference", "preference:missing"],
+        ["get_decision", "decision:missing"],
+      ] as const) {
+        const res = await client.callTool({ name, arguments: { id } });
+        expect(res.structuredContent, name).toEqual({ result: null });
+        expect((res.content as Array<{ text: string }>)[0]!.text, name).toBe("null");
+      }
+      await configure();
+      const none = await client.callTool({ name: "get_schema", arguments: {} });
+      expect(none.structuredContent).toEqual({ result: null });
+      const failed = await client.callTool({ name: "get_entity", arguments: { id: "bad" } });
+      expect(failed.isError).toBe(true);
+      expect(failed.structuredContent).toMatchObject({ error_type: "ValidationError", tool: "get_entity" });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("serves the schema through get_schema in either format, and null without one", async () => {
     const schema = {
       entities: [{ name: "Person" }, { name: "Company" }],
