@@ -1677,6 +1677,23 @@ export async function kuzuReadOnly(): Promise<object> {
 }
 
 /**
+ * Read back a merge whose rewrite carries evidence and list the keys in the order each SDK prints them.
+ *
+ * @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+ * @return (Promise<unknown[]>): the keys of each stored rewrite and of each of its evidence records.
+ */
+async function mergeKeyOrder(graph: SelfGraph): Promise<unknown[]> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_merge_keys`, resolver: "default" });
+  await g.insert.facts({ entities: [{ type: "Person", name: "Ann Lee", aliases: ["Annie"] }] });
+  const quote = { source_id: "memo", quote: "Annie knows Ann Lee", confidence: 0.9 };
+  const relation = { from_entity: "person:annie", type: "KNOWS", to_entity: "person:ann-lee", evidence: [quote] };
+  await g.insert.facts({ entities: [{ type: "Person", name: "Annie" }], relations: [relation] });
+  const records = (await g.entities.merges("person:ann-lee")).items;
+  const rewrites = records.flatMap((record) => toJsonable(record.rewrites) as Array<Record<string, unknown>>);
+  return rewrites.map((rw) => [Object.keys(rw), (rw.evidence as Array<Record<string, unknown>>).map(Object.keys)]);
+}
+
+/**
  * Call MCP tools with text, boolean, and null arguments the servers must reject before running the tool.
  *
  * @return (Promise<object[]>): the error text, code, and field each call reports, or "accepted".
@@ -2132,6 +2149,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     out.facts_none = exc.message;
   }
   out.mcp_arguments = await mcpArgumentErrors();
+  out.merge_key_order = await mergeKeyOrder(graph);
   const flagErrors: string[] = [];
   for (const flag of ["false", 0]) {
     for (const call of [

@@ -1198,6 +1198,23 @@ MCP_ARGUMENT_CASES = [
 ]
 
 
+async def merge_key_order(graph):
+    """Read back a merge whose rewrite carries evidence and list the keys in the order each SDK prints them.
+
+    @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+    @return (list): the keys of each stored rewrite and of each of its evidence records.
+    """
+    g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_merge_keys", resolver="default")
+    await g.insert.facts({"entities": [{"type": "Person", "name": "Ann Lee", "aliases": ["Annie"]}]})
+    quote = {"source_id": "memo", "quote": "Annie knows Ann Lee", "confidence": 0.9}
+    relation = {"from_entity": "person:annie", "type": "KNOWS", "to_entity": "person:ann-lee", "evidence": [quote]}
+    await g.insert.facts({"entities": [{"type": "Person", "name": "Annie"}], "relations": [relation]})
+    rewrites = [
+        to_jsonable(rw) for record in (await g.entities.merges("person:ann-lee")).items for rw in record.rewrites
+    ]
+    return [[list(rw), [list(ev) for ev in rw["evidence"]]] for rw in rewrites]
+
+
 async def mcp_argument_errors():
     """Check MCP tool arguments that both servers must reject, with the pydantic rules the Python server applies.
 
@@ -1770,6 +1787,7 @@ async def write(graph):
     except ValidationError as exc:
         out["facts_none"] = str(exc)
     out["mcp_arguments"] = await mcp_argument_errors()
+    out["merge_key_order"] = await merge_key_order(graph)
     out["flag_errors"] = []
     for flag in ("false", 0):
         for call in (
