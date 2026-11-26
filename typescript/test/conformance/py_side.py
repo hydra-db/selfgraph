@@ -1770,6 +1770,19 @@ async def write(graph):
     except ValidationError as exc:
         out["facts_none"] = str(exc)
     out["mcp_arguments"] = await mcp_argument_errors()
+    out["external_id_errors"] = []
+    for bad in ({"crm": ""}, {"crm": " \t"}):
+        for call in (
+            lambda bad=bad: graph.entities.create("Blank Id", "Person", external_ids=bad),
+            lambda bad=bad: graph.insert.facts(
+                {"entities": [{"name": "Blank Id", "type": "Person", "external_ids": bad}]}
+            ),
+        ):
+            try:
+                await call()
+                out["external_id_errors"].append("accepted")
+            except ValidationError as exc:
+                out["external_id_errors"].append([exc.code, exc.field, str(exc)])
     out["flag_errors"] = []
     for flag in ("false", 0):
         for call in (

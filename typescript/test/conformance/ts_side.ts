@@ -2132,6 +2132,22 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     out.facts_none = exc.message;
   }
   out.mcp_arguments = await mcpArgumentErrors();
+  const externalIdErrors: unknown[] = [];
+  for (const bad of [{ crm: "" }, { crm: " \t" }]) {
+    for (const call of [
+      () => graph.entities.create("Blank Id", "Person", { external_ids: bad }),
+      () => graph.insert.facts({ entities: [{ name: "Blank Id", type: "Person", external_ids: bad }] }),
+    ]) {
+      try {
+        await call();
+        externalIdErrors.push("accepted");
+      } catch (exc) {
+        if (!(exc instanceof ValidationError)) throw exc;
+        externalIdErrors.push([exc.code, exc.field, exc.message]);
+      }
+    }
+  }
+  out.external_id_errors = externalIdErrors;
   const flagErrors: string[] = [];
   for (const flag of ["false", 0]) {
     for (const call of [
