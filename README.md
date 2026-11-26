@@ -149,6 +149,8 @@ await graph.retrieve("which employers")  # seeds Company entities through the sy
 
 ## Backends
 
+HydraDB requires version 0.5.0 or later.
+
 ```python
 from selfgraph import CypherStore, FalkorDBStore, HydraDBStore, KuzuStore, Neo4jStore
 
@@ -156,7 +158,7 @@ Neo4jStore("bolt://localhost:7687", auth=("neo4j", "password"))
 CypherStore("bolt://localhost:7687", auth=("user", "password"))  # Memgraph and other Bolt engines
 FalkorDBStore(host="localhost", port=6379)
 KuzuStore("graph.kuzu")  # embedded
-HydraDBStore("bolt://127.0.0.1:17687", auth=("neo4j", "<token>"))  # HydraDB 0.4.0 or newer
+HydraDBStore("bolt://127.0.0.1:17687", auth=("neo4j", "<token>"))
 ```
 
 See [backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md) to configure from settings or add your own store.

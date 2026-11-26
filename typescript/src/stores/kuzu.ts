@@ -122,7 +122,7 @@ const PATH_QUEUES = new Map<string | symbol, Promise<unknown>>();
 const MAX_SKIP = 10_000_000;
 const RECONNECT_EVERY = 500;
 const DEFAULT_CHECKPOINT_THRESHOLD = 16 * 1024 ** 2;
-const CHECKPOINT_POOL_DIVISOR = 1024;
+const CHECKPOINT_POOL_DIVISOR = 512;
 const MAX_DB_SIZE_DEFAULT = 8_796_093_022_208;
 const NOW = "RETURN current_timestamp() AS now";
 const CLOCK_TICK_MS = 20;
@@ -280,6 +280,11 @@ const UPSERT_NODES =
   "SET n.id = row.id, n.ns = $ns, n.label = $label, n.doc = row.doc";
 const MERGE_KEYS =
   "UNWIND $rows AS row WITH row, row.pk AS k MERGE (n:K {pk: k}) SET n.ns = $ns, n.key = row.key, n.eid = row.eid";
+const UPSERT_NEW_NODES =
+  "UNWIND $keys AS key WITH key, key.pk AS kp MERGE (k:K {pk: kp}) " +
+  "SET k.ns = $ns, k.key = key.key, k.eid = key.eid " +
+  "WITH count(*) AS key_count " +
+  UPSERT_NODES;
 const EDGE_ROWS =
   "UNWIND $rows AS row WITH row, row.f AS f MATCH (a:N {pk: f}) WITH a, row, row.t AS t MATCH (b:N {pk: t}) " +
   "WHERE a.label = $fl AND b.label = $tl ";
@@ -687,6 +692,29 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     return res.rows.length > 0;
   }
 
+  /**
+   * Return which of the given ids exist as nodes with this label, in batches to bound each query.
+   *
+   * @param ns (string): namespace.
+   * @param label (string): the node label.
+   * @param ids (readonly string[]): the candidate node ids.
+   * @return (Promise<Set<string>>): the ids that exist.
+   */
+  async nodesExist(ns: string, label: string, ids: readonly string[]): Promise<Set<string>> {
+    const found = new Set<string>();
+    for (const batch of batches([...new Set(ids)], SEEK_BATCH)) {
+      const params: Record<string, unknown> = { label };
+      const parts = batch.map((id, i) => {
+        params[`pk${i}`] = pk(ns, id);
+        params[`id${i}`] = id;
+        return `MATCH (n:N {pk:$pk${i}}) WHERE n.label = $label RETURN $id${i} AS id`;
+      });
+      const res = await this._run(parts.join(" UNION ALL "), params);
+      for (const row of res.rows) found.add(row.id as string);
+    }
+    return found;
+  }
+
   async upsertNode(
     ns: string,
     label: string,
@@ -713,12 +741,33 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
   ): Promise<void> {
     if (options.extra_label != null) quoteLabel(options.extra_label);
     for (const [, props] of rows) requireKeys(props);
+    if (await this.upsertBoundedEntities(ns, label, rows)) return;
     if (label === L_ENTITY) await this.mergeKeys(ns, rows);
     for (const [, batch] of writeBatches(
       rows.map(([id, props]) => [null, { pk: pk(ns, id), id, doc: jv(props) }] as const),
     )) {
       await this._run(UPSERT_NODES, { rows: batch, ns, label });
     }
+  }
+
+  private async upsertBoundedEntities(ns: string, label: string, rows: readonly NodeRow[]): Promise<boolean> {
+    if (label !== L_ENTITY || !rows.length || rows.length > 50) return false;
+    const keys: Array<{ pk: string; key: string; eid: string }> = [];
+    for (const [id, props] of rows) {
+      const derived = entityKeys(props);
+      if (keys.length + derived.size > 256) return false;
+      for (const key of [...derived].sort(comparePy)) keys.push({ pk: `${ns}\x00${key}\x00${id}`, key, eid: id });
+    }
+    if (!keys.length) return false;
+    const params = {
+      keys,
+      rows: rows.map(([id, props]) => ({ pk: pk(ns, id), id, doc: jv(props) })),
+      ns,
+      label,
+    };
+    if (Buffer.byteLength(jv(params), "utf8") > 64 * 1024) return false;
+    await this._run(UPSERT_NEW_NODES, params);
+    return true;
   }
 
   /**

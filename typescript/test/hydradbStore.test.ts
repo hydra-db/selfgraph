@@ -6,6 +6,82 @@ import { forEachStore, type StoreSpec, uniqueNs } from "./helpers.js";
 const props = (ns: string, id: string) => ({ id, ns, name: id });
 
 function suite(spec: StoreSpec) {
+  it.runIf(spec.name === "hydradb")("keeps parallel versions and namespace isolation in point reads", async () => {
+    const store = spec.make();
+    const namespaces = [uniqueNs("point"), uniqueNs("point_other")];
+    const sid = "relation:shared";
+    try {
+      await store.initialize();
+      for (const ns of namespaces) {
+        for (const node of ["x:a", "x:b", "x:c", "x:d"]) {
+          await store.upsertNode(ns, "Entity", node, {
+            ...props(ns, node),
+            type: "X",
+            aliases: [],
+            external_ids_json: "{}",
+            properties_json: "{}",
+            source_count: 0,
+            created_at: "2026-01-01T00:00:00+00:00",
+            updated_at: "2026-01-01T00:00:00+00:00",
+          });
+        }
+        for (const [revision, source, target] of [
+          [1, "x:a", "x:b"],
+          [2, "x:a", "x:b"],
+          [3, "x:c", "x:d"],
+        ] as const) {
+          expect(
+            await store.createEdge(ns, "LINK", "Entity", source, "Entity", target, {
+              id: sid,
+              ns,
+              revision,
+              is_current: revision === 3,
+            }),
+          ).toBe(true);
+        }
+        for (const [id, current] of [
+          ["relation:other", true],
+          ["relation:retired", false],
+        ] as const) {
+          expect(
+            await store.createEdge(ns, "LINK", "Entity", "x:a", "Entity", "x:b", {
+              id,
+              ns,
+              revision: 1,
+              is_current: current,
+            }),
+          ).toBe(true);
+        }
+      }
+      for (const ns of namespaces) {
+        const versions = await store.listEdgeVersions(ns, sid);
+        expect(versions.map((v) => v.props.revision)).toEqual([1, 2, 3]);
+        expect(versions.every((v) => v.props.ns === ns && v.props.id === sid)).toBe(true);
+        const bulk = await store.edgeVersions!(ns, "Entity", "Entity", [sid, "relation:missing"]);
+        expect(bulk?.map((v) => v.props.revision).sort()).toEqual([1, 2, 3]);
+        expect(bulk?.every((v) => v.props.ns === ns && v.props.id === sid)).toBe(true);
+        expect(await store.edgeVersions!(ns, "Source", "Entity", [sid])).toEqual([]);
+        const current = await store.getCurrentEdge(ns, sid);
+        expect(current?.props.revision).toBe(3);
+        expect(current?.props.ns).toBe(ns);
+        expect([current?.from_id, current?.to_id]).toEqual(["x:c", "x:d"]);
+        expect(await store.getCurrentEdge(ns, "relation:retired")).toBeNull();
+        expect(await store.listEdgeVersions(ns, "relation:retired")).toHaveLength(1);
+        expect(await store.getCurrentEdge(ns, "relation:missing")).toBeNull();
+        expect(await store.listEdgeVersions(ns, "relation:missing")).toEqual([]);
+        expect(await store.deleteEdges(ns, sid)).toBe(3);
+        expect(await store.listEdgeVersions(ns, sid)).toEqual([]);
+        expect(await store.deleteEdges(ns, sid)).toBe(0);
+        expect(await store.getCurrentEdge(ns, "relation:other")).not.toBeNull();
+      }
+    } finally {
+      for (const ns of namespaces) {
+        for (const node of ["x:a", "x:b", "x:c", "x:d"]) await store.deleteNode(ns, "Entity", node);
+      }
+      await store.close?.();
+    }
+  });
+
   it.each(["node", "edge", "update"])("uses the full HydraDB row budget for JSON blobs: %s", async (operation) => {
     if (spec.name !== "hydradb") return;
     const store = spec.make();
@@ -138,7 +214,7 @@ function suite(spec: StoreSpec) {
 
 await forEachStore("HydraDB write queue", suite);
 
-it("filters version read edge properties without index seeks", async () => {
+it("filters version reads after selecting sources", async () => {
   const store = new HydraDBStore("bolt://127.0.0.1:1", { auth: ["neo4j", "unused"] });
   const queries: string[] = [];
   const driver = store as unknown as { exec: (query: string) => Promise<{ rows: unknown[] }> };
@@ -155,8 +231,8 @@ it("filters version read edge properties without index seeks", async () => {
   } finally {
     await store.close();
   }
-  expect(queries).toHaveLength(5);
-  const [current, history, byId, versions, batch] = queries;
+  expect(queries).toHaveLength(6);
+  const [current, history, byId, versionSeed, versions, batch] = queries;
   expect(current).toContain("(a:Entity {ns: $ns})");
   expect(current).toContain("NOT r.`ns` <> $eq0");
   expect(current).toContain("NOT r.`etype` <> $eq1");
@@ -164,9 +240,15 @@ it("filters version read edge properties without index seeks", async () => {
   expect(history).toContain("a.id IN $fiids_in");
   expect(history).toContain("NOT r.`ns` <> $eq0");
   expect(history).not.toContain("r.is_current");
-  expect(byId).toContain("NOT r.`sid` <> $sid");
-  expect(versions).toContain("NOT r.`sid` <> $sid");
-  expect(batch).toContain("NOT (NOT r.sid IN $sids)");
+  expect(byId).toContain("{sid: $sid}");
+  expect(byId).toContain("NOT r.is_current <> true");
+  expect(versionSeed).toContain("{sid: $sid}");
+  expect(versions).toContain("a.id IN $sources");
+  expect(versions).toContain("NOT r.`ns` <> $ns");
+  expect(versions).toContain("[r:RELATES {sid: $sid}]");
+  expect(versions).not.toContain("r.`sid`");
+  expect(batch).toContain("r.sid IN $sids");
+  expect(batch).toContain("RETURN a.id AS source");
 });
 
 describe("HydraDB write queue failure", () => {

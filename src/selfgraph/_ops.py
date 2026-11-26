@@ -112,6 +112,7 @@ _MAX_ID_BYTES = 1024
 _PAGE = 500
 _BATCH = 1000
 _RELATION_ID_BATCH = 256
+_EXISTS_BATCH = 256
 
 SchemaCheck = Callable[..., Awaitable[None]]
 
@@ -819,7 +820,51 @@ async def _entity_known(runner: Any, ns: str, eid: str, known: set[str] | frozen
         raise ValidationError(f"entity reference must be a string id, got {type_name(eid)}")
     if _has_control(eid):
         raise ValidationError("entity reference cannot contain control or surrogate characters")
-    return eid in known or await runner.node_exists(ns, L_ENTITY, eid)
+    if eid in known:
+        return True
+    present = await runner.node_exists(ns, L_ENTITY, eid)
+    if present and isinstance(known, set):
+        known.add(eid)
+    return present
+
+
+def _unchecked(eid: Any, known: set[str]) -> bool:
+    """Tell whether an entity reference is a clean string id not yet known present.
+
+    @param eid (Any): the entity reference.
+    @param known (set[str]): entity ids known present.
+    @return (bool): True when the store would be asked about it.
+    """
+    return isinstance(eid, str) and eid not in known and not _has_control(eid)
+
+
+async def _prefetch_endpoints(
+    probe: Callable[..., Any], ns: str, relations: list[RelationInput], start: int, known: set[str]
+) -> tuple[int, Callable[..., Any] | None]:
+    """Ask the store once which unchecked endpoints of the next relations exist, adding the present ones to known.
+
+    @param probe (Callable[..., Any]): the store's nodes_exist.
+    @param ns (str): namespace.
+    @param relations (list[RelationInput]): the relations being validated.
+    @param start (int): the index of the first relation to look ahead from.
+    @param known (set[str]): entity ids known present; updated in place.
+    @return (tuple[int, Callable[..., Any] | None]): the index after the relations covered, and the probe to use
+    """
+    batch: dict[str, None] = {}
+    end = start
+    while end < len(relations) and len(batch) <= _EXISTS_BATCH - 2:
+        for eid in (relations[end].from_entity, relations[end].to_entity):
+            if _unchecked(eid, known):
+                batch[eid] = None
+        end += 1
+    if not batch:
+        return end, probe
+    try:
+        present = await probe(ns, L_ENTITY, list(batch))
+    except Exception:  # noqa: BLE001
+        return end, None
+    known.update(eid for eid in batch if eid in present)
+    return end, probe
 
 
 async def _require_endpoints(
@@ -962,7 +1007,9 @@ async def validate_facts(
         _require_str_mapping("external_ids", ent.external_ids)
         _require_list("entity aliases", ent.aliases)
 
-    for rel in facts.relations:
+    probe = getattr(runner, "nodes_exist", None)
+    window = 0
+    for at, rel in enumerate(facts.relations):
         _validate_own_id("relation", rel.id)
         _require_datetime("relation event_time", rel.event_time)
         _reject_reserved_rel_type(_ids.normalize_rel_type(rel.type), rel.type)
@@ -970,6 +1017,12 @@ async def validate_facts(
             raise ValidationError(f"relation evidence must be a list, got {type_name(rel.evidence)}")
         for ev in rel.evidence:
             _require_clean_evidence(ev)
+        if (
+            probe is not None
+            and at >= window
+            and (_unchecked(rel.from_entity, entities) or _unchecked(rel.to_entity, entities))
+        ):
+            window, probe = await _prefetch_endpoints(probe, ns, facts.relations, at, entities)
         await _require_endpoints(
             runner,
             ns,
@@ -1042,23 +1095,50 @@ async def get_entity(runner: Any, ns: str, eid: str) -> Entity | None:
     return decode_entity(props) if props else None
 
 
-async def preserve_entity_writes(runner: Any, ns: str, eid: str, fields: Mapping[str, Any]) -> None:
-    """Keep explicitly written fields out of live merges' removal sets."""
-    rows = await _nodes_where(runner, ns, L_MERGE, "survivor_id", [eid])
+async def preserve_entity_writes(runner: Any, ns: str, writes: Iterable[tuple[str, Mapping[str, Any]]]) -> None:
+    """Keep explicitly written fields out of live merges' removal sets.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param writes (Iterable[tuple[str, Mapping[str, Any]]]): entity ids and explicitly written fields.
+    @return (None): nothing.
+    """
+    fields_by_id: dict[str, list[Mapping[str, Any]]] = {}
+    for eid, fields in writes:
+        fields_by_id.setdefault(eid, []).append(fields)
+    rows = await _nodes_where(runner, ns, L_MERGE, "survivor_id", list(fields_by_id))
     for row in rows:
         if row.get("reverted_at") is not None:
             continue
         props = dict(row)
-        for key, values in (
-            ("aliases", [_clean_text(a) for a in fields.get("aliases", ())]),
-            ("properties", fields.get("properties", {})),
-            ("external_ids", fields.get("external_ids", {})),
-        ):
-            column = f"added_{key}_json"
-            props[column] = _dumps([v for v in _loads(row.get(column), []) if v not in values])
+        for fields in fields_by_id[row["survivor_id"]]:
+            for key, values in (
+                ("aliases", [_clean_text(a) for a in fields.get("aliases", ())]),
+                ("properties", fields.get("properties", {})),
+                ("external_ids", fields.get("external_ids", {})),
+            ):
+                column = f"added_{key}_json"
+                props[column] = _dumps([v for v in _loads(props.get(column), []) if v not in values])
         if props != row:
             await runner.lock_node(ns, L_MERGE, row["id"])
             await runner.upsert_node(ns, L_MERGE, row["id"], props)
+
+
+async def _lock_nodes(runner: Any, ns: str, label: str, ids: list[str]) -> None:
+    """Acquire all supplied locks before any dependent reads.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param label (str): node label.
+    @param ids (list[str]): ids in acquisition order.
+    @return (None): nothing.
+    """
+    batch = getattr(runner, "lock_nodes", None)
+    if len(ids) > 1 and callable(batch):
+        await batch(ns, label, ids)
+    else:
+        for id in ids:
+            await runner.lock_node(ns, label, id)
 
 
 async def upsert_entities(
@@ -1091,8 +1171,7 @@ async def upsert_entities(
         _validate_entity_identity(eid, etype, ename)
         keyed.append((eid, etype, ename, ent))
     eids = _dedup_list(eid for eid, *_ in keyed)
-    for eid in eids:
-        await runner.lock_node(ns, L_ENTITY, eid)
+    await _lock_nodes(runner, ns, L_ENTITY, eids)
     stored = {eid: decode_entity(p) for eid, p in (await _nodes_by_id(runner, ns, L_ENTITY, eids)).items()}
     records, counts = await _plan_evidence(
         runner,
@@ -1161,8 +1240,10 @@ async def upsert_entities(
     by_type: dict[str, list[tuple[str, dict]]] = {}
     for eid, props in writes.items():
         by_type.setdefault(props["type"], []).append((eid, props))
+    fresh = getattr(runner, "upsert_new_nodes", None)
     for etype, rows in by_type.items():
-        await runner.upsert_nodes(ns, L_ENTITY, rows, extra_label=etype)
+        new = fresh is not None and stored.keys().isdisjoint(eid for eid, _ in rows)
+        await (fresh if new else runner.upsert_nodes)(ns, L_ENTITY, rows, extra_label=etype)
     await _write_evidence(runner, ns, records, created_at)
     return out
 
@@ -1272,8 +1353,14 @@ async def update_entity(
         _require_text("entity type", fields["type"])
     if "name" in fields:
         _require_text("entity name", fields["name"])
-    await runner.lock_node(ns, L_ENTITY, eid)
-    existing = await get_entity(runner, ns, eid)
+    lock_and_get = getattr(runner, "lock_and_get_node", None)
+    if getattr(runner, "lock_refreshes_reads", True) and callable(lock_and_get):
+        props = await lock_and_get(ns, L_ENTITY, eid)
+        existing = decode_entity(props) if props else None
+    else:
+        await runner.lock_node(ns, L_ENTITY, eid)
+        if getattr(runner, "lock_refreshes_reads", True):
+            existing = await get_entity(runner, ns, eid)
     if existing is None:
         raise TransientError(f"entity {eid!r} was changed concurrently; retry")
     new_type = _clean_text(fields["type"]) if "type" in fields else existing.type
@@ -1297,7 +1384,7 @@ async def update_entity(
         subject = EntityInput(id=eid, type=new_type, name=new_name, properties=properties)
         stored = EntityInput(id=eid, type=existing.type, name=existing.name, properties=existing.properties)
         await schema_check(runner, Extraction(entities=[subject]), Extraction(entities=[stored]))
-    await preserve_entity_writes(runner, ns, eid, fields)
+    await preserve_entity_writes(runner, ns, [(eid, fields)])
     if (
         new_type == existing.type
         and new_name == existing.name
@@ -1471,9 +1558,10 @@ async def delete_entity(
     @return (dict[str, int]): counts of what was removed and restored.
     """
     eid = _ids.canonical_entity_id(eid)
-    if not await runner.node_exists(ns, L_ENTITY, eid):
+    counts = await delete_entities(runner, ns, [eid], caps)
+    if not counts["deleted_entities"]:
         raise await missing_entity(runner, ns, eid)
-    return await delete_entities(runner, ns, [eid], caps)
+    return counts
 
 
 async def _edges_into(
@@ -1611,10 +1699,9 @@ async def delete_entities(
     )
     for batch in _batches(profiles):
         await runner.delete_nodes(ns, L_PROFILE, batch)
-    await _delete_nodes_where(runner, ns, L_EVIDENCE, "target_id", rids)
+    await _delete_nodes_where(runner, ns, L_EVIDENCE, "target_id", [*rids, *eids])
     for batch in _batches(eids):
         await runner.delete_nodes(ns, L_ENTITY, batch)
-    await _delete_nodes_where(runner, ns, L_EVIDENCE, "target_id", eids)
     for side in ("survivor_id", "absorbed_id"):
         merges = [n["id"] for n in await _nodes_where(runner, ns, L_MERGE, side, eids)]
         await _delete_nodes_where(runner, ns, L_MERGE_ENTRY, "merge_id", merges)
@@ -1901,6 +1988,12 @@ async def _lock_current(
     claim = _take_claim(runner, ns, oid)
     before = await get(runner, ns, oid) or await _newest_unretired(runner, ns, oid, kind, keep)
     await runner.lock_node(ns, *lock_on(before))
+    if getattr(runner, "lock_refreshes_reads", True) is False:
+        if before.is_current:
+            _found_current(claim)
+        else:
+            _require_unshared(claim, oid, kind)
+        return before
     current = await get(runner, ns, oid)
     if current is not None:
         _found_current(claim)
@@ -1970,12 +2063,6 @@ async def _current_relations(
 ) -> dict[str, dict]:
     """Fetch the current version of many relations, or the newest version of one that has no current version.
 
-    A derived relation id fixes its endpoints, so its stored versions are among its source entity's relations; an
-    explicit id may name a relation between other entities, so one not found that way is looked up by id. Only
-    source entities with a relation not found current are read again across all versions, so an insert of new
-    relations from new entities costs one query. A store that reads edges by id (edge_versions) may instead read
-    only the wanted relations' versions, once, and the same selection runs over them.
-
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param keyed (list[tuple[str, RelationInput]]): (relation id, input) pairs.
@@ -1988,32 +2075,24 @@ async def _current_relations(
     ids = _dedup_list(rid for rid, _ in keyed)
     versions = None
     if by_id is not None:
-        if all_ids:
-            versions = []
-            for batch in _batches(ids, _RELATION_ID_BATCH):
-                rows = await by_id(ns, L_ENTITY, L_ENTITY, batch)
-                if rows is None:
-                    versions = None
-                    break
-                versions.extend(rows)
-        else:
-            versions = await by_id(ns, L_ENTITY, L_ENTITY, ids)
+        versions = []
+        for batch in _batches(ids, _RELATION_ID_BATCH):
+            rows = await by_id(ns, L_ENTITY, L_ENTITY, batch)
+            if rows is None:
+                versions = None
+                break
+            versions.extend(rows)
     for current_only in (True, False):
         pending = _dedup_list(rel.from_entity for rid, rel in keyed if rid not in found)
         if versions is None:
             edges = await _edges_into(runner, ns, L_ENTITY, L_ENTITY, "from_in", pending, current_only=current_only)
         else:
-            sources = set(pending)
-            edges = [
-                e
-                for e in versions
-                if (all_ids or e["from_id"] in sources) and (e["props"]["is_current"] or not current_only)
-            ]
+            edges = [e for e in versions if e["props"]["is_current"] or not current_only]
         for edge in edges:
             if edge["props"]["id"] in wanted and _is_relation_type(edge["type"]):
                 _keep_newest(found, edge)
         wanted -= set(found)
-    if all_ids and versions is not None:
+    if versions is not None:
         return found
     for rid in _dedup_list(rid for rid, rel in keyed if all_ids or rel.id is not None):
         if rid not in found:
@@ -2891,8 +2970,12 @@ async def upsert_relations(
         inputs.append((rid, rtype, rel, evidence, None if via is None else via[position]))
     folded = _fold_relations(inputs, default_event_time)
     keyed = [(rid, rtype, rel, evidence) for rid, rtype, rel, evidence, _ in folded]
-    for eid in _relation_lock_ids(caps, [(rtype, rel.from_entity, rel.to_entity) for _, rtype, rel, _ in keyed]):
-        await runner.lock_node(ns, L_ENTITY, eid)
+    await _lock_nodes(
+        runner,
+        ns,
+        L_ENTITY,
+        _relation_lock_ids(caps, [(rtype, rel.from_entity, rel.to_entity) for _, rtype, rel, _ in keyed]),
+    )
     rids = _dedup_list(rid for rid, *_ in keyed)
     claims = {rid: _take_claim(runner, ns, rid) for rid in rids}
     stored = await _current_relations(runner, ns, [(rid, rel) for rid, _, rel, _ in keyed])

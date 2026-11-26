@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from concurrent.futures import Future
 from contextvars import ContextVar
@@ -67,7 +68,8 @@ class _PathLock:
         previous, mine = self._join()
         _PENDING.set((*_PENDING.get(), mine))
         try:
-            await asyncio.shield(asyncio.wrap_future(previous))
+            if not previous.done():
+                await asyncio.shield(asyncio.wrap_future(previous))
         except BaseException:
             _PENDING.set(_PENDING.get()[:-1])
             previous.add_done_callback(lambda _done, _mine=mine: _mine.set_result(None))
@@ -89,10 +91,12 @@ _CACHE_LOCK = threading.Lock()
 _LOCKS: dict[object, _PathLock] = {}
 _WRITE_LOCKS: dict[object, _PathLock] = {}
 _OPEN_STORES: dict[object, int] = {}
+_SCHEMA_GEN: dict[object, int] = {}
 _MAX_SKIP = 10_000_000
 _RECONNECT_EVERY = 500
+_PLAN_CACHE_MAX = 64
 _DEFAULT_CHECKPOINT_THRESHOLD = 16 * 1024**2
-_CHECKPOINT_POOL_DIVISOR = 1024
+_CHECKPOINT_POOL_DIVISOR = 512
 _NOW = "RETURN current_timestamp()"
 _CLOCK_TICK = 0.02
 _MULTI_STATEMENT = "Kuzu runs one statement per query; pass one statement, not several joined by ';'"
@@ -190,6 +194,27 @@ def _release_store(key: object) -> None:
             _DATABASE_OPTIONS.pop(key, None)
             _LOCKS.pop(key, None)
             _WRITE_LOCKS.pop(key, None)
+            _SCHEMA_GEN.pop(key, None)
+
+
+def _schema_gen(key: object) -> int:
+    """Read the schema generation for a path, bumped whenever a raw statement may have changed its schema.
+
+    @param key (object): the cache key the store was opened under.
+    @return (int): the current generation, zero before any raw statement has run.
+    """
+    with _CACHE_LOCK:
+        return _SCHEMA_GEN.get(key, 0)
+
+
+def _bump_schema_gen(key: object) -> None:
+    """Advance the schema generation for a path so every store on it rebuilds its prepared plans.
+
+    @param key (object): the cache key the store was opened under.
+    @return (None): nothing.
+    """
+    with _CACHE_LOCK:
+        _SCHEMA_GEN[key] = _SCHEMA_GEN.get(key, 0) + 1
 
 
 def _db_options(kuzu: Any, db_kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -249,6 +274,11 @@ _UPSERT_NODES = (
 )
 _MERGE_KEYS = (
     "UNWIND $rows AS row WITH row, row.pk AS k MERGE (n:K {pk: k}) SET n.ns = $ns, n.key = row.key, n.eid = row.eid"
+)
+_UPSERT_NEW_NODES = (
+    "UNWIND $keys AS key WITH key, key.pk AS kp MERGE (k:K {pk: kp}) "
+    "SET k.ns = $ns, k.key = key.key, k.eid = key.eid "
+    "WITH count(*) AS key_count " + _UPSERT_NODES
 )
 _EDGE_ROWS = (
     "UNWIND $rows AS row WITH row, row.f AS f MATCH (a:N {pk: f}) WITH a, row, row.t AS t MATCH (b:N {pk: t}) "
@@ -391,6 +421,9 @@ class KuzuStore(AutoCommitStore):
             raise
         self._statements = 0
         self._raw = False
+        self._plans: OrderedDict[str, Any] = OrderedDict()
+        self._plans_conn = self._conn
+        self._plans_gen = _schema_gen(key)
 
     async def _in_thread(self, fn: Any, conn: Any, token: Future[None], state: dict[str, bool]) -> Any:
         """Run a Kuzu call in a worker thread, holding the path lock until the thread leaves the native call.
@@ -431,24 +464,65 @@ class KuzuStore(AutoCommitStore):
             work.add_done_callback(_release)
             raise
 
+    def _plan(self, conn: Any, query: str) -> Any:
+        """Return a prepared statement to reuse for a parameterized SDK query, or the query string on failure.
+
+        @param conn (Any): the connection the plan is prepared on and executed with.
+        @param query (str): the SDK-generated parameterized query.
+        @return (Any): a Kuzu PreparedStatement bound to conn, or the query string if preparing did not succeed.
+        """
+        gen = _schema_gen(self._cache_key)
+        if self._plans_conn is not conn or self._plans_gen != gen:
+            self._plans.clear()
+            self._plans_conn = conn
+            self._plans_gen = gen
+        cached = self._plans.get(query)
+        if cached is not None:
+            self._plans.move_to_end(query)
+            return cached
+        prepare = getattr(conn, "_prepare", None)
+        if prepare is None:
+            return query
+        prepared = prepare(query)
+        if not prepared.is_success():
+            return query
+        self._plans[query] = prepared
+        if len(self._plans) > _PLAN_CACHE_MAX:
+            self._plans.popitem(last=False)
+        return prepared
+
     async def _run(self, query: str, params: Mapping[str, Any] | None = None, *, raw: bool = False) -> CypherResult:
         def _exec(conn: Any) -> tuple[list[str], list[dict]]:
-            qr = conn.execute(query, parameters=dict(params or {}))
-            if isinstance(qr, list):
-                raise StoreError(_MULTI_STATEMENT)
-            columns = qr.get_column_names()
-            rows = []
-            while qr.has_next():
-                try:
-                    values = qr.get_next()
-                except InvalidOperation as exc:
-                    raise StoreError(UNREADABLE_DECIMAL, code="inexact_value") from exc
-                rows.append({k: normalize(v) for k, v in zip(columns, values, strict=False)})
-            return columns, rows
+            if raw:
+                _bump_schema_gen(self._cache_key)
+                self._plans.clear()
+                target: Any = query
+            elif params:
+                target = self._plan(conn, query)
+            else:
+                target = query
+            try:
+                qr = conn.execute(target, parameters=dict(params or {}))
+                if isinstance(qr, list):
+                    raise StoreError(_MULTI_STATEMENT)
+                columns = qr.get_column_names()
+                rows = []
+                while qr.has_next():
+                    try:
+                        values = qr.get_next()
+                    except InvalidOperation as exc:
+                        raise StoreError(UNREADABLE_DECIMAL, code="inexact_value") from exc
+                    rows.append({k: normalize(v) for k, v in zip(columns, values, strict=False)})
+                return columns, rows
+            finally:
+                if raw:
+                    _bump_schema_gen(self._cache_key)
+                    self._plans.clear()
 
         previous, token = self._lock._join()
         try:
-            await asyncio.shield(asyncio.wrap_future(previous))
+            if not previous.done():
+                await asyncio.shield(asyncio.wrap_future(previous))
         except BaseException:
             previous.add_done_callback(lambda _done, _t=token: _t.set_result(None))
             raise
@@ -462,6 +536,8 @@ class KuzuStore(AutoCommitStore):
                 if not (self._raw and await self._in_thread(lambda: self._in_transaction(old), old, token, state)):
                     self._conn = self._connect()
                     self._raw = False
+                    self._plans.clear()
+                    self._plans_conn = self._conn
             self._raw = self._raw or raw
             conn = self._conn
             columns, rows = await self._in_thread(lambda: _exec(conn), conn, token, state)
@@ -589,6 +665,8 @@ class KuzuStore(AutoCommitStore):
             if self._closed:
                 return
             self._closed = True
+            self._plans.clear()
+            self._plans_conn = None
             self._conn.close()
             _release_store(self._cache_key)
 
@@ -605,6 +683,27 @@ class KuzuStore(AutoCommitStore):
             {"pk": _pk(ns, id), "label": label},
         )
         return bool(res.rows)
+
+    async def nodes_exist(self, ns: str, label: str, ids: list[str]) -> set[str]:
+        """Return which of the given ids exist as nodes with this label, in batches to bound each query.
+
+        @param ns (str): namespace.
+        @param label (str): the node label.
+        @param ids (list[str]): the candidate node ids.
+        @return (set[str]): the ids that exist.
+        """
+        found: set[str] = set()
+        for batch in _batches(list(dict.fromkeys(ids)), _SEEK_BATCH):
+            params = {"label": label}
+            for i, id in enumerate(batch):
+                params[f"pk{i}"] = _pk(ns, id)
+                params[f"id{i}"] = id
+            query = " UNION ALL ".join(
+                f"MATCH (n:N {{pk:$pk{i}}}) WHERE n.label = $label RETURN $id{i} AS id" for i in range(len(batch))
+            )
+            res = await self._run(query, params)
+            found.update(row["id"] for row in res.rows)
+        return found
 
     async def upsert_node(self, ns: str, label: str, id: str, props: dict, *, extra_label: str | None = None) -> None:
         await self.upsert_nodes(ns, label, [(id, props)], extra_label=extra_label)
@@ -624,10 +723,41 @@ class KuzuStore(AutoCommitStore):
             quote_label(extra_label)
         for _, props in rows:
             require_keys(props)
+        if await self._upsert_bounded_entities(ns, label, rows):
+            return
         if label == L_ENTITY:
             await self._merge_keys(ns, rows)
         for _, batch in write_batches((None, {"pk": _pk(ns, id), "id": id, "doc": _jv(props)}) for id, props in rows):
             await self._run(_UPSERT_NODES, {"rows": batch, "ns": ns, "label": label})
+
+    async def _upsert_bounded_entities(self, ns: str, label: str, rows: list[tuple[str, dict]]) -> bool:
+        """Merge eligible entities and their keys atomically.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param rows (list[tuple[str, dict]]): validated node rows.
+        @return (bool): whether the atomic write ran.
+        """
+        if label != L_ENTITY or not rows or len(rows) > 50:
+            return False
+        keys = []
+        for id, props in rows:
+            derived = _keys_of(props)
+            if len(keys) + len(derived) > 256:
+                return False
+            keys.extend({"pk": f"{ns}\x00{key}\x00{id}", "key": key, "eid": id} for key in sorted(derived))
+        if not keys:
+            return False
+        params = {
+            "keys": keys,
+            "rows": [{"pk": _pk(ns, id), "id": id, "doc": _jv(props)} for id, props in rows],
+            "ns": ns,
+            "label": label,
+        }
+        if len(_jv(params).encode("utf-8")) > 64 * 1024:
+            return False
+        await self._run(_UPSERT_NEW_NODES, params)
+        return True
 
     async def create_edges(
         self, ns: str, from_label: str, to_label: str, rows: list[tuple[str, str, str, dict]]

@@ -4,7 +4,7 @@ import { errorMessage, SelfGraphError, StoreError, TransientError } from "../err
 import { sleep } from "../internal/time.js";
 import { LABELS } from "../labels.js";
 import type { CypherResult } from "../models.js";
-import type { GraphPrimitives, GraphStore } from "../protocols.js";
+import type { GraphPrimitives, GraphStore, Props } from "../protocols.js";
 import {
   type BoltStoreOptions,
   boltError,
@@ -64,12 +64,33 @@ export function uniqueLabels(rows: Record<string, unknown>[]): Set<string> {
 export type CypherStoreOptions = BoltStoreOptions;
 
 class CypherWriter extends CypherPrimitives {
+  protected override readonly nodePageMaps = true;
+  protected override readonly countedNodeDelete = true;
   constructor(
     private readonly tx: Transaction,
     private readonly uri: string,
     private readonly database: string | null,
   ) {
     super();
+  }
+
+  async lockAndGetNode(ns: string, label: string, id: string): Promise<Props | null> {
+    const res = await this._run(`MATCH (n:${label} {id:$id, ns:$ns}) SET n._lock = coalesce(n._lock, 0) + 1 RETURN n`, {
+      id,
+      ns,
+    });
+    const row = res.rows[0];
+    return row ? (row.n as Props) : null;
+  }
+
+  async lockNodes(ns: string, label: string, ids: readonly string[]): Promise<void> {
+    for (let start = 0; start < ids.length; start += 256) {
+      const rows = ids.slice(start, start + 256).map((id, ordinal) => ({ id, ordinal }));
+      await this._run(
+        `UNWIND $rows AS row WITH row ORDER BY row.ordinal MATCH (n:${label} {id:row.id, ns:$ns}) SET n._lock = coalesce(n._lock, 0) + 1`,
+        { ns, rows },
+      );
+    }
   }
 
   protected async _run(query: string, params?: Record<string, unknown> | null): Promise<CypherResult> {
@@ -83,9 +104,12 @@ class CypherWriter extends CypherPrimitives {
 }
 
 export class CypherStore extends CypherPrimitives implements GraphStore {
+  protected override readonly nodePageMaps = true;
+  protected override readonly countedNodeDelete = true;
   protected readonly driver: Driver;
   protected readonly uri: string;
   protected readonly database: string | null;
+  private memgraph = false;
 
   /**
    * A store for the Bolt and openCypher family (Neo4j, Memgraph, and compatible engines).
@@ -130,12 +154,17 @@ export class CypherStore extends CypherPrimitives implements GraphStore {
   private async listConstraints(): Promise<Record<string, unknown>[]> {
     for (const query of SHOW_CONSTRAINTS) {
       try {
-        return (await this._run(query)).rows;
+        const result = await this._run(query);
+        this.memgraph =
+          query === "SHOW CONSTRAINT INFO" ||
+          result.columns.includes("constraint type") ||
+          result.rows.some((row) => "constraint type" in row);
+        return result.rows;
       } catch (exc) {
         if (exc instanceof TransientError || !(exc instanceof StoreError)) throw exc;
         const cause = exc.cause ?? exc;
         if (boltError(cause, this.uri, this.database) !== null) throw exc;
-        if (syntaxDetail(cause) === null) return [];
+        if (syntaxDetail(cause) === null) throw exc;
       }
     }
     return [];
@@ -144,9 +173,9 @@ export class CypherStore extends CypherPrimitives implements GraphStore {
   /**
    * Report whether the uniqueness constraints are already in place, so initialize can skip the DDL. Constraint DDL needs exclusive access on Memgraph, so a check that keeps conflicting with another client's work means the store is in use and is treated as set up.
    *
-   * @return (boolean): true when every label has its constraint or the check kept conflicting.
+   * @return (boolean | null): whether every label has its constraint, or null when the store stays busy.
    */
-  private async constraintsExist(): Promise<boolean> {
+  private async constraintsExist(): Promise<boolean | null> {
     for (let attempt = 0; attempt < INIT_ATTEMPTS; attempt++) {
       try {
         const present = uniqueLabels(await this.listConstraints());
@@ -156,14 +185,16 @@ export class CypherStore extends CypherPrimitives implements GraphStore {
         if (attempt < INIT_ATTEMPTS - 1) await sleep(INIT_BASE_DELAY_MS * 2 ** attempt);
       }
     }
-    return true;
+    return null;
   }
 
   /** Create the id and namespace uniqueness constraints on every graph-schema label unless they exist, retrying lost races. */
   async initialize(): Promise<void> {
     this.requireOpen();
-    if (await this.constraintsExist()) return;
-    for (const label of LABELS) {
+    this.memgraph = false;
+    const constraintsExist = await this.constraintsExist();
+    if (constraintsExist === null) return;
+    for (const label of constraintsExist ? [] : LABELS) {
       const query =
         `CREATE CONSTRAINT selfgraph_${label.toLowerCase()}_id IF NOT EXISTS ` +
         `FOR (n:${label}) REQUIRE (n.id, n.ns) IS UNIQUE`;
@@ -185,6 +216,87 @@ export class CypherStore extends CypherPrimitives implements GraphStore {
         } finally {
           await session.close().catch(() => undefined);
         }
+      }
+    }
+    if (this.memgraph) await this.initializeIndexes();
+    else {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await this._run(
+            "CREATE RANGE INDEX selfgraph_evidence_ns_target_id IF NOT EXISTS " +
+              "FOR (n:Evidence) ON (n.ns, n.target_id)",
+          );
+          break;
+        } catch (exc) {
+          if (!(exc instanceof TransientError) || attempt === INIT_ATTEMPTS - 1) throw exc;
+          await sleep(INIT_BASE_DELAY_MS * 2 ** attempt);
+        }
+      }
+    }
+  }
+
+  /**
+   * Create missing Memgraph node id indexes, retrying exclusive-access conflicts.
+   * @return (Promise<void>): resolves after every fixed label has a lookup index.
+   */
+  private async initializeIndexes(): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const rows = (await this._run("SHOW INDEX INFO")).rows;
+        const indexed = new Set(
+          rows
+            .filter(
+              (row) =>
+                typeof row.label === "string" &&
+                LABELS.some((label) => label === row.label) &&
+                row["index type"] === "label+property" &&
+                (typeof row.property === "string" || (Array.isArray(row.property) && row.property.length === 1)),
+            )
+            .map((row) => `${row.label}:${Array.isArray(row.property) ? row.property[0] : row.property}`),
+        );
+        const labeled = new Set(
+          rows
+            .filter(
+              (row) =>
+                row["index type"] === "label" &&
+                typeof row.label === "string" &&
+                LABELS.some((label) => label === row.label),
+            )
+            .map((row) => row.label),
+        );
+        for (const label of LABELS) {
+          if (!labeled.has(label)) await this._run(`CREATE INDEX ON :${label}`);
+        }
+        const indexes = [...LABELS.map((label) => [label, "id"]), ["Evidence", "target_id"]];
+        for (const [label, prop] of indexes) {
+          if (!indexed.has(`${label}:${prop}`)) await this._run(`CREATE INDEX ON :${label}(${prop})`);
+        }
+        const refreshed = (await this._run("SHOW INDEX INFO")).rows;
+        const modern = refreshed.some(
+          (row) =>
+            row["index type"] === "label+property" &&
+            typeof row.label === "string" &&
+            LABELS.some((label) => label === row.label) &&
+            Array.isArray(row.property) &&
+            row.property.length === 1 &&
+            row.property[0] === "id",
+        );
+        if (modern) {
+          const versions = (await this._run("SHOW VERSION")).rows;
+          const version = versions.length === 1 ? versions[0]?.version : null;
+          if (
+            version === "3.14.0" &&
+            !refreshed.some(
+              (row) => row["index type"] === "edge-property" && row.label === null && row.property === "id",
+            )
+          ) {
+            await this._run("CREATE GLOBAL EDGE INDEX ON :(id)");
+          }
+        }
+        return;
+      } catch (exc) {
+        if (!(exc instanceof TransientError) || attempt === INIT_ATTEMPTS - 1) throw exc;
+        await sleep(INIT_BASE_DELAY_MS * 2 ** attempt);
       }
     }
   }

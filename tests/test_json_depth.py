@@ -3,7 +3,7 @@ import json
 import pytest
 
 from selfgraph.errors import ValidationError
-from selfgraph.models import EntityInput, PreferenceInput, RelationInput
+from selfgraph.models import CypherResult, EntityInput, PreferenceInput, RelationInput
 from selfgraph.runtime import parse_json, read_json
 
 
@@ -62,3 +62,39 @@ def test_a_property_deeper_than_the_validator_can_recurse_is_a_coded_error(kind)
             build()
         assert raised.value.code == "invalid_argument"
         assert str(raised.value) == f"{label} is nested too deeply; keep it under 64 levels"
+
+
+@pytest.mark.parametrize("depth", [253, 254, 255])
+@pytest.mark.parametrize("kind", ["list", "dict", "tuple", "mixed"])
+def test_result_nesting_boundary(depth, kind):
+    value = 1
+    for index in range(depth):
+        shape = index % 3 if kind == "mixed" else {"list": 0, "dict": 1, "tuple": 2}[kind]
+        value = [value] if shape == 0 else {"x": value} if shape == 1 else (value,)
+    rows = [{"x": value}]
+    if depth <= 254:
+        assert CypherResult._result_depth(rows) is rows
+        assert CypherResult(rows=rows).rows == rows
+    else:
+        with pytest.raises(ValidationError, match="maximum nesting depth of 254") as caught:
+            CypherResult(rows=rows)
+        assert caught.value.code == "invalid_argument"
+        assert caught.value.field == "rows"
+
+
+@pytest.mark.parametrize("value", [None, [], {}, [1, {"a": (None, "x")}], object()])
+def test_result_depth_preserves_cell_identity(value):
+    rows = [{"x": value}]
+    assert CypherResult._result_depth(rows) is rows
+    assert CypherResult(rows=rows).rows[0]["x"] is value
+
+
+@pytest.mark.parametrize("kind", [list, dict])
+def test_cyclic_result_is_rejected(kind):
+    value = kind()
+    if isinstance(value, list):
+        value.append(value)
+    else:
+        value["self"] = value
+    with pytest.raises(ValidationError, match="maximum nesting depth of 254"):
+        CypherResult(rows=[{"x": value}])

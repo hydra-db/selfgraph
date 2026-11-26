@@ -639,14 +639,14 @@ class CypherResult(BaseModel):
     @classmethod
     def _result_depth(cls, rows: Any) -> Any:
         """Bound result cell nesting. @param rows (Any): rows. @return (Any): checked rows."""
-        pending = [(value, 0) for row in rows for value in row.values()]
+        containers = (dict, list, tuple)
+        pending = [(value, 0) for row in rows for value in row.values() if isinstance(value, containers)]
         while pending:
             value, depth = pending.pop()
-            if isinstance(value, dict | list | tuple):
-                if depth >= 254:
-                    raise ValidationError("run_cypher result exceeds the maximum nesting depth of 254", field="rows")
-                items = value.values() if isinstance(value, dict) else value
-                pending.extend((item, depth + 1) for item in items)
+            if depth >= 254:
+                raise ValidationError("run_cypher result exceeds the maximum nesting depth of 254", field="rows")
+            items = value.values() if isinstance(value, dict) else value
+            pending.extend((item, depth + 1) for item in items if isinstance(item, containers))
         return rows
 
 

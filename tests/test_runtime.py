@@ -5,13 +5,14 @@ import subprocess
 import sys
 import traceback
 import weakref
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 
 from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph, runtime
-from selfgraph._serde import LABELS
+from selfgraph._serde import LABELS, _cached_iso, _parse_iso, from_iso
 from selfgraph.errors import (
     StoreError,
     TransientError,
@@ -556,6 +557,11 @@ def test_bolt_initialize_skips_existing_constraints():
         raise AssertionError("constraint DDL ran")
 
     async def memgraph_rows(query, params=None):
+        if query == "SHOW INDEX INFO":
+            return CypherResult(
+                columns=[],
+                rows=[{"index type": "label+property", "label": label, "property": "id"} for label in LABELS],
+            )
         if query == "SHOW CONSTRAINTS":
             raise cypher._translate_cypher_error(DriverError("x", "parsing error at SHOW"), "bolt://h:1", None)
         rows = [{"constraint type": "unique", "label": label, "properties": ["ns", "id"]} for label in LABELS]
@@ -784,4 +790,62 @@ def test_run_cypher_results_drop_internal_node_properties():
     assert _to_json({"n": node, "rows": [node]}) == {
         "n": {"id": "t:a", "tags": [1]},
         "rows": [{"id": "t:a", "tags": [1]}],
+    }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-01-01",
+        "2026-01-01T12:30:45.123456789Z",
+        "2026-01-01t12:30:45z",
+        "2026-01-01T12:30:45+05:30:01",
+        "2026-01-01T12:30:45-0330",
+        "2026-01-01T12:30:45.123456+00:00",
+    ],
+)
+def test_cached_timestamps_keep_the_parser_grammar(value):
+    _cached_iso.cache_clear()
+    assert from_iso(value) == _parse_iso(value)
+    assert from_iso(value) == _parse_iso(value)
+    assert _cached_iso.cache_info().hits == 1
+
+
+@pytest.mark.parametrize(
+    "value", ["2026-01-01T12:30:45+05:60", "2026-02-30", "2026-W01-1", "2026-01-01T12:30:45+24:00"]
+)
+def test_invalid_dates_are_rejected_without_being_cached(value):
+    _cached_iso.cache_clear()
+    with pytest.raises(ValueError):
+        from_iso(value)
+    assert _cached_iso.cache_info().currsize == 0
+
+
+def test_timestamp_cache_bounds_entry_count_and_key_length():
+    _cached_iso.cache_clear()
+    for microsecond in range(1030):
+        value = f"2026-01-01T00:00:00.{microsecond:06}+00:00"
+        assert from_iso(value) == datetime(2026, 1, 1, microsecond=microsecond, tzinfo=timezone.utc)
+    assert _cached_iso.cache_info().currsize == 1024
+    info = _cached_iso.cache_info()
+    assert from_iso("2026-01-01" + " " * 10000 + "Z") == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert _cached_iso.cache_info() == info
+    assert from_iso(None) is None
+    stamp = datetime.now(timezone.utc)
+    assert from_iso(stamp) is stamp
+
+
+@pytest.mark.parametrize("base,value", [(str, "text"), (int, 7), (float, float("nan"))])
+def test_falkordb_scalar_subclasses_keep_graph_properties(base, value):
+    from selfgraph.stores.falkordb import _to_json
+
+    scalar = type("Scalar", (base,), {"properties": {"value": 3, "_lock": "hidden"}})(value)
+    assert _to_json(scalar) == {"value": 3}
+
+
+def test_falkordb_nested_values_preserve_nulls_and_nonfinite_numbers():
+    from selfgraph.stores.falkordb import _to_json
+
+    assert _to_json({"values": (None, float("nan"), float("inf"), float("-inf"), 2.5)}) == {
+        "values": [None, None, None, None, 2.5]
     }

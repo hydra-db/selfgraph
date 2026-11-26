@@ -427,6 +427,7 @@ export function aliasList(name: string, items: readonly string[]): string[] {
 const PAGE = 500;
 const BATCH = 1000;
 const RELATION_ID_BATCH = 256;
+const EXISTS_BATCH = 256;
 
 /**
  * Call a skip/limit list function page by page until it runs dry or reaches the cap.
@@ -725,7 +726,56 @@ export const precheckEdges = (
 async function entityKnown(runner: Runner, ns: string, eid: unknown, known: Set<string>): Promise<boolean> {
   if (typeof eid !== "string") throw new ValidationError(`entity reference must be a string id, got ${typeName(eid)}`);
   if (hasControl(eid)) throw new ValidationError("entity reference cannot contain control or surrogate characters");
-  return known.has(eid) || (await runner.nodeExists(ns, L_ENTITY, eid));
+  if (known.has(eid)) return true;
+  const present = await runner.nodeExists(ns, L_ENTITY, eid);
+  if (present) known.add(eid);
+  return present;
+}
+
+/**
+ * Tell whether an entity reference is a clean string id not yet known present.
+ * @param eid (unknown): the entity reference.
+ * @param known (Set<string>): entity ids known present.
+ * @return (boolean): true when the store would be asked about it.
+ */
+const unchecked = (eid: unknown, known: Set<string>): eid is string =>
+  typeof eid === "string" && !known.has(eid) && !hasControl(eid);
+
+type NodesExist = NonNullable<Runner["nodesExist"]>;
+
+/**
+ * Ask the store once which unchecked endpoints of the next relations exist, adding the present ones to known.
+ * @param probe (NodesExist): the store's nodesExist.
+ * @param ns (string): the namespace.
+ * @param relations (readonly ParsedRelationInput[]): the relations being validated.
+ * @param start (number): the index of the first relation to look ahead from.
+ * @param known (Set<string>): entity ids known present; updated in place.
+ * @return ([number, NodesExist | null]): the index after the relations covered, and the probe to use next, or null
+ */
+async function prefetchEndpoints(
+  probe: NodesExist,
+  ns: string,
+  relations: readonly ParsedRelationInput[],
+  start: number,
+  known: Set<string>,
+): Promise<[number, NodesExist | null]> {
+  const batch = new Set<string>();
+  let end = start;
+  while (end < relations.length && batch.size <= EXISTS_BATCH - 2) {
+    for (const eid of [relations[end]!.from_entity, relations[end]!.to_entity]) {
+      if (unchecked(eid, known)) batch.add(eid);
+    }
+    end += 1;
+  }
+  if (!batch.size) return [end, probe];
+  let present: Set<string>;
+  try {
+    present = await probe(ns, L_ENTITY, [...batch]);
+  } catch {
+    return [end, null];
+  }
+  for (const eid of batch) if (present.has(eid)) known.add(eid);
+  return [end, probe];
 }
 
 /**
@@ -887,13 +937,18 @@ export async function validateFacts(
     requireList("entity aliases", ent.aliases);
   }
 
-  for (const rel of facts.relations) {
+  let probe = runner.nodesExist?.bind(runner) ?? null;
+  let window = 0;
+  for (const [at, rel] of facts.relations.entries()) {
     validateOwnId("relation", rel.id);
     requireDatetime("relation event_time", rel.event_time);
     rejectReservedRelType(ids.normalizeRelType(rel.type), rel.type);
     if (!Array.isArray(rel.evidence))
       throw new ValidationError(`relation evidence must be a list, got ${typeName(rel.evidence)}`);
     for (const ev of rel.evidence) requireCleanEvidence(ev);
+    if (probe && at >= window && (unchecked(rel.from_entity, entities) || unchecked(rel.to_entity, entities))) {
+      [window, probe] = await prefetchEndpoints(probe, ns, facts.relations, at, entities);
+    }
     await requireEndpoints(
       runner,
       ns,
@@ -949,25 +1004,40 @@ export async function getEntity(runner: Runner, ns: string, eid: string): Promis
 export async function preserveEntityWrites(
   runner: Runner,
   ns: string,
-  eid: string,
-  fields: UpdateEntityFields,
+  writes: Iterable<readonly [string, UpdateEntityFields]>,
 ): Promise<void> {
-  const rows = await nodesWhere(runner, ns, L_MERGE, "survivor_id", [eid]);
+  const fieldsById = new Map<string, UpdateEntityFields[]>();
+  for (const [eid, fields] of writes) {
+    const group = fieldsById.get(eid) ?? [];
+    group.push(fields);
+    fieldsById.set(eid, group);
+  }
+  const rows = await nodesWhere(runner, ns, L_MERGE, "survivor_id", [...fieldsById.keys()]);
   for (const row of rows) {
     if (row.reverted_at != null) continue;
     const props = { ...row };
-    for (const [key, values] of [
-      ["aliases", (fields.aliases ?? []).map(cleanText)],
-      ["properties", Object.keys(fields.properties ?? {})],
-      ["external_ids", Object.keys(fields.external_ids ?? {})],
-    ] as const) {
-      const column = `added_${key}_json`;
-      props[column] = dumps(loads<string[]>(row[column], []).filter((v) => !values.includes(v)));
+    for (const fields of fieldsById.get(row.survivor_id as string) ?? []) {
+      for (const [key, values] of [
+        ["aliases", (fields.aliases ?? []).map(cleanText)],
+        ["properties", Object.keys(fields.properties ?? {})],
+        ["external_ids", Object.keys(fields.external_ids ?? {})],
+      ] as const) {
+        const column = `added_${key}_json`;
+        props[column] = dumps(loads<string[]>(props[column], []).filter((v) => !values.includes(v)));
+      }
     }
     if (!deepEqual(props, row)) {
       await runner.lockNode(ns, L_MERGE, row.id as string);
       await runner.upsertNode(ns, L_MERGE, row.id as string, props);
     }
+  }
+}
+
+async function lockNodes(runner: Runner, ns: string, label: string, ids: readonly string[]): Promise<void> {
+  if (ids.length > 1 && runner.lockNodes) {
+    await runner.lockNodes(ns, label, ids);
+  } else {
+    for (const id of ids) await runner.lockNode(ns, label, id);
   }
 }
 
@@ -1000,7 +1070,7 @@ export async function upsertEntities(
     return { eid, etype, ename, ent };
   });
   const eids = dedupList(keyed.map((k) => k.eid));
-  for (const eid of eids) await runner.lockNode(ns, L_ENTITY, eid);
+  await lockNodes(runner, ns, L_ENTITY, eids);
   const stored = new Map<string, Entity>();
   for (const [eid, props] of await nodesById(runner, ns, L_ENTITY, eids)) stored.set(eid, decodeEntity(props));
   const [records, counts] = await planEvidence(
@@ -1079,7 +1149,11 @@ export async function upsertEntities(
     rows.push([eid, props]);
     byType.set(props.type as string, rows);
   }
-  for (const [etype, rows] of byType) await runner.upsertNodes(ns, L_ENTITY, rows, { extra_label: etype });
+  for (const [etype, rows] of byType) {
+    if (runner.upsertNewNodes && rows.every(([eid]) => !stored.has(eid)))
+      await runner.upsertNewNodes(ns, L_ENTITY, rows, { extra_label: etype });
+    else await runner.upsertNodes(ns, L_ENTITY, rows, { extra_label: etype });
+  }
   await writeEvidence(runner, ns, records, createdAt);
   return out;
 }
@@ -1181,8 +1255,13 @@ export async function updateEntity(
   if (fields.external_ids !== undefined) requireStrMapping("external_ids", fields.external_ids);
   if (fields.type !== undefined) requireStr("entity type", fields.type);
   if (fields.name !== undefined) requireStr("entity name", fields.name);
-  await runner.lockNode(ns, L_ENTITY, eid);
-  existing = await getEntity(runner, ns, eid);
+  if (runner.lockRefreshesReads !== false && runner.lockAndGetNode) {
+    const props = await runner.lockAndGetNode(ns, L_ENTITY, eid);
+    existing = props ? decodeEntity(props) : null;
+  } else {
+    await runner.lockNode(ns, L_ENTITY, eid);
+    if (runner.lockRefreshesReads !== false) existing = await getEntity(runner, ns, eid);
+  }
   if (existing === null) throw new TransientError(`entity ${pyRepr(eid)} was changed concurrently; retry`);
   let type = fields.type !== undefined ? cleanText(fields.type) : existing.type;
   if (ids.slug(type) !== ids.slug(existing.type)) {
@@ -1207,7 +1286,7 @@ export async function updateEntity(
       relations: [],
     },
   );
-  await preserveEntityWrites(runner, ns, eid, fields);
+  await preserveEntityWrites(runner, ns, [[eid, fields]]);
   if (
     type === existing.type &&
     name === existing.name &&
@@ -1473,8 +1552,9 @@ export async function deleteEntity(
   caps?: ReadonlyMap<string, RelationCap> | null,
 ): Promise<DeleteResult> {
   const eid = ids.canonicalEntityId(given);
-  if (!(await runner.nodeExists(ns, L_ENTITY, eid))) throw await missingEntity(runner, ns, eid);
-  return deleteEntities(runner, ns, [eid], caps);
+  const counts = await deleteEntities(runner, ns, [eid], caps);
+  if (!counts.deleted_entities) throw await missingEntity(runner, ns, eid);
+  return counts;
 }
 
 /**
@@ -1634,9 +1714,8 @@ export async function deleteEntities(
     valued.filter((edge) => PREFERENCE_EDGE_TYPES.includes(edge.type) && !goneProfiles.has(edge.from_id)),
   );
   for (const batch of batches(profiles)) await runner.deleteNodes(ns, L_PROFILE, batch);
-  await deleteNodesWhere(runner, ns, L_EVIDENCE, "target_id", rids);
+  await deleteNodesWhere(runner, ns, L_EVIDENCE, "target_id", [...rids, ...eids]);
   for (const batch of batches(eids)) await runner.deleteNodes(ns, L_ENTITY, batch);
-  await deleteNodesWhere(runner, ns, L_EVIDENCE, "target_id", eids);
   for (const side of ["survivor_id", "absorbed_id"]) {
     const merges = (await nodesWhere(runner, ns, L_MERGE, side, eids)).map(idOf);
     await deleteNodesWhere(runner, ns, L_MERGE_ENTRY, "merge_id", merges);
@@ -1934,12 +2013,6 @@ async function newestPreference(runner: Runner, ns: string, pid: string): Promis
 
 /**
  * Fetch the current version of many relations, or the newest version of one that has no current version.
- *
- * A derived relation id fixes its endpoints, so its stored versions are among its source entity's relations; an
- * explicit id may name a relation between other entities, so one not found that way is looked up by id. Only
- * source entities with a relation not found current are read again across all versions, so an insert of new
- * relations from new entities costs one query.
- *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param keyed (ReadonlyArray<readonly [string, Pick<ParsedRelationInput, "id" | "from_entity">]>): (relation id, input) pairs.
@@ -1957,34 +2030,29 @@ export async function currentRelations(
   const ids = [...wanted];
   let versions: EdgeRow[] | null = null;
   if (runner.edgeVersions) {
-    if (allIds) {
-      versions = [];
-      for (const batch of batches(ids, RELATION_ID_BATCH)) {
-        const rows = await runner.edgeVersions(ns, L_ENTITY, L_ENTITY, batch);
-        if (rows === null) {
-          versions = null;
-          break;
-        }
-        for (const edge of rows) versions.push(edge);
+    versions = [];
+    for (const batch of batches(ids, RELATION_ID_BATCH)) {
+      const rows = await runner.edgeVersions(ns, L_ENTITY, L_ENTITY, batch);
+      if (rows === null) {
+        versions = null;
+        break;
       }
-    } else {
-      versions = await runner.edgeVersions(ns, L_ENTITY, L_ENTITY, ids);
+      for (const edge of rows) versions.push(edge);
     }
   }
   for (const currentOnly of [true, false]) {
     const pending = dedupList(keyed.filter(([rid]) => !found.has(rid)).map(([, rel]) => rel.from_entity));
     const filter = { from_label: L_ENTITY, to_label: L_ENTITY, current_only: currentOnly };
-    const sources = new Set(pending);
     const edges =
       versions === null
         ? await edgesAt(runner, ns, filter, "from_in", pending)
-        : versions.filter((e) => (allIds || sources.has(e.from_id)) && (Boolean(e.props.is_current) || !currentOnly));
+        : versions.filter((e) => Boolean(e.props.is_current) || !currentOnly);
     for (const edge of edges) {
       if (wanted.has(idOf(edge.props)) && isRelationType(edge.type)) keepNewest(found, edge);
     }
     for (const rid of found.keys()) wanted.delete(rid);
   }
-  if (allIds && versions !== null) return found;
+  if (versions !== null) return found;
   const missing = dedupList(keyed.filter(([rid, rel]) => (allIds || rel.id) && !found.has(rid)).map(([rid]) => rid));
   for (const rid of missing) {
     const edge = newestEdge(await typedEdgeVersions(runner, ns, rid, isRelationType));
@@ -3052,11 +3120,15 @@ export async function upsertRelations(
     return { rid, rtype, rel, evidence, via: options.via === undefined ? null : [...options.via[position]!] };
   });
   const keyed = foldRelations(inputs, defaultEventTime);
-  for (const eid of relationLockIds(
-    options.caps,
-    keyed.map((k) => [k.rtype, k.rel.from_entity, k.rel.to_entity] as const),
-  ))
-    await runner.lockNode(ns, L_ENTITY, eid);
+  await lockNodes(
+    runner,
+    ns,
+    L_ENTITY,
+    relationLockIds(
+      options.caps,
+      keyed.map((k) => [k.rtype, k.rel.from_entity, k.rel.to_entity] as const),
+    ),
+  );
   const rids = dedupList(keyed.map((k) => k.rid));
   const claims = new Map(rids.map((rid) => [rid, takeClaim(runner, ns, rid)] as const));
   const stored = await currentRelations(
@@ -3379,6 +3451,11 @@ async function lockCurrent<T extends { is_current: boolean }>(
   const claim = takeClaim(runner, ns, id);
   const before = (await get(runner, ns, id)) ?? (await newestUnretired(runner, ns, id, kind, newest));
   await runner.lockNode(ns, ...lockOn(before));
+  if (runner.lockRefreshesReads === false) {
+    if (before.is_current) foundCurrent(claim);
+    else requireUnshared(claim, id, kind);
+    return before;
+  }
   const current = await get(runner, ns, id);
   if (current !== null) {
     foundCurrent(claim);

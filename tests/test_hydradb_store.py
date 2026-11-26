@@ -128,3 +128,78 @@ def test_json_blobs_use_the_full_hydradb_row_budget(operation):
         await store.delete_node(ns, "Source", "x:b")
 
     run(go())
+
+
+def test_relation_point_reads_keep_parallel_versions_and_namespace_isolation():
+    store = make_store()
+    namespaces = [unique_ns("point"), unique_ns("point_other")]
+    sid = "relation:shared"
+
+    async def go():
+        try:
+            await store.initialize()
+            for ns in namespaces:
+                for node in ("x:a", "x:b", "x:c", "x:d"):
+                    await store.upsert_node(
+                        ns,
+                        "Entity",
+                        node,
+                        {
+                            **_props(ns, node),
+                            "type": "X",
+                            "aliases": [],
+                            "external_ids_json": "{}",
+                            "properties_json": "{}",
+                            "source_count": 0,
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                            "updated_at": "2026-01-01T00:00:00+00:00",
+                        },
+                    )
+                for revision, source, target in ((1, "x:a", "x:b"), (2, "x:a", "x:b"), (3, "x:c", "x:d")):
+                    assert await store.create_edge(
+                        ns,
+                        "LINK",
+                        "Entity",
+                        source,
+                        "Entity",
+                        target,
+                        {"id": sid, "ns": ns, "revision": revision, "is_current": revision == 3},
+                    )
+                for other_id, current in (("relation:other", True), ("relation:retired", False)):
+                    assert await store.create_edge(
+                        ns,
+                        "LINK",
+                        "Entity",
+                        "x:a",
+                        "Entity",
+                        "x:b",
+                        {"id": other_id, "ns": ns, "revision": 1, "is_current": current},
+                    )
+            for ns in namespaces:
+                versions = await store.list_edge_versions(ns, sid)
+                assert [v["props"]["revision"] for v in versions] == [1, 2, 3]
+                assert all(v["props"]["ns"] == ns and v["props"]["id"] == sid for v in versions)
+                bulk = await store.edge_versions(ns, "Entity", "Entity", [sid, "relation:missing"])
+                assert sorted(v["props"]["revision"] for v in bulk) == [1, 2, 3]
+                assert all(v["props"]["ns"] == ns and v["props"]["id"] == sid for v in bulk)
+                assert await store.edge_versions(ns, "Source", "Entity", [sid]) == []
+                current = await store.get_current_edge(ns, sid)
+                assert current["props"]["revision"] == 3 and current["props"]["ns"] == ns
+                assert (current["from_id"], current["to_id"]) == ("x:c", "x:d")
+                assert await store.count_edges(ns, sid) == 3
+                assert await store.get_current_edge(ns, "relation:retired") is None
+                assert len(await store.list_edge_versions(ns, "relation:retired")) == 1
+                assert await store.get_current_edge(ns, "relation:missing") is None
+                assert await store.list_edge_versions(ns, "relation:missing") == []
+                assert await store.count_edges(ns, "relation:missing") == 0
+                assert await store.delete_edges(ns, sid) == 3
+                assert await store.list_edge_versions(ns, sid) == []
+                assert await store.delete_edges(ns, sid) == 0
+                assert await store.get_current_edge(ns, "relation:other") is not None
+        finally:
+            for ns in namespaces:
+                for node in ("x:a", "x:b", "x:c", "x:d"):
+                    await store.delete_node(ns, "Entity", node)
+            await store.close()
+
+    run(go())

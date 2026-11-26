@@ -374,7 +374,7 @@ def test_relation_id_preflight_batches_kuzu_reads(monkeypatch):
     relations = [{"from_entity": "person:ada", "type": "KNOWS", "to_entity": f"person:contact-{i}"} for i in range(257)]
     result = run(g.insert.facts({"entities": entities, "relations": relations}))
     assert len(result.relations) == 257
-    assert batches == [256, 1]
+    assert batches == [256, 1, 256, 1]
     assert single_reads == []
 
 

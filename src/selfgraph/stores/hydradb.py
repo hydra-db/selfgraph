@@ -146,8 +146,12 @@ def _same(alias: str, key: str, param: str) -> str:
 
 
 _BY_SID = f"MATCH ()-[r:{_EDGE} {{sid: $sid}}]->() WHERE {_same('r', 'ns', 'ns')}"
-_READ_EDGES = f"MATCH (a {{ns: $ns}})-[r:{_EDGE}]->() WHERE {_same('r', 'ns', 'ns')}"
-_READ_BY_SID = f"{_READ_EDGES} AND {_same('r', 'sid', 'sid')}"
+_DELETE_BY_ID = "UNWIND $rows AS row MATCH (n {id: row.id}) DETACH DELETE n"
+_SET_BY_SID = f"UNWIND $rows AS row MATCH ()-[r:{_EDGE} {{sid: row.sid}}]->() WHERE {_same('r', 'ns', 'ns')}"
+_READ_BY_SID = (
+    f"MATCH (a)-[r:{_EDGE}]->() WHERE a.id IN $sources AND {_same('r', 'ns', 'ns')} AND {_same('r', 'sid', 'sid')}"
+)
+_SEEK_BY_SID = f"MATCH (a)-[r:{_EDGE} {{sid: $sid}}]->() WHERE a.id IN $sources AND {_same('r', 'ns', 'ns')}"
 
 
 def _keyed(alias: str, label: str, equals: dict | None, params: dict) -> str:
@@ -486,6 +490,26 @@ class HydraDBStore(AutoCommitStore):
         res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.sid AS sid", {"iid": iid}, reads=[iid])
         return bool(res.rows)
 
+    async def nodes_exist(self, ns: str, label: str, ids: list[str]) -> set[str]:
+        """Report which of some node ids exist under one label, seeking their keys in bounded batches.
+
+        @param ns (str): namespace.
+        @param label (str): the node label.
+        @param ids (list[str]): the node ids.
+        @return (set[str]): the ids node_exists would report present.
+        """
+        by_key: dict[int, list[str]] = {}
+        for id in ids:
+            by_key.setdefault(_sk(ns, id), []).append(id)
+        found: set[str] = set()
+        for batch in _batches(sorted(by_key), _SEEK_BATCH):
+            res = await self._run(
+                f"MATCH (n:{label}) WHERE n.id IN $iids RETURN n.id AS id", {"iids": batch}, reads=batch
+            )
+            for row in res.rows:
+                found.update(by_key.get(row["id"], ()))
+        return found
+
     def check_node_writes(self, ns: str, label: str, rows: list[tuple[str, dict]]) -> None:
         """Reject node upserts that would not fit in one HydraDB Bolt message, before any write.
 
@@ -518,6 +542,33 @@ class HydraDBStore(AutoCommitStore):
     async def upsert_nodes(
         self, ns: str, label: str, rows: list[tuple[str, dict]], *, extra_label: str | None = None
     ) -> None:
+        await self._upsert_nodes(ns, label, rows, extra_label, probe_labels=True)
+
+    async def upsert_new_nodes(
+        self, ns: str, label: str, rows: list[tuple[str, dict]], *, extra_label: str | None = None
+    ) -> None:
+        """Upsert nodes with an idempotent extra-label write instead of a label probe.
+
+        @param ns (str): namespace.
+        @param label (str): the node label.
+        @param rows (list[tuple[str, dict]]): (id, encoded properties) pairs, as upsert_nodes takes them.
+        @param extra_label (str | None): an additional label to add to every node.
+        @return (None): nothing.
+        """
+        await self._upsert_nodes(ns, label, rows, extra_label, probe_labels=False)
+
+    async def _upsert_nodes(
+        self, ns: str, label: str, rows: list[tuple[str, dict]], extra_label: str | None, *, probe_labels: bool
+    ) -> None:
+        """Upsert nodes with their key rows first, then clear the columns their properties unset.
+
+        @param ns (str): namespace.
+        @param label (str): the node label.
+        @param rows (list[tuple[str, dict]]): (id, encoded properties) pairs.
+        @param extra_label (str | None): an additional label to add to every node.
+        @param probe_labels (bool): read which nodes lack the extra label and write it only to those, else write it
+        @return (None): nothing.
+        """
         if extra_label is not None:
             quote_label(extra_label)
         out = []
@@ -544,20 +595,28 @@ class HydraDBStore(AutoCommitStore):
                     held.append((keys, params))
         index_rows = _key_rows(ns, rows) if label == L_ENTITY else []
         await self._merge_rows(_KEY, index_rows)
-        await self._merge_rows(label, out, [r["id"] for r in index_rows], extra_label=extra_label)
+        await self._merge_rows(
+            label, out, [r["id"] for r in index_rows], extra_label=extra_label, probe_labels=probe_labels
+        )
         for keys, params in held:
             await self._run(f"MATCH (n:{label}) WHERE n.id IN $iids REMOVE {_removes('n', keys)}", params)
 
     async def _merge_rows(
-        self, label: str, rows: list[dict], needs: list[int] | None = None, *, extra_label: str | None = None
+        self,
+        label: str,
+        rows: list[dict],
+        needs: list[int] | None = None,
+        *,
+        extra_label: str | None = None,
+        probe_labels: bool = True,
     ) -> None:
         """Upsert node rows by surrogate id with one UNWIND statement per batch of rows sharing a column set.
 
         @param label (str): the node label.
         @param rows (list[dict]): the rows, each with its surrogate id and the columns to set.
         @param needs (list[int] | None): ids that must be written first, such as the entities' key rows, so a
-            failed write never leaves an entity stored without them.
         @param extra_label (str | None): an additional label to add to every node.
+        @param probe_labels (bool): read which nodes lack the extra label and write it only to those, else write it
         @return (None): nothing.
         """
         extra_label = _engine_label(extra_label)
@@ -566,6 +625,17 @@ class HydraDBStore(AutoCommitStore):
         after_all = label in (L_EVIDENCE, L_MERGE)
         for batch in _by_columns(rows):
             ids = [r["id"] for r in batch]
+            missing_labels = []
+            if extra_label is not None and not probe_labels:
+                missing_labels = ids
+            elif extra_label is not None:
+                found = await self._run(
+                    f"MATCH (n:{quote_label(extra_label)}) WHERE n.id IN $iids RETURN n.id AS id",
+                    {"iids": ids},
+                    reads=ids,
+                )
+                labelled = {row["id"] for row in found.rows}
+                missing_labels = [iid for iid in ids if iid not in labelled]
             await self._write(
                 f"UNWIND $rows AS row MERGE (n {{id: row.id}}) SET n:{label}, {_sets('n', batch[0], ('id',))}",
                 {"rows": batch},
@@ -574,12 +644,12 @@ class HydraDBStore(AutoCommitStore):
                 marks,
                 after_all=after_all,
             )
-            if extra_label is not None:
+            if missing_labels:
                 await self._write(
-                    f"MATCH (n:{label}) WHERE n.id IN $iids SET n:{quote_label(extra_label)}",
-                    {"iids": ids},
-                    ids,
-                    ids,
+                    f"UNWIND $rows AS row MATCH (n:{label} {{id: row.id}}) SET n:{quote_label(extra_label)}",
+                    {"rows": [{"id": iid} for iid in missing_labels]},
+                    missing_labels,
+                    missing_labels,
                     marks,
                     after_all=after_all,
                 )
@@ -693,8 +763,21 @@ class HydraDBStore(AutoCommitStore):
     async def delete_nodes(self, ns: str, label: str, ids: list[str]) -> None:
         for batch in _batches(ids, _DELETE_BATCH):
             iids = [_sk(ns, i) for i in batch]
-            await self._run("MATCH (n) WHERE n.id IN $iids DETACH DELETE n", {"iids": iids})
-            await self._drop_keys(label, iids)
+            keys = []
+            if label == L_ENTITY:
+                found = await self._run(
+                    f"MATCH (k:{_KEY}) WHERE k.eid IN $iids AND {_same('k', 'ns', 'ns')} "
+                    "RETURN k.id AS id LIMIT $limit",
+                    {"iids": iids, "ns": ns, "limit": _DELETE_BATCH},
+                )
+                keys = [row["id"] for row in found.rows]
+            for doomed in _batches([*iids, *keys], _DELETE_BATCH):
+                await self._run(_DELETE_BY_ID, {"rows": [{"id": iid} for iid in doomed]})
+            if len(keys) == _DELETE_BATCH:
+                await self._run(
+                    f"MATCH (k:{_KEY}) WHERE k.eid IN $iids AND {_same('k', 'ns', 'ns')} DETACH DELETE k",
+                    {"iids": iids, "ns": ns},
+                )
 
     async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
         params: dict[str, Any] = {"ns": ns, "batch": _DELETE_BATCH}
@@ -745,6 +828,16 @@ class HydraDBStore(AutoCommitStore):
             if keys := _unset(props):
                 cleared.setdefault(keys, []).append({"f": row["f"], "t": row["t"], "id": row["id"]})
         for keys, ends in cleared.items():
+            ids = [row["id"] for row in ends]
+            have = " OR ".join(f"r.`{require_identifier(k)}` IS NOT NULL" for k in keys)
+            found = await self._run(
+                f"MATCH (a:{from_label})-[r:{_EDGE}]->() WHERE a.id IN $sources "
+                f"AND ({have}) RETURN r.sid AS sid LIMIT 1",
+                {"ids": ids, "sources": list(dict.fromkeys(row["f"] for row in ends))},
+                reads=[*ids, *(row["f"] for row in ends)],
+            )
+            if not found.rows:
+                continue
             await self._run(
                 f"UNWIND $rows AS row MATCH (a:{from_label} {{id: row.f}})-[r:{_EDGE} {{id: row.id}}]->"
                 f"(b:{to_label} {{id: row.t}}) REMOVE {_removes('r', keys)}",
@@ -760,9 +853,23 @@ class HydraDBStore(AutoCommitStore):
                 after_all=any(r.get("is_current") is False and r.get("invalidated_by") for r in batch),
             )
 
+    async def _sid_sources(self, ns: str, id: str) -> dict:
+        """Select source vertices by relation id before expanding all of their versions.
+
+        @param ns (str): namespace.
+        @param id (str): relation id.
+        @return (dict): parameters for the source-anchored version read.
+        """
+        result = await self._run(
+            f"MATCH (a)-[r:{_EDGE} {{sid: $sid}}]->() WHERE {_same('r', 'ns', 'ns')} RETURN a.id AS source",
+            {"ns": ns, "sid": id},
+            reads=[_sid_key(ns, id)],
+        )
+        return {"ns": ns, "sid": id, "sources": list(dict.fromkeys(row["source"] for row in result.rows))}
+
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
         res = await self._run(
-            f"{_READ_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
+            f"{_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
             f", r.fa AS fa, r.tb AS tb, r.etype AS et",
             {"ns": ns, "sid": id},
             reads=[_sid_key(ns, id)],
@@ -771,10 +878,10 @@ class HydraDBStore(AutoCommitStore):
 
     async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
         res = await self._run(
-            f"{_READ_BY_SID} RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
+            f"{_SEEK_BY_SID} RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
             f", r.fa AS fa, r.tb AS tb, r.etype AS et, "
             "r.revision AS rev ORDER BY rev",
-            {"ns": ns, "sid": id},
+            await self._sid_sources(ns, id),
             reads=[_sid_key(ns, id)],
         )
         return [edge_row(r) for r in res.rows]
@@ -782,7 +889,7 @@ class HydraDBStore(AutoCommitStore):
     async def edge_versions(
         self, ns: str, from_label: str | None, to_label: str | None, ids: list[str]
     ) -> list[dict] | None:
-        """Read every version of a bounded set of edge ids in one namespace scan.
+        """Read every version after seeking source vertices by a bounded set of edge ids.
 
         @param ns (str): namespace.
         @param from_label (str | None): the source node label the edges must have, or None for any.
@@ -794,13 +901,22 @@ class HydraDBStore(AutoCommitStore):
             return None
         if not ids:
             return []
+        seeds = await self._run(
+            f"MATCH (a)-[r:{_EDGE}]->() WHERE r.sid IN $sids AND {_same('r', 'ns', 'ns')} RETURN a.id AS source",
+            {"ns": ns, "sids": ids},
+            reads=(_sid_key(ns, sid) for sid in ids),
+        )
+        sources = list(dict.fromkeys(row["source"] for row in seeds.rows))
+        if not sources:
+            return []
         labels = {k: v for k, v in (("fl", from_label), ("tl", to_label)) if v is not None}
         where = "".join(f" AND {_same('r', k, k)}" for k in labels)
         res = await self._run(
-            f"{_READ_EDGES} AND NOT (NOT r.sid IN $sids){where} "
+            f"MATCH (a)-[r:{_EDGE}]->() WHERE a.id IN $sources AND {_same('r', 'ns', 'ns')} "
+            f"AND NOT (NOT r.sid IN $sids){where} "
             "RETURN r.sid AS sid, r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
             ", r.fa AS fa, r.tb AS tb, r.etype AS et",
-            {"ns": ns, "sids": ids, **labels},
+            {"ns": ns, "sids": ids, "sources": sources, **labels},
             reads=(_sid_key(ns, sid) for sid in ids),
         )
         by_id: dict[str, list[dict]] = {}
@@ -819,22 +935,25 @@ class HydraDBStore(AutoCommitStore):
             sets.append(f"r.`{require_identifier(k)}` = $s_{k}")
             params[f"s_{k}"] = v
         _guard_sizes(params)
-        if keys := _unset(merged):
-            await self._run(f"{_BY_SID} AND r.is_current = true REMOVE {_removes('r', keys)}", {"ns": ns, "sid": id})
+        params["rows"] = [{"sid": params.pop("sid")}]
+        keys = _unset(merged)
+        remove = f" REMOVE {_removes('r', keys)}" if keys else ""
         await self._run(
-            f"{_BY_SID} AND r.is_current = true SET {', '.join(sets)}",
+            f"{_SET_BY_SID} AND r.is_current = true{remove} SET {', '.join(sets)}",
             params,
         )
 
     async def count_edges(self, ns: str, id: str) -> int:
-        res = await self._run(f"{_READ_BY_SID} RETURN count(*) AS n", {"ns": ns, "sid": id})
+        res = await self._run(f"{_READ_BY_SID} RETURN count(*) AS n", await self._sid_sources(ns, id))
         return count_of(res.rows)
 
     async def delete_edges(self, ns: str, id: str) -> int:
-        n = await self.count_edges(ns, id)
-        if n:
-            await self._run(f"{_BY_SID} DELETE r", {"ns": ns, "sid": id})
-        return n
+        res = await self._run(
+            f"MATCH (a)-[r:{_EDGE} {{sid: $sid}}]->() WHERE a.id IN $sources AND {_same('r', 'ns', 'ns')} "
+            "DELETE r RETURN count(r) AS n",
+            await self._sid_sources(ns, id),
+        )
+        return count_of(res.rows)
 
     async def match_edges(
         self,
@@ -887,9 +1006,29 @@ class HydraDBStore(AutoCommitStore):
             params[f"eq{i}"] = value
         if current_only:
             where.append("NOT r.is_current <> true")
-        where_after("r.sid", id_gt, where, params)
+        if id_gt is not None:
+            where.append("NOT r.sid <= $id_gt")
+            params["id_gt"] = id_gt
         ob = "sid" if order_by == "id" else require_identifier(order_by, "order_by")
         tie_break, order = (", r.revision AS __rev", "__ob, __rev") if order_by == "id" else ("", "__ob")
+        if not from_anchored and not to_anchored:
+            seek = next(
+                ((k, v) for k, v in sorted((equals or {}).items()) if k != "ns" and isinstance(v, _SCALARS)), None
+            )
+            if seek is not None:
+                key, value = seek
+                seeds = await self._run(
+                    f"MATCH (a)-[r:{_EDGE} {{`{require_identifier(key)}`: $seek}}]->() "
+                    f"WHERE {_same('r', 'ns', 'ns')} RETURN a.id AS source LIMIT $seek_limit",
+                    {"ns": ns, "seek": value, "seek_limit": _SEEK_BATCH + 1},
+                )
+                if len(seeds.rows) <= _SEEK_BATCH:
+                    sources = list(dict.fromkeys(row["source"] for row in seeds.rows))
+                    if not sources:
+                        return []
+                    apat = f"a:{from_label}"
+                    where.insert(0, "a.id IN $sources")
+                    params["sources"] = sources
         res = await self._run(
             f"MATCH ({apat})-[r:{_EDGE}]->({bpat}) WHERE {' AND '.join(where)} "
             f"RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"

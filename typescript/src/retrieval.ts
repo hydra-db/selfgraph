@@ -60,6 +60,8 @@ const FILLER = new Set(
 const PAGE = 500;
 const MAX_POOL = 5000;
 const SEED_PAGE = 5000;
+const SEED_DOC_UNITS = 1 << 20;
+const SEED_ENTRY_UNITS = 256;
 const NEIGHBOR_PARTS = 8;
 const MAX_PASSAGES = 6;
 const PASSAGE_BUDGET_PERCENT = 60;
@@ -139,6 +141,89 @@ function entityText(e: Entity): string {
   return parts.join(" ");
 }
 
+type EntityDoc = [folded: string, tokens: string[]];
+
+/**
+ * Fold an entity's searchable text once and split it as tokenList does, for the corpus statistics and the score.
+ * @param e (Entity): the entity to describe.
+ * @return (EntityDoc): the folded searchable text and its content tokens, repeats kept.
+ */
+function entityDoc(e: Entity): EntityDoc {
+  const folded = fold(entityText(e));
+  return [folded, wordRuns(folded).filter((t) => !STOPWORDS.has(t))];
+}
+
+type Kept = [candidates: Array<[Entity, EntityDoc]>, units: number];
+
+/**
+ * Retain positive-score candidates within the document and full-record budget.
+ * @param entities (Iterable<Entity>): the entity page.
+ * @param docs (EntityDoc[] | null): its documents retained by the corpus pass.
+ * @param queryTokens (Set<string>): query tokens.
+ * @param exact (Set<string>): exact-name query tokens.
+ * @param kept (Kept | null): candidates and units used, or null after overflow.
+ * @param queryStems (Set<string>): query stems shared across candidate pages.
+ * @return (Kept | null): bounded candidates and units, or null after overflow.
+ */
+function keepSeedCandidates(
+  entities: Iterable<Entity>,
+  docs: EntityDoc[] | null,
+  queryTokens: Set<string>,
+  exact: Set<string>,
+  kept: Kept | null,
+  queryStems: Set<string>,
+): Kept | null {
+  if (kept === null) return null;
+  const candidates = kept[0];
+  let units = kept[1];
+  let index = 0;
+  for (const entity of entities) {
+    const doc = docs === null ? entityDoc(entity) : docs[index]!;
+    index += 1;
+    if (
+      !doc[1].some((token) => queryStems.has(stem(token))) &&
+      grepScore(queryTokens, doc[0]) === 0 &&
+      (exact.size === 0 || !exact.has(fold(entity.name)))
+    )
+      continue;
+    units += doc[0].length + 16 * doc[1].length + SEED_ENTRY_UNITS + Math.ceil(cpLen(JSON.stringify(entity)) / 8);
+    if (units > SEED_DOC_UNITS) return null;
+    candidates.push([entity, doc]);
+  }
+  return [candidates, units];
+}
+
+/**
+ * Collect corpus statistics while retaining documents within the call's text and token budget.
+ * @param entities (Iterable<Entity>): the page to tokenize.
+ * @param queryTokens (Set<string>): query tokens for the corpus statistics.
+ * @param stats (CorpusStats | null): previous pages' statistics, or null to start.
+ * @param retain (boolean): whether this page can be reused for scoring.
+ * @return ([CorpusStats, EntityDoc[] | null]): the corpus statistics and retained documents, or null after overflow.
+ */
+function seedCorpus(
+  entities: Iterable<Entity>,
+  queryTokens: Set<string>,
+  stats: CorpusStats | null = null,
+  retain = true,
+): [CorpusStats, EntityDoc[] | null] {
+  let docs: EntityDoc[] | null = retain ? [] : null;
+  let units = 0;
+  function* tokenized() {
+    for (const entity of entities) {
+      const doc = entityDoc(entity);
+      if (docs !== null) {
+        units += doc[0].length + 16 * doc[1].length + 32;
+        if (units > SEED_DOC_UNITS) docs = null;
+        else docs.push(doc);
+      }
+      yield doc[1];
+    }
+  }
+  const corpus = corpusStats(queryTokens, tokenized(), stats);
+  return [corpus, docs];
+}
+
 /**
  * Render relation properties as a compact brace-wrapped string, values rendered by pyStr.
  *
@@ -194,11 +279,11 @@ function corpusStats(query: Set<string>, docs: Iterable<string[]>, stats: Corpus
 
 /**
  * Score entities by Okapi BM25 over the corpus statistics plus a substring boost and an exact-name boost, divided by the log of their source count.
- *
  * @param entities (Iterable<Entity>): the entities to score.
  * @param queryTokens (Set<string>): the content tokens from the query.
  * @param exact (Set<string>): short query tokens that seed an entity whose whole name equals one.
  * @param stats (CorpusStats): the corpus statistics, from corpusStats.
+ * @param docs (EntityDoc[] | null): each entity's entityDoc in the same order, or null to build them.
  * @return (Array<[Entity, number]>): the entities with a positive score, with it.
  */
 function seedScores(
@@ -206,22 +291,31 @@ function seedScores(
   queryTokens: Set<string>,
   exact: Set<string>,
   stats: CorpusStats,
+  docs: EntityDoc[] | null = null,
 ): Array<[Entity, number]> {
   const { n, total, df } = stats;
   const avgdl = (n ? total / n : 0) || 1.0;
   const idf = new Map([...df].map(([t, d]) => [t, Math.log(1 + (n - d + 0.5) / (d + 0.5))]));
   const terms = stemSet(queryTokens);
   const scored: Array<[Entity, number]> = [];
+  let i = 0;
   for (const entity of entities) {
-    const text = entityText(entity);
+    let folded: string;
+    let doc: string[];
+    if (docs === null) {
+      folded = fold(entityText(entity));
+      doc = queryTokens.size ? wordRuns(folded).filter((t) => !STOPWORDS.has(t)) : [];
+    } else {
+      [folded, doc] = docs[i];
+    }
+    i += 1;
     let bm25 = 0;
     if (terms.size) {
-      const doc = tokenList(text);
       const norm = BM25_K1 * (1 - BM25_B + (BM25_B * doc.length) / avgdl);
       for (const [t, f] of termCounts(terms, doc)) bm25 += ((idf.get(t) ?? 0) * f * (BM25_K1 + 1)) / (f + norm);
     }
-    const named = exact.has(fold(entity.name)) ? 1 : 0;
-    const score = bm25 + GREP_WEIGHT * (grepScore(queryTokens, fold(text)) + named);
+    const named = exact.size > 0 && exact.has(fold(entity.name)) ? 1 : 0;
+    const score = bm25 + GREP_WEIGHT * (grepScore(queryTokens, folded) + named);
     if (score > 0) scored.push([entity, score / Math.log(Math.E + entity.source_count)]);
   }
   return scored;
@@ -261,16 +355,12 @@ export function grepScore(terms: Set<string>, text: string): number {
  * @return (Array<[Entity, number]>): seed entities with their scores, best first.
  */
 export function selectSeeds(entities: Entity[], queryTokens: Set<string>, k: number): Array<[Entity, number]> {
-  const stats = corpusStats(
-    queryTokens,
-    entities.map((e) => tokenList(entityText(e))),
-  );
-  return bestSeeds(seedScores(entities, queryTokens, new Set(), stats), k);
+  const [stats, docs] = seedCorpus(entities, queryTokens);
+  return bestSeeds(seedScores(entities, queryTokens, new Set(), stats, docs), k);
 }
 
 /**
- * Rank every entity as a seed, as selectSeeds does, in two streaming passes over id-ordered pages: the first gathers the BM25 corpus statistics and the second scores each page and keeps the best k, so memory holds one page and the seeds, never the whole graph. When the first pass read a single page, the second scores that page instead of reading it again.
- *
+ * Rank every entity as a seed, as selectSeeds does, streaming id-ordered pages.
  * @param store (GraphPrimitives): the graph reader.
  * @param ns (string): the namespace.
  * @param queryTokens (Set<string>): the content tokens from the query.
@@ -290,25 +380,35 @@ async function scanSeeds(
   valid: Preference[] | null,
 ): Promise<Array<[Entity, number]>> {
   let stats: CorpusStats | null = null;
-  let pagesRead = 0;
+  let kept: Kept | null = [[], 0];
   let first: Entity[] = [];
+  let firstDocs: EntityDoc[] | null = null;
+  let pagesRead = 0;
+  let queryStems: Set<string> = new Set();
   for await (const page of entityPages(store, ns, asOf, valid)) {
-    stats = corpusStats(
-      queryTokens,
-      page.map((e) => tokenList(entityText(e))),
-      stats,
-    );
+    let docs: EntityDoc[] | null;
+    [stats, docs] = seedCorpus(page, queryTokens, stats, kept !== null);
     pagesRead += 1;
-    first = pagesRead === 1 ? page : [];
+    if (pagesRead === 1) [first, firstDocs] = [page, docs];
+    else {
+      if (pagesRead === 2) {
+        queryStems = stemSet(queryTokens);
+        kept = keepSeedCandidates(first, firstDocs, queryTokens, exact, kept, queryStems);
+        [first, firstDocs] = [[], null];
+      }
+      kept = keepSeedCandidates(page, docs, queryTokens, exact, kept, queryStems);
+    }
   }
-  async function* scored(): AsyncGenerator<Entity[]> {
-    if (pagesRead === 1) yield first;
-    else yield* entityPages(store, ns, asOf, valid);
+  const retained = kept;
+  async function* scored(): AsyncGenerator<[Entity[], EntityDoc[] | null]> {
+    if (pagesRead === 1) yield [first, firstDocs];
+    else if (retained === null) for await (const page of entityPages(store, ns, asOf, valid)) yield [page, null];
+    else if (retained[0].length) yield [retained[0].map(([entity]) => entity), retained[0].map(([, doc]) => doc)];
   }
   let best: Array<[Entity, number]> = [];
-  for await (const page of scored()) {
+  for await (const [page, docs] of scored()) {
     const visible = asOf?.known ? await ops.withKnownSources(store, ns, page, asOf.known) : page;
-    best = bestSeeds([...best, ...seedScores(visible, queryTokens, exact, stats!)], k);
+    best = bestSeeds([...best, ...seedScores(visible, queryTokens, exact, stats!, docs)], k);
   }
   return best;
 }
@@ -530,7 +630,7 @@ async function neighbors(
   for (let start = 0; start < nodes.length; start += PAGE) {
     const chunk = nodes.slice(start, start + PAGE);
     const parts: string[][] = [];
-    const size = Math.ceil(chunk.length / NEIGHBOR_PARTS);
+    const size = Math.ceil(PAGE / NEIGHBOR_PARTS);
     for (let i = 0; i < chunk.length; i += size) parts.push(chunk.slice(i, i + size));
     for (const [out, inc] of await Promise.all(parts.map((part) => adjacent(store, ns, part, asOf)))) {
       for (const rel of out) outgoing.get(rel.from_entity)?.push(rel);
@@ -758,7 +858,7 @@ async function collectDecisions(
  * @param asOf (AsOf | null): the point in time read, or null for now.
  * @return (boolean): true when its chunks may be quoted.
  */
-function quotable(version: Props | undefined, asOf: ops.AsOf | null): boolean {
+export function quotable(version: Props | undefined, asOf: ops.AsOf | null): boolean {
   if (version === undefined) return false;
   if (
     asOf !== null &&
@@ -821,7 +921,7 @@ async function chunkTexts(store: GraphPrimitives, ns: string, versions: string[]
  * @param asOf (ops.AsOf | null): skip source versions that took effect after its valid time or were written after its known time.
  * @return (string[]): passage texts, most query-relevant first; a version replaced by a newer one of its source (insert.text with replace_source) by then is skipped.
  */
-async function collectPassages(
+export async function collectPassages(
   store: GraphPrimitives,
   ns: string,
   entities: Entity[],
@@ -831,26 +931,36 @@ async function collectPassages(
 ): Promise<string[]> {
   const distOf = distanceIn(dist);
   const terms = stemSet(queryTokens);
-  const svDist = new Map<string, number>();
+  const ordered = [...entities].sort((a, b) => distOf(a.id) - distOf(b.id)).filter((e) => e.source_count);
+  const ordinal = new Map<string, number>(ordered.map((e, i) => [e.id, i]));
+  const rank = ordered.map((e) => distOf(e.id));
   const usable = new Map<string, boolean>();
-  for (const e of [...entities].sort((a, b) => distOf(a.id) - distOf(b.id))) {
-    if (!e.source_count) continue;
-    const fetch = ops.nodeListing(store, ns, L_EVIDENCE, { equals: { target_id: e.id } });
+  const earliest = new Map<string, [number, number]>();
+  const seen = new Map<string, number>();
+  for (const batch of ops.batches(ordered.map((e) => e.id))) {
+    const fetch = ops.nodeListing(store, ns, L_EVIDENCE, { any_of: { target_id: batch } });
     for (let skip = 0; ; ) {
       const rows = await fetch(skip, PAGE);
       const unseen = [...new Set(rows.map((r) => r.source_version as string).filter((sv) => !usable.has(sv)))];
       const versions = await ops.nodesById(store, ns, L_SOURCE_VERSION, unseen);
       for (const sv of unseen) usable.set(sv, quotable(versions.get(sv), asOf));
       for (const row of rows) {
+        const target = row.target_id as string;
+        const pos = seen.get(target) ?? 0;
+        seen.set(target, pos + 1);
         const sv = row.source_version as string;
         if (!usable.get(sv)) continue;
         if (asOf !== null && !ops.knownBy(fromIso(row.created_at), asOf.known)) continue;
-        if (!svDist.has(sv)) svDist.set(sv, distOf(e.id));
+        const key: [number, number] = [ordinal.get(target)!, pos];
+        const prev = earliest.get(sv);
+        if (prev === undefined || key[0] < prev[0] || (key[0] === prev[0] && key[1] < prev[1])) earliest.set(sv, key);
       }
       if (rows.length < PAGE) break;
       skip += rows.length;
     }
   }
+  const svDist = new Map<string, number>();
+  for (const [sv, [o]] of [...earliest].sort((a, b) => a[1][0] - b[1][0] || a[1][1] - b[1][1])) svDist.set(sv, rank[o]);
 
   type Ranked = [string, [number, number, number]];
   const byRank = (a: Ranked, b: Ranked): number => a[1][0] - b[1][0] || a[1][1] - b[1][1] || a[1][2] - b[1][2];
@@ -1149,12 +1259,14 @@ async function run(
     relations = within(relations, dist);
   }
 
-  await load(store, ns, known, dist.keys());
+  let [, decisions, preferences] = await Promise.all([
+    load(store, ns, known, dist.keys()),
+    collectDecisions(store, ns, new Set(relations.map((r) => r.id)), asOf),
+    collectPreferences(store, ns, dist.keys(), valid),
+  ]);
   let entities = [...dist.keys()].flatMap((eid) => known.get(eid) ?? []);
   if (asOf?.known) entities = await ops.withKnownSources(store, ns, entities, asOf.known);
 
-  let decisions = await collectDecisions(store, ns, new Set(relations.map((r) => r.id)), asOf);
-  let preferences = await collectPreferences(store, ns, dist.keys(), valid);
   if (asOf !== null && valid !== null && decisions.length) {
     const refsOf = (d: DecisionTrace): string[] =>
       [

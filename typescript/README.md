@@ -69,6 +69,8 @@ Close the graph when you are done: an open server connection keeps Node running.
 
 ## Backends
 
+HydraDB requires version 0.5.0 or later.
+
 ```ts
 import { CypherStore, FalkorDBStore, HydraDBStore, KuzuStore, Neo4jStore } from "@hydradb/selfgraph";
 
@@ -76,7 +78,7 @@ new Neo4jStore("bolt://localhost:7687", { auth: ["neo4j", "password"] });
 new CypherStore("bolt://localhost:7687", { auth: ["user", "password"] }); // Memgraph and other Bolt engines
 new FalkorDBStore("localhost", 6379);
 new KuzuStore("graph.kuzu");                                              // embedded
-new HydraDBStore("bolt://127.0.0.1:17687", { auth: ["neo4j", "<token>"] }); // HydraDB 0.4.0 or newer
+new HydraDBStore("bolt://127.0.0.1:17687", { auth: ["neo4j", "<token>"] });
 ```
 
 See [backends](https://github.com/hydra-db/selfgraph/blob/main/docs/backends.md) to configure from settings or add your own store.

@@ -136,6 +136,8 @@ _CLITIC = re.compile(
 _PAGE = 500
 _MAX_POOL = 5000
 _SEED_PAGE = 5000
+_SEED_DOC_UNITS = 1 << 20
+_SEED_ENTRY_UNITS = 256
 _NEIGHBOR_PARTS = 8
 _MAX_PASSAGES = 6
 _PASSAGE_BUDGET_PERCENT = 60
@@ -211,6 +213,87 @@ def _entity_text(e: Entity) -> str:
     return " ".join(parts)
 
 
+def _entity_doc(e: Entity) -> tuple[str, list[str]]:
+    """Fold an entity's searchable text once and split it as _token_list does, for the corpus statistics and the score.
+
+    @param e (Entity): the entity to describe.
+    @return (tuple[str, list[str]]): the folded searchable text and its content tokens, repeats kept.
+    """
+    folded = _fold(_entity_text(e))
+    return folded, [t for t in _word_runs(folded) if t not in _STOPWORDS]
+
+
+def _keep_seed_candidates(
+    entities: Iterable[Entity],
+    docs: list[tuple[str, list[str]]] | None,
+    query_tokens: set[str],
+    exact: set[str] | frozenset[str],
+    kept: tuple[list[tuple[Entity, tuple[str, list[str]]]], int] | None,
+    query_stems: set[str] | None = None,
+) -> tuple[list[tuple[Entity, tuple[str, list[str]]]], int] | None:
+    """Retain positive-score candidates within the document and full-record budget.
+
+    @param entities (Iterable[Entity]): the entity page.
+    @param docs (list | None): its folded documents, when retained by the corpus pass.
+    @param query_tokens (set[str]): query tokens.
+    @param exact (set[str] | frozenset[str]): exact-name query tokens.
+    @param kept (tuple | None): candidates and units used, or None after overflow.
+    @param query_stems (set[str] | None): shared query stems, or None to compute for this page.
+    @return (tuple | None): bounded candidates and units, or None after overflow.
+    """
+    if kept is None:
+        return None
+    if query_stems is None:
+        query_stems = _stems(query_tokens)
+    candidates, units = kept
+    for index, entity in enumerate(entities):
+        doc = docs[index] if docs is not None else _entity_doc(entity)
+        if (
+            query_stems.isdisjoint(_stems(doc[1]))
+            and _grep_score(query_tokens, doc[0]) == 0
+            and (not exact or _fold(entity.name) not in exact)
+        ):
+            continue
+        units += len(doc[0]) + 16 * len(doc[1]) + _SEED_ENTRY_UNITS + (len(entity.model_dump_json()) + 7) // 8
+        if units > _SEED_DOC_UNITS:
+            return None
+        candidates.append((entity, doc))
+    return candidates, units
+
+
+def _seed_corpus(
+    entities: Iterable[Entity],
+    query_tokens: set[str],
+    stats: tuple[int, int, dict[str, int]] | None = None,
+    *,
+    retain: bool = True,
+) -> tuple[tuple[int, int, dict[str, int]], list[tuple[str, list[str]]] | None]:
+    """Collect corpus statistics while retaining documents within the call's text and token budget.
+
+    @param entities (Iterable[Entity]): the page to tokenize.
+    @param query_tokens (set[str]): query tokens for the corpus statistics.
+    @param stats (tuple | None): previous pages' statistics.
+    @param retain (bool): whether this page can be reused for scoring.
+    @return (tuple): corpus statistics and retained documents, or None when the budget is exceeded.
+    """
+    docs: list[tuple[str, list[str]]] | None = [] if retain else None
+    units = 0
+
+    def tokenized():
+        nonlocal docs, units
+        for entity in entities:
+            folded, tokens = _entity_doc(entity)
+            if docs is not None:
+                units += len(folded) + 16 * len(tokens) + 32
+                if units > _SEED_DOC_UNITS:
+                    docs = None
+                else:
+                    docs.append((folded, tokens))
+            yield tokens
+
+    return _corpus_stats(query_tokens, tokenized(), stats), docs
+
+
 def _format_props(props: dict) -> str:
     """Render relation properties as a compact brace-wrapped string.
 
@@ -262,14 +345,15 @@ def _seed_scores(
     query_tokens: set[str],
     exact: set[str] | frozenset[str],
     stats: tuple[int, int, dict[str, int]],
+    docs: list[tuple[str, list[str]]] | None = None,
 ) -> list[tuple[Entity, float]]:
-    """Score entities by Okapi BM25 over the corpus statistics plus a grep boost and an exact-name boost, divided by
-    the log of their source count.
+    """Score entities by Okapi BM25 over the corpus statistics plus a grep boost and an exact-name boost, divided by.
 
     @param entities (Iterable[Entity]): the entities to score.
     @param query_tokens (set[str]): the content tokens from the query.
     @param exact (set[str] | frozenset[str]): short query tokens that seed an entity whose whole name equals one.
     @param stats (tuple[int, int, dict[str, int]]): the corpus statistics, from _corpus_stats.
+    @param docs (list[tuple[str, list[str]]] | None): each entity's _entity_doc, in order, or None to build them.
     @return (list[tuple[Entity, float]]): the entities with a positive score, with it.
     """
     n, total, df = stats
@@ -277,15 +361,20 @@ def _seed_scores(
     terms = _stems(query_tokens)
     idf = {t: math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5)) for t in terms}
     scored = []
-    for entity in entities:
-        text = _entity_text(entity)
+    for i, entity in enumerate(entities):
+        if docs is None:
+            folded = _fold(_entity_text(entity))
+            doc = [t for t in _word_runs(folded) if t not in _STOPWORDS] if query_tokens else []
+        else:
+            folded, doc = docs[i]
         bm25 = 0.0
         if terms:
-            doc = _token_list(text)
             norm = _BM25_K1 * (1 - _BM25_B + _BM25_B * len(doc) / avgdl)
             tf = _term_counts(terms, doc)
             bm25 = sum(idf[t] * f * (_BM25_K1 + 1) / (f + norm) for t, f in tf.items())
-        score = bm25 + _GREP_WEIGHT * (_grep_score(query_tokens, _fold(text)) + (_fold(entity.name) in exact))
+        score = bm25 + _GREP_WEIGHT * (
+            _grep_score(query_tokens, folded) + (bool(exact) and _fold(entity.name) in exact)
+        )
         if score > 0:
             scored.append((entity, score / math.log(math.e + entity.source_count)))
     return scored
@@ -323,8 +412,8 @@ def _select_seeds(
     @param exact (set[str] | frozenset[str]): short query tokens that seed an entity whose whole name equals one.
     @return (list[tuple[Entity, float]]): seed entities with their scores, best first.
     """
-    stats = _corpus_stats(query_tokens, (_token_list(_entity_text(e)) for e in entities))
-    return heapq.nsmallest(k, _seed_scores(entities, query_tokens, exact, stats), key=_seed_rank)
+    stats, docs = _seed_corpus(entities, query_tokens)
+    return heapq.nsmallest(k, _seed_scores(entities, query_tokens, exact, stats, docs), key=_seed_rank)
 
 
 async def _scan_seeds(
@@ -336,11 +425,7 @@ async def _scan_seeds(
     as_of: AsOf | None,
     valid: list[Preference] | None,
 ) -> list[tuple[Entity, float]]:
-    """Rank every entity as a seed, as _select_seeds does, in two streaming passes over id-ordered pages.
-
-    The first pass gathers the BM25 corpus statistics and the second scores each page and keeps the best k, so
-    memory holds one page and the seeds, never the whole graph. When the first pass read a single page, the second
-    scores that page instead of reading it again.
+    """Rank every entity as a seed, as _select_seeds does, streaming id-ordered pages.
 
     @param graph (SelfGraph): the open graph.
     @param ns (str): the namespace to read.
@@ -352,25 +437,37 @@ async def _scan_seeds(
     @return (list[tuple[Entity, float]]): seed entities with their scores, best first.
     """
     stats = None
-    pages_read = 0
+    kept: tuple[list[tuple[Entity, tuple[str, list[str]]]], int] | None = ([], 0)
     first: list[Entity] = []
+    first_docs: list[tuple[str, list[str]]] | None = None
+    pages_read = 0
+    query_stems: set[str] | None = None
     async for page in _entity_pages(graph, ns, as_of, valid):
-        stats = _corpus_stats(query_tokens, (_token_list(_entity_text(e)) for e in page), stats)
+        stats, docs = _seed_corpus(page, query_tokens, stats, retain=kept is not None)
         pages_read += 1
-        first = page if pages_read == 1 else []
+        if pages_read == 1:
+            first, first_docs = page, docs
+        else:
+            if pages_read == 2:
+                query_stems = _stems(query_tokens)
+                kept = _keep_seed_candidates(first, first_docs, query_tokens, exact, kept, query_stems)
+                first, first_docs = [], None
+            kept = _keep_seed_candidates(page, docs, query_tokens, exact, kept, query_stems)
 
     async def scored():
         if pages_read == 1:
-            yield first
-        else:
+            yield first, first_docs
+        elif kept is None:
             async for page in _entity_pages(graph, ns, as_of, valid):
-                yield page
+                yield page, None
+        elif kept[0]:
+            yield [entity for entity, _ in kept[0]], [doc for _, doc in kept[0]]
 
     best: list[tuple[Entity, float]] = []
-    async for page in scored():
+    async for page, docs in scored():
         if as_of is not None and as_of.known is not None:
             page = await _ops.with_known_sources(graph.store, ns, page, as_of.known)
-        best = heapq.nsmallest(k, [*best, *_seed_scores(page, query_tokens, exact, stats)], key=_seed_rank)
+        best = heapq.nsmallest(k, [*best, *_seed_scores(page, query_tokens, exact, stats, docs)], key=_seed_rank)
     return best
 
 
@@ -625,7 +722,7 @@ async def _neighbors(
     incoming: dict[str, list[Relation]] = {n: [] for n in nodes}
     for start in range(0, len(nodes), _PAGE):
         chunk = nodes[start : start + _PAGE]
-        size = -(-len(chunk) // _NEIGHBOR_PARTS)
+        size = -(-_PAGE // _NEIGHBOR_PARTS)
         parts = [chunk[i : i + size] for i in range(0, len(chunk), size)]
         for out, inc in await asyncio.gather(*(_adjacent(graph, ns, part, as_of) for part in parts)):
             for rel in out:
@@ -798,12 +895,14 @@ async def _collect_passages(
     """
     far = len(dist) + 1
     terms = _stems(query_tokens)
-    sv_dist: dict[str, int] = {}
+    ordered = [e for e in sorted(entities, key=lambda e: dist.get(e.id, far)) if e.source_count]
+    ordinal = {e.id: i for i, e in enumerate(ordered)}
+    rank = [dist.get(e.id, far) for e in ordered]
     usable: dict[str, bool] = {}
-    for e in sorted(entities, key=lambda e: dist.get(e.id, far)):
-        if not e.source_count:
-            continue
-        fetch = partial(graph.store.match_nodes, ns, L_EVIDENCE, equals={"target_id": e.id})
+    earliest: dict[str, tuple[int, int]] = {}
+    seen: dict[str, int] = {}
+    for batch in _ops._batches([e.id for e in ordered]):
+        fetch = partial(graph.store.match_nodes, ns, L_EVIDENCE, any_of={"target_id": batch})
         skip = 0
         while True:
             rows = await fetch(skip=skip, limit=_PAGE)
@@ -811,14 +910,22 @@ async def _collect_passages(
             versions = await _ops._nodes_by_id(graph.store, ns, L_SOURCE_VERSION, unseen)
             usable.update((sv, _quotable(versions.get(sv), as_of)) for sv in unseen)
             for row in rows:
-                if not usable[row["source_version"]]:
+                target = row["target_id"]
+                pos = seen.get(target, 0)
+                seen[target] = pos + 1
+                sv = row["source_version"]
+                if not usable[sv]:
                     continue
                 if as_of is not None and not _ops._known_by(from_iso(row.get("created_at")), as_of.known):
                     continue
-                sv_dist.setdefault(row["source_version"], dist.get(e.id, far))
+                key = (ordinal[target], pos)
+                prev = earliest.get(sv)
+                if prev is None or key < prev:
+                    earliest[sv] = key
             if len(rows) < _PAGE:
                 break
             skip += len(rows)
+    sv_dist: dict[str, int] = {sv: rank[o] for sv, (o, _) in sorted(earliest.items(), key=lambda kv: kv[1])}
 
     best: dict[str, tuple[int, int, int]] = {}
     order = 0
@@ -1057,13 +1164,15 @@ async def retrieve(
         dist = {n: rank for n, rank in ranks.items() if rank < max_nodes}
         relations = _within(relations, dist)
 
-    await _load(graph, ns, known, dist)
+    _, decisions, preferences = await asyncio.gather(
+        _load(graph, ns, known, dist),
+        _collect_decisions(graph, ns, {r.id for r in relations}, as_of),
+        _collect_preferences(graph, ns, dist, valid),
+    )
     entities = [known[eid] for eid in dist if eid in known]
     if as_of is not None and as_of.known is not None:
         entities = await _ops.with_known_sources(graph.store, ns, entities, as_of.known)
 
-    decisions = await _collect_decisions(graph, ns, {r.id for r in relations}, as_of)
-    preferences = await _collect_preferences(graph, ns, dist, valid)
     if as_of is not None and decisions:
 
         def refs_of(d: DecisionTrace) -> list[str]:

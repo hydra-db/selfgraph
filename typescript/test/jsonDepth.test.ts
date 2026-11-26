@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ValidationError } from "../src/errors.js";
-import { EntityInput, PreferenceInput, RelationInput } from "../src/models.js";
+import { checkResultDepth, EntityInput, PreferenceInput, RelationInput } from "../src/models.js";
 import { parseJson, readJson } from "../src/runtime.js";
 import { tempDir } from "./helpers.js";
 
@@ -76,4 +76,38 @@ describe("deep JSON input", () => {
     writeFileSync(path, nested(130));
     expect(() => readJson(path)).toThrow(/nested too deeply/);
   });
+});
+
+it.each([253, 254, 255])("checks result nesting at depth %s", (depth) => {
+  for (const kind of ["list", "dict", "mixed"]) {
+    let value: unknown = 1;
+    for (let i = 0; i < depth; i++)
+      value = kind === "list" || (kind === "mixed" && i % 2 === 0) ? [value] : { x: value };
+    const check = () => checkResultDepth([{ x: value }]);
+    if (depth <= 254) expect(check).not.toThrow();
+    else {
+      expect(check).toThrow(ValidationError);
+      try {
+        check();
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_argument", field: "rows" });
+      }
+    }
+  }
+});
+
+it("leaves scalar and container values intact", () => {
+  for (const value of [null, [], {}, [1, { a: [null, "x"] }], undefined, Symbol("x")]) {
+    const rows = [{ x: value }];
+    checkResultDepth(rows);
+    expect(rows[0]?.x).toBe(value);
+  }
+});
+
+it("rejects cyclic result containers", () => {
+  const array: unknown[] = [];
+  array.push(array);
+  const object: Record<string, unknown> = {};
+  object.self = object;
+  for (const value of [array, object]) expect(() => checkResultDepth([{ x: value }])).toThrow(ValidationError);
 });

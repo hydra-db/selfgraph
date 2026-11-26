@@ -68,10 +68,43 @@ def _unique_labels(rows: list[dict]) -> set[str]:
 
 
 class _CypherWriter(CypherPrimitives):
+    _node_page_maps = True
+    _counted_node_delete = True
+
     def __init__(self, tx, uri: str, database: str | None) -> None:
         self._tx = tx
         self._uri = uri
         self._database = database
+
+    async def lock_and_get_node(self, ns: str, label: str, id: str) -> dict | None:
+        """Acquire a write lock and return the refreshed node properties.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param id (str): node id.
+        @return (dict | None): refreshed properties, or None.
+        """
+        res = await self._run(
+            f"MATCH (n:{label} {{id:$id, ns:$ns}}) SET n._lock = coalesce(n._lock, 0) + 1 RETURN n",
+            {"id": id, "ns": ns},
+        )
+        return res.rows[0]["n"] if res.rows else None
+
+    async def lock_nodes(self, ns: str, label: str, ids: list[str]) -> None:
+        """Drain ordered parameter batches before returning to the caller.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param ids (list[str]): ids in acquisition order, including duplicates.
+        @return (None): nothing.
+        """
+        for start in range(0, len(ids), 256):
+            rows = [{"id": id, "ordinal": ordinal} for ordinal, id in enumerate(ids[start : start + 256])]
+            await self._run(
+                f"UNWIND $rows AS row WITH row ORDER BY row.ordinal "
+                f"MATCH (n:{label} {{id:row.id, ns:$ns}}) SET n._lock = coalesce(n._lock, 0) + 1",
+                {"ns": ns, "rows": rows},
+            )
 
     async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
         try:
@@ -84,6 +117,9 @@ class _CypherWriter(CypherPrimitives):
 
 
 class CypherStore(CypherPrimitives):
+    _node_page_maps = True
+    _counted_node_delete = True
+
     def __init__(
         self,
         uri: str,
@@ -137,7 +173,13 @@ class CypherStore(CypherPrimitives):
         """
         for query in _SHOW_CONSTRAINTS:
             try:
-                return (await self._run(query)).rows
+                result = await self._run(query)
+                self._memgraph = (
+                    query == "SHOW CONSTRAINT INFO"
+                    or "constraint type" in result.columns
+                    or any("constraint type" in row for row in result.rows)
+                )
+                return result.rows
             except TransientError:
                 raise
             except StoreError as exc:
@@ -145,16 +187,16 @@ class CypherStore(CypherPrimitives):
                 if bolt_error(cause, self._uri, self._database) is not None:
                     raise
                 if syntax_detail(cause) is None:
-                    return []
+                    raise
         return []
 
-    async def _constraints_exist(self) -> bool:
+    async def _constraints_exist(self) -> bool | None:
         """Report whether the uniqueness constraints are already in place, so initialize can skip the DDL.
 
         Constraint DDL needs exclusive access on Memgraph, so a check that keeps conflicting with another
         client's work means the store is in use and is treated as set up.
 
-        @return (bool): True when every label has its constraint or the check kept conflicting.
+        @return (bool | None): whether every label has its constraint, or None when the store stays busy.
         """
         for attempt in range(_INIT_RETRIES):
             try:
@@ -163,14 +205,16 @@ class CypherStore(CypherPrimitives):
                 if attempt < _INIT_RETRIES - 1:
                     await asyncio.sleep(_INIT_BASE_DELAY * 2**attempt)
         _log.debug("skipping constraint setup: the store is busy with another client")
-        return True
+        return None
 
     async def initialize(self) -> None:
         """Create the id and namespace uniqueness constraints on the versioned node labels unless they exist."""
         self._require_open()
-        if await self._constraints_exist():
+        self._memgraph = False
+        constraints_exist = await self._constraints_exist()
+        if constraints_exist is None:
             return
-        for label in LABELS:
+        for label in () if constraints_exist else LABELS:
             query = (
                 f"CREATE CONSTRAINT selfgraph_{label.lower()}_id IF NOT EXISTS "
                 f"FOR (n:{label}) REQUIRE (n.id, n.ns) IS UNIQUE"
@@ -191,6 +235,74 @@ class CypherStore(CypherPrimitives):
                     hint = _HYDRADB_HINT if "syntax" in lowered or "parse error" in lowered else ""
                     detail = getattr(exc, "message", None) or exc
                     raise StoreError(f"failed creating constraint on {label}: {detail}{hint}") from exc
+
+        if getattr(self, "_memgraph", False):
+            await self._initialize_indexes()
+        else:
+            for attempt in range(_INIT_RETRIES):
+                try:
+                    await self._run(
+                        "CREATE RANGE INDEX selfgraph_evidence_ns_target_id IF NOT EXISTS "
+                        "FOR (n:Evidence) ON (n.ns, n.target_id)"
+                    )
+                    break
+                except TransientError:
+                    if attempt == _INIT_RETRIES - 1:
+                        raise
+                    await asyncio.sleep(_INIT_BASE_DELAY * 2**attempt)
+
+    async def _initialize_indexes(self) -> None:
+        """Create missing Memgraph lookup indexes, retrying exclusive-access conflicts.
+
+        @return (None): None after plain label, id and evidence target lookup indexes exist.
+        """
+        for attempt in range(_INIT_RETRIES):
+            try:
+                rows = (await self._run("SHOW INDEX INFO")).rows
+                indexed = {
+                    (row.get("label"), prop)
+                    for row in rows
+                    if isinstance(row.get("label"), str)
+                    and row["label"] in LABELS
+                    and row.get("index type") == "label+property"
+                    for prop in ("id", "target_id")
+                    if row.get("property") in (prop, [prop])
+                }
+                labeled = {
+                    row["label"]
+                    for row in rows
+                    if row.get("index type") == "label" and isinstance(row.get("label"), str) and row["label"] in LABELS
+                }
+                for label in LABELS:
+                    if label not in labeled:
+                        await self._run(f"CREATE INDEX ON :{label}")
+                for label, prop in [*((label, "id") for label in LABELS), ("Evidence", "target_id")]:
+                    if (label, prop) not in indexed:
+                        await self._run(f"CREATE INDEX ON :{label}({prop})")
+                rows = (await self._run("SHOW INDEX INFO")).rows
+                modern = any(
+                    row.get("index type") == "label+property"
+                    and isinstance(row.get("label"), str)
+                    and row["label"] in LABELS
+                    and row.get("property") == ["id"]
+                    for row in rows
+                )
+                if modern:
+                    versions = (await self._run("SHOW VERSION")).rows
+                    version = versions[0].get("version") if len(versions) == 1 else None
+                    if version == "3.14.0" and not any(
+                        row.get("index type") == "edge-property"
+                        and "label" in row
+                        and row["label"] is None
+                        and row.get("property") == "id"
+                        for row in rows
+                    ):
+                        await self._run("CREATE GLOBAL EDGE INDEX ON :(id)")
+                return
+            except TransientError:
+                if attempt == _INIT_RETRIES - 1:
+                    raise
+                await asyncio.sleep(_INIT_BASE_DELAY * 2**attempt)
 
     @asynccontextmanager
     async def transaction(self):
