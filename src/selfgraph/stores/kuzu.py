@@ -685,6 +685,13 @@ class KuzuStore(AutoCommitStore):
         return bool(res.rows)
 
     async def nodes_exist(self, ns: str, label: str, ids: list[str]) -> set[str]:
+        """Return which of the given ids exist as nodes with this label, in batches to bound each query.
+
+        @param ns (str): namespace.
+        @param label (str): the node label.
+        @param ids (list[str]): the candidate node ids.
+        @return (set[str]): the ids that exist.
+        """
         found: set[str] = set()
         for batch in _batches(list(dict.fromkeys(ids)), _SEEK_BATCH):
             params = {"label": label}

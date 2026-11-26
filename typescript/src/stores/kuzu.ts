@@ -692,6 +692,14 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     return res.rows.length > 0;
   }
 
+  /**
+   * Return which of the given ids exist as nodes with this label, in batches to bound each query.
+   *
+   * @param ns (string): namespace.
+   * @param label (string): the node label.
+   * @param ids (readonly string[]): the candidate node ids.
+   * @return (Promise<Set<string>>): the ids that exist.
+   */
   async nodesExist(ns: string, label: string, ids: readonly string[]): Promise<Set<string>> {
     const found = new Set<string>();
     for (const batch of batches([...new Set(ids)], SEEK_BATCH)) {
