@@ -337,6 +337,22 @@ function suite(spec: StoreSpec) {
   const ids = async (g: SelfGraph) => (await g.entities.list({ limit: 1000 })).items.map((e) => e.id).sort();
   const seed = (g: SelfGraph, ...entities: Extraction["entities"] & object[]) => g.insert.facts({ entities });
 
+  it("reads stored merge rewrites and their evidence in model field order", async () => {
+    const g = open({ resolver: "default" });
+    await seed(g, { type: "Person", name: "Ann Lee", aliases: ["Annie"] });
+    const quote = { source_id: "memo", quote: "Annie knows Ann Lee", confidence: 0.9 };
+    await g.insert.facts({
+      entities: [{ type: "Person", name: "Annie" }],
+      relations: [{ from_entity: "person:annie", type: "KNOWS", to_entity: "person:ann-lee", evidence: [quote] }],
+    });
+    const [record] = (await g.entities.merges("person:ann-lee")).items;
+    const [rewrite] = record!.rewrites;
+    expect(Object.keys(rewrite!)).toEqual(["kind", "id", "original", "rewritten", "existed", "dropped", "evidence"]);
+    expect(rewrite!.evidence.map((ev) => Object.keys(ev))).toEqual([
+      ["source_id", "source_version", "chunk_id", "quote", "start_offset", "end_offset", "confidence"],
+    ]);
+  });
+
   it.each([
     ["insert", 1],
     ["insert", 2],
