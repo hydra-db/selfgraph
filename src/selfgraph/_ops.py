@@ -471,11 +471,11 @@ def _merge_props(
 
 
 def _require_str_mapping(name: str, value: Any) -> None:
-    """Validate a value is a mapping of strings to strings.
+    """Validate a value is a mapping of nonblank strings to nonblank strings.
 
     @param name (str): the field name for the error message.
     @param value (Any): the value to check.
-    @return (None): nothing; raises ValidationError when not a string-to-string mapping.
+    @return (None): nothing; raises ValidationError when not a string-to-string mapping or a key or value is blank.
     """
     _require_mapping(name, value)
     for key, item in value.items():
@@ -483,6 +483,8 @@ def _require_str_mapping(name: str, value: Any) -> None:
             raise ValidationError(f"{name} keys cannot be empty or whitespace", field=name)
         if not isinstance(item, str):
             raise ValidationError(f"{name} must map strings to strings")
+        if not item.strip():
+            raise ValidationError(f"{name} values cannot be empty or whitespace", field=name)
 
 
 def _require_clean_evidence(ev: EvidenceInput) -> None:
