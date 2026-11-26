@@ -537,14 +537,19 @@ def json_constants():
 
 
 def tables_reference_errors():
-    """Draft a schema with each invalid column reference and return the resulting error messages.
+    """Draft a schema with each invalid column reference and non-list columns value and return the error messages.
 
-    @return (list[str]): one message per reference, including unhashable ones.
+    @return (list[str]): one message per case, including unhashable references.
     """
     messages = []
     for reference in ({"table": "users"}, ["users"], 5):
         try:
             Schema.from_tables([{"name": "orders", "columns": [{"name": "user_id", "references": reference}]}])
+        except ValidationError as exc:
+            messages.append(str(exc))
+    for columns in (5, True, "abc"):
+        try:
+            Schema.from_tables([{"name": "orders", "columns": columns}])
         except ValidationError as exc:
             messages.append(str(exc))
     return messages

@@ -26,6 +26,14 @@ def test_306_schema_rejects_empty_normalized_relation_types():
     asyncio.run(check())
 
 
+def test_307_from_tables_rejects_a_non_list_columns_value():
+    for value, name in [(5, "number"), (True, "boolean"), (1.5, "number"), ("abc", "string")]:
+        with pytest.raises(ValidationError) as exc:
+            Schema.from_tables([{"name": "orders", "columns": value}])
+        assert (exc.value.code, exc.value.field) == ("invalid_argument", "columns")
+        assert str(exc.value) == f"tables[0].columns must be a list of column mappings, got {name}"
+
+
 def test_309_from_tables_distinguishes_schema_qualified_names():
     async def check():
         schema = Schema.from_tables(
