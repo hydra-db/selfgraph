@@ -1,7 +1,10 @@
 import { ValidationError } from "./errors.js";
 import { dumps } from "./internal/json.js";
+import { FORMAT_CLASS } from "./internal/marks.js";
 import { comparePy, cpLen, isPlainObject, pyNum, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso, toIso } from "./internal/time.js";
+
+const FORMAT = new RegExp(`[${FORMAT_CLASS}]`, "gu");
 
 export const MAX_JSON_DEPTH = 64;
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
@@ -49,6 +52,16 @@ export function hasControl(text: string): boolean {
     if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || (cp >= 0xd800 && cp <= 0xdfff)) return true;
   }
   return false;
+}
+
+/**
+ * Report whether text has no visible character once format characters and whitespace are removed.
+ *
+ * @param value (string): the text to inspect.
+ * @return (boolean): true when nothing but whitespace remains after dropping Unicode format characters.
+ */
+export function isBlank(value: string): boolean {
+  return !pyStrip(value.replace(FORMAT, ""));
 }
 
 /**
@@ -145,7 +158,7 @@ export function requireCleanJson(name: string, value: unknown, depth = 0, safeIn
  */
 export function requireStr(label: string, value: unknown): asserts value is string {
   if (typeof value !== "string") throw new ValidationError(`${label} must be a string, got ${typeName(value)}`);
-  if (!pyStrip(value)) throw new ValidationError(`${label} cannot be empty`);
+  if (isBlank(value)) throw new ValidationError(`${label} cannot be empty`);
   requireNoControl(label, value);
 }
 

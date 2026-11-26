@@ -21,6 +21,7 @@ from pydantic import ValidationError as PydanticValidationError
 from .errors import ValidationError
 from .ids import (
     _has_surrogate,
+    _is_blank,
     _reject_proto_keys,
     _require_clean_json,
     _require_json_depth,
@@ -663,7 +664,7 @@ class EntityInput(InputModel):
     @field_validator("type", "name")
     @classmethod
     def _require_non_empty(cls, value: str) -> str:
-        if not value or not value.strip():
+        if not value or _is_blank(value):
             raise ValidationError(
                 "entity type and name cannot be empty; an entity needs both, e.g. type='Person', name='Jane Doe'"
             )
