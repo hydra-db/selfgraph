@@ -1,6 +1,6 @@
 import { ValidationError } from "./errors.js";
 import { dumps } from "./internal/json.js";
-import { comparePy, cpLen, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
+import { comparePy, cpLen, isPlainObject, pyNum, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso, toIso } from "./internal/time.js";
 
 export const MAX_JSON_DEPTH = 64;
@@ -110,14 +110,18 @@ export function requireCleanJson(name: string, value: unknown, depth = 0, safeIn
     }
   } else if (typeof value === "bigint") {
     if (safeInts && (value > MAX_SAFE_BIGINT || value < -MAX_SAFE_BIGINT)) {
-      throw new ValidationError(`${name} integer ${value} is outside the safe range; store it as a string`);
+      throw new ValidationError(`${name} integer ${value} is outside the safe range; store it as a string`, {
+        field: name,
+      });
     }
   } else if (typeof value === "number") {
     if (!Number.isFinite(value)) {
       throw new ValidationError(`${name} cannot hold NaN or Infinity; use a finite number or a string`);
     }
     if (safeInts && Number.isInteger(value) && !Number.isSafeInteger(value)) {
-      throw new ValidationError(`${name} integer ${value} is outside the safe range; store it as a string`);
+      throw new ValidationError(`${name} integer ${pyNum(value)} is outside the safe range; store it as a string`, {
+        field: name,
+      });
     }
   } else if (value instanceof Date) {
     throw new ValidationError(`${name} cannot hold Date values; use an ISO 8601 string`);

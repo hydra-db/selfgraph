@@ -98,8 +98,9 @@ def _require_count(field: str, value: object, *, minimum: int) -> None:
     @return (None): nothing; raises ValidationError on a non-integer or a value below the minimum.
     """
     _require_int(field, value)
-    if value < minimum:
-        raise ValidationError(f"{field} must be at least {minimum}, got {value}")
+    count = int(value)  # type: ignore[arg-type]
+    if count < minimum:
+        raise ValidationError(f"{field} must be at least {minimum}, got {count}")
 
 
 def chunk_text(text: str, *, max_tokens: int = 512, overlap_tokens: int | None = None) -> list[Chunk]:
@@ -112,9 +113,11 @@ def chunk_text(text: str, *, max_tokens: int = 512, overlap_tokens: int | None =
     @return (list[Chunk]): the chunks, in order.
     """
     _require_count("max_tokens", max_tokens, minimum=1)
+    max_tokens = int(max_tokens)
     if overlap_tokens is None:
         overlap_tokens = min(64, max_tokens // 4)
     _require_count("overlap_tokens", overlap_tokens, minimum=0)
+    overlap_tokens = int(overlap_tokens)
     if overlap_tokens >= max_tokens:
         raise ValidationError(f"overlap_tokens ({overlap_tokens}) must be smaller than max_tokens ({max_tokens})")
     if not text.strip():

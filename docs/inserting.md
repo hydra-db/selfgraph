@@ -253,10 +253,8 @@ Properties and metadata hold JSON values.
 - Keys in `properties`, `set_properties`, and `metadata` cannot be empty or
   whitespace (`properties keys cannot be empty or whitespace`).
 - An integer outside +/-(2^53 - 1) raises `ValidationError` ("store it as a
-  string"). TypeScript applies that to any integer-valued number, so an
-  exponent-written value such as `1e16` is rejected there, while Python accepts
-  it as a float. JavaScript has a single number type, so the two SDKs cannot
-  agree on every exponent-written value.
+  string"). Whole-number floats outside that range, such as `1e16` or `1e21`,
+  are rejected the same way.
 - A whole-number float within that range, such as `2.0`, is stored and read
   back as the integer `2`, since TypeScript cannot tell the two apart. `-0.0`
   and every other float stay floats.

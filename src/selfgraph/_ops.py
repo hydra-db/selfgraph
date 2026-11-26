@@ -198,13 +198,15 @@ _require_text = _ids._require_str
 
 
 def _require_int(field: str, value: Any) -> None:
-    """Validate a value is an integer, excluding bool.
+    """Validate a value is an integer or a whole finite float, excluding bool.
 
     @param field (str): the field name for the error message.
     @param value (Any): the value to check.
-    @return (None): nothing; raises ValidationError when not a non-bool integer.
+    @return (None): nothing; raises ValidationError when not an integer.
     """
-    if not isinstance(value, int) or isinstance(value, bool):
+    if isinstance(value, bool) or not (
+        isinstance(value, int) or (isinstance(value, float) and math.isfinite(value) and value.is_integer())
+    ):
         raise ValidationError(f"{field} must be an integer, got {type_name(value)}", field=field)
 
 

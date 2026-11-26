@@ -1799,6 +1799,10 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
     store_refused: await errorOf(() => new SelfGraph(new Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
     list_limit_zero: await errorOf(() => graph.entities.list({ limit: 0 })),
     list_limit_text: await errorOf(() => graph.entities.list({ limit: "5" } as never)),
+    list_limit_float_non_integer: await errorOf(() => graph.entities.list({ limit: 5.5 })),
+    entity_unsafe_float: await errorOf(() =>
+      graph.entities.create("Huge", "Person", { properties: { p: 1e21 } as never }),
+    ),
     decay_half_life_zero: await errorOf(() => graph.maintenance.decay({ half_life_days: 0 })),
     decay_half_life_negative: await errorOf(() => graph.maintenance.decay({ half_life_days: -2 })),
     decay_now_text: await errorOf(() => graph.maintenance.decay({ now: "soon" })),

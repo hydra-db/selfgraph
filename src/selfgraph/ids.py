@@ -126,10 +126,12 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
         return
     elif isinstance(value, int):
         if safe_ints and abs(value) > MAX_SAFE_INTEGER:
-            raise ValidationError(f"{name} integer {value} is outside the safe range; store it as a string")
+            raise ValidationError(f"{name} integer {value} is outside the safe range; store it as a string", field=name)
     elif isinstance(value, float):
         if not math.isfinite(value):
             raise ValidationError(f"{name} cannot hold NaN or Infinity; use a finite number or a string")
+        if safe_ints and value.is_integer() and abs(value) > MAX_SAFE_INTEGER:
+            raise ValidationError(f"{name} integer {value} is outside the safe range; store it as a string", field=name)
     elif isinstance(value, date):
         raise ValidationError(f"{name} cannot hold {type_name(value)} values; use an ISO 8601 string")
     elif isinstance(value, Mapping):
