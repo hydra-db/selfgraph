@@ -828,6 +828,11 @@ describe("obsidian vault file names", () => {
       ),
     ).filter((path) => !path.includes("/"));
 
+  it("strips leading and trailing dots from note names", () => {
+    const out = notes([". .NET", "Acme. .", "v1. ."]).sort();
+    expect(out).toEqual(["Acme.md", "NET.md", "v1.md"]);
+  });
+
   it("cuts long names without splitting a character", () => {
     const out = notes([
       "B".repeat(300),

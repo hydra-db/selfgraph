@@ -2922,6 +2922,10 @@ async function vaultNames(graph: SelfGraph): Promise<string[]> {
     "\u5317".repeat(150),
     `${"z".repeat(210)}a`,
     `${"z".repeat(210)}b`,
+    ". .NET",
+    "Acme. .",
+    "v1. .",
+    `${"D".repeat(199)}. .`,
   ];
   for (const name of names) await g.entities.create(name, "Thing");
   return Object.keys(await g.exportObsidian()).sort(comparePy);
