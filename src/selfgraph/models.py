@@ -299,6 +299,10 @@ M = TypeVar("M", bound=BaseModel)
 def as_input(model: type[M], value: Any, what: str) -> M | None:
     """Coerce an input argument: a model instance passes through, a mapping is validated, None stays None.
 
+    A mapping with a non-string top-level key cannot be expanded into ``**data`` at all: Python raises a bare
+    TypeError before any validator runs, so the coded error a bad key one level down gets never happens there.
+    That check runs here, on the raw mapping, because it is the last place that can still see the key.
+
     @param model (type[M]): the input model.
     @param value (Any): the argument.
     @param what (str): a label for the error message.
@@ -306,6 +310,15 @@ def as_input(model: type[M], value: Any, what: str) -> M | None:
     """
     if value is None or isinstance(value, model):
         return value
+    if isinstance(value, Mapping):
+        not_string = sorted(repr(k) for k in value if not isinstance(k, str))
+        if not_string:
+            label = getattr(model, "input_label", what)
+            raise ValidationError(
+                f"unknown key {not_string[0]} in {label}; keys must be strings",
+                code="unknown_key",
+                field=not_string[0],
+            )
     try:
         return model.model_validate(value)
     except PydanticValidationError as exc:

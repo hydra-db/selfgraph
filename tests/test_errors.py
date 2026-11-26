@@ -35,6 +35,7 @@ from selfgraph.errors import (
 )
 from selfgraph.llm.base import _fatal
 from selfgraph.mcp.server import run_cypher
+from selfgraph.models import as_input
 from selfgraph.resolution import ResolutionDecision
 from selfgraph.runtime import GraphSettings, check_settings
 from selfgraph.stores.kuzu import _kuzu_error
@@ -336,6 +337,14 @@ def test_bad_input_names_the_field_at_fault(facts, code, field):
     with pytest.raises(SelfGraphError) as exc:
         Extraction(**facts)
     assert (exc.value.code, exc.value.to_dict()["field"]) == (code, field)
+
+
+@pytest.mark.parametrize("facts", [{1: "x"}, {None: []}, {(1, 2): "y"}])
+def test_a_non_string_top_level_key_is_a_coded_error(facts):
+    with pytest.raises(SelfGraphError) as exc:
+        as_input(Extraction, facts, "facts")
+    assert exc.value.code == "unknown_key"
+    assert "keys must be strings" in str(exc.value)
 
 
 @pytest.mark.parametrize(
