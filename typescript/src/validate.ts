@@ -436,7 +436,7 @@ export function requireJsonMapping(name: string, value: unknown, safeInts = true
 }
 
 /**
- * Validate a value is a mapping from strings to strings.
+ * Validate a value is a mapping from nonblank strings to nonblank strings.
  *
  * @param name (string): the field name for the error message.
  * @param value (unknown): the value.
@@ -446,5 +446,6 @@ export function requireStrMapping(name: string, value: unknown): asserts value i
   for (const [key, item] of Object.entries(value)) {
     if (!pyStrip(key)) throw new ValidationError(`${name} keys cannot be empty or whitespace`, { field: name });
     if (typeof item !== "string") throw new ValidationError(`${name} must map strings to strings`);
+    if (!pyStrip(item)) throw new ValidationError(`${name} values cannot be empty or whitespace`, { field: name });
   }
 }
