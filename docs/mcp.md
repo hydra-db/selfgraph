@@ -9,6 +9,44 @@ library.
 | Python | `pip install "selfgraph[mcp]"` |
 | TypeScript | the `@modelcontextprotocol/sdk` peer package |
 
+## Quick setup
+
+`selfgraph install` writes the server entry into an agent's config for you:
+
+```bash
+selfgraph install                      # every agent with a config folder in this project
+selfgraph install claude cursor        # just these agents
+selfgraph --store kuzu --uri ./graph.kuzu install --global
+```
+
+| Agent | Project file | User file (`--global`) |
+|-------|--------------|------------------------|
+| `claude` (Claude Code) | `.mcp.json` | `~/.claude.json` |
+| `cursor` | `.cursor/mcp.json` | `~/.cursor/mcp.json` |
+| `vscode` (VS Code, Copilot) | `.vscode/mcp.json` | none |
+| `gemini` (Gemini CLI) | `.gemini/settings.json` | `~/.gemini/settings.json` |
+| `windsurf` | none | `~/.codeium/windsurf/mcp_config.json` |
+
+- With no agent named, it installs for each agent whose folder (`.claude/`,
+  `.cursor/`, and so on) already exists in the project, or in your home folder
+  with `--global`. An agent with one scope uses it, so `windsurf` always writes
+  the user file, and `vscode --global` fails.
+- Connection flags you pass, such as `--store`, `--uri`, `--namespace`, and
+  `--schema`, go into the entry's `env` as `SELFGRAPH_*` variables, as written.
+  Variables set only in your shell are not copied.
+- A credential (`--auth`, `--llm-api-key`, or a URI with a user or password) is
+  never written to a project file, since those are often committed. Pass
+  `--global` to write it to your user config instead.
+- Other servers and keys in the file are kept, and running it again changes
+  nothing. A file that does not parse is left alone, and the command fails before
+  writing any file.
+- `--dry-run` prints what would change and writes nothing.
+
+The Python command writes `selfgraph mcp`, or `python -m selfgraph mcp` with the
+current interpreter when the `selfgraph` on your path belongs to another
+install. The TypeScript command writes the `npx` command below. Restart or reload
+the agent afterwards.
+
 ## Client config
 
 The server runs over stdio. The client launches it from its config:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, NoReturn, get_args
 
 from . import _ops
+from ._install import AGENTS, apply_changes, plan_install, server_command
 from .errors import (
     WARNING_HINTS,
     NotFoundError,
@@ -546,6 +547,17 @@ def build_parser() -> argparse.ArgumentParser:
     mcp = sub.add_parser("mcp", help="run the MCP server over stdio", description=mcp_help)
     _add_globals(mcp, nested=True, listed=True)
     mcp.set_defaults(func=None)
+    install_help = (
+        "add the MCP server to an agent's config; the global options given here go into its env as SELFGRAPH_* "
+        "variables"
+    )
+    ins = sub.add_parser("install", help="add the MCP server to an agent's config", description=install_help)
+    agents_help = f"{', '.join(AGENTS)} (default: every agent whose config folder exists)"
+    ins.add_argument("agents", nargs="*", metavar="AGENT", help=agents_help)
+    ins.add_argument("--global", dest="user", action="store_true", help="write the user-level config")
+    ins.add_argument("--dry-run", action="store_true", help="print what would change and write nothing")
+    _add_globals(ins, nested=True, listed=True)
+    ins.set_defaults(func=None)
     sc = sub.add_parser(
         "schema",
         help="print the active schema, or import or export a Neo4j graph schema",
@@ -1040,6 +1052,27 @@ def error_text(exc: SelfGraphError, command: str) -> str:
     return "\n".join(lines)
 
 
+def _install(args: argparse.Namespace, settings: dict[str, str]) -> int:
+    """Add the MCP server to each agent's config and print one line per file.
+
+    @param args (argparse.Namespace): the parsed install command.
+    @param settings (dict[str, str]): the settings given as flags that the store does not ignore.
+    @return (int): the process exit code.
+    """
+    command, server_args = server_command()
+    changes = plan_install(
+        args.agents,
+        user=args.user,
+        command=command,
+        args=server_args,
+        settings=settings,
+        cwd=Path.cwd(),
+        home=Path.home(),
+    )
+    print("\n".join(apply_changes(changes, dry_run=args.dry_run)), flush=True)
+    return 0
+
+
 async def _run_with_diagnostics(args: argparse.Namespace, settings: GraphSettings) -> int:
     """Run a command showing the library's warnings and progress (such as 'extracting chunk 3/12') on stderr.
 
@@ -1085,7 +1118,8 @@ def main(argv: list[str] | None = None) -> int:
         _FAILED_COMMAND[0] = None
         print(error_text(exc, failed or _command_path(parser, None)), file=sys.stderr)
         return 2
-    settings = settings_from_env(**{key: getattr(args, key, None) for key in SETTING_KEYS})
+    flags = {key: getattr(args, key, None) for key in SETTING_KEYS}
+    settings = settings_from_env(**flags)
     args.store, args.namespace = store_kind(settings), settings.namespace
     ignored = ignored_settings(settings) if args.command != "version" else []
     for key in ignored:
@@ -1099,6 +1133,8 @@ def main(argv: list[str] | None = None) -> int:
 
             run_stdio(settings)
             return 0
+        if args.command == "install":
+            return _install(args, {key: v for key, v in flags.items() if v is not None and key not in ignored})
         return asyncio.run(_run_with_diagnostics(args, settings))
     except BrokenPipeError:
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())

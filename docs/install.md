@@ -15,6 +15,9 @@ uv tool install "selfgraph[llm,mcp,kuzu]"
 pipx install "selfgraph[llm,mcp,kuzu]"
 ```
 
+To add the MCP server to an agent such as Claude Code or Cursor, run
+`selfgraph install` ([quick setup](mcp.md#quick-setup)).
+
 ## Extras
 
 | Extra | Adds | Needed for |

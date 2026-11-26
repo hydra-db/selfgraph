@@ -71,6 +71,7 @@ settings from the environment are ignored silently.
 | `init` | Checks the connection, creates the store's indexes or constraints where the backend has them, and prints the store and namespace in use. |
 | `version` | Prints the installed version as JSON. `--version` or `-V` prints it bare. |
 | `mcp` | Runs the [MCP](mcp.md) server over stdio with the global flags. |
+| `install` | Adds the MCP server to an agent's config. See [`install`](#install). |
 | `schema` | Prints the active schema, or `null` with a hint on stderr. `schema import FILE` and `schema export` convert from and to a [Neo4j graph schema](schema.md#neo4j-graph-schema-interop); `schema export --to ossie` prints an [Apache Ossie ontology](schema.md#apache-ossie-export). Importing a file that is already a SelfGraph schema fails with a hint to pass it as `--schema`. |
 | `readiness` | Prints whether the store is reachable and the namespace holds data, with counts and lint ([readiness](trust.md#readiness)). |
 | `check-answerable` | Judges whether the graph holds what a question asks about. Unquoted words join into one question; `--term` (repeatable) checks given phrases instead, with `--as-of`, `--known-at`, and `--depth` ([check_answerable](trust.md#check_answerable)). |
@@ -91,6 +92,23 @@ An unknown command fails with exit code 2.
 also goes to stderr as `selfgraph: CODE: message`. An LLM insert of more than one
 chunk prints `selfgraph: extracting chunk N/M` on stderr. Hints name CLI flags
 rather than library settings ([errors](errors.md#messages)).
+
+### `install`
+
+`install [AGENT ...] [--global] [--dry-run]` writes the `selfgraph`
+server entry into each agent's MCP config.
+
+| Argument | Meaning |
+|----------|---------|
+| `AGENT` | `claude`, `cursor`, `vscode`, `gemini`, or `windsurf`. Default: every agent whose config folder exists in the scope. |
+| `--global` | Write the user-level file instead of the project's. `vscode` has none. |
+| `--dry-run` | Print what would change and write nothing. |
+
+The connection flags you pass go into the entry's `env` as `SELFGRAPH_*`
+variables. It prints one line per file, such as `claude: wrote .mcp.json`, then
+a reminder to restart or reload the agent. A file that does not parse fails
+with exit code 2 before any file is written. File locations and the credential
+rule are in [MCP quick setup](mcp.md#quick-setup).
 
 ### `retrieve`
 

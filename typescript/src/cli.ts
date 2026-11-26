@@ -1,4 +1,5 @@
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +14,7 @@ import {
 import { SelfGraph } from "./client.js";
 import { internalError, NotFoundError, SelfGraphError, surfaceHint, ValidationError, WARNING_HINTS } from "./errors.js";
 import { toOssie } from "./export.js";
+import { AGENTS, applyChanges, planInstall, SERVER_ARGS, SERVER_COMMAND } from "./install.js";
 import { log, setLogger } from "./internal/log.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
 import { toIso } from "./internal/time.js";
@@ -294,9 +296,10 @@ const checkedSettings = new WeakMap<object, GraphSettings>();
 
 let lastSettings: GraphSettings | null = null;
 
+const flag = (key: string) => key.replace(/_(\w)/g, (_, c: string) => c.toUpperCase());
+
 function settingsOf(cmd: { optsWithGlobals(): GlobalOptions }): GraphSettings {
   const o: Record<string, string | undefined> = cmd.optsWithGlobals();
-  const flag = (key: string) => key.replace(/_(\w)/g, (_, c: string) => c.toUpperCase());
   const settings = settingsFromEnv(Object.fromEntries(SETTING_KEYS.map((key) => [key, o[flag(key)]])));
   lastSettings = settings;
   return settings;
@@ -812,6 +815,32 @@ export function buildParser(): Command<[], GlobalOptions> {
     .description("run the MCP server over stdio; it honours the global options listed below")
     .configureHelp({ showGlobalOptions: true })
     .action((_o, cmd) => runStdio(connectSettings(cmd)));
+  program
+    .command("install")
+    .summary("add the MCP server to an agent's config")
+    .description(
+      "add the MCP server to an agent's config; the global options given here go into its env as SELFGRAPH_* variables",
+    )
+    .argument("[AGENT...]", `${AGENTS.join(", ")} (default: every agent whose config folder exists)`)
+    .option("--global", "write the user-level config")
+    .option("--dry-run", "print what would change and write nothing")
+    .configureHelp({ showGlobalOptions: true })
+    .action(async (agents: string[], o, cmd) => {
+      const given: Record<string, unknown> = cmd.optsWithGlobals();
+      const settings = connectSettings(cmd);
+      const flags = SETTING_KEYS.filter(
+        (key) => typeof given[flag(key)] === "string" && settings[key as keyof GraphSettings] !== null,
+      );
+      const changes = planInstall(agents, {
+        user: o.global === true,
+        command: SERVER_COMMAND,
+        args: SERVER_ARGS,
+        settings: Object.fromEntries(flags.map((key) => [key, given[flag(key)] as string])),
+        cwd: process.cwd(),
+        home: homedir(),
+      });
+      await writeOut(`${applyChanges(changes, o.dryRun === true).join("\n")}\n`);
+    });
   const schema = program
     .command("schema")
     .summary("print the active schema, or import or export a Neo4j graph schema")

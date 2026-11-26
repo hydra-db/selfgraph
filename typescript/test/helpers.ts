@@ -365,16 +365,21 @@ export function buildCli(): void {
  * Run the built CLI and parse its stdout as JSON when it is JSON.
  *
  * @param args (string[]): the CLI arguments.
- * @param options ({ input?: string; env?: Record<string, string | undefined> }): stdin and environment overrides; undefined unsets a variable.
+ * @param options ({ input?: string; env?: Record<string, string | undefined>; cwd?: string }): stdin, environment overrides (undefined unsets a variable), and the working folder.
  * @return ({ code: number; out: unknown; err: string }): the exit code, parsed stdout, and stderr.
  */
 export function runCli(
   args: string[],
-  options: { input?: string; env?: Record<string, string | undefined> } = {},
+  options: { input?: string; env?: Record<string, string | undefined>; cwd?: string } = {},
 ): { code: number; out: unknown; err: string } {
   const env = { ...process.env, ...options.env };
   for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
-  const res = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", input: options.input, env });
+  const res = spawnSync(process.execPath, [CLI, ...args], {
+    encoding: "utf8",
+    input: options.input,
+    env,
+    cwd: options.cwd,
+  });
   let out: unknown = res.stdout;
   try {
     out = JSON.parse(res.stdout);
