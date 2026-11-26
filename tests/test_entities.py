@@ -31,6 +31,24 @@ def test_create_get_update_delete():
         run(g.entities.delete(e.id))
 
 
+def test_a_blank_external_id_value_is_rejected_so_unrelated_entities_never_merge():
+    g = fresh_graph("blank_xid")
+    ann = run(g.entities.create("Ann Lee", "Person"))
+    for bad in ({"crm": ""}, {"crm": "  "}):
+        bob = {"name": "Bob Stone", "type": "Person", "external_ids": bad}
+        for call in (
+            lambda bad=bad: g.entities.create("Bob Stone", "Person", external_ids=bad),
+            lambda bad=bad: g.entities.update(ann.id, external_ids=bad),
+            lambda bob=bob: g.insert.facts({"entities": [bob]}),
+        ):
+            with pytest.raises(ValidationError, match="^external_ids values cannot be empty or whitespace$") as err:
+                run(call())
+            assert (err.value.code, err.value.field) == ("invalid_argument", "external_ids")
+    stored = run(g.entities.list()).items
+    assert [(e.id, e.aliases, e.external_ids) for e in stored] == [(ann.id, [], {})]
+    assert run(g.entities.merges(ann.id)).items == []
+
+
 def test_list_filters_and_pagination():
     g = new_graph()
     for i in range(3):
