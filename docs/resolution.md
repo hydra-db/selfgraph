@@ -70,7 +70,7 @@ the first signal that fires:
 | Signal | Confidence | Reason |
 |--------|------------|--------|
 | The candidate's id equals the entity's id. | 1.0 | `id` |
-| The candidate and the entity share an external id key with the same value. | 1.0 | `external_id` |
+| The candidate and the entity share an external id key with the same value. Keys and values are never blank: inserts, `create`, and `update` reject them. | 1.0 | `external_id` |
 | Any of the candidate's name and aliases matches the entity's name or one of its aliases, after NFC normalization and case folding. | 0.95 | `alias` |
 | Same type, and the lexical similarity of the names reaches `threshold`. Only with `fuzzy=True`. | the score | `similarity` |
 

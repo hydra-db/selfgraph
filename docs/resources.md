@@ -126,7 +126,7 @@ raises `ValidationError`.
 | `type` | May change only case or spacing, since the type is part of the id. Any other type raises `ValidationError`. The stored type is kept, so `type="person"` on a `Person` is a no-op, unless the new type is a schema type name or alias, which stores the schema's type name. |
 | `aliases`, `remove_aliases` | Add or remove aliases. |
 | `properties`, `remove_properties` | Merge into or remove from the stored properties. |
-| `external_ids` | Merges into the stored external ids. |
+| `external_ids` | Merges into the stored external ids. A blank key or value raises `ValidationError`. |
 
 Aliases are cleaned like names (trimmed, NFC-normalized) before they are stored
 or compared, so `" Other"` is stored as `Other`. `remove_aliases` is cleaned the
