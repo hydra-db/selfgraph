@@ -10,6 +10,7 @@ from selfgraph.cli import main
 from selfgraph.runtime import SETTING_KEYS
 
 SKILL = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+CODEX = 'model = "o3"\n\n[mcp_servers.other]\ncommand = "other"\nargs = []\n'
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def snapshot(*roots):
 
 def test_writes_each_agents_file_shape(capsys, dirs):
     project, home = dirs
-    code, out, _ = install(capsys, "claude", "cursor", "vscode", "gemini", "windsurf")
+    code, out, _ = install(capsys, "claude", "cursor", "vscode", "gemini", "windsurf", "codex")
     assert code == 0
     assert out == [
         "claude: wrote .mcp.json",
@@ -53,6 +54,7 @@ def test_writes_each_agents_file_shape(capsys, dirs):
         "vscode: wrote .vscode/mcp.json",
         "gemini: wrote .gemini/settings.json",
         "windsurf: wrote ~/.codeium/windsurf/mcp_config.json",
+        "codex: wrote .codex/config.toml",
         "Restart or reload the agent to pick up the change.",
     ]
     stdio = {"type": "stdio", "command": "selfgraph", "args": ["mcp"]}
@@ -66,6 +68,8 @@ def test_writes_each_agents_file_shape(capsys, dirs):
     ]:
         assert path.read_text(encoding="utf-8") == json.dumps({key: {"selfgraph": entry}}, indent=2) + "\n"
     assert (project / ".claude/skills/selfgraph/SKILL.md").read_text(encoding="utf-8") == SKILL
+    toml = '[mcp_servers.selfgraph]\ncommand = "selfgraph"\nargs = ["mcp"]\n'
+    assert (project / ".codex/config.toml").read_text(encoding="utf-8") == toml
 
 
 def test_global_writes_user_files(capsys, dirs):
@@ -82,6 +86,8 @@ def test_merges_with_other_servers_idempotently_and_removes(capsys, dirs):
     (project / ".cursor").mkdir()
     cursor = {"theme": "dark", "mcpServers": {"other": {"command": "other", "args": ["x"]}}}
     (project / ".cursor/mcp.json").write_text(json.dumps(cursor), encoding="utf-8")
+    (project / ".codex").mkdir()
+    (project / ".codex/config.toml").write_bytes(CODEX.encode())
 
     assert install(capsys, "--store", "kuzu")[0] == 0
     first = snapshot(project)
@@ -98,15 +104,22 @@ def test_merges_with_other_servers_idempotently_and_removes(capsys, dirs):
             },
         },
     }
-    assert install(capsys, "--store", "kuzu")[1] == ["cursor: unchanged .cursor/mcp.json"]
+    assert (project / ".codex/config.toml").read_text() == CODEX + (
+        '\n[mcp_servers.selfgraph]\ncommand = "selfgraph"\nargs = ["mcp"]\n\n'
+        '[mcp_servers.selfgraph.env]\nSELFGRAPH_STORE = "kuzu"\n'
+    )
+    unchanged = ["cursor: unchanged .cursor/mcp.json", "codex: unchanged .codex/config.toml"]
+    assert install(capsys, "--store", "kuzu")[1] == unchanged
     assert snapshot(project) == first
 
     assert install(capsys, "--remove")[1] == [
         "cursor: wrote .cursor/mcp.json",
+        "codex: wrote .codex/config.toml",
         "Restart or reload the agent to pick up the change.",
     ]
     assert json.loads((project / ".cursor/mcp.json").read_text()) == cursor
-    assert install(capsys, "--remove")[1] == ["cursor: unchanged .cursor/mcp.json"]
+    assert (project / ".codex/config.toml").read_bytes() == CODEX.encode()
+    assert install(capsys, "--remove")[1] == unchanged
 
 
 def test_remove_drops_the_skill(capsys, dirs):
@@ -139,7 +152,7 @@ def test_detects_agents_by_config_folder(capsys, dirs):
     assert (code, err[0]) == (
         2,
         "error[invalid_argument]: found no agent config folder in this folder; "
-        "name one or more of: claude, cursor, vscode, gemini, windsurf",
+        "name one or more of: claude, cursor, vscode, gemini, windsurf, codex",
     )
     for folder in (project / ".vscode", project / ".claude", home / ".codeium/windsurf", home / ".gemini"):
         folder.mkdir(parents=True)
@@ -157,7 +170,7 @@ def test_unsupported_scope_and_unknown_agent_fail(capsys, dirs):
     code, _, err = install(capsys, "cursor", "nope")
     assert (code, err[0]) == (
         2,
-        "error[invalid_argument]: unknown agent 'nope'; choose from claude, cursor, vscode, gemini, windsurf",
+        "error[invalid_argument]: unknown agent 'nope'; choose from claude, cursor, vscode, gemini, windsurf, codex",
     )
     assert "field: agents" in err
     assert snapshot(*dirs) == {}
@@ -190,19 +203,27 @@ def test_credentials_stay_out_of_project_files(capsys, dirs, argv):
 
 
 @pytest.mark.parametrize(
-    ("text", "message"),
+    ("rel", "text", "message"),
     [
-        ("{nope", "cannot update '.cursor/mcp.json': not valid JSON"),
-        ("[]", "cannot update '.cursor/mcp.json': not a JSON object"),
-        ('{"mcpServers": []}', "cannot update '.cursor/mcp.json': mcpServers is not an object"),
+        (".cursor/mcp.json", "{nope", "cannot update '.cursor/mcp.json': not valid JSON"),
+        (".cursor/mcp.json", "[]", "cannot update '.cursor/mcp.json': not a JSON object"),
+        (".cursor/mcp.json", '{"mcpServers": []}', "cannot update '.cursor/mcp.json': mcpServers is not an object"),
+        (".codex/config.toml", 'a = "x\n', "cannot update '.codex/config.toml': not valid TOML at line 1"),
+        (".codex/config.toml", "a = 1\nb = [\n  1,\n", "cannot update '.codex/config.toml': not valid TOML at line 2"),
+        (
+            ".codex/config.toml",
+            "[mcp_servers]\nselfgraph = { command = 'x' }\n",
+            "cannot update '.codex/config.toml': it sets mcp_servers.selfgraph outside a [mcp_servers.selfgraph] "
+            "table; move it into one or remove it",
+        ),
     ],
 )
-def test_bad_file_fails_without_writing_anything(capsys, dirs, text, message):
+def test_bad_file_fails_without_writing_anything(capsys, dirs, rel, text, message):
     project, _ = dirs
-    (project / ".cursor").mkdir()
-    (project / ".cursor/mcp.json").write_text(text, encoding="utf-8")
+    (project / rel).parent.mkdir()
+    (project / rel).write_text(text, encoding="utf-8")
     before = snapshot(project)
-    code, out, err = install(capsys, "claude", "cursor")
+    code, out, err = install(capsys, "claude", "cursor", "codex")
     assert (code, out, err[0]) == (2, [], f"error[invalid_argument]: {message}")
     assert snapshot(project) == before
 
@@ -234,3 +255,23 @@ def test_server_command_falls_back_to_this_interpreter(monkeypatch):
     assert _install.server_command() == (sys.executable, ["-m", "selfgraph", "mcp"])
     monkeypatch.setattr(_install.shutil, "which", lambda name: "/elsewhere/bin/selfgraph")
     assert _install.server_command() == (sys.executable, ["-m", "selfgraph", "mcp"])
+
+
+def test_toml_merge_keeps_the_rest_of_the_file():
+    entry = {"command": "selfgraph", "args": ["mcp"], "env": {"SELFGRAPH_URI": 'a "b"\\c'}}
+    text = (
+        '# top\r\nnote = """\n[mcp_servers.selfgraph]\n"""\n\n[mcp_servers.selfgraph]\ncommand = "old"\n'
+        '\n[mcp_servers.selfgraph.env]\nX = "1"\n\n# next\n[profiles.fast]\nmodel = "o4"\n'
+    )
+    merged = _install._merge_toml(text, entry, "c.toml")
+    assert merged == (
+        '# top\r\nnote = """\n[mcp_servers.selfgraph]\n"""\n\n[mcp_servers.selfgraph]\ncommand = "selfgraph"\n'
+        'args = ["mcp"]\n\n[mcp_servers.selfgraph.env]\nSELFGRAPH_URI = "a \\"b\\"\\\\c"\n\n# next\n'
+        '[profiles.fast]\nmodel = "o4"\n'
+    )
+    assert _install._merge_toml(merged, entry, "c.toml") == merged
+    assert _install._merge_toml(merged, None, "c.toml") == (
+        '# top\r\nnote = """\n[mcp_servers.selfgraph]\n"""\n\n\n# next\n[profiles.fast]\nmodel = "o4"\n'
+    )
+    assert _install._merge_toml("a = 1", entry, "c.toml").startswith("a = 1\n\n[mcp_servers.selfgraph]\n")
+    assert _install._merge_toml(None, None, "c.toml") is None

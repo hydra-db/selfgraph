@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 import sysconfig
@@ -18,13 +19,15 @@ __all__ = ["AGENTS", "Change", "apply_changes", "plan_install", "server_command"
 _SERVER = "selfgraph"
 _SKILL = ".claude/skills/selfgraph/SKILL.md"
 _SECRETS = ("auth", "llm_api_key")
+_TOML_TABLE = ("mcp_servers", _SERVER)
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 
 @dataclass(frozen=True)
 class _Agent:
     folder: str
     files: Mapping[str, str]
-    key: str
+    key: str | None
     stdio: bool = False
 
 
@@ -34,6 +37,7 @@ _AGENTS = {
     "vscode": _Agent(".vscode", {"project": ".vscode/mcp.json"}, "servers", stdio=True),
     "gemini": _Agent(".gemini", {"project": ".gemini/settings.json", "user": ".gemini/settings.json"}, "mcpServers"),
     "windsurf": _Agent(".codeium/windsurf", {"user": ".codeium/windsurf/mcp_config.json"}, "mcpServers"),
+    "codex": _Agent(".codex", {"project": ".codex/config.toml", "user": ".codex/config.toml"}, None),
 }
 AGENTS = tuple(_AGENTS)
 
@@ -98,6 +102,215 @@ def _merge(text: str | None, key: str, entry: Mapping[str, Any] | None, shown: s
     else:
         data[key] = {**(servers or {}), _SERVER: dict(entry)}
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def _toml_block(entry: Mapping[str, Any]) -> str:
+    """Render the selfgraph server as a TOML table, with its env as a subtable.
+
+    @param entry (Mapping[str, Any]): the command, args, and optional env.
+    @return (str): the table text, ending in a newline.
+    """
+    args = ", ".join(_toml_string(a) for a in entry["args"])
+    lines = [f"[{'.'.join(_TOML_TABLE)}]", f"command = {_toml_string(entry['command'])}", f"args = [{args}]"]
+    if entry.get("env"):
+        lines += ["", f"[{'.'.join(_TOML_TABLE)}.env]"]
+        lines += [f"{name} = {_toml_string(value)}" for name, value in entry["env"].items()]
+    return "\n".join(lines) + "\n"
+
+
+def _toml_key(line: str, i: int) -> tuple[list[str], int] | None:
+    """Read a dotted TOML key starting at a position.
+
+    @param line (str): the line.
+    @param i (int): where the key starts.
+    @return (tuple[list[str], int] | None): the key parts and the position after them, or None when there is no key.
+    """
+    parts: list[str] = []
+    while True:
+        while i < len(line) and line[i] in " \t":
+            i += 1
+        if i < len(line) and line[i] in "\"'":
+            quote = line[i]
+            end = i + 1
+            while end < len(line) and line[end] != quote:
+                end += 2 if quote == '"' and line[end] == "\\" else 1
+            if end >= len(line):
+                return None
+            parts.append(line[i + 1 : end])
+            i = end + 1
+        else:
+            bare = _BARE_KEY.match(line, i)
+            if not bare:
+                return None
+            parts.append(bare.group())
+            i = bare.end()
+        while i < len(line) and line[i] in " \t":
+            i += 1
+        if i >= len(line) or line[i] != ".":
+            return parts, i
+        i += 1
+
+
+def _scan_value(line: str, i: int, state: dict[str, Any]) -> bool:
+    """Track strings, arrays, and inline tables through a value, so a header inside one is not read as a table.
+
+    @param line (str): the line.
+    @param i (int): where the value text starts.
+    @param state (dict[str, Any]): the open multi-line string delimiter and the bracket depth, updated in place.
+    @return (bool): False when a bracket closes that never opened, or a one-line string does not end.
+    """
+    while i < len(line):
+        if state["string"]:
+            delim = state["string"]
+            while i < len(line) and not line.startswith(delim, i):
+                i += 2 if delim == '"""' and line[i] == "\\" else 1
+            if i >= len(line):
+                return True
+            i += 3
+            while i < len(line) and line[i] == delim[0]:
+                i += 1
+            state["string"] = None
+            continue
+        char = line[i]
+        if char == "#":
+            return True
+        if line.startswith('"""', i) or line.startswith("'''", i):
+            state["string"] = line[i : i + 3]
+            i += 3
+        elif char in "\"'":
+            end = i + 1
+            while end < len(line) and line[end] != char and line[end] != "\n":
+                end += 2 if char == '"' and line[end] == "\\" else 1
+            if end >= len(line) or line[end] != char:
+                return False
+            i = end + 1
+        else:
+            if char in "[{":
+                state["depth"] += 1
+            elif char in "]}":
+                state["depth"] -= 1
+                if state["depth"] < 0:
+                    return False
+            i += 1
+    return True
+
+
+def _toml_layout(lines: list[str], shown: str) -> tuple[list[tuple[int, list[str]]], list[bool]]:
+    """Check a TOML file's structure and find its table headers.
+
+    @param lines (list[str]): the file's lines, each with its newline.
+    @param shown (str): the file as shown to the user.
+    @return (tuple[list[tuple[int, list[str]]], list[bool]]): each table header's line and key, and per line whether it
+        is blank or a comment outside any value.
+    """
+    state: dict[str, Any] = {"string": None, "depth": 0}
+    headers: list[tuple[int, list[str]]] = []
+    quiet = [False] * len(lines)
+    table: list[str] = []
+    opened = 0
+
+    def bad(n: int) -> ValidationError:
+        return ValidationError(f"cannot update {shown!r}: not valid TOML at line {n + 1}")
+
+    def unsupported() -> ValidationError:
+        return ValidationError(
+            f"cannot update {shown!r}: it sets {'.'.join(_TOML_TABLE)} outside a "
+            f"[{'.'.join(_TOML_TABLE)}] table; move it into one or remove it"
+        )
+
+    for n, line in enumerate(lines):
+        if state["string"] or state["depth"]:
+            if not _scan_value(line, 0, state):
+                raise bad(n)
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            quiet[n] = True
+            continue
+        opened = n
+        start = len(line) - len(line.lstrip())
+        if stripped.startswith("["):
+            array = stripped.startswith("[[")
+            key = _toml_key(line, start + (2 if array else 1))
+            if key is None:
+                raise bad(n)
+            parts, i = key
+            close = "]]" if array else "]"
+            if not line.startswith(close, i):
+                raise bad(n)
+            rest = line[i + len(close) :].strip()
+            if rest and not rest.startswith("#"):
+                raise bad(n)
+            if array and tuple(parts[:2]) == _TOML_TABLE:
+                raise unsupported()
+            table = parts
+            if not array:
+                headers.append((n, parts))
+            continue
+        key = _toml_key(line, start)
+        if key is None or key[1] >= len(line) or line[key[1]] != "=":
+            raise bad(n)
+        full = [*table, *key[0]]
+        if tuple(table[:2]) != _TOML_TABLE and (full == ["mcp_servers"] or tuple(full[:2]) == _TOML_TABLE):
+            raise unsupported()
+        value = line[key[1] + 1 :].strip()
+        if not value or value.startswith("#") or not _scan_value(line, key[1] + 1, state):
+            raise bad(n)
+    if state["string"] or state["depth"]:
+        raise bad(opened)
+    return headers, quiet
+
+
+def _merge_toml(text: str | None, entry: Mapping[str, Any] | None, shown: str) -> str | None:
+    """Set or remove the [mcp_servers.selfgraph] table and its subtables, leaving the rest of the file as it is.
+
+    @param text (str | None): the file's text, or None when it does not exist.
+    @param entry (Mapping[str, Any] | None): the command, args, and optional env, or None to remove the table.
+    @param shown (str): the file as shown to the user.
+    @return (str | None): the new text, or the old one when nothing changes.
+    """
+    lines = re.findall(r"[^\n]*\n|[^\n]+$", text or "")
+    headers, quiet = _toml_layout(lines, shown)
+    blocks: list[tuple[int, int]] = []
+    for index, (n, parts) in enumerate(headers):
+        if tuple(parts[:2]) != _TOML_TABLE:
+            continue
+        end = headers[index + 1][0] if index + 1 < len(headers) else len(lines)
+        while end > n + 1 and quiet[end - 1]:
+            end -= 1
+        if blocks and all(quiet[blocks[-1][1] : n]):
+            n = blocks.pop()[0]
+        blocks.append((n, end))
+    block = None if entry is None else _toml_block(entry)
+    if not blocks:
+        if block is None:
+            return text
+        head = text or ""
+        if head and not head.endswith("\n"):
+            head += "\n"
+        if head and not head.endswith("\n\n"):
+            head += "\n"
+        return head + block
+    keep = [True] * len(lines)
+    for start, end in blocks:
+        keep[start:end] = [False] * (end - start)
+    last_start, last_end = blocks[-1]
+    if block is None and all(quiet[last_end:]):
+        n = last_start
+        while n > 0 and not lines[n - 1].strip():
+            n -= 1
+            keep[n] = False
+    out = []
+    for n, line in enumerate(lines):
+        if n == blocks[0][0] and block is not None:
+            out.append(block)
+        if keep[n]:
+            out.append(line)
+    return "".join(out)
 
 
 def _read(path: Path, shown: str) -> str | None:
@@ -184,7 +397,7 @@ def plan_install(
             shown = rel if scope == "project" else f"~/{rel}"
             old = _read(path, shown)
             if rel != _SKILL:
-                new = _merge(old, agent.key, entry, shown)
+                new = _merge(old, agent.key, entry, shown) if agent.key else _merge_toml(old, entry, shown)
             elif remove:
                 new = None
             else:

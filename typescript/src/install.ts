@@ -17,9 +17,11 @@ import { parseJson } from "./runtime.js";
 const SERVER = "selfgraph";
 const SKILL = ".claude/skills/selfgraph/SKILL.md";
 const SECRETS = ["auth", "llm_api_key"];
+const TOML_TABLE = "mcp_servers.selfgraph";
+const BARE_KEY = /[A-Za-z0-9_-]+/y;
 
 type Scope = "project" | "user";
-type Agent = { folder: string; files: Partial<Record<Scope, string>>; key: string; stdio?: boolean };
+type Agent = { folder: string; files: Partial<Record<Scope, string>>; key: string | null; stdio?: boolean };
 
 const AGENT_SPECS: Record<string, Agent> = {
   claude: { folder: ".claude", files: { project: ".mcp.json", user: ".claude.json" }, key: "mcpServers", stdio: true },
@@ -36,12 +38,14 @@ const AGENT_SPECS: Record<string, Agent> = {
     key: "mcpServers",
   },
   windsurf: { folder: ".codeium/windsurf", files: { user: ".codeium/windsurf/mcp_config.json" }, key: "mcpServers" },
+  codex: { folder: ".codex", files: { project: ".codex/config.toml", user: ".codex/config.toml" }, key: null },
 };
 
 export const AGENTS = Object.keys(AGENT_SPECS);
 export const SERVER_COMMAND = "npx";
 export const SERVER_ARGS = ["-y", "-p", "@hydradb/selfgraph", "-p", "@modelcontextprotocol/sdk", "selfgraph", "mcp"];
 
+type ServerEntry = { command: string; args: string[]; env?: Record<string, string> };
 export type Change = { agent: string; path: string; shown: string; text: string | null; changed: boolean };
 
 /**
@@ -88,6 +92,211 @@ function merge(text: string | null, key: string, entry: Record<string, unknown> 
     data[key] = { ...servers, [SERVER]: { ...entry } };
   }
   return `${JSON.stringify(data, null, 2)}\n`;
+}
+
+const tomlString = (value: string): string => JSON.stringify(value).replace(/\x7f/g, "\\u007f");
+
+/**
+ * Render the selfgraph server as a TOML table, with its env as a subtable.
+ *
+ * @param entry (ServerEntry): the command, args, and optional env.
+ * @return (string): the table text, ending in a newline.
+ */
+function tomlBlock(entry: ServerEntry): string {
+  const lines = [
+    `[${TOML_TABLE}]`,
+    `command = ${tomlString(entry.command)}`,
+    `args = [${entry.args.map(tomlString).join(", ")}]`,
+  ];
+  if (entry.env && Object.keys(entry.env).length) {
+    lines.push("", `[${TOML_TABLE}.env]`);
+    for (const [name, value] of Object.entries(entry.env)) lines.push(`${name} = ${tomlString(value)}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Read a dotted TOML key starting at a position.
+ *
+ * @param line (string): the line.
+ * @param start (number): where the key starts.
+ * @return ([string[], number] | null): the key parts and the position after them, or null when there is no key.
+ */
+function tomlKey(line: string, start: number): [string[], number] | null {
+  const parts: string[] = [];
+  let i = start;
+  const blank = () => {
+    while (i < line.length && (line[i] === " " || line[i] === "\t")) i++;
+  };
+  for (;;) {
+    blank();
+    const quote = line[i];
+    if (quote === '"' || quote === "'") {
+      let end = i + 1;
+      while (end < line.length && line[end] !== quote) end += quote === '"' && line[end] === "\\" ? 2 : 1;
+      if (end >= line.length) return null;
+      parts.push(line.slice(i + 1, end));
+      i = end + 1;
+    } else {
+      BARE_KEY.lastIndex = i;
+      const bare = BARE_KEY.exec(line);
+      if (!bare) return null;
+      parts.push(bare[0]);
+      i += bare[0].length;
+    }
+    blank();
+    if (i >= line.length || line[i] !== ".") return [parts, i];
+    i++;
+  }
+}
+
+type ScanState = { string: string | null; depth: number };
+
+/**
+ * Track strings, arrays, and inline tables through a value, so a header inside one is not read as a table.
+ *
+ * @param line (string): the line.
+ * @param start (number): where the value text starts.
+ * @param state (ScanState): the open multi-line string delimiter and the bracket depth, updated in place.
+ * @return (boolean): false when a bracket closes that never opened, or a one-line string does not end.
+ */
+function scanValue(line: string, start: number, state: ScanState): boolean {
+  let i = start;
+  while (i < line.length) {
+    if (state.string) {
+      const delim = state.string;
+      while (i < line.length && !line.startsWith(delim, i)) i += delim === '"""' && line[i] === "\\" ? 2 : 1;
+      if (i >= line.length) return true;
+      i += 3;
+      while (i < line.length && line[i] === delim[0]) i++;
+      state.string = null;
+      continue;
+    }
+    const char = line[i]!;
+    if (char === "#") return true;
+    if (line.startsWith('"""', i) || line.startsWith("'''", i)) {
+      state.string = line.slice(i, i + 3);
+      i += 3;
+    } else if (char === '"' || char === "'") {
+      let end = i + 1;
+      while (end < line.length && line[end] !== char && line[end] !== "\n")
+        end += char === '"' && line[end] === "\\" ? 2 : 1;
+      if (end >= line.length || line[end] !== char) return false;
+      i = end + 1;
+    } else {
+      if (char === "[" || char === "{") state.depth++;
+      else if (char === "]" || char === "}") {
+        state.depth--;
+        if (state.depth < 0) return false;
+      }
+      i++;
+    }
+  }
+  return true;
+}
+
+const isServerTable = (parts: string[]): boolean => parts[0] === "mcp_servers" && parts[1] === SERVER;
+
+/**
+ * Check a TOML file's structure and find its table headers.
+ *
+ * @param lines (string[]): the file's lines, each with its newline.
+ * @param shown (string): the file as shown to the user.
+ * @return ([Array<[number, string[]]>, boolean[]]): each table header's line and key, and per line whether it is blank or a comment outside any value.
+ */
+function tomlLayout(lines: string[], shown: string): [Array<[number, string[]]>, boolean[]] {
+  const state: ScanState = { string: null, depth: 0 };
+  const headers: Array<[number, string[]]> = [];
+  const quiet = lines.map(() => false);
+  let table: string[] = [];
+  let opened = 0;
+  const bad = (n: number) => new ValidationError(`cannot update ${pyRepr(shown)}: not valid TOML at line ${n + 1}`);
+  const unsupported = () =>
+    new ValidationError(
+      `cannot update ${pyRepr(shown)}: it sets ${TOML_TABLE} outside a [${TOML_TABLE}] table; move it into one or remove it`,
+    );
+  for (const [n, line] of lines.entries()) {
+    if (state.string || state.depth) {
+      if (!scanValue(line, 0, state)) throw bad(n);
+      continue;
+    }
+    const stripped = line.trim();
+    if (!stripped || stripped.startsWith("#")) {
+      quiet[n] = true;
+      continue;
+    }
+    opened = n;
+    const start = line.length - line.trimStart().length;
+    if (stripped.startsWith("[")) {
+      const array = stripped.startsWith("[[");
+      const key = tomlKey(line, start + (array ? 2 : 1));
+      if (key === null) throw bad(n);
+      const [parts, i] = key;
+      const close = array ? "]]" : "]";
+      if (!line.startsWith(close, i)) throw bad(n);
+      const rest = line.slice(i + close.length).trim();
+      if (rest && !rest.startsWith("#")) throw bad(n);
+      if (array && isServerTable(parts)) throw unsupported();
+      table = parts;
+      if (!array) headers.push([n, parts]);
+      continue;
+    }
+    const key = tomlKey(line, start);
+    if (key === null || key[1] >= line.length || line[key[1]] !== "=") throw bad(n);
+    const full = [...table, ...key[0]];
+    if (!isServerTable(table) && ((full.length === 1 && full[0] === "mcp_servers") || isServerTable(full)))
+      throw unsupported();
+    const value = line.slice(key[1] + 1).trim();
+    if (!value || value.startsWith("#") || !scanValue(line, key[1] + 1, state)) throw bad(n);
+  }
+  if (state.string || state.depth) throw bad(opened);
+  return [headers, quiet];
+}
+
+/**
+ * Set or remove the [mcp_servers.selfgraph] table and its subtables, leaving the rest of the file as it is.
+ *
+ * @param text (string | null): the file's text, or null when it does not exist.
+ * @param entry (ServerEntry | null): the command, args, and optional env, or null to remove the table.
+ * @param shown (string): the file as shown to the user.
+ * @return (string | null): the new text, or the old one when nothing changes.
+ */
+export function mergeToml(text: string | null, entry: ServerEntry | null, shown: string): string | null {
+  const lines = (text ?? "").match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const [headers, quiet] = tomlLayout(lines, shown);
+  const blocks: Array<[number, number]> = [];
+  for (const [index, [first, parts]] of headers.entries()) {
+    if (!isServerTable(parts)) continue;
+    let n = first;
+    let end = index + 1 < headers.length ? headers[index + 1]![0] : lines.length;
+    while (end > n + 1 && quiet[end - 1]) end--;
+    const previous = blocks.at(-1);
+    if (previous && quiet.slice(previous[1], n).every(Boolean)) {
+      n = previous[0];
+      blocks.pop();
+    }
+    blocks.push([n, end]);
+  }
+  const block = entry === null ? null : tomlBlock(entry);
+  if (!blocks.length) {
+    if (block === null) return text;
+    let head = text ?? "";
+    if (head && !head.endsWith("\n")) head += "\n";
+    if (head && !head.endsWith("\n\n")) head += "\n";
+    return head + block;
+  }
+  const keep = lines.map(() => true);
+  for (const [start, end] of blocks) keep.fill(false, start, end);
+  const [lastStart, lastEnd] = blocks.at(-1)!;
+  if (block === null && quiet.slice(lastEnd).every(Boolean)) {
+    for (let n = lastStart; n > 0 && !lines[n - 1]!.trim(); n--) keep[n - 1] = false;
+  }
+  const out: string[] = [];
+  for (const [n, line] of lines.entries()) {
+    if (n === blocks[0]![0] && block !== null) out.push(block);
+    if (keep[n]) out.push(line);
+  }
+  return out.join("");
 }
 
 /**
@@ -181,7 +390,7 @@ export function planInstall(
       const shown = scope === "project" ? rel : `~/${rel}`;
       const old = read(path, shown);
       let text: string | null;
-      if (rel !== SKILL) text = merge(old, agent.key, entry, shown);
+      if (rel !== SKILL) text = agent.key === null ? mergeToml(old, entry, shown) : merge(old, agent.key, entry, shown);
       else if (options.remove) text = null;
       else text = skillText();
       if (old !== null || text !== null) changes.push({ agent: name, path, shown, text, changed: text !== old });

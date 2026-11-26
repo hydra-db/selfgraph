@@ -100,7 +100,7 @@ server entry into each agent's MCP config.
 
 | Argument | Meaning |
 |----------|---------|
-| `AGENT` | `claude`, `cursor`, `vscode`, `gemini`, or `windsurf`. Default: every agent whose config folder exists in the scope. |
+| `AGENT` | `claude`, `cursor`, `vscode`, `gemini`, `windsurf`, or `codex`. Default: every agent whose config folder exists in the scope. |
 | `--global` | Write the user-level file instead of the project's. `vscode` has none. |
 | `--dry-run` | Print what would change and write nothing. |
 | `--remove` | Delete the `selfgraph` entry, and the Claude Code skill, keeping the rest. |

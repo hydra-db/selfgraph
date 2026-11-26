@@ -26,6 +26,7 @@ selfgraph --store kuzu --uri ./graph.kuzu install --global
 | `vscode` (VS Code, Copilot) | `.vscode/mcp.json` | none |
 | `gemini` (Gemini CLI) | `.gemini/settings.json` | `~/.gemini/settings.json` |
 | `windsurf` | none | `~/.codeium/windsurf/mcp_config.json` |
+| `codex` | `.codex/config.toml` | `~/.codex/config.toml` |
 
 - With no agent named, it installs for each agent whose folder (`.claude/`,
   `.cursor/`, and so on) already exists in the project, or in your home folder
@@ -40,7 +41,9 @@ selfgraph --store kuzu --uri ./graph.kuzu install --global
   never written to a project file, since those are often committed. Pass
   `--global` to write it to your user config instead.
 - Other servers and keys in the file are kept, and running it again changes
-  nothing. A file that does not parse is left alone, and the command fails before
+  nothing. In the Codex TOML file only the `[mcp_servers.selfgraph]` table and
+  its subtables are rewritten; comments and the rest of the file stay byte for
+  byte. A file that does not parse is left alone, and the command fails before
   writing any file.
 - `--dry-run` prints what would change. `--remove` deletes the `selfgraph` entry
   and the skill.
