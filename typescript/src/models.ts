@@ -7,6 +7,7 @@ import { parseIso, toIso } from "./internal/time.js";
 import { STANCES } from "./labels.js";
 import {
   hasSurrogate,
+  isBlank,
   keyHint,
   rejectProtoKeys,
   requireCleanJson,
@@ -87,7 +88,7 @@ const props = <V extends z.ZodType<JsonValue>>(label: string, values?: V) =>
   );
 
 const entityText = z.string().transform((value) => {
-  if (!value || !pyStrip(value)) {
+  if (!value || isBlank(value)) {
     throw new ValidationError(
       "entity type and name cannot be empty; an entity needs both, e.g. type='Person', name='Jane Doe'",
     );

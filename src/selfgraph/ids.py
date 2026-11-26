@@ -59,6 +59,15 @@ def _has_control(text: str) -> bool:
     return any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or 0xD800 <= ord(ch) <= 0xDFFF for ch in text)
 
 
+def _is_blank(value: str) -> bool:
+    """Report whether text has no visible character once format characters and whitespace are removed.
+
+    @param value (str): the text to inspect.
+    @return (bool): True when nothing but whitespace remains after dropping the pinned format characters.
+    """
+    return not _FORMAT.sub("", value).strip()
+
+
 _MAX_JSON_DEPTH = 64
 MAX_SAFE_INTEGER = 2**53 - 1
 
@@ -195,7 +204,7 @@ def _require_str(label: str, value: object) -> None:
     """
     if not isinstance(value, str):
         raise ValidationError(f"{label} must be a string, got {type_name(value)}")
-    if not value.strip():
+    if _is_blank(value):
         raise ValidationError(f"{label} cannot be empty")
     _require_no_control(label, value)
 

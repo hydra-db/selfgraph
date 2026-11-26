@@ -154,7 +154,9 @@
   [
    "Person",
    "\u200b",
-   "person:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Person",
@@ -375,7 +377,9 @@
   [
    "Big Company",
    "\u200b",
-   "big-company:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Big Company",
@@ -596,7 +600,9 @@
   [
    "  Org ",
    "\u200b",
-   "org:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "  Org ",
@@ -817,7 +823,9 @@
   [
    "\u00dcberType",
    "\u200b",
-   "\u00fcbertype:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "\u00dcberType",
@@ -1038,7 +1046,9 @@
   [
    "a\u3000b",
    "\u200b",
-   "a-b:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "a\u3000b",
@@ -1259,7 +1269,9 @@
   [
    "Company",
    "\u200b",
-   "company:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Company",
@@ -1480,7 +1492,9 @@
   [
    "Organization",
    "\u200b",
-   "organization:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Organization",
@@ -1701,7 +1715,9 @@
   [
    "Work",
    "\u200b",
-   "work:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "Work",
@@ -1922,7 +1938,9 @@
   [
    " Bank ",
    "\u200b",
-   "bank:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    " Bank ",
@@ -2143,7 +2161,9 @@
   [
    "U\u0308ber",
    "\u200b",
-   "\u00fcber:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "U\u0308ber",
@@ -2364,7 +2384,9 @@
   [
    "\u0130\u0327",
    "\u200b",
-   "i\u0327\u0307:\u200b"
+   {
+    "error": "ValidationError"
+   }
   ],
   [
    "\u0130\u0327",

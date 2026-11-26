@@ -188,6 +188,12 @@ def test_format_characters_inside_a_name_do_not_split_it():
     assert ids.entity_id("Person", "Jane\u200b Doe") == "person:jane-doe"
 
 
+def test_a_name_made_only_of_format_characters_is_empty():
+    for name in ("\u200b", "\u2060", "\ufeff", " \u200b ", "\u200b\u2060", "\u00ad"):
+        with pytest.raises(ValidationError, match="entity name cannot be empty"):
+            ids.entity_id("Person", name)
+
+
 def test_format_characters_follow_one_pinned_table():
     assert [ids._FORMAT.match(ch) is not None for ch in "\u00ad\u200b\u2060\ufeff\U000e0001"] == [True] * 5
     assert [ids._FORMAT.match(ch) is not None for ch in "a \u0301\ufe0f\u3000"] == [False] * 5

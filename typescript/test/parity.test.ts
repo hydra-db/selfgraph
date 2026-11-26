@@ -134,6 +134,11 @@ describe("ids match Python byte for byte", () => {
       expect(entityId("Person", name), JSON.stringify(name)).toBe("person:acme");
   });
 
+  it("treats a name made only of format characters as empty", () => {
+    for (const name of ["\u200b", "\u2060", "\ufeff", " \u200b ", "\u200b\u2060", "\u00ad"])
+      expect(() => entityId("Person", name), JSON.stringify(name)).toThrow(/entity name cannot be empty/);
+  });
+
   it("relation types, control and surrogate characters, and quoted labels", () => {
     for (const [input, expected] of Object.entries(fx.normalize_rel_type)) {
       expect(normalizeRelType(input)).toBe(expected);
