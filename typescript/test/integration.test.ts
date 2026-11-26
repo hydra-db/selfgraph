@@ -88,6 +88,27 @@ function suite(spec: StoreSpec) {
   const ns = uniqueNs(`ts_${spec.name}`);
   const fresh = freshGraphs(spec, "fresh");
 
+  it("rejects a blank external id value so unrelated entities never merge", async () => {
+    const g = fresh();
+    const ann = await g.entities.create("Ann Lee", "Person");
+    for (const bad of [{ crm: "" }, { crm: "  " }]) {
+      for (const call of [
+        () => g.entities.create("Bob Stone", "Person", { external_ids: bad }),
+        () => g.entities.update(ann.id, { external_ids: bad }),
+        () => g.insert.facts({ entities: [{ name: "Bob Stone", type: "Person", external_ids: bad }] }),
+      ]) {
+        await expect(call()).rejects.toMatchObject({
+          message: "external_ids values cannot be empty or whitespace",
+          code: "invalid_argument",
+          field: "external_ids",
+        });
+      }
+    }
+    const stored = (await g.entities.list()).items.map((e) => [e.id, e.aliases, e.external_ids]);
+    expect(stored).toEqual([[ann.id, [], {}]]);
+    expect((await g.entities.merges(ann.id)).items).toEqual([]);
+  });
+
   it("rejects proto properties from a custom extractor", async () => {
     const g = fresh({
       extractor: {
