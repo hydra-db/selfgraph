@@ -1,7 +1,7 @@
 import pytest
 from helpers import KUZU, make_store, run
 
-from selfgraph import KuzuStore, SelfGraph, SyncSelfGraph
+from selfgraph import CypherStore, HydraDBStore, KuzuStore, Neo4jStore, SelfGraph, SyncSelfGraph
 from selfgraph.errors import HINTS, ValidationError
 
 
@@ -124,6 +124,20 @@ def test_399_unknown_store_option_is_coded():
     assert str(exc.value) == (
         "unknown option 'max_db_sise' for KuzuStore; did you mean 'max_db_size'? "
         "(valid options: buffer_pool_size, max_db_size, compression, read_only)"
+    )
+
+
+@pytest.mark.parametrize("store_cls", [CypherStore, Neo4jStore, HydraDBStore])
+def test_398_unknown_bolt_store_option_is_coded(store_cls):
+    with pytest.raises(ValidationError) as exc:
+        store_cls("bolt://h:1", max_connection_pool_sze=1)
+    assert (exc.value.code, exc.value.field, exc.value.hint) == (
+        "unknown_key",
+        "max_connection_pool_sze",
+        HINTS["unknown_key"],
+    )
+    assert str(exc.value) == (
+        f"unknown option 'max_connection_pool_sze' for {store_cls.__name__}; did you mean 'max_connection_pool_size'?"
     )
 
 
