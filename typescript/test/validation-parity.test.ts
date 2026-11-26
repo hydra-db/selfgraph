@@ -13,6 +13,49 @@ const booleanCases = [
 ] as const;
 
 describe("validation parity", () => {
+  it.each([
+    [1e16, "1e+16"],
+    [-1e-7, "-1e-07"],
+    [-1e20, "-1e+20"],
+  ] as const)("formats strength and confidence range errors for %s", async (value, rendered) => {
+    const graph = new SelfGraph(new KuzuStore(":memory:", { buffer_pool_size: 128 << 20 }));
+    try {
+      await graph.initialize();
+      const a = await graph.entities.create("a", "T");
+      const b = await graph.entities.create("b", "T");
+      const preference = await graph.preferences.create(a.id, "k", b.id);
+      const relation = await graph.relations.create(a.id, "R", b.id);
+      const evidence = [{ source_id: "s", confidence: value }];
+      for (const call of [
+        () => graph.preferences.create(a.id, "k", b.id, { strength: value }),
+        () => graph.preferences.update(preference.id, { strength: value }),
+        () =>
+          graph.insert.facts({
+            preferences: [{ subject_entity: a.id, key: "k", value_entity: b.id, strength: value }],
+          }),
+      ]) {
+        await expect(call()).rejects.toMatchObject({
+          code: "invalid_argument",
+          hint: HINTS.invalid_argument,
+          message: `preference strength must be between 0 and 1, got ${rendered}`,
+        });
+      }
+      for (const call of [
+        () => graph.relations.create(a.id, "R", b.id, { evidence }),
+        () => graph.relations.update(relation.id, { evidence }),
+        () => graph.insert.facts({ relations: [{ from_entity: a.id, type: "R", to_entity: b.id, evidence }] }),
+      ]) {
+        await expect(call()).rejects.toMatchObject({
+          code: "invalid_argument",
+          hint: HINTS.invalid_argument,
+          message: `evidence confidence must be between 0 and 1, got ${rendered}`,
+        });
+      }
+    } finally {
+      await graph.close();
+    }
+  });
+
   for (const [schema, field] of booleanCases) {
     for (const value of ["false", 0, 1]) {
       it(`#376 rejects ${field}=${value}`, async () => {

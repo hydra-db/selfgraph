@@ -5,6 +5,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from ._serde import _dumps
+from ._unicode import casefold
 from .errors import ValidationError
 from .ids import normalize_rel_type
 from .models import DecisionTrace, Entity, Preference, Relation
@@ -153,13 +154,13 @@ def _claim(options: list[str], taken: set[str]) -> str:
     @param taken (set[str]): the casefolded names already used, updated in place.
     @return (str): the chosen file name.
     """
-    stem = next((s for s in options if s and s.casefold() not in taken), None)
+    stem = next((s for s in options if s and casefold(s) not in taken), None)
     n = 2
     while stem is None:
         candidate = f"{options[-1] or 'note'} {n}"
-        stem = None if candidate.casefold() in taken else candidate
+        stem = None if casefold(candidate) in taken else candidate
         n += 1
-    taken.add(stem.casefold())
+    taken.add(casefold(stem))
     return stem
 
 

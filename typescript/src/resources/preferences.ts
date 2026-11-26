@@ -9,7 +9,7 @@ import {
   type Stance,
 } from "../models.js";
 import * as ops from "../ops.js";
-import { checkOptions, keysOf, parseTime } from "../validate.js";
+import { checkOptions, keysOf, parseTime, requireBool } from "../validate.js";
 import { paginate, Resource, VERSIONS_KEYS } from "./common.js";
 
 export interface PreferenceCreateOptions {
@@ -152,6 +152,7 @@ export class Preferences extends Resource {
    */
   async versions(id: string, options: { newest_first?: boolean } = {}): Promise<Preference[]> {
     checkOptions("preferences.versions", options, VERSIONS_KEYS);
+    requireBool("newest_first", options.newest_first ?? true);
     ops.validateOwnId("preference", id);
     const versions = await this.graph.read((store, ns) =>
       ops.listPreferenceVersions(store, ns, id, options.newest_first ?? true),

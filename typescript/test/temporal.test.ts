@@ -47,6 +47,81 @@ async function instant(): Promise<Date> {
 function suite(spec: StoreSpec): void {
   const open = freshGraphs(spec, "temporal");
 
+  const cappedGraph = async (fromMax: number, toMax: number) => {
+    const spec: Schema = {
+      entities: [{ name: "Person" }, { name: "Company" }],
+      relations: [
+        {
+          type: "WORKS_AT",
+          from: { types: ["Person"], max_count: fromMax },
+          to: { types: ["Company"], max_count: toMax },
+        },
+      ],
+    };
+    const g = open({ schema: spec, contradiction: "supersede" });
+    await g.insert.facts({ entities: PEOPLE });
+    return g;
+  };
+
+  const retirements = async (g: SelfGraph) =>
+    Object.fromEntries(
+      (await g.relations.list({ include_invalidated: true, limit: 100 })).items.map((r) => [
+        r.id,
+        [r.is_current, r.invalidated_by, r.invalidated_at],
+      ]),
+    );
+
+  const PARALLEL_ARRIVALS: Record<string, [number, number, Array<[string, string, string, number]>]> = {
+    "three-parallel": [
+      1,
+      2,
+      [
+        ["f4", "ann", "acme", 10],
+        ["f0", "ann", "acme", 11],
+        ["f1", "ann", "acme", 12],
+      ],
+    ],
+    "other-end-unread": [
+      2,
+      2,
+      [
+        ["f0", "ann", "initech", 3],
+        ["f1", "ann", "acme", 4],
+        ["f3", "ann", "initech", 11],
+        ["f2", "bob", "initech", 12],
+      ],
+    ],
+    "pair-at-third-relation": [
+      2,
+      2,
+      [
+        ["f0", "bob", "acme", 6],
+        ["f2", "bob", "initech", 3],
+        ["f4", "bob", "acme", 1],
+        ["f5", "ann", "acme", 9],
+      ],
+    ],
+    "limit-two-from": [
+      2,
+      1,
+      [
+        ["f0", "ann", "acme", 7],
+        ["f1", "ann", "acme", 3],
+        ["f2", "ann", "acme", 4],
+        ["f4", "ann", "initech", 2],
+      ],
+    ],
+    "mixed-ends": [
+      2,
+      1,
+      [
+        ["f1", "ann", "acme", 7],
+        ["f2", "ann", "acme", 5],
+        ["f3", "ann", "initech", 8],
+      ],
+    ],
+  };
+
   it("requires visible endpoints for decision steps", async () => {
     const g = open();
     await g.insert.facts({ entities: ["Ada", "Bob", "Cy", "Dee"].map((name) => ({ type: "Person", name })) });
@@ -1233,6 +1308,56 @@ function suite(spec: StoreSpec): void {
     }
   }
 
+  it("restating a retired relation earlier by create settles the other end it sat at", async () => {
+    const spec: Schema = {
+      entities: [{ name: "Person" }, { name: "Company" }],
+      relations: [
+        { type: "WORKS_AT", from: { types: ["Person"], max_count: 1 }, to: { types: ["Company"], max_count: 1 } },
+      ],
+    };
+    const day = (month: number, date: number): Date => new Date(Date.UTC(2020, month - 1, date));
+    const settled = async (how: "insert" | "create") => {
+      const g = open({ schema: spec, contradiction: "supersede" });
+      await g.insert.facts({
+        entities: [
+          ...["Ann", "Bob", "Cy"].map((name) => ({ type: "Person", name })),
+          ...["Globex", "Initech"].map((name) => ({ type: "Company", name })),
+        ],
+      });
+      for (const [rid, person, company, when] of [
+        ["y", "cy", "initech", day(8, 28)],
+        ["b", "bob", "globex", day(5, 30)],
+        ["z", "ann", "globex", day(9, 27)],
+        ["x", "cy", "globex", day(4, 30)],
+      ] as const) {
+        await g.relations.create(`person:${person}`, "WORKS_AT", `company:${company}`, {
+          id: `relation:${rid}`,
+          event_time: when,
+        });
+      }
+      if (how === "insert") {
+        await insert(g, [
+          { id: "relation:b", ...worksAt("person:bob", "company:globex"), event_time: day(3, 1).toISOString() },
+        ]);
+      } else {
+        await g.relations.create("person:bob", "WORKS_AT", "company:globex", {
+          id: "relation:b",
+          event_time: day(3, 1),
+        });
+      }
+      const [x] = await g.relations.versions("relation:x");
+      const valid = await g.retrieve("Cy", { as_of: day(9, 1) });
+      return [
+        [x!.is_current, x!.invalidated_by, x!.invalidated_at],
+        valid.subgraph.relations.map((r) => r.id),
+        (await g.relations.list()).items.map((r) => r.id).sort(),
+      ];
+    };
+    const created = await settled("create");
+    expect(created).toEqual(await settled("insert"));
+    expect(created).toEqual([[false, "relation:y", day(8, 28)], ["relation:y"], ["relation:y", "relation:z"]]);
+  });
+
   it("an insert that moves a fact reports what it stored", async () => {
     const g = await graph("supersede");
     await insert(g, [annAt("acme", 2020)]);
@@ -1244,6 +1369,51 @@ function suite(spec: StoreSpec): void {
       [true, null],
       [false, ACME],
     ]);
+  });
+
+  it("a later displacement at one end keeps a parallel relation's earlier retirement", async () => {
+    for (const how of ["insert", "create"] as const) {
+      const g = await cappedGraph(2, 1);
+      for (const [rid, company, month] of [
+        ["old", "initech", 0],
+        ["new", "initech", 1],
+        ["other", "acme", 11],
+      ] as const) {
+        const when = new Date(Date.UTC(2020, month, 15));
+        if (how === "insert") {
+          await insert(g, [{ id: `relation:${rid}`, ...annAt(company), event_time: when.toISOString() }]);
+        } else {
+          await g.relations.create("person:ann", "WORKS_AT", `company:${company}`, {
+            id: `relation:${rid}`,
+            event_time: when,
+          });
+        }
+      }
+      const [old] = await g.relations.versions("relation:old");
+      expect([how, old!.is_current, old!.invalidated_by, old!.invalidated_at]).toEqual([
+        how,
+        false,
+        "relation:new",
+        new Date(Date.UTC(2020, 1, 15)),
+      ]);
+      const valid = await g.retrieve("Ann", { as_of: new Date(Date.UTC(2020, 2, 1)) });
+      expect(valid.subgraph.relations.map((r) => r.id)).toEqual(["relation:new"]);
+    }
+  });
+
+  it("parallel relations retire at the earliest end whatever the arrival order", async () => {
+    for (const [name, [fromMax, toMax, facts]] of Object.entries(PARALLEL_ARRIVALS)) {
+      const rels = facts.map(([rid, person, company, month]) => ({
+        id: `relation:${rid}`,
+        ...worksAt(`person:${person}`, `company:${company}`),
+        event_time: new Date(Date.UTC(2020, month - 1, 15)).toISOString(),
+      }));
+      const arrived = await cappedGraph(fromMax, toMax);
+      for (const rel of rels) await insert(arrived, [rel]);
+      const batch = await cappedGraph(fromMax, toMax);
+      await insert(batch, rels);
+      expect([name, await retirements(arrived)]).toEqual([name, await retirements(batch)]);
+    }
   });
 
   for (const how of ["insert", "update"] as const) {
@@ -1288,6 +1458,50 @@ function suite(spec: StoreSpec): void {
       expect([await valid(at(2016)), await valid(at(2019))]).toEqual([[ACME, GLOBEX].sort(), [GLOBEX, initech].sort()]);
     });
   }
+
+  for (const howMove of ["insert", "update"] as const) {
+    for (const howFact of ["insert", "update"] as const) {
+      it(`fact inside earlier stretch of moved relation is retired at arrival (move ${howMove}, fact ${howFact})`, async () => {
+        const g = open({ schema: SPEC, contradiction: "supersede" });
+        await g.insert.facts({ entities: PEOPLE });
+        await insert(g, [annAt("acme", 2012)]);
+        if (howMove === "insert") await insert(g, [annAt("acme", 2016)]);
+        else await g.relations.update(ACME, { event_time: at(2016) });
+        if (howFact === "insert") await insert(g, [annAt("globex", 2014)]);
+        else await g.relations.create("person:ann", "WORKS_AT", "company:globex", { event_time: at(2014) });
+        const [globex] = await g.relations.versions(GLOBEX);
+        expect([globex!.is_current, globex!.invalidated_by, globex!.invalidated_at]).toEqual([false, ACME, at(2014)]);
+        const valid = async (year: number) =>
+          (await g.retrieve("Ann", { as_of: at(year) })).subgraph.relations.map((r) => r.id);
+        expect([await valid(2013), await valid(2015), await valid(2017)]).toEqual([[ACME], [ACME], [ACME]]);
+      });
+    }
+  }
+
+  it("fact dated before multiple higher ranked relations retires at earliest max_count valid", async () => {
+    const relations = [{ type: "WORKS_AT", from: { types: ["Person"], max_count: 2 } }];
+    const g = open({ schema: { ...SPEC, relations }, contradiction: "supersede" });
+    const companies = Array.from({ length: 5 }, (_, i) => ({ type: "Company", name: `Co${i}` }));
+    await g.insert.facts({ entities: [...PEOPLE, ...companies] });
+    const co = Array.from({ length: 5 }, (_, i) => ids.relationId("person:ann", "WORKS_AT", `company:co${i}`));
+    await g.relations.create("person:ann", "WORKS_AT", "company:co0", { event_time: at(2016) });
+    await g.insert.facts({
+      relations: [{ from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:co1", event_time: at(2017) }],
+    });
+    await g.insert.facts({
+      relations: [{ from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:co2", event_time: at(2013) }],
+    });
+    await g.relations.create("person:ann", "WORKS_AT", "company:co3", { event_time: at(2015) });
+    await g.relations.update(co[1]!, { set_properties: { p: 1 } });
+    await g.insert.facts({
+      relations: [{ from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:co2", event_time: at(2019) }],
+    });
+    await g.relations.create("person:ann", "WORKS_AT", "company:co4", { event_time: at(2012) });
+    const [co4] = await g.relations.versions(co[4]!);
+    expect([co4!.is_current, co4!.invalidated_at]).toEqual([false, at(2015)]);
+    const res = await g.retrieve("Ann", { as_of: new Date(Date.UTC(2015, 6, 1)) });
+    expect(res.subgraph.relations.map((r) => r.id).sort()).toEqual([co[2]!, co[3]!].sort());
+  });
 
   it("rejects an invalid as_of and a closed graph", async () => {
     const g = await graph();

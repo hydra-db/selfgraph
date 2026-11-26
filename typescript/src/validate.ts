@@ -3,7 +3,7 @@ import { dumps } from "./internal/json.js";
 import { comparePy, cpLen, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso, toIso } from "./internal/time.js";
 
-const MAX_JSON_DEPTH = 64;
+export const MAX_JSON_DEPTH = 64;
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const KEY_SYNONYMS: Readonly<Record<string, string>> = {
   entity_types: "entities",
@@ -69,6 +69,25 @@ export function rejectProtoKeys(value: unknown): void {
       throw new ValidationError("property and external id keys cannot be '__proto__'");
     }
     for (const child of Object.values(item)) pending.push(child);
+  }
+}
+
+/**
+ * Bound the nesting of a raw JSON value without recursing, so it can run before the schema parser walks the value.
+ *
+ * @param name (string): the field name for error messages.
+ * @param value (unknown): the raw input, traversed through arrays and plain objects.
+ */
+export function requireJsonDepth(name: string, value: unknown): void {
+  const pending: Array<[unknown, number]> = [[value, 0]];
+  while (pending.length) {
+    const [item, depth] = pending.pop()!;
+    if (depth > MAX_JSON_DEPTH) {
+      throw new ValidationError(`${name} is nested too deeply; keep it under ${MAX_JSON_DEPTH} levels`);
+    }
+    if (Array.isArray(item) || isPlainObject(item)) {
+      for (const child of Object.values(item)) pending.push([child, depth + 1]);
+    }
   }
 }
 
@@ -269,7 +288,9 @@ export function checkOptions(method: string, options: unknown, allowed: readonly
  * @param value (unknown): the value to check.
  */
 export function requireBool(name: string, value: unknown): asserts value is boolean {
-  if (typeof value !== "boolean") throw new ValidationError(`${name} must be a boolean, got ${typeName(value)}`);
+  if (typeof value !== "boolean") {
+    throw new ValidationError(`${name} must be a boolean, got ${typeName(value)}`, { field: name });
+  }
 }
 
 /**
@@ -294,7 +315,7 @@ export function requireInt(field: string, value: unknown): asserts value is numb
 export function requireUnit(label: string, value: unknown, finite = false): void {
   if (typeof value !== "number") throw new ValidationError(`${label} must be a number, got ${typeName(value)}`);
   if (finite && !Number.isFinite(value)) throw new ValidationError(`${label} must be a finite number`);
-  if (!(value >= 0 && value <= 1)) throw new ValidationError(`${label} must be between 0 and 1, got ${value}`);
+  if (!(value >= 0 && value <= 1)) throw new ValidationError(`${label} must be between 0 and 1, got ${pyRepr(value)}`);
 }
 
 /**
@@ -345,6 +366,7 @@ export function parseTime(value: unknown, field: string): Date | null {
   } catch {
     throw new ValidationError(
       `invalid ${field}: ${pyRepr(value)} is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)`,
+      { field },
     );
   }
   requireDatetime(field, parsed);
@@ -404,7 +426,8 @@ export function requireJsonMapping(name: string, value: unknown, safeInts = true
  */
 export function requireStrMapping(name: string, value: unknown): asserts value is Record<string, string> {
   requireMapping(name, value);
-  for (const item of Object.values(value)) {
+  for (const [key, item] of Object.entries(value)) {
+    if (!pyStrip(key)) throw new ValidationError(`${name} keys cannot be empty or whitespace`, { field: name });
     if (typeof item !== "string") throw new ValidationError(`${name} must map strings to strings`);
   }
 }

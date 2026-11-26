@@ -2,12 +2,13 @@ import { createServer } from "node:http";
 
 import { APICallError, LoadAPIKeyError } from "@ai-sdk/provider";
 import { MockLanguageModelV4 } from "ai/test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { loadTokenizer } from "../src/chunking.js";
-import { assembleExtraction, LLMExtractor } from "../src/extraction/extractor.js";
+import { assembleExtraction, LLMExtractor, type RawEntity } from "../src/extraction/extractor.js";
 import { render } from "../src/extraction/prompts.js";
+import * as idsModule from "../src/ids.js";
 import {
   buildLlmClient,
   ExtractionError,
@@ -17,9 +18,11 @@ import {
   SelfGraph,
   ValidationError,
 } from "../src/index.js";
+import { pyRepr } from "../src/internal/py.js";
 import { fatalError, summarizeError } from "../src/llm/index.js";
 import type { InsertWarning } from "../src/models.js";
 import type { LLMClient } from "../src/protocols.js";
+import { Schema } from "../src/schema.js";
 import { captureLog, freshGraphs, KUZU_SPEC } from "./helpers.js";
 
 type Kind = "entities" | "relations" | "preferences" | "decisions";
@@ -109,7 +112,448 @@ function mockModel(
 
 const open = freshGraphs(KUZU_SPEC, "llm");
 
+describe("extraction name resolution", () => {
+  const RESOLVE_TYPES = [
+    "Person",
+    "Company",
+    "Organization",
+    "Organisation",
+    "Bank",
+    "Org",
+    "COMPANY",
+    "Place",
+    "Thing",
+  ];
+  const RESOLVE_BASES = ["Acme", "Beta", "Café", "Straße", "Ünï", "Jane Doe"];
+  const RESOLVE_PREFIXES = ["", "The ", "the "];
+  const RESOLVE_SUFFIXES = ["", " Inc", " inc.", " Corp", " LLC", "!", " Ltd"];
+  const RESOLVE_CASES: Array<(text: string) => string> = [(t) => t, (t) => t.toUpperCase(), (t) => t.toLowerCase()];
+  const RESOLVE_FORMS = ["NFC", "NFD"];
+  const FILLERS = 1000;
+
+  const seeded = (seed: number): (() => number) => {
+    let state = seed + 1;
+    return () => {
+      state = (state * 1664525 + 1013904223) % 4294967296;
+      return state / 4294967296;
+    };
+  };
+
+  const pick = <T>(rng: () => number, items: T[]): T => items[Math.floor(rng() * items.length)]!;
+
+  const resolveSurface = (rng: () => number): string =>
+    pick(
+      rng,
+      RESOLVE_CASES,
+    )(pick(rng, RESOLVE_PREFIXES) + pick(rng, RESOLVE_BASES) + pick(rng, RESOLVE_SUFFIXES)).normalize(
+      pick(rng, RESOLVE_FORMS),
+    );
+
+  const scanResolve = (registry: Map<string, RawEntity>, name: string): string | null => {
+    const matches = [...registry.values()].filter((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
+    if (matches.length > 1) return null;
+    if (matches.length === 0) {
+      const ent = { type: "Thing", name: name.trim() };
+      registry.set(ids.entityId(ent.type, ent.name), ent);
+      return ids.entityId(ent.type, ent.name);
+    }
+    return ids.entityId(matches[0]!.type, matches[0]!.name);
+  };
+
+  const limitDerivations = (budget: number): void => {
+    let calls = 0;
+    const guard =
+      (real: (type: string, name: string) => string) =>
+      (type: string, name: string): string => {
+        calls += 1;
+        if (calls > budget) throw new Error(`name resolution derived more than ${budget} ids`);
+        return real(type, name);
+      };
+    const guardedEntityId = guard(idsModule.entityId);
+    const guardedCanonicalName = guard(idsModule.canonicalName);
+    vi.spyOn(idsModule, "entityId").mockImplementation(guardedEntityId);
+    vi.spyOn(idsModule, "canonicalName").mockImplementation(guardedCanonicalName);
+  };
+
+  const fillers = (): RawEntity[] =>
+    Array.from({ length: FILLERS }, (_, i) => ({ type: "Thing", name: `Filler ${i}` }));
+
+  const assembleNames = (entities: RawEntity[], names: string[], warnings: InsertWarning[] = []) => {
+    limitDerivations(3.5 * FILLERS + 20 * names.length);
+    return assembleExtraction(
+      [...fillers(), ...entities, { type: "Person", name: "Anchor" }],
+      names.map((name, i) => ({ from_name: name, type: `R${i}`, to_name: "Anchor" })),
+      [],
+      [],
+      warnings,
+    );
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(Array.from({ length: 60 }, (_, seed) => seed))(
+    "matches the linear scan on random name sets (seed %i)",
+    (seed) => {
+      const rng = seeded(seed);
+      const entities = Array.from({ length: Math.floor(rng() * 15) }, () => ({
+        type: pick(rng, RESOLVE_TYPES),
+        name: resolveSurface(rng),
+        aliases: [resolveSurface(rng)],
+      }));
+      const names = Array.from({ length: 40 }, () => resolveSurface(rng));
+      const registry = new Map<string, RawEntity>();
+      for (const ent of [...entities, { type: "Person", name: "Anchor" }]) {
+        const key = ids.entityId(ent.type, ent.name);
+        if (!registry.has(key)) registry.set(key, ent);
+      }
+      const expected = names.map((name) => scanResolve(registry, name));
+      const warnings: InsertWarning[] = [];
+      const facts = assembleNames(entities, names, warnings);
+      expect(facts.relations.map((r) => r.from_entity)).toEqual(expected.filter((id) => id !== null));
+      expect(facts.entities.slice(FILLERS).map((e) => [e.type, e.name])).toEqual(
+        [...registry.values()].map((e) => [e.type, e.name]),
+      );
+      expect(warnings.map((w) => w.message)).toEqual(
+        names
+          .filter((_, i) => expected[i] === null)
+          .map((name) => `unresolved extracted entity reference ${pyRepr(name)}: multiple entity types match`),
+      );
+    },
+  );
+
+  it.each([
+    [
+      [
+        ["Organization", "Acme"],
+        ["Company", "Acme Ltd"],
+      ],
+      "ACME Inc",
+      null,
+    ],
+    [
+      [
+        ["Company", "Acme Ltd"],
+        ["Organization", "Acme"],
+      ],
+      "ACME Inc",
+      null,
+    ],
+    [
+      [
+        ["Person", "Acme"],
+        ["Company", "Acme"],
+      ],
+      "Acme Inc",
+      "company:acme",
+    ],
+    [
+      [
+        ["Person", "Acme!"],
+        ["Company", "Acme Corp"],
+      ],
+      "Acme",
+      null,
+    ],
+    [
+      [
+        ["Person", "Acme!"],
+        ["Company", "Acme Corp"],
+      ],
+      "The Acme Inc",
+      "company:acme",
+    ],
+    [
+      [
+        ["Person", "Acme!"],
+        ["Company", "Acme Corp"],
+      ],
+      "ACME.",
+      null,
+    ],
+    [
+      [
+        ["Person", "Bob"],
+        ["Place", "Bob"],
+      ],
+      "BOB.",
+      null,
+    ],
+    [[["Person", "Robert"]], "Bob", "thing:bob"],
+    [
+      [
+        ["Person", "Bob"],
+        ["Person", "Robert"],
+      ],
+      "BOB.",
+      "person:bob",
+    ],
+    [
+      [
+        ["Person", "Bob"],
+        ["Human", "Bob"],
+      ],
+      "bob",
+      null,
+    ],
+    [[["Place", "Café"]], "Café", "place:café"],
+    [[["Place", "Café"]], "CAFÉ", "place:café"],
+    [[["COMPANY", "Acme Corp"]], "ACME inc", "company:acme"],
+    [[["Person", "The Acme Inc"]], "The Acme Inc!", "person:the-acme-inc"],
+    [[["Thing", "Acme Inc"]], "ACME INC.", "thing:acme-inc"],
+    [[], "Acme Inc", "thing:acme-inc"],
+  ] as Array<[Array<[string, string]>, string, string | null]>)(
+    "pins the winner for %j and %s",
+    (entities, name, expected) => {
+      const warnings: InsertWarning[] = [];
+      const facts = assembleNames(
+        entities.map(([type, entityName]) => ({ type, name: entityName })),
+        [name],
+        warnings,
+      );
+      expect(facts.relations.map((r) => r.from_entity)).toEqual(expected === null ? [] : [expected]);
+      expect(warnings).toHaveLength(expected === null ? 1 : 0);
+    },
+  );
+
+  it.each(["!!!", "...", " - "])("drops the punctuation-only name %j without a warning", (name) => {
+    const warnings: InsertWarning[] = [];
+    const facts = assembleNames([{ type: "Person", name: "Bob" }], [name, "BOB."], warnings);
+    expect(facts.relations.map((r) => r.from_entity)).toEqual(["person:bob"]);
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([true, false])("ignores aliases that name another entity (bob first: %s)", (bobFirst) => {
+    const bob = { type: "Person", name: "Bob" };
+    const robert = { type: "Person", name: "Robert", aliases: ["Bob", "Rob"] };
+    const facts = assembleNames(bobFirst ? [bob, robert] : [robert, bob], ["BOB.", "ROB."]);
+    expect(facts.relations.map((r) => r.from_entity)).toEqual(["person:bob", "thing:rob"]);
+  });
+
+  it("picks the endpoint type out of several matches", () => {
+    limitDerivations(3.5 * FILLERS + 100);
+    const schema = Schema.parse({
+      entities: [{ name: "Person" }, { name: "Company" }],
+      relations: [{ type: "WORKS_AT", from: { types: ["Person"] }, to: { types: ["Company"] } }],
+    });
+    const facts = assembleExtraction(
+      [...fillers(), { type: "Company", name: "Acme" }, { type: "Person", name: "acme" }],
+      [{ from_name: "ACME", type: "WORKS_AT", to_name: "Acme." }],
+      [],
+      [],
+      [],
+      schema,
+    );
+    expect(facts.relations.map((r) => [r.from_entity, r.to_entity])).toEqual([["person:acme", "company:acme"]]);
+  });
+
+  it.each([
+    [["Person"], "person:acme"],
+    [["Person", "Company"], null],
+    [["Place"], "place:acme"],
+    [["Org"], null],
+  ] as Array<[string[], string | null]>)("narrows several matches by endpoint type %j", (fromTypes, expected) => {
+    limitDerivations(3.5 * FILLERS + 100);
+    const schema = Schema.parse({
+      entities: [{ name: "Person" }, { name: "Company" }, { name: "Place" }, { name: "Org" }],
+      relations: [{ type: "KNOWS", from: { types: fromTypes }, to: { types: ["Person"] } }],
+    });
+    const warnings: InsertWarning[] = [];
+    const facts = assembleExtraction(
+      [
+        ...fillers(),
+        ...["Company", "Person", "Place"].map((type) => ({ type, name: "Acme" })),
+        { type: "Person", name: "Anchor" },
+      ],
+      [{ from_name: "ACME", type: "KNOWS", to_name: "Anchor" }],
+      [],
+      [],
+      warnings,
+      schema,
+    );
+    expect(facts.relations.map((r) => r.from_entity)).toEqual(expected === null ? [] : [expected]);
+    expect(warnings).toHaveLength(expected === null ? 1 : 0);
+  });
+
+  it("resolves every kind of name lookup through the same index", () => {
+    const acme = "ACME inc";
+    const cafe = "Café";
+    limitDerivations(3.5 * FILLERS + 100);
+    const facts = assembleExtraction(
+      [
+        ...fillers(),
+        { type: "Company", name: "Acme Corp" },
+        { type: "Person", name: "Jane" },
+        { type: "Place", name: "Café" },
+      ],
+      [{ from_name: acme, type: "OWNS", to_name: cafe }],
+      [{ subject_name: acme, stance: "preference", key: "venue", value_name: cafe, about_name: acme }],
+      [
+        {
+          title: "Pick a venue",
+          actor_name: acme,
+          outcome_name: cafe,
+          alternative_names: [cafe, acme, "Nowhere Inc"],
+          steps: [{ from_name: acme, type: "USES", to_name: cafe }],
+        },
+      ],
+    );
+    expect(facts.relations.map((r) => [r.from_entity, r.to_entity])).toEqual([
+      ["company:acme", "place:café"],
+      ["company:acme", "place:café"],
+    ]);
+    expect(facts.preferences.map((p) => [p.subject_entity, p.value_entity, p.about_entity])).toEqual([
+      ["company:acme", "place:café", "company:acme"],
+    ]);
+    expect(facts.decisions.map((d) => [d.actor_entity, d.outcome_entity, d.alternative_entities])).toEqual([
+      ["company:acme", "place:café", ["place:café", "company:acme", "thing:nowhere-inc"]],
+    ]);
+    expect(facts.entities.slice(FILLERS).map((e) => [e.type, e.name])).toEqual([
+      ["Company", "Acme Corp"],
+      ["Person", "Jane"],
+      ["Place", "Café"],
+      ["Thing", "Nowhere Inc"],
+    ]);
+  });
+
+  it("drops invalid and blank names with one warning", () => {
+    const bad = "Bad\u0000name";
+    let warnings: InsertWarning[] = [];
+    const alone = [0, 1].map((i) => ({ from_name: bad, type: `R${i}`, to_name: "Jane" }));
+    expect(assembleExtraction([], alone, [], [], warnings).relations).toEqual([]);
+    expect(warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
+    expect(warnings[0]!.message.startsWith("dropped an extracted entity: ")).toBe(true);
+
+    warnings = [];
+    const facts = assembleNames([], [bad, "  ", bad, "", "\t", "Gamma Inc"], warnings);
+    expect(facts.relations.map((r) => r.from_entity)).toEqual(["thing:gamma-inc"]);
+    expect(warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
+    expect(warnings[0]!.message.startsWith("dropped an extracted entity: ")).toBe(true);
+  });
+
+  it("derives a bounded number of ids however many entities and names it resolves", () => {
+    const n = 2000;
+    limitDerivations(30 * n);
+    const entities = Array.from({ length: n }, (_, i) => ({ type: "Person", name: `Person ${i}` }));
+    const relations = Array.from({ length: n }, (_, i) => ({
+      from_name: `Person ${i}`,
+      type: "KNOWS",
+      to_name: `Stranger ${i}`,
+    }));
+    const facts = assembleExtraction(entities, relations, [], []);
+    expect(facts.entities).toHaveLength(2 * n);
+    expect(facts.relations).toHaveLength(n);
+  });
+});
+
 describe("LLM extraction through the AI SDK", () => {
+  const ANN = { type: "Person", name: "Ann", aliases: [] };
+  const ACME = { type: "Company", name: "Acme", aliases: [] };
+  const CHOSE = { from_name: "Ann", type: "CHOSE", to_name: "Acme" };
+  const FRESH_STEP = { from_name: "Zed", type: "CHOSE", to_name: "Pizza" };
+
+  const extractItems = async (
+    kind: "decisions" | "preferences",
+    rows: unknown[],
+    entities: unknown[] = [ANN, ACME],
+    relations: unknown[] = [],
+  ) => {
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const field = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        const replies: Record<string, unknown[]> = { entities, relations, [kind]: rows };
+        return { [field]: replies[field] ?? [] } as never;
+      },
+    };
+    const g = open({ llm });
+    const result = await g.insert.text("x");
+    const stored = {
+      entities: (await g.entities.list()).items.map((e) => e.id).sort(),
+      relations: (await g.relations.list()).items.map((r) => [r.from_entity, r.type, r.to_entity]),
+      decisions: (await g.decisions.list()).items.map((d) => d.title),
+      preferences: (await g.preferences.list()).items.map((p) => [p.subject_entity, p.key, p.value_entity]),
+    };
+    return { result, stored };
+  };
+
+  describe("issue 342 dropped items write nothing", () => {
+    const decision = (title: string, actor_name: string | null) => ({
+      title,
+      actor_name,
+      outcome_name: "Fresh Outcome",
+      alternative_names: [],
+      steps: [CHOSE, FRESH_STEP],
+    });
+
+    for (const title of ["", "   ", "Pick\u0007it"]) {
+      for (const actor of [null, "Ann", "Nobody"]) {
+        it(`drops a decision titled ${JSON.stringify(title)} by ${actor} with everything it named`, async () => {
+          const { result, stored } = await extractItems("decisions", [decision(title, actor)]);
+          expect(stored).toEqual({
+            entities: ["company:acme", "person:ann"],
+            relations: [],
+            decisions: [],
+            preferences: [],
+          });
+          expect(result.entities.map((e) => e.id)).toEqual(["person:ann", "company:acme"]);
+          expect(result.relations).toEqual([]);
+          expect(result.decisions).toEqual([]);
+          expect(result.warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
+          expect(result.warnings[0]!.message.startsWith("dropped an extracted decision: ")).toBe(true);
+        });
+      }
+    }
+
+    it("keeps what other decisions wrote", async () => {
+      const { result, stored } = await extractItems("decisions", [
+        decision("", "Newcomer"),
+        { title: "Pick Acme", actor_name: "Zed", alternative_names: [], steps: [FRESH_STEP] },
+      ]);
+      expect(stored.entities).toEqual(["company:acme", "person:ann", "thing:pizza", "thing:zed"]);
+      expect(stored.relations).toEqual([["thing:zed", "CHOSE", "thing:pizza"]]);
+      expect(stored.decisions).toEqual(["Pick Acme"]);
+      expect(result.decisions.map((d) => d.steps.length)).toEqual([1]);
+      expect(result.warnings).toHaveLength(1);
+    });
+
+    it.each([
+      { subject_name: "Zed", key: "food", value_name: "Pizza", strength: 5.0 },
+      { subject_name: "Zed", key: "food", value_name: "Pizza", strength: -0.1 },
+      { subject_name: "Zed", key: "", value_name: "Pizza" },
+      { subject_name: "Zed", key: "food", value_name: "" },
+      { subject_name: "Zed", key: "food", value_name: "Pizza", about_name: "Dinner", strength: 2.0 },
+    ])("drops preference %j with everything it named", async (row) => {
+      const { result, stored } = await extractItems("preferences", [{ stance: "preference", ...row }]);
+      expect(stored.entities).toEqual(["company:acme", "person:ann"]);
+      expect(stored.preferences).toEqual([]);
+      expect(result.entities.map((e) => e.id)).toEqual(["person:ann", "company:acme"]);
+      expect(result.preferences).toEqual([]);
+    });
+
+    it("keeps what other preferences wrote", async () => {
+      const { result, stored } = await extractItems("preferences", [
+        { subject_name: "Zed", stance: "preference", key: "food", value_name: "Pizza", strength: 5.0 },
+        { subject_name: "Zed", stance: "preference", key: "drink", value_name: "Tea", strength: 0.5 },
+        { subject_name: "Ann", stance: "preference", key: "food", value_name: "Pizza", strength: 7.0 },
+      ]);
+      expect(stored.entities).toEqual(["company:acme", "person:ann", "thing:tea", "thing:zed"]);
+      expect(stored.preferences).toEqual([["thing:zed", "drink", "thing:tea"]]);
+      expect(result.warnings).toHaveLength(2);
+    });
+
+    it("does not let a dropped preference block the one a relation states", async () => {
+      const soup = { type: "Food", name: "Soup", aliases: [] };
+      const likes = { from_name: "Ann", type: "PREFERS", to_name: "Soup", event_time: null };
+      const row = { subject_name: "Ann", stance: "preference", key: "taste", value_name: "Soup", strength: 9.0 };
+      const { result, stored } = await extractItems("preferences", [row], [ANN, ACME, soup], [likes]);
+      expect(stored.preferences).toEqual([["person:ann", "food", "food:soup"]]);
+      expect(stored.relations).toEqual([]);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]!.message.startsWith("dropped an extracted preference: ")).toBe(true);
+    });
+  });
+
   it.each([false, true])("issue 343 keeps same-name entities with different types (typed: %s)", async (typed) => {
     const llm: LLMClient = {
       async generate({ output }) {

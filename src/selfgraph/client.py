@@ -313,8 +313,12 @@ class SelfGraph:
             await close()
 
     async def __aenter__(self) -> SelfGraph:
-        """Initialize the store and return the graph for use in an async with block."""
-        await self.initialize()
+        """Initialize the store and return the graph for use in an async with block, closing it when that fails."""
+        try:
+            await self.initialize()
+        except BaseException:
+            await self.close()
+            raise
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -512,7 +516,7 @@ class SelfGraph:
         await self._ensure_ready()
         for attempt in range(_MAX_TX_RETRIES):
             try:
-                async with self.store.transaction() as tx:
+                async with self.store.transaction() as tx, _ops.claim_scope():
                     return await fn(tx)
             except TransientError as exc:
                 if attempt == _MAX_TX_RETRIES - 1:
@@ -664,7 +668,12 @@ class SelfGraph:
             canonical = await _ops.validate_facts(tx, ns, facts, rewrite=lambda o: canonicalize_types(o, active_schema))
             resolution = None
             if active_resolver is not None:
-                resolution = await plan_resolution(tx, ns, canonical, active_resolver, active_schema, created_at)
+                dated = [
+                    r if r.event_time is not None else r.model_copy(update={"event_time": default_event_time})
+                    for r in canonical.relations
+                ]
+                stamped = canonical.model_copy(update={"relations": dated})
+                resolution = await plan_resolution(tx, ns, stamped, active_resolver, active_schema, created_at)
             resolved = resolution.facts if resolution is not None else canonical
             dropped: list[InsertWarning] = []
             if extracted and mode == "strict":
@@ -733,6 +742,7 @@ class SelfGraph:
                 evidence=list(base_evidence),
                 created_at=created_at,
                 schema_types=frozenset(t.name for t in active_schema.entities) if active_schema is not None else (),
+                via=None if resolution is None else resolution.entity_via,
             )
             items = [
                 (
@@ -770,10 +780,9 @@ class SelfGraph:
                 found.extend(notes)
                 diff = SourceDiff(kept=sorted(produced & prior), added=sorted(produced - prior), retired=retired)
 
-            preferences = [
-                await _ops.upsert_preference(tx, ns, pref, default_event_time=default_event_time, created_at=created_at)
-                for pref in resolved.preferences
-            ]
+            preferences = await _ops.upsert_preferences(
+                tx, ns, list(resolved.preferences), default_event_time=default_event_time, created_at=created_at
+            )
 
             decisions = []
             for dec in resolved.decisions:
@@ -800,7 +809,15 @@ class SelfGraph:
 
             merges = []
             if resolution is not None:
-                merges = await save_merges(tx, ns, resolution, source_id=source_id, created_at=created_at)
+                merges = await save_merges(
+                    tx,
+                    ns,
+                    resolution,
+                    source_id=source_id,
+                    source_version=source_version,
+                    evidence=base_evidence,
+                    created_at=created_at,
+                )
             _log.debug(
                 "inserted %d entities, %d relations, %d preferences, %d decisions (source=%s)",
                 len(entities),

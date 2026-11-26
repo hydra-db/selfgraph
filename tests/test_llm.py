@@ -1,11 +1,13 @@
 import asyncio
 import errno
 import re
+from dataclasses import replace
+from functools import partial
 
 import pytest
 from helpers import run
 
-from selfgraph import LLMConfig, ValidationError
+from selfgraph import LLMConfig, SelfGraph, ValidationError
 from selfgraph._ops import _require_text
 from selfgraph.errors import error_reason, surface_hint
 from selfgraph.extraction import chunking
@@ -13,7 +15,7 @@ from selfgraph.extraction.chunking import _chunk_by_chars, chunk_text, count_tok
 from selfgraph.extraction.extractor import LLMExtractor, _EntitiesOut, _EntityOut
 from selfgraph.llm.base import _fatal, _require_provider, _sends_temperature, resolve_llm, summarize_error
 from selfgraph.models import ParsedDocument
-from selfgraph.runtime import GraphSettings, _build_llm
+from selfgraph.runtime import GraphSettings, _build_llm, check_settings, settings_from_env
 from selfgraph.stores.falkordb import FalkorDBStore
 
 
@@ -235,6 +237,33 @@ def test_token_chunks_end_on_the_token_edge_after_a_literal_replacement_characte
     assert [c.text for c in chunks] == [" \ufffd" * 4] * 16 + [" \ufffd" * 2]
 
 
+def test_a_nel_or_byte_order_mark_counts_and_chunks_as_a_space():
+    pytest.importorskip("tiktoken")
+    issue = {
+        "Line one \x85Line two": (5, [(0, 9), (9, 18)]),
+        "End of first file. \ufeffSecond file starts here.": (11, [(0, 12), (12, 19), (19, 38), (38, 44)]),
+        " \x85!": (2, [(0, 3)]),
+        " \ufeff!": (2, [(0, 3)]),
+    }
+    for text, (tokens, offsets) in issue.items():
+        assert count_tokens(text) == tokens
+        chunks = chunk_text(text, max_tokens=3, overlap_tokens=0)
+        assert [(c.start_offset, c.end_offset) for c in chunks] == offsets
+        assert [c.text for c in chunks] == [text[start:end] for start, end in offsets]
+    for text in (
+        "\ufeffBOM at the start",
+        "after a newline\n\ufeffBOM",
+        "NEL\x85without a space",
+        "a \x85\x85 b \ufeff c",
+    ):
+        spaced = text.replace("\x85", " ").replace("\ufeff", " ")
+        assert count_tokens(text) == count_tokens(spaced)
+        assert chunk_text(text, max_tokens=2, overlap_tokens=0) == [
+            replace(c, text=text[c.start_offset : c.end_offset])
+            for c in chunk_text(spaced, max_tokens=2, overlap_tokens=0)
+        ]
+
+
 def test_token_chunking_and_counting_read_special_tokens_as_text():
     text = "Models end a sample with <|endoftext|> and fill code with <|fim_prefix|>."
     assert count_tokens(text) > 0
@@ -288,6 +317,112 @@ def test_settings_build_the_llm_config():
     assert (tuned.timeout, tuned.concurrency) == (30, 7)
     with pytest.raises(ValidationError, match="llm_timeout must be a positive number of seconds"):
         _build_llm(GraphSettings(llm_model="openai/m", llm_timeout="soon"))
+
+
+LLM_TIMEOUTS = [("30", 30.0), (" 1.5 ", 1.5), ("+2", 2.0), (".5", 0.5), ("5.", 5.0), ("1e1", 10.0), ("1E+1", 10.0)]
+LLM_CONCURRENCIES = [
+    ("7", 7),
+    (" 7 ", 7),
+    ("+7", 7),
+    ("007", 7),
+    ("9007199254740991", 9007199254740991),
+    ("0" * 5000 + "5", 5),
+]
+BAD_LLM_TIMEOUTS = [
+    "1_0",
+    "\u0665",
+    "\uff15",
+    "0x10",
+    "0b1",
+    "0o7",
+    "inf",
+    "nan",
+    "-5",
+    "--5",
+    "0",
+    "1 0",
+    "soon",
+    "1e400",
+    "1e-400",
+]
+BAD_LLM_CONCURRENCIES = [
+    "++5",
+    "+",
+    "-1",
+    "0",
+    "\u0665",
+    "\uff15",
+    "99999999999999999999",
+    "9007199254740992",
+    "1_0",
+    "5.0",
+    "1e3",
+    "0x10",
+    "x",
+]
+
+
+def test_llm_settings_accept_a_plain_ascii_number_and_integer():
+    for value, seconds in LLM_TIMEOUTS:
+        settings = GraphSettings(llm_model="openai/m", llm_timeout=value)
+        check_settings(settings)
+        assert _build_llm(settings).timeout == seconds
+    for value, count in LLM_CONCURRENCIES:
+        settings = GraphSettings(llm_model="openai/m", llm_concurrency=value)
+        check_settings(settings)
+        assert _build_llm(settings).concurrency == count
+
+
+def test_bad_llm_settings_raise_invalid_setting_from_every_entry_point(monkeypatch):
+    cases = [("llm_timeout", v) for v in BAD_LLM_TIMEOUTS] + [("llm_concurrency", v) for v in BAD_LLM_CONCURRENCIES]
+    for setting, value in cases:
+        kind = "a positive number of seconds" if setting == "llm_timeout" else "a positive integer"
+        message = f"{setting} must be {kind}, got {value!r}"
+        monkeypatch.setenv(f"SELFGRAPH_{setting.upper()}", value)
+        for call in (
+            partial(check_settings, GraphSettings(**{setting: value})),
+            partial(check_settings, settings_from_env()),
+            partial(SelfGraph.connect, store="kuzu", **{setting: value}),
+        ):
+            with pytest.raises(ValidationError) as caught:
+                call()
+            assert (caught.value.code, caught.value.field, str(caught.value)) == ("invalid_setting", setting, message)
+        monkeypatch.delenv(f"SELFGRAPH_{setting.upper()}")
+
+
+def test_non_text_llm_timeouts_that_are_not_finite_positive_numbers_raise_invalid_setting():
+    for value in (True, 10**400, float("nan"), float("inf"), -1.5, 0):
+        with pytest.raises(ValidationError) as caught:
+            check_settings(GraphSettings(llm_timeout=value))
+        assert (caught.value.code, caught.value.field) == ("invalid_setting", "llm_timeout")
+
+
+def test_a_provider_prefix_conflict_from_settings_names_llm_provider(monkeypatch, capsys):
+    from selfgraph import SelfGraph
+    from selfgraph.cli import main
+
+    message = (
+        "llm_provider 'openai' conflicts with model prefix 'anthropic'; "
+        "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model"
+    )
+    with pytest.raises(ValidationError) as built:
+        _build_llm(GraphSettings(llm_provider="openai", llm_model="anthropic/claude"))
+    with pytest.raises(ValidationError) as connected:
+        SelfGraph.connect(store="kuzu", llm_provider="openai", llm_model="anthropic/claude")
+    for exc in (built, connected):
+        assert (exc.value.code, exc.value.field, str(exc.value)) == ("invalid_setting", "llm_provider", message)
+    monkeypatch.setenv("SELFGRAPH_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("SELFGRAPH_LLM_MODEL", "anthropic/claude")
+    assert main(["version"]) == 2
+    err = capsys.readouterr().err
+    assert "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model" in err
+    assert "field: llm_provider\n" in err
+    with pytest.raises(ValidationError) as direct:
+        LLMConfig(provider="openai", model="anthropic/claude")
+    assert (direct.value.field, str(direct.value)) == (
+        "provider",
+        "provider 'openai' conflicts with model prefix 'anthropic'",
+    )
 
 
 def test_chunks_extract_concurrently_up_to_the_setting_and_merge_in_order():

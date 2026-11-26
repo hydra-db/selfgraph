@@ -46,6 +46,8 @@ export const HINTS = {
     "A prompt template is malformed. Keep `{text}` in the user template and use no placeholder other than `{text}` and `{instructions}`.",
   query_failed:
     "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself.",
+  inexact_value:
+    "The Kuzu driver cannot return a result value exactly. Cast the column in the query to a type it returns exactly, such as `cast(x AS STRING)` for an integer beyond 2^53 or a wide DECIMAL, or `cast(x AS DOUBLE)` for a negative DECIMAL between -0.1 and 0. Do not drop the column to make the call pass.",
   invalid_stored_data:
     "A stored node or edge is malformed. Repair the document identified by the message in its namespace before reading it again.",
   graph_closed: "The SelfGraph was closed. Create a new SelfGraph.",
@@ -463,6 +465,38 @@ export function redactUris(text: string, ...uris: (string | null | undefined)[])
  */
 export function errorMessage(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
+}
+
+/**
+ * Render control characters as backslash escapes, the way repr shows quoted input.
+ *
+ * Engine error text can quote the query, so a raw escape byte in it would run in a
+ * terminal or log viewer. Newline, carriage return, and tab get their short forms;
+ * other C0/C1 controls, DEL, lone surrogates, and bidi/format and zero-width
+ * characters get \\xNN or \\uNNNN.
+ *
+ * @param text (string): the text, such as an engine error message.
+ * @return (string): the text with control characters escaped.
+ */
+export function escapeControls(text: string): string {
+  return Array.from(text, (ch) => {
+    if (ch === "\n") return "\\n";
+    if (ch === "\r") return "\\r";
+    if (ch === "\t") return "\\t";
+    const code = ch.codePointAt(0)!;
+    if (
+      code < 0x20 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      (code >= 0xd800 && code <= 0xdfff) ||
+      (code >= 0x200b && code <= 0x200f) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      code === 0xfeff
+    ) {
+      return code < 0x100 ? `\\x${code.toString(16).padStart(2, "0")}` : `\\u${code.toString(16).padStart(4, "0")}`;
+    }
+    return ch;
+  }).join("");
 }
 
 /**

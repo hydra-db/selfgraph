@@ -113,9 +113,9 @@ before writing anything.
 
 | | Transactional (Neo4j, Memgraph) | Auto-commit (HydraDB, Kuzu, FalkorDB) |
 |---|---|---|
-| A failed batch | Rolls back as one unit. | Can leave some of its writes in place. HydraDB runs writes that do not depend on each other concurrently, so they need not be the earlier ones. |
+| A failed batch | Rolls back as one unit. | Can leave some of its writes in place. HydraDB runs writes that do not depend on each other concurrently, so they need not be the earlier ones. An update cut off between retiring a relation's or preference's current version and writing the next leaves no current version, and the next update or insert of it completes the write. One that finds a write of it still running in the same process, in a task that shares its outer transaction, raises `TransientError` instead. A decision update leaves the steps alone when they are unchanged, and writes new steps before it deletes stale ones, so a cut off update never loses a step. |
 | Writers in one process | Serialized per subject node. | One write at a time per graph object. |
-| Writers in separate processes | Each keeps its own version. A loser under heavy contention raises `TransientError` to retry. | Not serialized. Concurrent creates of one id can all report success with one write kept, and concurrent updates collapse to last-writer-wins. |
+| Writers in separate processes | Each keeps its own version. A loser under heavy contention raises `TransientError` to retry. | Not serialized. Concurrent creates of one id can all report success with one write kept, and concurrent updates collapse to last-writer-wins, as when one completes an update another process is still writing. |
 
 Within one process, one concurrent `create` of an id wins and the rest raise
 `ConflictError`. Every backend keeps exactly one current version per relation or
@@ -150,6 +150,21 @@ backends.
 - It can write, as can `selfgraph query`. Only the MCP `run_cypher` tool is
   read-only.
 - `result.counters` is always empty on Kuzu.
+- On Kuzu, both SDKs return a result value in one form, read from its column type. An
+  integer, or a `DECIMAL` of at most 15 digits, is a number while a double holds it exactly,
+  and is its decimal text beyond that (Python: `INT64`, `UINT64`, `INT128`, and wider
+  `DECIMAL` values). A `DATE` is `YYYY-MM-DD`, a timestamp is `YYYY-MM-DDTHH:MM:SS[.ffffff]Z`
+  in UTC, an interval is an ISO 8601 duration such as `P1DT2H3M4.5S` (a month counts as 30
+  days), a `BLOB` is hex, and a `UNION` is the value it holds.
+- The Kuzu Node driver rounds an `INT64` or `UINT64` beyond 2^53, a `DECIMAL` of more than
+  15 digits, and a timestamp or interval to milliseconds before the SDK sees it. The
+  TypeScript SDK raises [`inexact_value`](errors.md#inexact_value) for the first two,
+  naming the column, so `cast(x AS STRING)` it in the query. Timestamps and intervals
+  keep only milliseconds there, and a timestamp before 1970 rounds toward 1970. The driver
+  does not say which member a `UNION` value holds, so TypeScript raises the same code when
+  two members share a driver type, such as `INT64` and `DOUBLE`. A node, relationship, or
+  path reads each property with the type its table declares. A `MAP` key keeps Kuzu's text
+  in TypeScript, which Python matches except for `INTERVAL` and `BLOB` keys.
 - The Kuzu store reopens its connection every 500 statements to free the memory
   Kuzu keeps per statement, so a `CALL` setting or `USE` may not last until a
   later statement. It does not reopen while a raw transaction is open.

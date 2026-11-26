@@ -106,6 +106,7 @@ class Preferences(Resource):
         @return (list[Preference]): the versions; raises NotFoundError when the id has none.
         """
         check_options("preferences.versions", options, ["newest_first"])
+        _ops._require_bool("newest_first", newest_first)
         _ops._validate_own_id("preference", id)
         reader = await self._c._reader()
         versions = await _ops.list_preference_versions(reader, self._c.namespace, id, newest_first=newest_first)

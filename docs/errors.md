@@ -224,6 +224,19 @@ result raises `invalid_argument` with field `rows` and message
 The backend rejected a query. The message keeps the engine's reason. Check any
 Cypher you passed yourself.
 
+#### `inexact_value`
+
+The Kuzu driver cannot return a result value exactly. Cast the column in the
+query to a type it returns exactly, such as `cast(x AS STRING)` for an integer
+beyond 2^53 or a wide DECIMAL, or `cast(x AS DOUBLE)` for a negative DECIMAL
+between -0.1 and 0. Do not drop the column to make the call pass.
+
+The Kuzu Node driver rounds an `INT64` or `UINT64` beyond 2^53 and a `DECIMAL`
+with more than 15 digits before the SDK sees the value, so TypeScript raises
+this code for them instead of returning a rounded number, and for a `UNION`
+whose members share a driver type. Python returns them exactly. Both SDKs raise
+it for a negative `DECIMAL` between -0.1 and 0, which Kuzu 0.11.3 cannot return.
+
 #### `write_conflict`
 
 A concurrent write conflicted and the SDK's own retries ran out. Run the same

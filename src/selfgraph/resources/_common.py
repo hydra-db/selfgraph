@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .._ops import _require_int
+from .._unicode import lower
 from ..errors import ValidationError
 from ..ids import _has_control, type_name
 from ..models import Page
@@ -90,7 +91,7 @@ def decode_key_cursor(cursor: str | None, kind: str) -> str | None:
             and prefix.strip()
             and name.strip()
             and not _has_control(text)
-            and (kind == "entity" or prefix.lower() == kind)
+            and (kind == "entity" or lower(prefix) == kind)
         )
 
     return _cursor_text(cursor, valid)

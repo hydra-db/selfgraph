@@ -296,6 +296,53 @@ def test_stopword_query_returns_nothing_and_an_empty_query_is_rejected():
             run(g.retrieve(query))
 
 
+def _plural_graph():
+    g = fresh_graph("plural-seeds")
+    run(
+        g.insert.facts(
+            {
+                "entities": [
+                    {"id": "engineer:bob", "type": "Engineer", "name": "Bob Ray"},
+                    {"id": "company:acme", "type": "Company", "name": "Acme"},
+                    {"id": "service:payment", "type": "Service", "name": "Payment API"},
+                    {"id": "document:libraries", "type": "Document", "name": "Libraries Index"},
+                    {"id": "person:nathan", "type": "Person", "name": "Nathan"},
+                ],
+                "relations": [
+                    {"from_entity": "engineer:bob", "type": "OWNS", "to_entity": "service:payment"},
+                ],
+            }
+        )
+    )
+    return g
+
+
+@pytest.mark.parametrize(
+    ("plural", "singular", "seed"),
+    [
+        ("who are the engineers", "which engineer", "engineer:bob"),
+        ("list all companies", "list a company", "company:acme"),
+        ("who owns payments", "who owns a payment", "service:payment"),
+        ("show the libraries", "show the library", "document:libraries"),
+    ],
+)
+def test_retrieve_seeds_a_plural_and_singular_word_alike_and_agrees_with_check_answerable(plural, singular, seed):
+    g = _plural_graph()
+    results = [run(g.retrieve(query)) for query in (plural, singular)]
+    assert [[s.id for s in r.seeds] for r in results] == [[seed], [seed]]
+    assert results[0].context == results[1].context != ""
+    for query in (plural, singular):
+        assert run(g.check_answerable(query)).verdict == "answerable"
+    assert run(g.retrieve("what did hans say")).seeds == []
+
+
+def test_retrieve_ranks_a_passage_by_the_plural_form_of_a_query_word():
+    g = fresh_graph("plural-passages")
+    run(g.insert.text("Ann reads one novel.", source_id="a"))
+    run(g.insert.text("Ann reads one poem.", source_id="b"))
+    assert _passages(run(g.retrieve("Ann poems")).context)[0] == "SOURCE | Ann reads one poem."
+
+
 def test_tiny_budgets_cut_to_fit_and_one_letter_names_seed():
     g = fresh_graph("q4")
     run(g.entities.create("A", "Person", id="person:a"))

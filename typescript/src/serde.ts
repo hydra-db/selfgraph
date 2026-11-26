@@ -176,6 +176,8 @@ export function decodeRelation(props: Props, edge: { from_entity: string; to_ent
   }
 }
 
+export const ABOUT_DROPPED = "about_dropped";
+
 export function encodePreferenceProps(args: {
   ns: string;
   id: string;
@@ -188,8 +190,9 @@ export function encodePreferenceProps(args: {
   event_time: Date | null;
   created_at: Date;
   is_current: boolean;
+  about_dropped?: boolean;
 }): Props {
-  return {
+  const props: Props = {
     id: args.id,
     ns: args.ns,
     revision: args.revision,
@@ -202,6 +205,8 @@ export function encodePreferenceProps(args: {
     event_time: toIso(args.event_time),
     created_at: toIso(args.created_at),
   };
+  if (args.about_dropped) props[ABOUT_DROPPED] = true;
+  return props;
 }
 
 export function decodePreference(

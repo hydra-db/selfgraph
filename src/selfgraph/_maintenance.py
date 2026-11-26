@@ -20,7 +20,7 @@ from ._serde import (
     to_iso,
 )
 from .errors import ValidationError
-from .ids import normalize_rel_type
+from .ids import normalize_rel_type, number_text
 from .models import DecisionTrace, DedupeGroup, Entity, LintIssue, Preference, Relation
 from .schema import Schema, _relation_index, canonical_entity_type, canonical_relation_type
 
@@ -80,9 +80,9 @@ def require_number(field: str, value: Any, *, positive: bool = False, upper: flo
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
         raise ValidationError(f"{field} must be a finite number, got {value!r}")
     if positive and value <= 0:
-        raise ValidationError(f"{field} must be greater than 0, got {value!r}")
+        raise ValidationError(f"{field} must be greater than 0, got {number_text(value)}")
     if upper is not None and not 0 <= value <= upper:
-        raise ValidationError(f"{field} must be between 0 and {upper}, got {value!r}")
+        raise ValidationError(f"{field} must be between 0 and {upper}, got {number_text(value)}")
 
 
 async def scan_entities(runner: Any, ns: str) -> list[Entity]:

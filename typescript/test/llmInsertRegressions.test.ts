@@ -7,7 +7,12 @@ const graph = freshGraphs(KUZU_SPEC, "llm_regression");
 const entities = ["A", "B", "C"].map((name) => ({ type: "T", name }));
 const relation = { from_entity: "t:a", type: "KNOWS", to_entity: "t:c" };
 
-function client(reply: unknown, properties: Record<string, unknown> = {}): LLMClient {
+function client(
+  reply: unknown,
+  properties: Record<string, unknown> = {},
+  extracted: unknown[] = entities.map((e) => ({ ...e, aliases: [] })),
+  relations: unknown[] = [{ from_name: "A", type: "KNOWS", to_name: "C", properties, event_time: null }],
+): LLMClient {
   return {
     async generate({ output }) {
       const fields = (output as unknown as { shape: Record<string, unknown> }).shape;
@@ -15,9 +20,9 @@ function client(reply: unknown, properties: Record<string, unknown> = {}): LLMCl
         "retired" in fields
           ? reply
           : "entities" in fields
-            ? { entities: entities.map((e) => ({ ...e, aliases: [] })) }
+            ? { entities: extracted }
             : "relations" in fields
-              ? { relations: [{ from_name: "A", type: "KNOWS", to_name: "C", properties, event_time: null }] }
+              ? { relations }
               : "preferences" in fields
                 ? { preferences: [] }
                 : { decisions: [] };
@@ -69,3 +74,53 @@ for (const operation of ["facts", "text", "create"]) {
     },
   );
 }
+
+const BLANK_NAME = "dropped an extracted entity: entity name cannot be empty";
+const BLANK_TYPE = "dropped an extracted entity: entity type cannot be empty";
+const CONTROL_NAME = "dropped an extracted entity: entity name cannot contain control or surrogate characters";
+
+const ann = { type: "Person", name: "Ann" };
+const acme = { type: "Company", name: "Acme" };
+const worksAt = { from_name: "Ann", type: "WORKS_AT", to_name: "Acme" };
+
+it.each([
+  [{ type: "Person", name: "" }, BLANK_NAME],
+  [{ type: "Person", name: "   " }, BLANK_NAME],
+  [{ type: "Company", name: "\t" }, BLANK_NAME],
+])("333 invalid entity %j keeps the rest of the chunk typed", async (bad, message) => {
+  const g = graph({ llm: client({}, {}, [ann, acme, bad], [worksAt]), extraction: "llm" });
+  const result = await g.insert.text("Ann works at Acme.");
+  const stored = Object.fromEntries((await g.entities.list()).items.map((e) => [e.id, e.type]));
+  expect(stored).toEqual({ "person:ann": "Person", "company:acme": "Company" });
+  expect(result.relations.map((r) => [r.from_entity, r.type, r.to_entity])).toEqual([
+    ["person:ann", "WORKS_AT", "company:acme"],
+  ]);
+  expect(result.warnings.map((w) => [w.code, w.message])).toEqual([["extraction_partial_failure", message]]);
+});
+
+it.each([
+  [{ type: " ", name: "Bob" }, { "thing:bob": "Thing" }, [BLANK_NAME, BLANK_TYPE]],
+  [{ type: "Person", name: "Bob\u0007" }, {}, [BLANK_NAME, CONTROL_NAME, CONTROL_NAME]],
+])("333 relation naming dropped entity %j follows the unknown name rule", async (bad, extra, messages) => {
+  const relation = { from_name: "Ann", type: "KNOWS", to_name: bad.name };
+  const g = graph({ llm: client({}, {}, [ann, { type: "Person", name: "" }, bad], [relation]), extraction: "llm" });
+  const result = await g.insert.text("Ann knows Bob.");
+  const stored = Object.fromEntries((await g.entities.list()).items.map((e) => [e.id, e.type]));
+  expect(stored).toEqual({ "person:ann": "Person", ...extra });
+  expect(result.relations.map((r) => r.to_entity)).toEqual(Object.keys(extra));
+  expect(result.warnings.map((w) => w.message)).toEqual(messages);
+});
+
+it("333 chunk with only invalid entities still inserts", async () => {
+  const bad = [
+    { type: "Person", name: "" },
+    { type: " ", name: "Ann" },
+    { type: "Company", name: "  " },
+    { type: "", name: "Cy" },
+  ];
+  const g = graph({ llm: client({}, {}, bad, [worksAt]), extraction: "llm" });
+  const result = await g.insert.text("Ann works at Acme.");
+  const stored = Object.fromEntries((await g.entities.list()).items.map((e) => [e.id, e.type]));
+  expect(stored).toEqual({ "thing:ann": "Thing", "thing:acme": "Thing" });
+  expect(result.warnings.map((w) => w.message)).toEqual([BLANK_NAME, BLANK_TYPE, BLANK_NAME, BLANK_TYPE]);
+});

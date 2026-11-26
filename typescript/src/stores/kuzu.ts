@@ -1,7 +1,15 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { errorMessage, maskUri, SelfGraphError, StoreError, splitScheme, ValidationError } from "../errors.js";
+import {
+  errorMessage,
+  escapeControls,
+  maskUri,
+  SelfGraphError,
+  StoreError,
+  splitScheme,
+  ValidationError,
+} from "../errors.js";
 import { BLANK, blankLexicalTokens } from "../internal/cypherGuard.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
@@ -34,6 +42,7 @@ import {
   writeBatches,
 } from "./cypherPrimitives.js";
 import { docs, edgeRow, firstDoc, mergedCurrentEdge, parseDoc } from "./docRows.js";
+import { normalizeRow, readTables } from "./kuzuValues.js";
 
 const SCHEMA = [
   "CREATE NODE TABLE IF NOT EXISTS N(pk STRING, id STRING, ns STRING, label STRING, doc STRING, PRIMARY KEY(pk))",
@@ -46,6 +55,7 @@ const SEEK_BATCH = 256;
 interface KuzuQueryResult {
   getAll(): Promise<Array<Record<string, unknown>>>;
   getColumnNames(): Promise<string[]> | string[];
+  getColumnDataTypes(): Promise<string[]> | string[];
   close?(): void;
 }
 
@@ -130,18 +140,51 @@ function nonEmptyStatements(query: string): number {
     .filter((part) => part.replaceAll(BLANK, "").trim().length > 0).length;
 }
 
-function normalize(value: unknown): unknown {
-  if (value === null || value === undefined) return null;
-  if (Array.isArray(value)) return value.map(normalize);
-  if (value instanceof Uint8Array) return Array.from(value, (b) => b.toString(16).padStart(2, "0")).join("");
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "bigint") return Number.isSafeInteger(Number(value)) ? Number(value) : value.toString();
-  if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = normalize(v);
-    return out;
+/**
+ * Find the first empty list or map in a parameter value, depth first.
+ *
+ * Map keys are sorted before the walk so both SDKs report the same first empty
+ * container: a JS object puts integer-like keys first, while the Python SDK
+ * keeps insertion order.
+ *
+ * @param value (unknown): the parameter value or a nested value.
+ * @param path (string): where the value sits in the parameter.
+ * @return ([string, string] | null): the kind, "list" or "map", and its path, or null when every container has a value.
+ */
+function emptyContainer(value: unknown, path: string): [string, string] | null {
+  if (Array.isArray(value)) {
+    if (!value.length) return ["list", path];
+    for (const [i, item] of value.entries()) {
+      const found = emptyContainer(item, `${path}[${i}]`);
+      if (found) return found;
+    }
+  } else if (value && typeof value === "object" && !(value instanceof Date)) {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    if (!keys.length) return ["map", path];
+    for (const key of keys) {
+      const found = emptyContainer((value as Record<string, unknown>)[key], `${path}.${key}`);
+      if (found) return found;
+    }
   }
-  return value;
+  return null;
+}
+
+/**
+ * Reject empty lists and maps in Kuzu parameters, which it cannot give a type.
+ *
+ * @param params (Record<string, unknown> | null | undefined): the query parameters.
+ */
+function requireTypedParams(params: Record<string, unknown> | null | undefined): void {
+  for (const [name, value] of Object.entries(params ?? {})) {
+    const found = emptyContainer(value, name);
+    if (found) {
+      const [kind, path] = found;
+      throw new ValidationError(
+        `parameter ${pyRepr(path)} is an empty ${kind}, which Kuzu cannot type; pass a non-empty ${kind}`,
+        { field: name },
+      );
+    }
+  }
 }
 
 /**
@@ -181,7 +224,9 @@ const SCHEME_STORES: Record<string, string> = {
  * @return (StoreError): the error to throw.
  */
 export function kuzuError(exc: unknown, prefix: string): StoreError {
-  const detail = errorMessage(exc).split(/\s+/).join(" ").trim();
+  const detail = escapeControls(errorMessage(exc))
+    .replace(/[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g, " ")
+    .trim();
   if (detail.includes("Could not set lock on file")) {
     return new StoreError(
       `${prefix}: another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time`,
@@ -433,9 +478,28 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     }
     try {
       const columns = await res.getColumnNames();
-      const rows = (await res.getAll()).map((row) => normalize(row) as Record<string, JsonValue>);
+      const types = await res.getColumnDataTypes();
+      const all = await res.getAll();
+      const tables = await readTables(all, columns, types, (statement) => this.rowsOf(conn, statement));
+      const rows = all.map((row) => normalizeRow(row, columns, types, tables) as Record<string, JsonValue>);
       checkResultDepth(rows);
       return { columns, rows, counters: {}, warnings: [] };
+    } finally {
+      res.close?.();
+    }
+  }
+
+  /**
+   * Run a read statement and return its rows.
+   *
+   * @param conn (KuzuConnection): the connection.
+   * @param statement (string): the statement.
+   * @return (Promise<Array<Record<string, unknown>>>): the rows.
+   */
+  private async rowsOf(conn: KuzuConnection, statement: string): Promise<Array<Record<string, unknown>>> {
+    const res = (await conn.query(statement)) as KuzuQueryResult;
+    try {
+      return await res.getAll();
     } finally {
       res.close?.();
     }
@@ -448,14 +512,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
    * @return (boolean): true when a transaction is open.
    */
   private async inTransaction(conn: KuzuConnection): Promise<boolean> {
-    const now = async () => {
-      const res = (await conn.query(NOW)) as KuzuQueryResult;
-      try {
-        return JSON.stringify(await res.getAll());
-      } finally {
-        res.close?.();
-      }
-    };
+    const now = async () => JSON.stringify(await this.rowsOf(conn, NOW));
     const first = await now();
     await new Promise((resolve) => setTimeout(resolve, CLOCK_TICK_MS));
     return (await now()) === first;
@@ -463,6 +520,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
 
   override async runCypher(query: string, params?: Record<string, JsonValue> | null): Promise<CypherResult> {
     if (nonEmptyStatements(query) > 1) throw new StoreError(MULTI_STATEMENT);
+    requireTypedParams(params);
     return this._run(query, params, true);
   }
 
@@ -492,8 +550,10 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     }
   }
 
-  /** Create the node, relationship, and entity key tables if they do not exist, and index entities stored before the key table. */
+  /** Create the node, relationship, and entity key tables if they do not exist, and index entities stored before the key table; a read-only store writes nothing, so it does neither. */
   async initialize(): Promise<void> {
+    await this.conn.get();
+    if (DATABASE_OPTIONS.get(this.cacheKey)?.read_only) return;
     for (const stmt of SCHEMA) await this._run(stmt);
     if (toCount((await this._run("MATCH (k:K) RETURN count(*) AS n")).rows)) return;
     let after = "";

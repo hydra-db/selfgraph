@@ -4,44 +4,27 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Iterable, Mapping
 from concurrent.futures import Future
 from contextvars import ContextVar
+from decimal import InvalidOperation
 from functools import partial
 from typing import Any
 
 from .._ops import _batches
 from .._serde import L_ENTITY, decode_entity
-from ..errors import SelfGraphError, StoreError, ValidationError, mask_uri, split_scheme
+from ..errors import SelfGraphError, StoreError, ValidationError, escape_controls, mask_uri, split_scheme
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult, JsonValue, check_options
 from ..resolution import match_keys
 from ._cypher import AutoCommitStore, count_of, require_keys, where_after, write_batches
 from ._docrows import docs, edge_row, first_doc, merged_current_edge, parse_doc
+from ._kuzu_values import UNREADABLE_DECIMAL, normalize
 
 __all__ = ["KuzuStore"]
-
-
-def _normalize(value: Any) -> Any:
-    """Convert a Kuzu result value to a JSON-ready value, matching the Bolt store's serialization.
-
-    @param value (Any): a raw value from a Kuzu result row.
-    @return (Any): the JSON-ready equivalent (ISO strings for temporals, hex for blobs, str for the rest).
-    """
-    if isinstance(value, dict):
-        return {k if isinstance(k, str) else str(k): _normalize(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_normalize(v) for v in value]
-    if isinstance(value, bytes | bytearray):
-        return value.hex()
-    if isinstance(value, str | int | float | bool) or value is None:
-        return value
-    iso = getattr(value, "isoformat", None)
-    if callable(iso):
-        return iso()
-    return str(value)
 
 
 _SCHEMA = (
@@ -126,6 +109,54 @@ def _non_empty_statements(query: str) -> int:
     return sum(1 for part in blank_lexical_tokens(query).split(";") if part.replace("\x00", "").split())
 
 
+def _require_typed_params(params: Mapping[str, Any] | None) -> None:
+    """Reject empty lists and maps in Kuzu parameters, which it cannot give a type.
+
+    @param params (Mapping[str, Any] | None): the query parameters.
+    @return (None): nothing; raises ValidationError naming the parameter.
+    """
+    for name, value in (params or {}).items():
+        found = _empty_container(value, name)
+        if found is not None:
+            kind, path = found
+            raise ValidationError(
+                f"parameter {path!r} is an empty {kind}, which Kuzu cannot type; pass a non-empty {kind}",
+                field=name,
+            )
+
+
+def _empty_container(value: Any, path: str) -> tuple[str, str] | None:
+    """Find the first empty list or map in a parameter value, depth first.
+
+    Map keys are sorted before the walk so both SDKs report the same first empty
+    container: Python keeps insertion order while a JS object puts integer-like
+    keys first.
+
+    @param value (Any): the parameter value or a nested value.
+    @param path (str): where the value sits in the parameter.
+    @return (tuple[str, str] | None): the kind, "list" or "map", and its path, or None when every container has a value.
+    """
+    if isinstance(value, list | tuple):
+        if not value:
+            return "list", path
+        for i, item in enumerate(value):
+            found = _empty_container(item, f"{path}[{i}]")
+            if found is not None:
+                return found
+    elif isinstance(value, Mapping):
+        if not value:
+            return "map", path
+        for key in sorted(value, key=str):
+            item = value[key]
+            found = _empty_container(item, f"{path}.{key}")
+            if found is not None:
+                return found
+    return None
+
+
+_WS_RUN = re.compile("[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+")
+
+
 def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
     """Map a Kuzu error to a StoreError, adding what to do for the lock and mmap failures.
 
@@ -139,7 +170,7 @@ def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
             "process at a time",
             code="store_locked",
         )
-    message = f"{prefix}: {' '.join(str(exc).split())}"
+    message = f"{prefix}: {_WS_RUN.sub(' ', escape_controls(str(exc))).strip()}"
     if "Buffer manager exception: Mmap for size" in str(exc):
         message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size"
     return StoreError(message)
@@ -350,6 +381,7 @@ class KuzuStore(AutoCommitStore):
             self._lock = _LOCKS.setdefault(key, _PathLock())
             self._write_lock = _WRITE_LOCKS.setdefault(key, _PathLock())
         self._cache_key = key
+        self._read_only = _DATABASE_OPTIONS[key]["read_only"]
         self._db = db
         self._connect = partial(kuzu.Connection, db)
         try:
@@ -407,7 +439,11 @@ class KuzuStore(AutoCommitStore):
             columns = qr.get_column_names()
             rows = []
             while qr.has_next():
-                rows.append({k: _normalize(v) for k, v in zip(columns, qr.get_next(), strict=False)})
+                try:
+                    values = qr.get_next()
+                except InvalidOperation as exc:
+                    raise StoreError(UNREADABLE_DECIMAL, code="inexact_value") from exc
+                rows.append({k: normalize(v) for k, v in zip(columns, values, strict=False)})
             return columns, rows
 
         previous, token = self._lock._join()
@@ -451,12 +487,15 @@ class KuzuStore(AutoCommitStore):
     async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
         if _non_empty_statements(query) > 1:
             raise StoreError(_MULTI_STATEMENT)
+        _require_typed_params(params)
         return await self._run(query, params, raw=True)
 
     async def initialize(self) -> None:
         """Create the node, relationship, and entity key tables if they do not exist, and index entities stored
-        before the key table.
+        before the key table; a read-only store writes nothing, so it does neither.
         """
+        if self._read_only:
+            return
         for stmt in _SCHEMA:
             await self._run(stmt)
         if count_of((await self._run("MATCH (k:K) RETURN count(*) AS n")).rows):
@@ -529,6 +568,17 @@ class KuzuStore(AutoCommitStore):
         for batch in _batches(stale, _SEEK_BATCH):
             await self._run("MATCH (k:K) WHERE k.pk IN $pks DELETE k", {"pks": batch})
         return list(found.values())
+
+    def _discard(self) -> None:
+        """Close a store no query has run on, without waiting for the path lock, which only queries hold.
+
+        @return (None): nothing.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._conn.close()
+        _release_store(self._cache_key)
 
     async def close(self) -> None:
         """Close the connection, and the database once no other store in this process holds it.

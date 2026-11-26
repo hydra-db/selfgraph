@@ -67,7 +67,7 @@ id is derived. This applies on insert and in `entities.create` and
 relation uses `from_entity` and `to_entity`. In Python the field is `from_`, so
 serialize with `schema.model_dump(by_alias=True)` (or
 `model_dump_json(by_alias=True)`) to get the `from` key. A plain `model_dump()`
-writes `from_`.
+writes `from_`, which a schema rejects as an unknown key.
 
 The `types` of an endpoint name entity types the same way entities do: by name or alias,
 ignoring case, with the parent chain followed. An entity typed `Company` matches an
@@ -272,6 +272,10 @@ What bounds the cost:
   same facts asks nothing.
 - At most 20 rivals are listed per call, lowest id first.
 
+Each fact is sent to the LLM as one numbered line. Line breaks and control
+characters in names, types, and property keys or values are escaped there, so
+stored text cannot add a numbered fact to the prompt.
+
 The LLM can decide differently on a rerun. Use `max_count` where the rule is
 known, and keep `llm` for what a schema cannot state.
 
@@ -321,7 +325,9 @@ A retired relation reads as described in [Relations](resources.md#relations).
 `relations.create`, or an insert with an effective time at or after its
 invalidation, reasserts it as the next revision. That revision is checked
 against what is current now. An insert with an earlier effective time leaves it
-retired, so replaying the same inputs is idempotent.
+retired, so replaying the same inputs is idempotent. Under `supersede`, a
+`relations.create` reassertion settles the relation's `max_count` endpoints
+again, so it ends the same relations an insert of that fact would.
 
 ## CLI and MCP
 
@@ -368,6 +374,9 @@ The format it reads:
 - Import also reads the camelCase keys (`nodeTypes`, `relationshipTypes`,
   `nodeType`, `relationshipType`, `propertyNames`, `propertyName`). The
   snake_case key wins when both are present.
+- Each label appears once per kind. A repeated label in `node_types` or
+  `relationship_types` raises the same `ValidationError` as a schema built
+  directly, such as `entities[1].name: duplicate entity type 'Person'`.
 
 | Neo4j | SelfGraph |
 |-------|-----------|

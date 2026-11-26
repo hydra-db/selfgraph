@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ExtractionError } from "./errors.js";
 
+import { contextPayload } from "./internal/payload.js";
 import { comparePy, pyStr } from "./internal/py.js";
 import { L_ENTITY } from "./labels.js";
 import { type InsertWarning, insertWarning, type JsonObject, type Relation } from "./models.js";
@@ -24,12 +25,12 @@ const Verdict = z.object({ retired: z.array(z.number().int()).default([]) });
  * @param source (string): the source entity's name.
  * @param target (string): the destination entity's name.
  * @param properties (JsonObject): the relation's properties.
- * @return (string): the fact as one line.
+ * @return (string): the fact as one line, with line breaks and control characters escaped.
  */
 function line(edgeType: string, source: string, target: string, properties: JsonObject): string {
   const entries = Object.entries(properties).sort(([a], [b]) => comparePy(a, b));
   const props = entries.length ? ` {${entries.map(([k, v]) => `${k}=${pyStr(v)}`).join(", ")}}` : "";
-  return `${source} -[${edgeType}]-> ${target}${props}`;
+  return contextPayload(`${source} -[${edgeType}]-> ${target}${props}`);
 }
 
 /**

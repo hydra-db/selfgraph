@@ -9,7 +9,8 @@
   "Organization": "organization",
   "Work": "work",
   " Bank ": "bank",
-  "U\u0308ber": "u\u0308ber",
+  "U\u0308ber": "\u00fcber",
+  "\u0130\u0327": "i\u0327\u0307",
   "Acme": "acme",
   "Acme, Inc.": "acme,-inc.",
   "The Acme Corporation": "the-acme-corporation",
@@ -23,14 +24,19 @@
   "AT&T": "at&t",
   "x\u200by": "x\u200by",
   "a\ufeffb": "a\ufeffb",
+  "Ac\u200dme": "ac\u200dme",
+  "Ac\u00adme": "ac\u00adme",
+  "Ac\u2060me": "ac\u2060me",
+  "\u200b": "\u200b",
   "Tab\tSeparated\u001cName": "tab-separated-name",
   "\u0130stanbul": "i\u0307stanbul",
+  "\u0130\u0327stanbul Holdings Ltd": "i\u0327\u0307stanbul-holdings-ltd",
   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3": "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2",
   "": "",
   "   ": "",
   "Group Holdings": "group-holdings",
   "acme  llc  ltd": "acme-llc-ltd",
-  "Cafe\u0301 Ole\u0301": "cafe\u0301-ole\u0301",
+  "Cafe\u0301 Ole\u0301": "caf\u00e9-ol\u00e9",
   "Caf\u00e9 Ol\u00e9": "caf\u00e9-ol\u00e9",
   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e": "\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
   "\u0930\u093e\u092e": "\u0930\u093e\u092e",
@@ -49,6 +55,7 @@
   "\uff21\uff43\uff4d\uff45": "\uff41\uff43\uff4d\uff45"
  },
  "mark_ranges": "300-36f 483-487 591-5bd 5bf 5c1-5c2 5c4-5c5 5c7 610-61a 64b-65f 670 6d6-6dc 6df-6e4 6e7-6e8 6ea-6ed 711 730-74a 7a6-7b0 7eb-7f3 7fd 816-819 81b-823 825-827 829-82d 859-85b 898-89f 8ca-8e1 8e3-903 93a-93c 93e-94f 951-957 962-963 981-983 9bc 9be-9c4 9c7-9c8 9cb-9cd 9d7 9e2-9e3 9fe a01-a03 a3c a3e-a42 a47-a48 a4b-a4d a51 a70-a71 a75 a81-a83 abc abe-ac5 ac7-ac9 acb-acd ae2-ae3 afa-aff b01-b03 b3c b3e-b44 b47-b48 b4b-b4d b55-b57 b62-b63 b82 bbe-bc2 bc6-bc8 bca-bcd bd7 c00-c04 c3c c3e-c44 c46-c48 c4a-c4d c55-c56 c62-c63 c81-c83 cbc cbe-cc4 cc6-cc8 cca-ccd cd5-cd6 ce2-ce3 cf3 d00-d03 d3b-d3c d3e-d44 d46-d48 d4a-d4d d57 d62-d63 d81-d83 dca dcf-dd4 dd6 dd8-ddf df2-df3 e31 e34-e3a e47-e4e eb1 eb4-ebc ec8-ece f18-f19 f35 f37 f39 f3e-f3f f71-f84 f86-f87 f8d-f97 f99-fbc fc6 102b-103e 1056-1059 105e-1060 1062-1064 1067-106d 1071-1074 1082-108d 108f 109a-109d 135d-135f 1712-1715 1732-1734 1752-1753 1772-1773 17b4-17d3 17dd 180b-180d 180f 1885-1886 18a9 1920-192b 1930-193b 1a17-1a1b 1a55-1a5e 1a60-1a7c 1a7f 1ab0-1abd 1abf-1ace 1b00-1b04 1b34-1b44 1b6b-1b73 1b80-1b82 1ba1-1bad 1be6-1bf3 1c24-1c37 1cd0-1cd2 1cd4-1ce8 1ced 1cf4 1cf7-1cf9 1dc0-1dff 20d0-20dc 20e1 20e5-20f0 2cef-2cf1 2d7f 2de0-2dff 302a-302f 3099-309a a66f a674-a67d a69e-a69f a6f0-a6f1 a802 a806 a80b a823-a827 a82c a880-a881 a8b4-a8c5 a8e0-a8f1 a8ff a926-a92d a947-a953 a980-a983 a9b3-a9c0 a9e5 aa29-aa36 aa43 aa4c-aa4d aa7b-aa7d aab0 aab2-aab4 aab7-aab8 aabe-aabf aac1 aaeb-aaef aaf5-aaf6 abe3-abea abec-abed fb1e fe20-fe2f 101fd 102e0 10376-1037a 10a01-10a03 10a05-10a06 10a0c-10a0f 10a38-10a3a 10a3f 10ae5-10ae6 10d24-10d27 10eab-10eac 10efd-10eff 10f46-10f50 10f82-10f85 11000-11002 11038-11046 11070 11073-11074 1107f-11082 110b0-110ba 110c2 11100-11102 11127-11134 11145-11146 11173 11180-11182 111b3-111c0 111c9-111cc 111ce-111cf 1122c-11237 1123e 11241 112df-112ea 11300-11303 1133b-1133c 1133e-11344 11347-11348 1134b-1134d 11357 11362-11363 11366-1136c 11370-11374 11435-11446 1145e 114b0-114c3 115af-115b5 115b8-115c0 115dc-115dd 11630-11640 116ab-116b7 1171d-1172b 1182c-1183a 11930-11935 11937-11938 1193b-1193e 11940 11942-11943 119d1-119d7 119da-119e0 119e4 11a01-11a0a 11a33-11a39 11a3b-11a3e 11a47 11a51-11a5b 11a8a-11a99 11c2f-11c36 11c38-11c3f 11c92-11ca7 11ca9-11cb6 11d31-11d36 11d3a 11d3c-11d3d 11d3f-11d45 11d47 11d8a-11d8e 11d90-11d91 11d93-11d97 11ef3-11ef6 11f00-11f01 11f03 11f34-11f3a 11f3e-11f42 13440 13447-13455 16af0-16af4 16b30-16b36 16f4f 16f51-16f87 16f8f-16f92 16fe4 16ff0-16ff1 1bc9d-1bc9e 1cf00-1cf2d 1cf30-1cf46 1d165-1d169 1d16d-1d172 1d17b-1d182 1d185-1d18b 1d1aa-1d1ad 1d242-1d244 1da00-1da36 1da3b-1da6c 1da75 1da84 1da9b-1da9f 1daa1-1daaf 1e000-1e006 1e008-1e018 1e01b-1e021 1e023-1e024 1e026-1e02a 1e08f 1e130-1e136 1e2ae 1e2ec-1e2ef 1e4ec-1e4ef 1e8d0-1e8d6 1e944-1e94a",
+ "format_ranges": "ad 600-605 61c 6dd 70f 890-891 8e2 180e 200b-200f 202a-202e 2060-2064 2066-206f feff fff9-fffb 110bd 110cd 13430-1343f 1bca0-1bca3 1d173-1d17a e0001 e0020-e007f",
  "is_mark": {
   "a": false,
   " ": false,
@@ -122,12 +129,32 @@
   [
    "Person",
    "x\u200by",
-   "person:x-y"
+   "person:xy"
   ],
   [
    "Person",
    "a\ufeffb",
-   "person:a-b"
+   "person:ab"
+  ],
+  [
+   "Person",
+   "Ac\u200dme",
+   "person:acme"
+  ],
+  [
+   "Person",
+   "Ac\u00adme",
+   "person:acme"
+  ],
+  [
+   "Person",
+   "Ac\u2060me",
+   "person:acme"
+  ],
+  [
+   "Person",
+   "\u200b",
+   "person:\u200b"
   ],
   [
    "Person",
@@ -140,6 +167,16 @@
    "Person",
    "\u0130stanbul",
    "person:i\u0307stanbul"
+  ],
+  [
+   "Person",
+   "\u0130\u0327",
+   "person:i\u0327\u0307"
+  ],
+  [
+   "Person",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "person:i\u0327\u0307stanbul-holdings-ltd"
   ],
   [
    "Person",
@@ -313,12 +350,32 @@
   [
    "Big Company",
    "x\u200by",
-   "big-company:x-y"
+   "big-company:xy"
   ],
   [
    "Big Company",
    "a\ufeffb",
-   "big-company:a-b"
+   "big-company:ab"
+  ],
+  [
+   "Big Company",
+   "Ac\u200dme",
+   "big-company:acme"
+  ],
+  [
+   "Big Company",
+   "Ac\u00adme",
+   "big-company:acme"
+  ],
+  [
+   "Big Company",
+   "Ac\u2060me",
+   "big-company:acme"
+  ],
+  [
+   "Big Company",
+   "\u200b",
+   "big-company:\u200b"
   ],
   [
    "Big Company",
@@ -331,6 +388,16 @@
    "Big Company",
    "\u0130stanbul",
    "big-company:i\u0307stanbul"
+  ],
+  [
+   "Big Company",
+   "\u0130\u0327",
+   "big-company:i\u0327\u0307"
+  ],
+  [
+   "Big Company",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "big-company:i\u0327\u0307stanbul-holdings-ltd"
   ],
   [
    "Big Company",
@@ -504,12 +571,32 @@
   [
    "  Org ",
    "x\u200by",
-   "org:x-y"
+   "org:xy"
   ],
   [
    "  Org ",
    "a\ufeffb",
-   "org:a-b"
+   "org:ab"
+  ],
+  [
+   "  Org ",
+   "Ac\u200dme",
+   "org:acme"
+  ],
+  [
+   "  Org ",
+   "Ac\u00adme",
+   "org:acme"
+  ],
+  [
+   "  Org ",
+   "Ac\u2060me",
+   "org:acme"
+  ],
+  [
+   "  Org ",
+   "\u200b",
+   "org:\u200b"
   ],
   [
    "  Org ",
@@ -522,6 +609,16 @@
    "  Org ",
    "\u0130stanbul",
    "org:i\u0307stanbul"
+  ],
+  [
+   "  Org ",
+   "\u0130\u0327",
+   "org:i\u0327\u0307"
+  ],
+  [
+   "  Org ",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "org:i\u0327\u0307stanbul"
   ],
   [
    "  Org ",
@@ -695,12 +792,32 @@
   [
    "\u00dcberType",
    "x\u200by",
-   "\u00fcbertype:x-y"
+   "\u00fcbertype:xy"
   ],
   [
    "\u00dcberType",
    "a\ufeffb",
-   "\u00fcbertype:a-b"
+   "\u00fcbertype:ab"
+  ],
+  [
+   "\u00dcberType",
+   "Ac\u200dme",
+   "\u00fcbertype:acme"
+  ],
+  [
+   "\u00dcberType",
+   "Ac\u00adme",
+   "\u00fcbertype:acme"
+  ],
+  [
+   "\u00dcberType",
+   "Ac\u2060me",
+   "\u00fcbertype:acme"
+  ],
+  [
+   "\u00dcberType",
+   "\u200b",
+   "\u00fcbertype:\u200b"
   ],
   [
    "\u00dcberType",
@@ -713,6 +830,16 @@
    "\u00dcberType",
    "\u0130stanbul",
    "\u00fcbertype:i\u0307stanbul"
+  ],
+  [
+   "\u00dcberType",
+   "\u0130\u0327",
+   "\u00fcbertype:i\u0327\u0307"
+  ],
+  [
+   "\u00dcberType",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "\u00fcbertype:i\u0327\u0307stanbul-holdings-ltd"
   ],
   [
    "\u00dcberType",
@@ -886,12 +1013,32 @@
   [
    "a\u3000b",
    "x\u200by",
-   "a-b:x-y"
+   "a-b:xy"
   ],
   [
    "a\u3000b",
    "a\ufeffb",
-   "a-b:a-b"
+   "a-b:ab"
+  ],
+  [
+   "a\u3000b",
+   "Ac\u200dme",
+   "a-b:acme"
+  ],
+  [
+   "a\u3000b",
+   "Ac\u00adme",
+   "a-b:acme"
+  ],
+  [
+   "a\u3000b",
+   "Ac\u2060me",
+   "a-b:acme"
+  ],
+  [
+   "a\u3000b",
+   "\u200b",
+   "a-b:\u200b"
   ],
   [
    "a\u3000b",
@@ -904,6 +1051,16 @@
    "a\u3000b",
    "\u0130stanbul",
    "a-b:i\u0307stanbul"
+  ],
+  [
+   "a\u3000b",
+   "\u0130\u0327",
+   "a-b:i\u0327\u0307"
+  ],
+  [
+   "a\u3000b",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "a-b:i\u0327\u0307stanbul-holdings-ltd"
   ],
   [
    "a\u3000b",
@@ -1077,12 +1234,32 @@
   [
    "Company",
    "x\u200by",
-   "company:x-y"
+   "company:xy"
   ],
   [
    "Company",
    "a\ufeffb",
-   "company:a-b"
+   "company:ab"
+  ],
+  [
+   "Company",
+   "Ac\u200dme",
+   "company:acme"
+  ],
+  [
+   "Company",
+   "Ac\u00adme",
+   "company:acme"
+  ],
+  [
+   "Company",
+   "Ac\u2060me",
+   "company:acme"
+  ],
+  [
+   "Company",
+   "\u200b",
+   "company:\u200b"
   ],
   [
    "Company",
@@ -1095,6 +1272,16 @@
    "Company",
    "\u0130stanbul",
    "company:i\u0307stanbul"
+  ],
+  [
+   "Company",
+   "\u0130\u0327",
+   "company:i\u0327\u0307"
+  ],
+  [
+   "Company",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "company:i\u0327\u0307stanbul"
   ],
   [
    "Company",
@@ -1268,12 +1455,32 @@
   [
    "Organization",
    "x\u200by",
-   "organization:x-y"
+   "organization:xy"
   ],
   [
    "Organization",
    "a\ufeffb",
-   "organization:a-b"
+   "organization:ab"
+  ],
+  [
+   "Organization",
+   "Ac\u200dme",
+   "organization:acme"
+  ],
+  [
+   "Organization",
+   "Ac\u00adme",
+   "organization:acme"
+  ],
+  [
+   "Organization",
+   "Ac\u2060me",
+   "organization:acme"
+  ],
+  [
+   "Organization",
+   "\u200b",
+   "organization:\u200b"
   ],
   [
    "Organization",
@@ -1286,6 +1493,16 @@
    "Organization",
    "\u0130stanbul",
    "organization:i\u0307stanbul"
+  ],
+  [
+   "Organization",
+   "\u0130\u0327",
+   "organization:i\u0327\u0307"
+  ],
+  [
+   "Organization",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "organization:i\u0327\u0307stanbul"
   ],
   [
    "Organization",
@@ -1459,12 +1676,32 @@
   [
    "Work",
    "x\u200by",
-   "work:x-y"
+   "work:xy"
   ],
   [
    "Work",
    "a\ufeffb",
-   "work:a-b"
+   "work:ab"
+  ],
+  [
+   "Work",
+   "Ac\u200dme",
+   "work:acme"
+  ],
+  [
+   "Work",
+   "Ac\u00adme",
+   "work:acme"
+  ],
+  [
+   "Work",
+   "Ac\u2060me",
+   "work:acme"
+  ],
+  [
+   "Work",
+   "\u200b",
+   "work:\u200b"
   ],
   [
    "Work",
@@ -1477,6 +1714,16 @@
    "Work",
    "\u0130stanbul",
    "work:i\u0307stanbul"
+  ],
+  [
+   "Work",
+   "\u0130\u0327",
+   "work:i\u0327\u0307"
+  ],
+  [
+   "Work",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "work:i\u0327\u0307stanbul-holdings-ltd"
   ],
   [
    "Work",
@@ -1650,12 +1897,32 @@
   [
    " Bank ",
    "x\u200by",
-   "bank:x-y"
+   "bank:xy"
   ],
   [
    " Bank ",
    "a\ufeffb",
-   "bank:a-b"
+   "bank:ab"
+  ],
+  [
+   " Bank ",
+   "Ac\u200dme",
+   "bank:acme"
+  ],
+  [
+   " Bank ",
+   "Ac\u00adme",
+   "bank:acme"
+  ],
+  [
+   " Bank ",
+   "Ac\u2060me",
+   "bank:acme"
+  ],
+  [
+   " Bank ",
+   "\u200b",
+   "bank:\u200b"
   ],
   [
    " Bank ",
@@ -1668,6 +1935,16 @@
    " Bank ",
    "\u0130stanbul",
    "bank:i\u0307stanbul"
+  ],
+  [
+   " Bank ",
+   "\u0130\u0327",
+   "bank:i\u0327\u0307"
+  ],
+  [
+   " Bank ",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "bank:i\u0327\u0307stanbul"
   ],
   [
    " Bank ",
@@ -1841,12 +2118,32 @@
   [
    "U\u0308ber",
    "x\u200by",
-   "\u00fcber:x-y"
+   "\u00fcber:xy"
   ],
   [
    "U\u0308ber",
    "a\ufeffb",
-   "\u00fcber:a-b"
+   "\u00fcber:ab"
+  ],
+  [
+   "U\u0308ber",
+   "Ac\u200dme",
+   "\u00fcber:acme"
+  ],
+  [
+   "U\u0308ber",
+   "Ac\u00adme",
+   "\u00fcber:acme"
+  ],
+  [
+   "U\u0308ber",
+   "Ac\u2060me",
+   "\u00fcber:acme"
+  ],
+  [
+   "U\u0308ber",
+   "\u200b",
+   "\u00fcber:\u200b"
   ],
   [
    "U\u0308ber",
@@ -1859,6 +2156,16 @@
    "U\u0308ber",
    "\u0130stanbul",
    "\u00fcber:i\u0307stanbul"
+  ],
+  [
+   "U\u0308ber",
+   "\u0130\u0327",
+   "\u00fcber:i\u0327\u0307"
+  ],
+  [
+   "U\u0308ber",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "\u00fcber:i\u0327\u0307stanbul-holdings-ltd"
   ],
   [
    "U\u0308ber",
@@ -1973,6 +2280,262 @@
    "U\u0308ber",
    "\uff21\uff43\uff4d\uff45",
    "\u00fcber:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "\u0130\u0327",
+   "Acme",
+   "i\u0327\u0307:acme"
+  ],
+  [
+   "\u0130\u0327",
+   "Acme, Inc.",
+   "i\u0327\u0307:acme-inc"
+  ],
+  [
+   "\u0130\u0327",
+   "The Acme Corporation",
+   "i\u0327\u0307:the-acme-corporation"
+  ],
+  [
+   "\u0130\u0327",
+   "  Jane   Doe ",
+   "i\u0327\u0307:jane-doe"
+  ],
+  [
+   "\u0130\u0327",
+   "Zo\u00eb \u00c5ngstr\u00f6m",
+   "i\u0327\u0307:zo\u00eb-\u00e5ngstr\u00f6m"
+  ],
+  [
+   "\u0130\u0327",
+   "\u5317\u4eac\u5927\u5b66",
+   "i\u0327\u0307:\u5317\u4eac\u5927\u5b66"
+  ],
+  [
+   "\u0130\u0327",
+   "\ud83d\ude80 Rocket Co",
+   "i\u0327\u0307:rocket-co"
+  ],
+  [
+   "\u0130\u0327",
+   "O'Reilly Media LLC",
+   "i\u0327\u0307:o-reilly-media-llc"
+  ],
+  [
+   "\u0130\u0327",
+   "the",
+   "i\u0327\u0307:the"
+  ],
+  [
+   "\u0130\u0327",
+   "Co",
+   "i\u0327\u0307:co"
+  ],
+  [
+   "\u0130\u0327",
+   "AT&T",
+   "i\u0327\u0307:at-t"
+  ],
+  [
+   "\u0130\u0327",
+   "x\u200by",
+   "i\u0327\u0307:xy"
+  ],
+  [
+   "\u0130\u0327",
+   "a\ufeffb",
+   "i\u0327\u0307:ab"
+  ],
+  [
+   "\u0130\u0327",
+   "Ac\u200dme",
+   "i\u0327\u0307:acme"
+  ],
+  [
+   "\u0130\u0327",
+   "Ac\u00adme",
+   "i\u0327\u0307:acme"
+  ],
+  [
+   "\u0130\u0327",
+   "Ac\u2060me",
+   "i\u0327\u0307:acme"
+  ],
+  [
+   "\u0130\u0327",
+   "\u200b",
+   "i\u0327\u0307:\u200b"
+  ],
+  [
+   "\u0130\u0327",
+   "Tab\tSeparated\u001cName",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "\u0130\u0327",
+   "\u0130stanbul",
+   "i\u0327\u0307:i\u0307stanbul"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0130\u0327",
+   "i\u0327\u0307:i\u0327\u0307"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0130\u0327stanbul Holdings Ltd",
+   "i\u0327\u0307:i\u0327\u0307stanbul-holdings-ltd"
+  ],
+  [
+   "\u0130\u0327",
+   "\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+   "i\u0327\u0307:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "\u0130\u0327",
+   "",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "\u0130\u0327",
+   "   ",
+   {
+    "error": "ValidationError"
+   }
+  ],
+  [
+   "\u0130\u0327",
+   "Group Holdings",
+   "i\u0327\u0307:group-holdings"
+  ],
+  [
+   "\u0130\u0327",
+   "acme  llc  ltd",
+   "i\u0327\u0307:acme-llc-ltd"
+  ],
+  [
+   "\u0130\u0327",
+   "Cafe\u0301 Ole\u0301",
+   "i\u0327\u0307:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "\u0130\u0327",
+   "Caf\u00e9 Ol\u00e9",
+   "i\u0327\u0307:caf\u00e9-ol\u00e9"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+   "i\u0327\u0307:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0930\u093e\u092e",
+   "i\u0327\u0307:\u0930\u093e\u092e"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0930\u0940\u092e\u093e",
+   "i\u0327\u0307:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0e01\u0e34\u0e19",
+   "i\u0327\u0307:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0e01\u0e31\u0e19",
+   "i\u0327\u0307:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "\u0130\u0327",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "i\u0327\u0307:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "\u0130\u0327",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "i\u0327\u0307:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd"
+  ],
+  [
+   "\u0130\u0327",
+   "Bob \u2764\ufe0f",
+   "i\u0327\u0307:bob"
+  ],
+  [
+   "\u0130\u0327",
+   "1\ufe0f\u20e3 first",
+   "i\u0327\u0307:1-first"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0628\u0898\u062a",
+   "i\u0327\u0307:\u0628\u0898\u062a"
+  ],
+  [
+   "\u0130\u0327",
+   "\u0628\u0897\u062a",
+   "i\u0327\u0307:\u0628-\u062a"
+  ],
+  [
+   "\u0130\u0327",
+   "The Trial",
+   "i\u0327\u0307:the-trial"
+  ],
+  [
+   "\u0130\u0327",
+   "The Acme Corporation Inc",
+   "i\u0327\u0307:the-acme-corporation-inc"
+  ],
+  [
+   "\u0130\u0327",
+   "snake_case_name",
+   "i\u0327\u0307:snake_case_name"
+  ],
+  [
+   "\u0130\u0327",
+   "\uff21\uff43\uff4d\uff45",
+   "i\u0327\u0307:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "Person",
+   "\u738b\ud87a\udff0",
+   "person:\u738b"
+  ],
+  [
+   "Person",
+   "\u738b\ud888\udfb0",
+   "person:\u738b"
+  ],
+  [
+   "Person",
+   "\u738b\ud884\udf50",
+   "person:\u738b\ud884\udf50"
+  ],
+  [
+   "Person",
+   "\u0422\u0430\u043d\u044f \u1c89\u0430",
+   "person:\u0442\u0430\u043d\u044f-\u0430"
+  ],
+  [
+   "Person",
+   "\ua7cbama",
+   "person:ama"
+  ],
+  [
+   "Person",
+   "\u2c2f\ua7c0",
+   "person:\u2c5f\ua7c1"
+  ],
+  [
+   "Person",
+   "\u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3 \u03a3",
+   "person:\u03bf\u03b4\u03c5\u03c3\u03c3\u03b5\u03c5\u03c2-\u03c3"
   ]
  ],
  "normalize_rel_type": {
@@ -2002,7 +2565,14 @@
   "Has2FA": "HAS2_FA",
   "x2\u00df": "X2_SS",
   "\u00df\u0307": "S\u1e60",
-  "56\u0130": "56_\u0130"
+  "56\u0130": "56_\u0130",
+  "\u738b\ud87a\udff0": "\u738b",
+  "\u738b\ud888\udfb0": "\u738b",
+  "\u738b\ud884\udf50": "\u738b\ud884\udf50",
+  "\u0422\u0430\u043d\u044f \u1c89\u0430": "\u0422\u0410\u041d\u042f_\u0410",
+  "\ua7cbama": "AMA",
+  "\u2c2f\ua7c0": "\u2c2f\ua7c0",
+  "\u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3 \u03a3": "\u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3_\u03a3"
  },
  "canonical_entity_id": [
   [
@@ -2036,6 +2606,14 @@
   [
    "\u0130stanbul:\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
    "i\u0307stanbul:\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"
+  ],
+  [
+   "PERSON:\u0130\u0327",
+   "person:i\u0327\u0307"
+  ],
+  [
+   "\u0130\u0327:Ada",
+   "i\u0327\u0307:ada"
   ],
   [
    "no-colon",
@@ -3460,7 +4038,12 @@
   "has`tick": "`has``tick`",
   "_x9": "_x9",
   "9x": "`9x`",
-  "\u00dcnicode": "`\u00dcnicode`"
+  "\u00dcnicode": "`\u00dcnicode`",
+  "a\n": "`a\n`",
+  "Person\n": "`Person\n`",
+  "a\t": "`a\t`",
+  "Person\t": "`Person\t`",
+  "a\u0001": "`a\u0001`"
  },
  "dumps_sorted": [
   [
@@ -3935,6 +4518,29 @@
    "\u01f0",
    "\u02bcn",
    "\u0390"
+  ],
+  "\u738b\ud87a\udff0": [
+   "\u738b"
+  ],
+  "\u738b\ud888\udfb0": [
+   "\u738b"
+  ],
+  "\u738b\ud884\udf50": [
+   "\u738b\ud884\udf50"
+  ],
+  "\u0422\u0430\u043d\u044f \u1c89\u0430": [
+   "\u0430",
+   "\u0442\u0430\u043d\u044f"
+  ],
+  "\ua7cbama": [
+   "ama"
+  ],
+  "\u2c2f\ua7c0": [
+   "\u2c5f\ua7c1"
+  ],
+  "\u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3 \u03a3": [
+   "\u03bf\u03b4\u03c5\u03c3\u03c3\u03b5\u03c5\u03c3",
+   "\u03c3"
   ]
  },
  "fold": {
@@ -5889,7 +6495,7 @@
    10,
    45,
    13,
-   40
+   38
   ]
  },
  "extract": [

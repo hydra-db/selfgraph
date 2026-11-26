@@ -46,8 +46,14 @@ NAMES = [
     "AT&T",
     "x​y",
     "a﻿b",
+    "Ac\u200dme",
+    "Ac\u00adme",
+    "Ac\u2060me",
+    "\u200b",
     "Tab\tSeparated\x1cName",
     "İstanbul",
+    "İ\u0327",
+    "İ\u0327stanbul Holdings Ltd",
     "ΣΊΣΥΦΟΣ",
     "",
     "   ",
@@ -82,6 +88,7 @@ TYPES = [
     "Work",
     " Bank ",
     "U\u0308ber",
+    "İ\u0327",
 ]
 REL_TYPES = [
     "works at",
@@ -123,6 +130,8 @@ ENTITY_ID_INPUTS = [
     "doc:A:B",
     "Big Company:Acme, Inc.",
     "İstanbul:ΣΊΣΥΦΟΣ",
+    "PERSON:İ\u0327",
+    "İ\u0327:Ada",
     "no-colon",
     ":x",
     "x:",
@@ -130,7 +139,7 @@ ENTITY_ID_INPUTS = [
 ]
 MARK_CHARS = "a \u093e\u0301\u0e34\U0001e94a\ufe0f\u20e3\U000e0100\u200d\u0898\u0897"
 BAD_STRINGS = ["tab\there", "nul\x00", "del\x7f", "c1\x85", "lone\ud800"]
-LABELS = ["Entity", "Big Company", "has`tick", "_x9", "9x", "Ünicode"]
+LABELS = ["Entity", "Big Company", "has`tick", "_x9", "9x", "Ünicode", "a\n", "Person\n", "a\t", "Person\t", "a\x01"]
 
 JSON_VALUES = [
     {"b": 1, "a": [1, 2.5, None, True], "c": {"z": "é", "y": "🚀"}},
@@ -378,6 +387,15 @@ FOLD_TEXTS = [
     "n x y Z 3 a_b c-d",
     "K Kelvin\u212a Å\u212b",
     "ŉ ǰ ΐ",
+]
+PINNED = [
+    "王\U0002ebf0",
+    "王\U000323b0",
+    "王\U00031350",
+    "Таня \U00001c89а",
+    "Ɤama",
+    "\U00002c2f\U0000a7c0",
+    "ΟΔΥΣΣΕΥΣ Σ",
 ]
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 EVIDENCE_KEY = ("source_id", "source_version", "chunk_id", "quote", "start_offset", "end_offset")
@@ -1218,9 +1236,11 @@ def main():
     out = {
         "slug": {t: attempt(ids.slug, t) for t in TYPES + NAMES},
         "mark_ranges": _marks.MARK_RANGES,
+        "format_ranges": _marks.FORMAT_RANGES,
         "is_mark": {ch: ids._is_mark(ch) for ch in MARK_CHARS},
-        "entity_id": [[t, n, attempt(ids.entity_id, t, n)] for t in TYPES for n in NAMES],
-        "normalize_rel_type": {t: ids.normalize_rel_type(t) for t in REL_TYPES if t.strip(" !")},
+        "entity_id": [[t, n, attempt(ids.entity_id, t, n)] for t in TYPES for n in NAMES]
+        + [["Person", n, ids.entity_id("Person", n)] for n in PINNED],
+        "normalize_rel_type": {t: ids.normalize_rel_type(t) for t in REL_TYPES + PINNED if t.strip(" !")},
         "canonical_entity_id": [[e, attempt(ids.canonical_entity_id, e)] for e in ENTITY_ID_INPUTS],
         "relation_id": [
             ["person:jane", t, "company:acme", ids.relation_id("person:jane", t, "company:acme")]
@@ -1264,7 +1284,7 @@ def main():
         "datetimes": [dt_case(dt) for dt in DATETIMES],
         "from_iso": {s: _serde.to_iso(_serde.from_iso(s)) for s in ISO_INPUTS},
         "format_props": [[p, _format_props(p)] for p in PROPS],
-        "tokens": {t: sorted(_tokens(t)) for t in TEXTS + FOLD_TEXTS},
+        "tokens": {t: sorted(_tokens(t)) for t in TEXTS + FOLD_TEXTS + PINNED},
         "fold": {t: _fold(t) for t in FOLD_TEXTS},
         "grep": [
             [sorted(_tokens(q)), _fold(t), _grep_score(_tokens(q), _fold(t))]

@@ -13,6 +13,7 @@ _log = logging.getLogger("selfgraph")
 
 _ENCODER = None
 _ENCODER_READY = False
+_AS_SPACE = str.maketrans("\x85\ufeff", "  ")
 
 
 def _encoder():
@@ -53,11 +54,13 @@ def count_tokens(text: str) -> int:
 def _encode(enc: Any, text: str) -> list[int]:
     """Encode text as ordinary text, so a special token such as <|endoftext|> in it is tokenized and not rejected.
 
+    U+0085 and U+FEFF encode as spaces, since the regex engines of the two SDKs disagree on whether they are whitespace.
+
     @param enc (Any): the tiktoken encoder.
     @param text (str): the text to encode.
     @return (list[int]): the tokens.
     """
-    return enc.encode(text, disallowed_special=())
+    return enc.encode(text.translate(_AS_SPACE), disallowed_special=())
 
 
 def _char_bounds(enc: Any, tokens: list[int], text: str) -> list[int]:

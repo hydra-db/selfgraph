@@ -13,7 +13,7 @@ import type {
 } from "../models.js";
 import * as ops from "../ops.js";
 import { type ContradictionMode, canonicalRelationType, warnSchema } from "../schema.js";
-import { checkOptions, keysOf, parseTime } from "../validate.js";
+import { checkOptions, keysOf, parseTime, requireBool } from "../validate.js";
 import { PAGE_KEYS, type PageOptions, paginate, parseEvidence, Resource, VERSIONS_KEYS } from "./common.js";
 
 export interface RelationCreateOptions {
@@ -137,6 +137,7 @@ export class Relations extends Resource {
    */
   async list(options: RelationListOptions = {}): Promise<Page<Relation>> {
     checkOptions("relations.list", options, LIST_KEYS);
+    requireBool("include_invalidated", options.include_invalidated ?? false);
     const rtype =
       typeof options.type === "string" && pyStrip(options.type)
         ? canonicalRelationType(options.type, this.graph.schema)
@@ -221,6 +222,7 @@ export class Relations extends Resource {
    */
   async versions(id: string, options: { newest_first?: boolean } = {}): Promise<Relation[]> {
     checkOptions("relations.versions", options, VERSIONS_KEYS);
+    requireBool("newest_first", options.newest_first ?? true);
     ops.validateOwnId("relation", id);
     const versions = await this.graph.read((store, ns) =>
       ops.listRelationVersions(store, ns, id, options.newest_first ?? true),

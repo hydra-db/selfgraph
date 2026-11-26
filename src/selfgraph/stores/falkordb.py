@@ -5,7 +5,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from ..errors import StoreError, TransientError, connection_reason
+from ..errors import StoreError, TransientError, connection_reason, escape_controls
 from ..models import CypherResult, check_options
 from ._cypher import WRITE_COUNTERS, AutoCommitStore, CypherPrimitives, graph_properties
 
@@ -95,7 +95,7 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
             lowered = str(exc).lower()
             if any(k in lowered for k in _TRANSIENT_MARKERS):
                 raise TransientError(f"FalkorDB transient error: {exc}", code="store_busy") from exc
-            raise StoreError(f"FalkorDB query failed: {exc}") from exc
+            raise StoreError(f"FalkorDB query failed: {escape_controls(str(exc))}") from exc
         columns = [head[-1] for head in (res.header or [])]
         rows = [{col: _to_json(val) for col, val in zip(columns, row, strict=False)} for row in (res.result_set or [])]
         counters = {name: int(getattr(res, name, 0) or 0) for name in WRITE_COUNTERS}

@@ -55,6 +55,8 @@ def test_quote_label():
     assert ids.quote_label("WORKS_AT") == "WORKS_AT"
     assert ids.quote_label("Graph Database") == "`Graph Database`"
     assert ids.quote_label("we`ird") == "`we``ird`"
+    assert ids.quote_label("a\n") == "`a\n`"
+    assert ids.quote_label("Person\n") == "`Person\n`"
 
 
 def test_explicit_entity_ids_are_canonicalized_like_derived_ones():
@@ -98,14 +100,70 @@ def test_combining_marks_stay_in_derived_ids():
     assert ids.relation_id("a:b", "पिता", "c:d") != ids.relation_id("a:b", "पोता", "c:d")
 
 
+@pytest.mark.parametrize(
+    ("type", "name"),
+    [
+        ("Person", "İ\u0327"),
+        ("İ\u0327", "Ada"),
+        ("Company", "İ\u0327stanbul Holdings Ltd"),
+    ],
+)
+def test_a_derived_id_with_a_lowercased_dotted_capital_i_canonicalizes_to_itself(type, name):
+    eid = ids.entity_id(type, name)
+    assert unicodedata.is_normalized("NFC", eid)
+    assert ids.canonical_entity_id(eid) == eid
+    assert ids.canonical_entity_id(eid.upper()) == eid
+    assert ids.slug(ids.slug(type)) == ids.slug(type)
+
+
 def test_names_without_combining_marks_keep_their_ids():
     assert ids.entity_id("Person", "Zoe\u0308 A\u030angstro\u0308m") == ids.entity_id("Person", "Zoë Ångström")
     assert ids.entity_id("Person", "Bob \U0001f600") == "person:bob"
     assert ids.entity_id("Person", "Bob \u2764\ufe0f") == "person:bob"
     assert ids.entity_id("Thing", "1\ufe0f\u20e3 first") == "thing:1-first"
-    assert ids.entity_id("Language", "C++") == "language:c"
     assert ids.entity_id("Company", "Acme, Inc.") == "company:acme"
     assert ids.normalize_rel_type("Works-At!!") == "WORKS_AT"
+
+
+def test_plus_and_sharp_stay_in_derived_ids():
+    names = ["C++", "C#", "C", "F#", "F", "Disney+", "Disney", "Notepad++", "Notepad"]
+    derived = [ids.entity_id("Language", name) for name in names]
+    assert derived == [
+        "language:c-plus-plus",
+        "language:c-sharp",
+        "language:c",
+        "language:f-sharp",
+        "language:f",
+        "language:disney-plus",
+        "language:disney",
+        "language:notepad-plus-plus",
+        "language:notepad",
+    ]
+    assert len(set(derived)) == len(names)
+
+
+def test_plus_and_sharp_ids_ignore_spacing_and_case():
+    assert {ids.entity_id("Language", name) for name in ["C++", "c ++", "C + +", "C plus plus", "c  PLUS  Plus"]} == {
+        "language:c-plus-plus"
+    }
+    assert {ids.entity_id("Language", name) for name in ["C#", "c #", "C Sharp", "C\u200b#"]} == {"language:c-sharp"}
+    assert ids.entity_id("Service", "Disney+") == ids.entity_id("Service", "Disney Plus")
+
+
+def test_plus_and_sharp_inside_and_around_names():
+    assert ids.entity_id("Thing", "A+B") == "thing:a-plus-b"
+    assert ids.entity_id("Thing", "a#b") == "thing:a-sharp-b"
+    assert ids.entity_id("Thing", "#1") == "thing:sharp-1"
+    assert ids.entity_id("Thing", "+1") == "thing:plus-1"
+    assert ids.entity_id("Thing", "+") == "thing:plus"
+    assert ids.entity_id("Thing", "#") == "thing:sharp"
+    assert ids.entity_id("Thing", "++") == "thing:plus-plus"
+    assert ids.entity_id("Company", "Google+ Inc.") == "company:google-plus"
+    assert ids.entity_id("Company", "The Disney+ Co") == "company:disney-plus"
+    assert ids.entity_id("Company", "AT&T") == "company:at-t"
+    assert ids.entity_id("Person", "Bob 😀") == "person:bob"
+    assert ids.entity_id("Thing", "😀") == "thing:😀"
+    assert ids.entity_id("Thing", "＋") == "thing:＋"
 
 
 def test_combining_marks_follow_one_pinned_table():
@@ -121,6 +179,22 @@ def test_combining_marks_follow_one_pinned_table():
         if unicodedata.category(chr(cp)) in ("Mn", "Mc") and not (0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF)
     }
     assert {cp for cp in range(sys.maxunicode + 1) if ids._is_mark(chr(cp))} == marks
+
+
+def test_format_characters_inside_a_name_do_not_split_it():
+    names = ["Ac\u200bme", "Ac\u200dme", "Ac\u00adme", "Ac\u2060me", "Ac\ufeffme", "\ufeffAcme", "Acme\u200f"]
+    assert [ids.entity_id("Person", name) for name in names] == ["person:acme"] * len(names)
+    assert ids.entity_id("Company", "Acme\u200b Inc\u00ad.") == "company:acme"
+    assert ids.entity_id("Person", "Jane\u200b Doe") == "person:jane-doe"
+
+
+def test_format_characters_follow_one_pinned_table():
+    assert [ids._FORMAT.match(ch) is not None for ch in "\u00ad\u200b\u2060\ufeff\U000e0001"] == [True] * 5
+    assert [ids._FORMAT.match(ch) is not None for ch in "a \u0301\ufe0f\u3000"] == [False] * 5
+    if unicodedata.unidata_version != "15.0.0":
+        pytest.skip("the table is checked against the Unicode 15.0 data of Python 3.12")
+    formats = {cp for cp in range(sys.maxunicode + 1) if unicodedata.category(chr(cp)) == "Cf"}
+    assert {cp for cp in range(sys.maxunicode + 1) if ids._FORMAT.match(chr(cp))} == formats
 
 
 def test_require_identifier_accepts_plain_identifiers():

@@ -10,13 +10,20 @@ import { ids, KuzuStore, SelfGraph } from "../src/index.js";
 import type { Schema } from "../src/schema.js";
 import {
   conformanceStore,
+  cutDecisionDeletes,
+  cutDecisionUpdates,
   dump,
   exitCodes,
+  kuzuParamErrors,
+  kuzuReadOnly,
   kuzuSchemeErrors,
   kuzuStatements,
+  kuzuValues,
+  pinnedUnicode,
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
+  tokenChunks,
   unmerge,
   write,
 } from "./conformance/ts_side.js";
@@ -35,8 +42,15 @@ function py(
     | "unmerge"
     | "kuzu_isolation"
     | "exit_codes"
+    | "pinned_unicode"
     | "kuzu_statements"
-    | "kuzu_scheme_errors",
+    | "kuzu_cut_update"
+    | "kuzu_cut_delete"
+    | "kuzu_values"
+    | "kuzu_scheme_errors"
+    | "kuzu_params"
+    | "kuzu_read_only"
+    | "token_chunks",
   store: string,
   ns: string,
 ): unknown {
@@ -122,6 +136,40 @@ const live = new Map<string, boolean>();
 for (const spec of specs) live.set(spec.name, await reachable(spec));
 
 describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
+  it.skipIf(!live.get("kuzu"))(
+    "rejects empty Kuzu parameters with the same error fields in both languages",
+    async () => {
+      expect(await kuzuParamErrors()).toEqual(py("kuzu_params", "-", "-"));
+      expect(await kuzuParamErrors()).toEqual({
+        list: expect.objectContaining({
+          error: "parameter 'x' is an empty list, which Kuzu cannot type; pass a non-empty list",
+          code: "invalid_argument",
+          field: "x",
+        }),
+        map: expect.objectContaining({
+          error: "parameter 'x' is an empty map, which Kuzu cannot type; pass a non-empty map",
+          code: "invalid_argument",
+          field: "x",
+        }),
+        nested_list: expect.objectContaining({
+          error: "parameter 'x.a' is an empty list, which Kuzu cannot type; pass a non-empty list",
+          code: "invalid_argument",
+          field: "x",
+        }),
+        nested_map: expect.objectContaining({
+          error: "parameter 'x.a' is an empty map, which Kuzu cannot type; pass a non-empty map",
+          code: "invalid_argument",
+          field: "x",
+        }),
+        sorted_map: expect.objectContaining({
+          error: "parameter 'x.1' is an empty map, which Kuzu cannot type; pass a non-empty map",
+          code: "invalid_argument",
+          field: "x",
+        }),
+      });
+    },
+  );
+
   it.skipIf(!live.get("kuzu"))("isolates anonymous Kuzu databases in both languages", async () => {
     const result: (boolean | string)[] = [];
     for (const path of ["", ":memory:"]) {
@@ -155,6 +203,32 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     },
   );
 
+  it.skipIf(!live.get("kuzu"))(
+    "reads a stored graph read-only and survives a failed read-only open the same way in both languages",
+    async () => {
+      const result = await kuzuReadOnly();
+      expect(result).toEqual(py("kuzu_read_only", "-", "-"));
+      expect(result).toEqual({
+        ids: ["company:acme", "person:ann"],
+        context: expect.stringContaining("Ann -[WORKS_AT]-> Acme"),
+        empty_database_code: "query_failed",
+        write_after_failed_open: true,
+      });
+    },
+  );
+
+  it("counts tokens and splits chunks the same around a NEL or a byte order mark in both languages", async () => {
+    const result = await tokenChunks();
+    expect(result).toEqual(py("token_chunks", "-", "-"));
+    expect(result[2]).toEqual({ tokens: 2, chunks: [[0, 3]] });
+  });
+
+  it("derives ids, relation types, and tokens from the pinned Unicode tables in both languages", () => {
+    const pinned = pinnedUnicode();
+    expect(pinned.entity_ids.slice(0, 4)).toEqual(["person:王", "company:王", "person:王", "company:王"]);
+    expect(pinned).toEqual(py("pinned_unicode", "-", "-"));
+  });
+
   it("gives every error code the same CLI exit code in both languages", () => {
     expect(exitCodes()).toEqual(py("exit_codes", "-", "-"));
   });
@@ -172,6 +246,69 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     expect(py("kuzu_statements", "-", "-")).toEqual(result);
   });
 
+  it.skipIf(!live.get("kuzu"))(
+    "keeps the steps of a decision update cut off at any write in both languages",
+    async () => {
+      const result = await cutDecisionUpdates(tempKuzu("selfgraph-conf-cut-"));
+      for (const run of Object.values(result)) {
+        expect(run.whole.rationale).toBe("new");
+        expect(run.failed_cuts).toEqual([]);
+      }
+      expect(py("kuzu_cut_update", "-", "-")).toEqual(result);
+    },
+    180_000,
+  );
+
+  it.skipIf(!live.get("kuzu"))(
+    "leaves no decision behind when a delete is cut off at any write in both languages",
+    async () => {
+      const result = await cutDecisionDeletes(tempKuzu("selfgraph-conf-cut-"));
+      for (const run of Object.values(result)) {
+        expect(run.whole.decisions).toEqual([]);
+        expect(run.whole.step_nodes).toEqual([]);
+        expect(run.failed_cuts).toEqual([]);
+      }
+      expect(py("kuzu_cut_delete", "-", "-")).toEqual(result);
+    },
+    180_000,
+  );
+
+  it.skipIf(!live.get("kuzu"))("returns the same run_cypher values in both languages", async () => {
+    const fromTs = await kuzuValues(tempKuzu("selfgraph-conf-values-"));
+    const fromPy = py("kuzu_values", "-", "-") as typeof fromTs;
+    const one = (v: unknown) => ({ rows: [{ v }] });
+    expect(fromTs.agree).toEqual(fromPy.agree);
+    expect(fromPy.wide).toEqual([
+      one("9007199254740993"),
+      one("-9223372036854775808"),
+      one("18446744073709551615"),
+      one("123456789012345678.5"),
+      one("99999999999999999999999999999999999999"),
+      one("1.50000000000000000000"),
+      one([1, "9007199254740993"]),
+      one({ a: "9007199254740993" }),
+      one({ 1: "9007199254740993" }),
+      one("9007199254740993"),
+      { rows: [{ w: { pk: 1, big: "9007199254740993", u: 1.5, _label: "W", _id: { offset: 0, table: 7 } } }] },
+      one(1.5),
+    ]);
+    expect(fromTs.wide.map((outcome) => (outcome as { code: string }).code)).toEqual(
+      fromPy.wide.map(() => "inexact_value"),
+    );
+    expect(fromPy.subsecond).toEqual([
+      one("2024-01-01T12:34:56.789123Z"),
+      one("1969-12-31T23:59:59.999999Z"),
+      one("2024-01-01T12:34:56.789123Z"),
+      one("PT0.000001S"),
+    ]);
+    expect(fromTs.subsecond).toEqual([
+      one("2024-01-01T12:34:56.789000Z"),
+      one("1970-01-01T00:00:00Z"),
+      one("2024-01-01T12:34:56.789000Z"),
+      one("PT0S"),
+    ]);
+  });
+
   it("schema validation produces identical warnings in both languages", () => {
     const warnings = schemaWarnings();
     expect(warnings).toEqual(py("schema", "-", "-"));
@@ -181,6 +318,38 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       "relations[0].to.types[0]",
       "relations[1].type",
       "relations[0].from.max_count",
+    ]);
+    expect(warnings.neo4j_duplicate_errors).toEqual([
+      {
+        code: "invalid_argument",
+        field: "entities[1].name",
+        message: "invalid schema: entities[1].name: duplicate entity type 'Person'",
+      },
+      {
+        code: "invalid_argument",
+        field: "relations[1].type",
+        message: "invalid schema: relations[1].type: duplicate relation type 'KNOWS'",
+      },
+      {
+        code: "invalid_argument",
+        field: "entities[2].name",
+        message: "invalid schema: entities[2].name: duplicate entity type 'A'",
+      },
+      {
+        code: "invalid_argument",
+        field: "entities[1].name",
+        message: "invalid schema: entities[1].name: duplicate entity type '__proto__'",
+      },
+      {
+        code: "invalid_argument",
+        field: "entities[1].name",
+        message: "invalid schema: entities[1].name: duplicate entity type 'person'",
+      },
+      {
+        code: "invalid_argument",
+        field: "relations[1].type",
+        message: "invalid schema: relations[1].type: duplicate relation type 'works at'",
+      },
     ]);
     expect(warnings.ossie.warnings).toContain("the OneToMany multiplicity of relation LEADS are left out");
   });
@@ -203,6 +372,20 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       const moved = fromTs as { moved_later: unknown[][]; moved_later_valid: string[] };
       expect(moved.moved_later).toEqual([[1, false, nakatomi, "2022-01-01T00:00:00Z"]]);
       expect(moved.moved_later_valid).toEqual([nakatomi]);
+      const parallel = (fromTs as { parallel_retirement: Record<string, Record<string, unknown[]>> })
+        .parallel_retirement;
+      expect(parallel.chronological!["relation:old"]).toEqual([1, false, "relation:new", "2020-02-15T00:00:00Z"]);
+      expect(parallel.other_end_unread!["relation:f0"]).toEqual([1, false, "relation:f3", "2020-11-15T00:00:00Z"]);
+      const apertureMia = ids.relationId("person:mia", "WORKS_AT", "company:aperture");
+      const gap = fromTs as { moved_earlier_gap: unknown[][]; moved_earlier_gap_valid: string[] };
+      expect(gap.moved_earlier_gap).toEqual([[1, false, apertureMia, "2014-01-01T00:00:00Z"]]);
+      expect(gap.moved_earlier_gap_valid).toEqual([apertureMia]);
+      const reasserted = fromTs as {
+        reasserted_earlier: Record<string, unknown[][]>;
+        reasserted_earlier_valid: string[];
+      };
+      expect(reasserted.reasserted_earlier.x![0]).toEqual([3, false, "relation:y", "2020-08-28T00:00:00Z"]);
+      expect(reasserted.reasserted_earlier_valid).toEqual(["relation:y"]);
     });
 
     it.skipIf(!live.get(store))(`${store}: unmerging a merge with no source agrees in both languages`, async () => {
@@ -242,6 +425,20 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
 
         const tsReadsTs = await ts(store, nsTs, (g) => dump(g, nsTs));
         const pyReadsTs = py("dump", store, nsTs);
+        for (const snapshot of [pyReadsPy, tsReadsPy, tsReadsTs, pyReadsTs]) {
+          expect((snapshot as { symbol_entity_ids: { ids: string[] } }).symbol_entity_ids.ids).toEqual([
+            "language:c-plus-plus",
+            "language:c-sharp",
+            "language:c",
+            "language:f-sharp",
+            "language:disney-plus",
+            "language:disney",
+            "language:a-plus-b",
+            "language:sharp-1",
+            "language:plus",
+            "language:c-plus-plus",
+          ]);
+        }
         if (store === "kuzu") {
           for (const snapshot of [pyReadsPy, tsReadsPy, tsReadsTs, pyReadsTs]) {
             expect(snapshot).toMatchObject({
@@ -295,6 +492,13 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
         }
         for (const ops of [pyOps, tsOps]) {
           expect((ops as { large_document: unknown }).large_document).toEqual({ entity: 40_000, relation: 40_000 });
+        }
+        for (const ops of [pyOps, tsOps]) {
+          const plural = (ops as { retrieval_plural_seeds: Record<string, { seeds: string[]; verdict: string }> })
+            .retrieval_plural_seeds;
+          expect(Object.values(plural).map((row) => [row.seeds.length > 0, row.verdict])).toEqual(
+            Object.keys(plural).map(() => [true, "answerable"]),
+          );
         }
         rmSync(evidence, { recursive: true, force: true });
       },

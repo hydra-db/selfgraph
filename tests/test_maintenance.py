@@ -154,12 +154,14 @@ def _state(g):
 def test_prune_dry_run_then_apply_matches_deleting_entities_one_by_one(caplog):
     one = fresh_graph("mt")
     _cascading(one)
+    run(one.preferences.create("person:keep", "pick", "temp:y", about_entity="temp:x"))
     counts = {}
     for eid in ("temp:x", "temp:y"):
         for key, value in run(one.entities.delete(eid)).model_dump().items():
             counts[key] = counts.get(key, 0) + value
     batched = fresh_graph("mt")
     uses, link = _cascading(batched)
+    run(batched.preferences.create("person:keep", "pick", "temp:y", about_entity="temp:x"))
     cutoff = _later(0.0005)
     plan = run(batched.maintenance.prune(older_than=cutoff, types=["Temp"]))
     assert plan.dry_run and plan.entity_ids == ["temp:x", "temp:y"]
@@ -178,7 +180,7 @@ def test_prune_dry_run_then_apply_matches_deleting_entities_one_by_one(caplog):
         "deleted_entities": 2,
         "deleted_relation_versions": 3,
         "deleted_decisions": 1,
-        "deleted_preference_versions": 1,
+        "deleted_preference_versions": 2,
         "restored_relations": 0,
     }
     assert _state(batched) == _state(one)

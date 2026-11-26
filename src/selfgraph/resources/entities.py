@@ -110,7 +110,7 @@ class Entities(Resource):
         @param merge_id (str): the merge record id, from entities.merges or InsertResult.merges.
         @return (UnmergeResult): the reverted record, the recreated entity, the survivor, and what moved back.
         """
-        return await self._c._write(resolution.unmerge, merge_id)
+        return await self._c._write(resolution.unmerge, merge_id, self._c._caps())
 
     def iterate(
         self, *, type: str | None = None, name: str | None = None, limit: int = DEFAULT_PAGE_LIMIT, **options: Any

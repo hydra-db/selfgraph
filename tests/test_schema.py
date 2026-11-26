@@ -854,6 +854,14 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
             "unknown key 'type' in schema.relations[0].from; did you mean 'types'?",
         ),
         (
+            lambda: as_schema({"relations": [{"type": "X", "from_": {"types": ["A"], "max_count": 1}}]}),
+            "unknown key 'from_' in schema.relations[0]; did you mean 'from'?",
+        ),
+        (
+            lambda: as_schema({"relations": [{"type": "X", "from": {"types": ["A"]}, "from_": {"types": ["B"]}}]}),
+            "unknown key 'from_' in schema.relations[0]; did you mean 'from'?",
+        ),
+        (
             lambda: new_graph(instructions={"entites": "x"}),
             "unknown key 'entites' in instructions; did you mean 'entities'?",
         ),

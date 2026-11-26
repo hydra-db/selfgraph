@@ -5,8 +5,8 @@ import json
 import os
 import time
 import uuid
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager, nullcontext, suppress
 from datetime import datetime, timezone
 from typing import Any
 
@@ -35,6 +35,7 @@ CYPHER = TEST_STORE in ("cypher", "memgraph")
 FALKORDB = TEST_STORE == "falkordb"
 KUZU = TEST_STORE == "kuzu"
 RAW_CYPHER = not (HYDRADB or KUZU)
+AUTO_COMMIT = HYDRADB or KUZU or FALKORDB
 NEO4J_URI = _env("SG_NEO4J_URI", "NEO4J_URI", default="bolt://127.0.0.1:7687")
 CYPHER_URI = _env("SG_MEMGRAPH_URI", "CYPHER_URI", default="bolt://127.0.0.1:7688")
 FALKOR_HOST = _env("FALKOR_HOST", default="localhost")
@@ -158,6 +159,108 @@ def employment_graph(prefix: str = "test", **kwargs) -> SelfGraph:
     g = fresh_graph(prefix, schema=WORKS_AT_SPEC, **kwargs)
     run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))
     return g
+
+
+def interrupt_write(
+    g: SelfGraph,
+    write: Any,
+    monkeypatch: Any,
+    *,
+    method: str = "create_edge",
+    while_stuck: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    """Cancel a write after it retires the current version and before it creates the next one.
+
+    @param g (SelfGraph): the graph on an auto-commit store.
+    @param write (Any): the write coroutine to interrupt.
+    @param monkeypatch (Any): the pytest monkeypatch fixture.
+    @param method (str): the store method that blocks, "create_edge", or "create_edges", which writes the first row.
+    @param while_stuck (Callable[[], Awaitable[None]] | None): runs while the write is cut off, in its outer transaction.
+    @return (None): nothing.
+    """
+
+    async def interrupted() -> None:
+        reached = asyncio.Event()
+        original = getattr(g.store, method)
+
+        async def hang(ns: str, *args: Any) -> Any:
+            if reached.is_set():
+                return await original(ns, *args)
+            if method == "create_edges":
+                *ends, rows = args
+                await original(ns, *ends, rows[:1])
+            reached.set()
+            await asyncio.Event().wait()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(g.store, method, hang)
+            async with g.store.transaction() if while_stuck else nullcontext():
+                task = asyncio.ensure_future(write)
+                waiter = asyncio.ensure_future(reached.wait())
+                try:
+                    await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+                    if not reached.is_set():
+                        await task
+                        raise AssertionError("the write ended before it was cut off")
+                    if while_stuck is not None:
+                        await while_stuck()
+                finally:
+                    waiter.cancel()
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+
+    run(interrupted())
+
+
+STORE_WRITES = (
+    "upsert_node",
+    "upsert_nodes",
+    "create_edge",
+    "create_edges",
+    "delete_node",
+    "delete_nodes",
+    "delete_nodes_by",
+    "delete_edges",
+    "delete_edges_touching_by_type",
+)
+
+
+@contextmanager
+def cut_store_write(g: SelfGraph, monkeypatch: Any, cut: int | None = None) -> Iterator[list[str]]:
+    """Count the store writes made in the block and fail the one at an index, as a lost connection does.
+
+    @param g (SelfGraph): the graph on an auto-commit store.
+    @param monkeypatch (Any): the pytest monkeypatch fixture.
+    @param cut (int | None): the index of the write to fail, or None to only count.
+    @return (Iterator[list[str]]): the names of the writes made so far, the failed one included.
+    """
+    calls: list[str] = []
+
+    def counting(name: str) -> Callable[..., Awaitable[Any]]:
+        """Wrap one store write so it is counted and raises when it is the one to cut.
+
+        @param name (str): the store method.
+        @return (Callable[..., Awaitable[Any]]): the wrapped method.
+        """
+        original = getattr(g.store, name)
+
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            """Count the write, then fail it or run it.
+
+            @return (Any): what the store method returns.
+            """
+            calls.append(name)
+            if len(calls) - 1 == cut:
+                raise ConnectionError("connection lost")
+            return await original(*args, **kwargs)
+
+        return wrapped
+
+    with monkeypatch.context() as patch:
+        for name in STORE_WRITES:
+            patch.setattr(g.store, name, counting(name))
+        yield calls
 
 
 def utc(year: int, month: int = 1, day: int = 1) -> datetime:

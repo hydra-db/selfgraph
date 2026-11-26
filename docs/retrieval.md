@@ -168,12 +168,15 @@ entity's changed properties read as they are now.
 1. **Seed.** The query is split into Unicode words, NFC-normalized and
    casefolded, with stopwords dropped. Every entity is scored with BM25 plus a
    grep boost: a term that is a substring of the entity's text adds to its score.
-   ASCII terms need three or more characters for the boost; other scripts count
-   at any length. The score is divided by the log of the entity's distinct
-   sources, so a generic entity does not crowd out a specific one. Ties go to the
-   higher [decay](maintenance.md#decay) `relevance`, then the lower id. A
-   one-character word, stopwords included, also seeds an entity whose whole name
-   equals it, ignoring case. The top `k` entities become seeds.
+   BM25 ignores a plain plural ending, the same way `check_answerable` does, so
+   `engineers` seeds an `Engineer` and `payments` seeds `Payment API`. A final
+   `s` always reads as a plural, so `Hans` also matches `Han`. ASCII
+   terms need three or more characters for the boost; other scripts count at any
+   length. The score is divided by the log of the entity's distinct sources, so a
+   generic entity does not crowd out a specific one. Ties go to the higher
+   [decay](maintenance.md#decay) `relevance`, then the lower id. A one-character
+   word, stopwords included, also seeds an entity whose whole name equals it,
+   ignoring case. The top `k` entities become seeds.
 2. **Traverse.** Current relations are walked in BFS or DFS order up to `depth`
    hops. This collects up to `max_nodes` entities and the relations among them.
    With `ppr`, BFS collects up to four times `max_nodes` candidates (at most
@@ -183,8 +186,9 @@ entity's changed properties read as they are now.
 3. **Assemble.** Passages, relations, preferences, decisions, and entities are
    written nearest or highest-ranked first. Passages are scored across every
    source behind the collected entities: a chunk ranks by how many distinct
-   query words it holds, then by the nearest entity that cites its source. The
-   best six distinct chunks are kept, and they take at most 60% of the budget.
+   query words it holds, ignoring a plain plural ending, then by the nearest
+   entity that cites its source. The best six distinct chunks are kept, and they
+   take at most 60% of the budget.
    The context never exceeds `budget_tokens`.
    The first relation, preference, decision, or entity line that does not fit
    ends the context, so a farther line never takes the place of a nearer one.

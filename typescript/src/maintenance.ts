@@ -272,7 +272,7 @@ export async function mergeRelations(
   }));
   const rids = found.map((rel) => rel.id);
   const tids = await ops.tracesTouchingRelations(runner, ns, rids);
-  await ops.repointSteps(runner, ns, tids, new Map(rids.map((rid) => [rid, survivor])));
+  await ops.repointSteps(runner, ns, tids.keys(), new Map(rids.map((rid) => [rid, survivor])));
   const versionsLost: Record<string, number> = {};
   for (const rid of rids) {
     versionsLost[rid] = await runner.deleteEdges(ns, rid);

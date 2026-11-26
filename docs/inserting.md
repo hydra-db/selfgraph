@@ -132,7 +132,7 @@ Text longer than one chunk logs `extracting chunk 3/12` at INFO on the
 | Missing or rejected API key, denied access, or unknown model | `ExtractionError` on the first failed call. |
 | Every call fails and nothing was extracted | `ExtractionError`. No source is recorded. |
 | Some calls fail | The rest is inserted. Each failure becomes an `extraction_partial_failure` warning with an `ErrorType: message` summary, the `source_id`, and the `chunk_id`. |
-| An extracted item cannot be stored, such as a preference strength above 1 | The item is dropped with an `extraction_partial_failure` warning. |
+| An extracted item cannot be stored, such as a preference strength above 1 | The item is dropped with an `extraction_partial_failure` warning. A dropped decision or preference stores nothing it named: no steps, and no entities made only for it. |
 | A relation or decision step uses a reserved type | The item is dropped with one `dropped_reserved_relation` warning. |
 
 The reserved types are SelfGraph's own edges: `AVOIDS`, `CONSIDERED`, `FROM`,
@@ -277,6 +277,10 @@ Text is split into chunks of up to 512 tokens with a 64-token overlap. Without
 `max_tokens` must be at least 1, and `overlap_tokens` from 0 to `max_tokens - 1`,
 or `chunk_text` raises `ValidationError`. Without `overlap_tokens` the overlap is
 `min(64, max_tokens // 4)`, so a small `max_tokens` works on its own.
+Both SDKs tokenize U+0085 (NEL) and U+FEFF (byte order mark) as spaces, because
+the regex engines behind tiktoken and `js-tiktoken` disagree on whether they are
+whitespace. Counts and chunk offsets then match, and chunk text keeps the original
+characters.
 `count_tokens` uses the tokenizer when installed and estimates otherwise.
 In Python, tiktoken downloads `cl100k_base` on first use. When that load fails,
 for example with no network, SelfGraph logs one warning on the `selfgraph` logger

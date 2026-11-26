@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, StrictInt
 from pydantic import ValidationError as PydanticValidationError
 
 from . import _ops
+from ._payload import context_payload
 from ._serde import L_ENTITY, decode_entity
 from .errors import ExtractionError
 from .models import InsertWarning, Relation
@@ -35,10 +36,10 @@ def _line(edge_type: str, source: str, target: str, properties: Mapping[str, Any
     @param source (str): the source entity's name.
     @param target (str): the destination entity's name.
     @param properties (Mapping[str, Any]): the relation's properties.
-    @return (str): the fact as one line.
+    @return (str): the fact as one line, with line breaks and control characters escaped.
     """
     props = " {" + ", ".join(f"{k}={v}" for k, v in sorted(properties.items())) + "}" if properties else ""
-    return f"{source} -[{edge_type}]-> {target}{props}"
+    return context_payload(f"{source} -[{edge_type}]-> {target}{props}")
 
 
 async def judge_contradictions(

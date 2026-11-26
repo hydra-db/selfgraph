@@ -4,6 +4,7 @@ import logging
 import re
 
 from .._marks import MARK_CLASS, UPPERCASE_CLASS
+from .._unicode import WORD_CLASS, lower, upper
 from ..errors import LLM_HINT
 from ..models import EntityInput, Extraction, InsertWarning, ParsedDocument
 from .extractor import _FALLBACK_TYPE, LLMExtractor, _RelOut, _WarningSink
@@ -28,7 +29,7 @@ _TYPE_MAP = {
     "LAW": "Law",
     "LANGUAGE": "Language",
 }
-_WORD = rf"[\w&.'\-{MARK_CLASS}]"
+_WORD = rf"[{WORD_CLASS}&.'\-{MARK_CLASS}]"
 _CAP = re.compile(rf"[{UPPERCASE_CLASS}]{_WORD}*(?:\s+[{UPPERCASE_CLASS}]{_WORD}*)*")
 _SENT = re.compile(r"(?<=[.!?])\s+")
 _STOPNAMES = frozenset(
@@ -101,7 +102,7 @@ def _spacy_extract(nlp, text: str):
             for obj in objects:
                 oe = ent_for(obj)
                 if oe is not None and oe.text != se.text:
-                    relations.append(_RelOut(from_name=se.text, type=tok.lemma_.upper(), to_name=oe.text))
+                    relations.append(_RelOut(from_name=se.text, type=upper(tok.lemma_), to_name=oe.text))
     return entities, relations
 
 
@@ -110,7 +111,7 @@ def _regex_extract(text: str):
     for sentence in _SENT.split(text):
         found = (m.group(0) for line in sentence.splitlines() for m in _CAP.finditer(line))
         raw = (" ".join(n.split()).strip(".,;:!?") for n in found)
-        names = list(dict.fromkeys(n for n in raw if n and n.lower() not in _STOPNAMES))
+        names = list(dict.fromkeys(n for n in raw if n and lower(n) not in _STOPNAMES))
         entities.extend(EntityInput(type=_FALLBACK_TYPE, name=name) for name in names)
         relations.extend(
             _RelOut(from_name=a, type="RELATED_TO", to_name=b) for a, b in zip(names, names[1:], strict=False)

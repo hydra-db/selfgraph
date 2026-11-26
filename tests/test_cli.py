@@ -1,6 +1,9 @@
 import argparse
+import errno
 import io
 import json
+import os
+import pathlib
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -125,11 +128,22 @@ def _subcommands(parser):
         (["--namespace", " x"], {}, "namespace cannot start or end with whitespace"),
         (["--llm-timeout", "-5"], {}, "llm_timeout must be a positive number"),
         (["--llm-concurrency", "0"], {}, "llm_concurrency must be a positive integer"),
+        (
+            ["--llm-concurrency", "++5"],
+            {},
+            "error[invalid_setting]: llm_concurrency must be a positive integer, got '++5'",
+        ),
+        ([], {"SELFGRAPH_LLM_CONCURRENCY": "++5"}, "llm_concurrency must be a positive integer, got '++5'"),
+        (["--llm-concurrency", "\u0665"], {}, "llm_concurrency must be a positive integer"),
+        ([], {"SELFGRAPH_LLM_CONCURRENCY": "99999999999999999999"}, "llm_concurrency must be a positive integer"),
+        (["--llm-timeout", "1_0"], {}, "llm_timeout must be a positive number"),
+        ([], {"SELFGRAPH_LLM_TIMEOUT": "\u0665"}, "llm_timeout must be a positive number"),
         (["--llm-provider", "gemini"], {}, "pass --llm-model"),
         (
             ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
             {},
-            "provider 'anthropic' conflicts with model prefix 'gemini'",
+            "llm_provider 'anthropic' conflicts with model prefix 'gemini'; pass --llm-provider "
+            "(or SELFGRAPH_LLM_PROVIDER) matching the model",
         ),
         (["--uri", ""], {}, "uri cannot be empty"),
         ([], {"SELFGRAPH_URI": ""}, "uri cannot be empty"),
@@ -267,9 +281,15 @@ def test_global_flags_after_the_subcommand(capsys, tmp_path):
     assert json.loads(capsys.readouterr().out)["id"] == "t:a"
     assert main(["--store", "kuzu", "--uri", uri, "--namespace", "n", "entity", "get", "t:a", "--namespace", "m"]) == 1
     capsys.readouterr()
-    with pytest.raises(SystemExit) as exc:
-        main(["entity", "get", "t:a", "--bogus"])
-    assert exc.value.code == 2
+    assert main(["entity", "get", "t:a", "--bogus"]) == 2
+    assert "error[invalid_argument]" in capsys.readouterr().err
+
+
+def test_a_subcommand_parse_error_names_the_full_command(capsys):
+    assert main(["entity", "list", "--limit", "x"]) == 2
+    err = capsys.readouterr().err
+    assert "command: selfgraph entity list" in err
+    assert "--limit expects an integer, got 'x'" in err
 
 
 def test_time_flags_share_one_parser(capsys):
@@ -284,9 +304,10 @@ def test_time_flags_share_one_parser(capsys):
     cli(g, ["entity", "create", "--name", "b", "--type", "T"], capsys)
     out = cli(g, ["relation", "create", "t:a", "KNOWS", "t:b", "--event-time", "2024-01-02T03:04:05Z"], capsys)
     assert out["event_time"] == "2024-01-02T03:04:05Z"
-    with pytest.raises(SystemExit):
+    with pytest.raises(SelfGraphError) as raised:
         cli(g, ["relation", "create", "t:a", "KNOWS", "t:b", "--event-time", "soon"], capsys)
-    assert "is not an ISO 8601 date or time" in capsys.readouterr().err
+    assert raised.value.code == "invalid_argument"
+    assert raised.value.field == "event_time"
 
 
 def test_time_arguments_read_one_iso_grammar_on_every_python():
@@ -368,9 +389,26 @@ def test_store_settings_warnings_params_and_inline_schema(capsys, tmp_path, monk
     assert "missing parameter $a" in capsys.readouterr().err
     assert kuzu_main(tmp_path, "query", "RETURN $a AS a", "--param", "a=1", "--param", "b=2") == 0
     assert json.loads(capsys.readouterr().out)["rows"] == [{"a": 1}]
+
+
+def test_query_error_escapes_control_characters(tmp_path, capsys):
+    assert kuzu_main(tmp_path, "query", "RETURN (\x1b[2J") == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err
+    assert "\\x1b" in err
     schema = json.dumps({"entities": [{"name": "Person"}]})
     assert kuzu_main(tmp_path, "--schema", schema, "schema") == 0
     assert json.loads(capsys.readouterr().out)["entities"][0]["name"] == "Person"
+
+
+def test_query_rejects_an_empty_kuzu_param_with_the_parameter_field(capsys, tmp_path):
+    assert kuzu_main(tmp_path, "query", "RETURN $x AS x", "--param", "x=[]") == 2
+    assert capsys.readouterr().err == cli_error(
+        "invalid_argument",
+        "parameter 'x' is an empty list, which Kuzu cannot type; pass a non-empty list",
+        "selfgraph query",
+        "x",
+    )
 
 
 def test_bad_facts_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsys, tmp_path):
@@ -466,6 +504,139 @@ def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path
     assert raised.value.code == "invalid_argument"
     assert raised.value.field == "directory"
     assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
+
+
+def test_export_obsidian_names_a_file_parent_not_a_directory_when_the_os_reports_it_as_existing(
+    capsys, monkeypatch, tmp_path
+):
+    g = fresh_graph("export-file-parent")
+    run(g.entities.create("Ada", "Person"))
+    parent = tmp_path / "notes"
+    parent.write_text("not a directory")
+    target = parent / "nested"
+    capsys.readouterr()
+
+    def parent_exists(self, *args, **kwargs):
+        raise FileExistsError(errno.EEXIST, "Cannot create a file when that file already exists", str(parent))
+
+    with monkeypatch.context() as patched:
+        patched.setattr(pathlib.Path, "mkdir", parent_exists)
+        with pytest.raises(SelfGraphError) as raised:
+            cli(g, ["export", "obsidian", str(target)], capsys)
+    assert (raised.value.code, raised.value.field) == ("invalid_argument", "directory")
+    assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
+    with pytest.raises(SelfGraphError) as raised:
+        cli(g, ["export", "obsidian", str(parent)], capsys)
+    assert str(raised.value) == f"cannot write the vault to {str(parent)!r}: file exists"
+
+
+def test_a_non_utf8_input_file_reports_a_coded_error(capsys, tmp_path):
+    pytest.importorskip("kuzu")
+    bad = tmp_path / "schema.json"
+    bad.write_bytes(b"\xff\xfe{")
+
+    assert main(["--schema", str(bad), "entity", "list"]) == 2
+    err = capsys.readouterr().err
+    assert (
+        f"error[invalid_argument]: cannot read {str(bad)!r}: not valid UTF-8; save the file as UTF-8 and try again"
+    ) in err
+    assert "field: path" in err
+    assert "Traceback" not in err
+
+
+def test_a_non_utf8_stdin_schema_reports_a_coded_error_under_surrogateescape():
+    pytest.importorskip("kuzu")
+    import selfgraph
+
+    src = os.path.dirname(os.path.dirname(os.path.abspath(selfgraph.__file__)))
+    env = {**os.environ, "PYTHONPATH": src, "PYTHONIOENCODING": "utf-8:surrogateescape"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "selfgraph.cli",
+            "--store",
+            "kuzu",
+            "--uri",
+            ":memory:",
+            "--schema",
+            "-",
+            "entity",
+            "list",
+        ],
+        input=b"\xff\xfe{",
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 2, result.stderr
+    err = result.stderr.decode("utf-8", "replace")
+    assert "error[invalid_argument]: cannot read '-': not valid UTF-8" in err
+    assert "field: path" in err
+    assert "Traceback" not in err
+
+
+def test_a_piped_stdout_is_utf8_when_the_locale_encoding_is_not(tmp_path):
+    pytest.importorskip("kuzu")
+    src = os.path.dirname(os.path.dirname(os.path.abspath(selfgraph.__file__)))
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}
+    env.update({"PYTHONPATH": src, "PYTHONIOENCODING": "cp1252"})
+    base = [sys.executable, "-m", "selfgraph.cli", "--store", "kuzu", "--uri", str(tmp_path / "g.kuzu")]
+
+    def run_cli(*args, stdin=None):
+        return subprocess.run([*base, *args], input=stdin, capture_output=True, env=env)
+
+    names = {"org:omega": "Ωmega Корп", "person:zoe": "Zoë"}
+    facts = {"entities": [{"id": key, "type": key.split(":")[0], "name": name} for key, name in names.items()]}
+    inserted = run_cli("insert", "facts", "-", stdin=json.dumps(facts, ensure_ascii=False).encode("utf-8"))
+    assert inserted.returncode == 0, inserted.stderr
+    listed = run_cli("entity", "list")
+    assert listed.returncode == 0, listed.stderr
+    assert {item["id"]: item["name"] for item in json.loads(listed.stdout.decode("utf-8"))["items"]} == names
+    missing = run_cli("entity", "get", "Ω:missing")
+    assert missing.returncode == 1
+    assert "Entity 'Ω:missing' does not exist" in missing.stderr.decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("argv", "code", "field", "text"),
+    [
+        (["entity", "list", "--limit", "x"], "invalid_argument", "limit", "--limit expects an integer, got 'x'"),
+        (["retrieve", "Ada", "--k", "1.5"], "invalid_argument", "k", "--k expects an integer, got '1.5'"),
+        (
+            ["preference", "create", "--strength", "x"],
+            "invalid_argument",
+            "strength",
+            "--strength expects a number, got 'x'",
+        ),
+        (
+            ["diff", "--since", "nope"],
+            "invalid_argument",
+            "since",
+            "invalid since: 'nope' is not an ISO 8601 date or time",
+        ),
+        (
+            ["--store", "bogus", "entity", "list"],
+            "invalid_setting",
+            "store",
+            "--store got 'bogus'; choose from neo4j, cypher, memgraph",
+        ),
+        (
+            ["--store", "kuzu", "--uri", ":memory:", "preference", "create", "--stance", "bogus"],
+            "invalid_argument",
+            "stance",
+            "--stance got 'bogus'; choose from preference, disinterest",
+        ),
+    ],
+)
+def test_typed_and_choice_flags_report_the_same_coded_error_as_typescript(capsys, argv, code, field, text):
+    args = argv if argv[0] == "--store" else ["--store", "kuzu", "--uri", ":memory:", *argv]
+    if any(flag in argv for flag in ("--limit", "--k", "--strength", "--since")):
+        pytest.importorskip("kuzu")
+    assert main(args) == 2
+    err = capsys.readouterr().err
+    assert err.startswith(f"error[{code}]: {text}")
+    assert f"field: {field}" in err
+    assert "usage:" not in err
 
 
 def test_version_and_help_text(capsys):

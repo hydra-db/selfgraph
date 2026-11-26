@@ -47,6 +47,7 @@ ErrorCode = Literal[
     "invalid_llm_output",
     "invalid_prompt_template",
     "query_failed",
+    "inexact_value",
     "invalid_stored_data",
     "graph_closed",
     "store_closed",
@@ -147,6 +148,11 @@ HINTS: dict[ErrorCode, str] = {
     ),
     "query_failed": (
         "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself."
+    ),
+    "inexact_value": (
+        "The Kuzu driver cannot return a result value exactly. Cast the column in the query to a type it returns "
+        "exactly, such as `cast(x AS STRING)` for an integer beyond 2^53 or a wide DECIMAL, or `cast(x AS DOUBLE)` "
+        "for a negative DECIMAL between -0.1 and 0. Do not drop the column to make the call pass."
     ),
     "invalid_stored_data": (
         "A stored node or edge is malformed. Repair the document identified by the message in its namespace "
@@ -653,3 +659,39 @@ def error_reason(exc: BaseException) -> str:
         return f"{head}: {inner}" if head and inner else head or inner
 
     return reason(exc) or type(exc).__name__
+
+
+def escape_controls(text: str) -> str:
+    """Render control characters as backslash escapes, the way repr shows quoted input.
+
+    Engine error text can quote the query, so a raw escape byte in it would run in a
+    terminal or log viewer. Newline, carriage return, and tab get their short forms;
+    other C0/C1 controls, DEL, lone surrogates, and bidi/format and zero-width
+    characters get \\xNN or \\uNNNN.
+
+    @param text (str): the text, such as an engine error message.
+    @return (str): the text with control characters escaped.
+    """
+    out = []
+    for ch in text:
+        if ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        else:
+            point = ord(ch)
+            if (
+                point < 0x20
+                or 0x7F <= point <= 0x9F
+                or 0xD800 <= point <= 0xDFFF
+                or 0x200B <= point <= 0x200F
+                or 0x202A <= point <= 0x202E
+                or 0x2066 <= point <= 0x2069
+                or point == 0xFEFF
+            ):
+                out.append(f"\\x{point:02x}" if point < 0x100 else f"\\u{point:04x}")
+            else:
+                out.append(ch)
+    return "".join(out)

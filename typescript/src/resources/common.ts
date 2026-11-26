@@ -1,6 +1,7 @@
 import type { GraphAccess } from "../access.js";
 import { ValidationError } from "../errors.js";
 import { isPlainObject, pyRepr, pyStrip } from "../internal/py.js";
+import { lower } from "../internal/unicode.js";
 import { type Evidence, EvidenceInput, type Page, parseOrThrow } from "../models.js";
 import { evidenceFromInputs } from "../ops.js";
 import type { GraphPrimitives } from "../protocols.js";
@@ -71,7 +72,7 @@ export function decodeKeyCursor(cursor: unknown, kind: string): string | null {
       !!pyStrip(prefix) &&
       !!pyStrip(text.slice(colon + 1)) &&
       !hasControl(text) &&
-      (kind === "entity" || prefix.toLowerCase() === kind)
+      (kind === "entity" || lower(prefix) === kind)
     );
   });
 }

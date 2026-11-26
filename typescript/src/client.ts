@@ -374,7 +374,7 @@ export class SelfGraph {
 }
 
 /**
- * Construct a SelfGraph from settings; does not initialize the store.
+ * Construct a SelfGraph from settings, closing the store when a later step fails; does not initialize the store.
  *
  * @param value (GraphSettings): the resolved store, LLM, and schema configuration.
  * @return (SelfGraph): the constructed graph.
@@ -382,16 +382,22 @@ export class SelfGraph {
 export function buildGraph(value: GraphSettings): SelfGraph {
   const settings = checkSettings(value);
   const namespace = settings.namespace ?? DEFAULT_SETTINGS.namespace;
-  return new SelfGraph(buildStore(settings), {
-    llm: buildLlm(settings),
-    instructions: settings.instructions as ExtractionInstructions | null,
-    prompts: settings.prompts as ExtractionPrompts | null,
-    namespace,
-    schema: settings.schema as ParsedSchema | null,
-    schema_mode: (settings.schema_mode || "warn") as SchemaMode,
-    resolver: (settings.resolver || null) as ResolverMode | null,
-    contradiction: (settings.contradiction || null) as ContradictionMode | null,
-    level: (settings.level || "balanced") as Level,
-    max_tier: (settings.max_tier || "max") as Level,
-  });
+  const store = buildStore(settings);
+  try {
+    return new SelfGraph(store, {
+      llm: buildLlm(settings),
+      instructions: settings.instructions as ExtractionInstructions | null,
+      prompts: settings.prompts as ExtractionPrompts | null,
+      namespace,
+      schema: settings.schema as ParsedSchema | null,
+      schema_mode: (settings.schema_mode || "warn") as SchemaMode,
+      resolver: (settings.resolver || null) as ResolverMode | null,
+      contradiction: (settings.contradiction || null) as ContradictionMode | null,
+      level: (settings.level || "balanced") as Level,
+      max_tier: (settings.max_tier || "max") as Level,
+    });
+  } catch (error) {
+    store.close?.().catch(() => undefined);
+    throw error;
+  }
 }

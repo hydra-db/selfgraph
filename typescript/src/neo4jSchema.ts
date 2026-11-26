@@ -191,21 +191,23 @@ export function fromNeo4jOntology(data: unknown): ParsedSchema {
   const top = mapping(data, "neo4j ontology");
   const dropped: string[] = [];
   extra(top, TOP_KEYS, "", dropped);
-  const nodes = new Map<string, TypeBody>();
-  items(top, "node_types", "neo4j ontology").forEach((raw, i) => {
-    const body = importType(raw, `node_types[${i}]`, dropped);
-    nodes.set(body.label, body);
-  });
-  const rels = new Map<string, TypeBody>();
-  items(top, "relationship_types", "neo4j ontology").forEach((raw, i) => {
-    const body = importType(raw, `relationship_types[${i}]`, dropped);
-    rels.set(body.label, body);
-  });
+  const nodes = items(top, "node_types", "neo4j ontology").map((raw, i) =>
+    importType(raw, `node_types[${i}]`, dropped),
+  );
+  const rels = items(top, "relationship_types", "neo4j ontology").map((raw, i) =>
+    importType(raw, `relationship_types[${i}]`, dropped),
+  );
+  const nodeBodies = new Map(nodes.map((body) => [body.label, body]));
+  const relBodies = new Map(rels.map((body) => [body.label, body]));
   const ends = new Map<string, [string[], string[]]>();
   const pairs = new Map<string, Set<string>>();
   items(top, "patterns", "neo4j ontology").forEach((raw, i) => {
     const [source, rel, target] = pattern(raw, `patterns[${i}]`);
-    if (!rels.has(rel)) rels.set(rel, { label: rel, description: null, aliases: [], properties: [] });
+    if (!relBodies.has(rel)) {
+      const body: TypeBody = { label: rel, description: null, aliases: [], properties: [] };
+      relBodies.set(rel, body);
+      rels.push(body);
+    }
     const [froms, tos] = ends.get(rel) ?? [[], []];
     if (!froms.includes(source)) froms.push(source);
     if (!tos.includes(target)) tos.push(target);
@@ -219,22 +221,22 @@ export function fromNeo4jOntology(data: unknown): ParsedSchema {
   }
   items(top, "constraints", "neo4j ontology").forEach((raw, i) => {
     const constraint = mapping(raw, `constraints[${i}]`);
-    applyConstraint(constraint.node_type ? nodes : rels, constraint, `constraints[${i}]`, dropped);
+    applyConstraint(constraint.node_type ? nodeBodies : relBodies, constraint, `constraints[${i}]`, dropped);
   });
   if (dropped.length) {
     log(`neo4j ontology: dropped what SelfGraph does not model: ${dropped.join(", ")}`);
   }
   return asSchema({
-    entities: [...nodes.values()].map((b) => ({
+    entities: nodes.map((b) => ({
       name: b.label,
       description: b.description,
       aliases: b.aliases as string[],
       properties: b.properties,
     })),
-    relations: [...rels.entries()].map(([label, b]) => {
-      const [froms, tos] = ends.get(label) ?? [[], []];
+    relations: rels.map((b) => {
+      const [froms, tos] = ends.get(b.label) ?? [[], []];
       return {
-        type: label,
+        type: b.label,
         description: b.description,
         aliases: b.aliases as string[],
         from: { types: froms },

@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import {
   type Command,
   CommanderError,
-  InvalidArgumentError,
   Option,
   type OptionValues,
   Command as Program,
@@ -94,7 +93,9 @@ const contradictionOption = () =>
   new Option(
     "--contradiction <mode>",
     "how to handle a contradicting relation; llm also judges with no max_count (default warn)",
-  ).choices(CONTRADICTION_MODES);
+  )
+    .choices(CONTRADICTION_MODES)
+    .argParser(choiceArg("--contradiction", CONTRADICTION_MODES));
 
 type GlobalOptions = {
   store?: string;
@@ -131,9 +132,36 @@ class Text {
  * @return ((value: string) => number): the parser.
  */
 const intArg = (flag: string) => (value: string) => {
-  if (!/^[+-]?\d+$/.test(value.trim())) throw new ValidationError(`${flag} expects an integer, got ${pyRepr(value)}`);
+  if (!/^[+-]?\d+$/.test(value.trim())) {
+    throw new ValidationError(`${flag} expects an integer, got ${pyRepr(value)}`, {
+      field: flag.replace(/^--/, "").replaceAll("-", "_"),
+    });
+  }
   return Number.parseInt(value, 10);
 };
+
+/**
+ * A parser for a fixed-choice flag that raises SelfGraph's own error instead of
+ * letting commander print a bare usage message.
+ *
+ * @param flag (string): the flag, for the message.
+ * @param choices (readonly string[]): the accepted values.
+ * @return ((value: string) => string): the parser.
+ */
+const choiceArg =
+  <T extends string>(flag: string, choices: readonly T[]) =>
+  (value: string): T => {
+    if (!choices.includes(value as T)) {
+      const setting = SETTING_CHOICES.has(flag);
+      throw new ValidationError(`${flag} got ${pyRepr(value)}; choose from ${choices.join(", ")}`, {
+        ...(setting ? { code: "invalid_setting" as const } : {}),
+        field: flag.replace(/^--/, "").replaceAll("-", "_"),
+      });
+    }
+    return value as T;
+  };
+
+const SETTING_CHOICES = new Set(["--store", "--schema-mode", "--resolver", "--contradiction", "--level", "--max-tier"]);
 
 /**
  * A repeatable --clear option limited to the fields an update can clear.
@@ -145,7 +173,11 @@ function clearOption(fields: readonly string[]) {
   return new Option("--clear <FIELD>", `clear a field (repeatable): ${fields.join(", ")}`)
     .choices(fields)
     .argParser((value: string, prev: string[]) => {
-      if (!fields.includes(value)) throw new InvalidArgumentError(`Allowed choices are ${fields.join(", ")}.`);
+      if (!fields.includes(value)) {
+        throw new ValidationError(`--clear got ${pyRepr(value)}; choose from ${fields.join(", ")}`, {
+          field: "clear",
+        });
+      }
       return [...prev, value];
     })
     .default([] as string[]);
@@ -189,7 +221,9 @@ const found =
 const floatArg = (flag: string) => (value: string) => {
   const n = Number(value);
   if (value.trim() === "" || Number.isNaN(n))
-    throw new ValidationError(`${flag} expects a number, got ${pyRepr(value)}`);
+    throw new ValidationError(`${flag} expects a number, got ${pyRepr(value)}`, {
+      field: flag.replace(/^--/, "").replaceAll("-", "_"),
+    });
   return n;
 };
 
@@ -329,9 +363,9 @@ function paging<A extends unknown[], O extends OptionValues, G extends OptionVal
 }
 
 const callResolver = () =>
-  new Option("--resolver <mode>", "entity resolution for this insert (default: the global --resolver)").choices(
-    RESOLVER_MODES,
-  );
+  new Option("--resolver <mode>", "entity resolution for this insert (default: the global --resolver)")
+    .choices(RESOLVER_MODES)
+    .argParser(choiceArg("--resolver", RESOLVER_MODES));
 
 function entityCommands(program: Command<[], GlobalOptions>): void {
   const ent = program.command("entity").description("create/get/list/evidence/merges/unmerge/update/delete entities");
@@ -510,7 +544,12 @@ function preferenceCommands(program: Command<[], GlobalOptions>): void {
     .command("create <subject> <key> <value>")
     .description("create a preference of a subject for a value entity (an existing entity id, e.g. tool:hydradb)")
     .option("--id <id>")
-    .addOption(new Option("--stance <stance>").choices(Stance.options).default(DEFAULT_STANCE))
+    .addOption(
+      new Option("--stance <stance>")
+        .choices(Stance.options)
+        .argParser(choiceArg("--stance", Stance.options))
+        .default(DEFAULT_STANCE),
+    )
     .option("--about <id>", "entity id the preference is about")
     .option("--strength <x>", "strength", floatArg("--strength"))
     .option("--prop <KEY=VALUE>", `property (repeatable)${JSON_VALUE}`, collect, [])
@@ -536,7 +575,9 @@ function preferenceCommands(program: Command<[], GlobalOptions>): void {
       .command("list [subject]")
       .description("list current preferences, for one subject or all (omit subject)")
       .option("--key <key>")
-      .addOption(new Option("--stance <stance>").choices(Stance.options)),
+      .addOption(
+        new Option("--stance <stance>").choices(Stance.options).argParser(choiceArg("--stance", Stance.options)),
+      ),
   ).action((subject, o, cmd) =>
     emit(cmd, (g) =>
       g.preferences.list(subject ?? null, { key: o.key, stance: o.stance, cursor: o.cursor, limit: o.limit }),
@@ -583,7 +624,12 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
     .option("--rationale <text>")
     .option("--outcome <id>", "outcome entity id")
     .option("--alternative <id>", "alternative entity id (repeatable)", collect, [])
-    .addOption(new Option("--status <status>").choices(Status.options).default(DEFAULT_STATUS))
+    .addOption(
+      new Option("--status <status>")
+        .choices(Status.options)
+        .argParser(choiceArg("--status", Status.options))
+        .default(DEFAULT_STATUS),
+    )
     .option("--event-time <iso>", `when the decision was made (${ISO})`, timeArg("event_time"))
     .action((title, o, cmd) =>
       emit(cmd, (g) =>
@@ -609,7 +655,9 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
       .command("list")
       .description("list decision traces, filtered by actor or status")
       .option("--actor <id>", "actor entity id")
-      .addOption(new Option("--status <status>").choices(Status.options)),
+      .addOption(
+        new Option("--status <status>").choices(Status.options).argParser(choiceArg("--status", Status.options)),
+      ),
   ).action((o, cmd) =>
     emit(cmd, (g) => g.decisions.list({ actor_entity: o.actor, status: o.status, cursor: o.cursor, limit: o.limit })),
   );
@@ -619,7 +667,7 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
     .option("--title <text>")
     .option("--summary <text>")
     .option("--rationale <text>")
-    .addOption(new Option("--status <status>").choices(Status.options))
+    .addOption(new Option("--status <status>").choices(Status.options).argParser(choiceArg("--status", Status.options)))
     .option("--step <relation-id>", "replace steps (repeatable, ordered; --clear steps empties them)", collect, [])
     .option("--actor <id>", "actor entity id")
     .option("--outcome <id>", "outcome entity id")
@@ -700,7 +748,9 @@ export function buildParser(): Command<[], GlobalOptions> {
       new Option(
         "--store <store>",
         "backend: hydradb, neo4j, cypher, memgraph, falkordb, or kuzu (default $SELFGRAPH_STORE, else embedded kuzu, or hydradb with --uri)",
-      ).choices(STORES),
+      )
+        .choices(STORES)
+        .argParser(choiceArg("--store", STORES)),
     )
     .option("--uri <uri>", "Bolt URI for neo4j/cypher/hydradb, host:port for falkordb, file path for kuzu")
     .option(
@@ -721,13 +771,27 @@ export function buildParser(): Command<[], GlobalOptions> {
     .option("--schema <path>", "schema JSON file applied to every insert, or inline JSON when it starts with '{'")
     .option("--instructions <path>", "extraction instructions JSON file, or inline JSON when it starts with '{'")
     .option("--prompts <path>", "extraction prompt templates JSON file, or inline JSON when it starts with '{'")
-    .addOption(new Option("--schema-mode <mode>", "default warn; strict needs --schema").choices(SCHEMA_MODES))
     .addOption(
-      new Option("--resolver <mode>", "entity resolution on insert (default: by level)").choices(RESOLVER_MODES),
+      new Option("--schema-mode <mode>", "default warn; strict needs --schema")
+        .choices(SCHEMA_MODES)
+        .argParser(choiceArg("--schema-mode", SCHEMA_MODES)),
+    )
+    .addOption(
+      new Option("--resolver <mode>", "entity resolution on insert (default: by level)")
+        .choices(RESOLVER_MODES)
+        .argParser(choiceArg("--resolver", RESOLVER_MODES)),
     )
     .addOption(contradictionOption())
-    .addOption(new Option("--level <level>", "sets every capability's default tier (default balanced)").choices(LEVELS))
-    .addOption(new Option("--max-tier <level>", "cost cap no capability climbs past (default max)").choices(LEVELS))
+    .addOption(
+      new Option("--level <level>", "sets every capability's default tier (default balanced)")
+        .choices(LEVELS)
+        .argParser(choiceArg("--level", LEVELS)),
+    )
+    .addOption(
+      new Option("--max-tier <level>", "cost cap no capability climbs past (default max)")
+        .choices(LEVELS)
+        .argParser(choiceArg("--max-tier", LEVELS)),
+    )
     .hook("preAction", (_program, action) => {
       checkedSettings.set(action, checkSettings(settingsOf(action)));
     });
@@ -794,7 +858,12 @@ export function buildParser(): Command<[], GlobalOptions> {
   schema
     .command("import <path>")
     .description("convert a Neo4j graph schema JSON file, or '-' for stdin, and print it")
-    .addOption(new Option("--from <format>", "the source format").choices(["neo4j"]).default("neo4j"))
+    .addOption(
+      new Option("--from <format>", "the source format")
+        .choices(["neo4j"])
+        .argParser(choiceArg("--from", ["neo4j"]))
+        .default("neo4j"),
+    )
     .action((path, _o, cmd) =>
       emit(cmd, async () => {
         const data = readJson(path);
@@ -813,7 +882,12 @@ export function buildParser(): Command<[], GlobalOptions> {
   schema
     .command("export")
     .description("print the active schema (--schema) as a Neo4j graph schema or Ossie ontology")
-    .addOption(new Option("--to <format>", "the target format").choices(["neo4j", "ossie"]).default("neo4j"))
+    .addOption(
+      new Option("--to <format>", "the target format")
+        .choices(["neo4j", "ossie"])
+        .argParser(choiceArg("--to", ["neo4j", "ossie"]))
+        .default("neo4j"),
+    )
     .action((o, cmd) =>
       emit(cmd, async (g) => {
         if (g.schema === null)
@@ -945,8 +1019,16 @@ export function buildParser(): Command<[], GlobalOptions> {
   program
     .command("retrieve <query...>")
     .description("retrieve graph context for a query; unquoted words join into one query")
-    .addOption(new Option("--strategy <s>", "traversal order, or ppr for PageRank ranking").choices(STRATEGIES))
-    .addOption(new Option("--seeds <tier>", "seeding tier (default: the level's)").choices(SEED_TIERS))
+    .addOption(
+      new Option("--strategy <s>", "traversal order, or ppr for PageRank ranking")
+        .choices(STRATEGIES)
+        .argParser(choiceArg("--strategy", STRATEGIES)),
+    )
+    .addOption(
+      new Option("--seeds <tier>", "seeding tier (default: the level's)")
+        .choices(SEED_TIERS)
+        .argParser(choiceArg("--seeds", SEED_TIERS)),
+    )
     .option("--depth <n>", "traversal hops", intArg("--depth"), RETRIEVE_DEFAULTS.depth)
     .option("--k <n>", "seed count", intArg("--k"), RETRIEVE_DEFAULTS.k)
     .option("--max-nodes <n>", "entity cap", intArg("--max-nodes"), RETRIEVE_DEFAULTS.max_nodes)

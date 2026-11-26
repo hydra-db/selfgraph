@@ -8,7 +8,8 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from ._marks import MARK_CLASS
+from ._marks import FORMAT_CLASS, MARK_CLASS
+from ._unicode import WORD_CLASS, lower, upper
 from .errors import ValidationError
 
 __all__ = [
@@ -84,6 +85,24 @@ def _reject_proto_keys(value: Any) -> Any:
     return value
 
 
+def _require_json_depth(name: str, value: object) -> None:
+    """Bound the nesting of a raw JSON value without recursing, so it can run before pydantic walks the value.
+
+    @param name (str): the field name for error messages.
+    @param value (object): the raw input, traversed through mappings and sequences.
+    @return (None): nothing; raises ValidationError past the depth that _require_clean_json allows.
+    """
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > _MAX_JSON_DEPTH:
+            raise ValidationError(f"{name} is nested too deeply; keep it under {_MAX_JSON_DEPTH} levels")
+        if isinstance(item, Mapping):
+            pending.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list | tuple):
+            pending.extend((child, depth + 1) for child in item)
+
+
 def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: bool = True) -> None:
     """Validate a stored JSON value: bounded nesting, clean string keys, and UTF-8-emittable string values.
 
@@ -125,6 +144,21 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
             _require_clean_json(name, item, depth + 1, safe_ints=safe_ints)
     else:
         raise ValidationError(f"{name} cannot hold {type_name(value)} values; use plain JSON")
+
+
+def number_text(value: int | float) -> str:
+    """Render a number the way the TypeScript port does in a message: a whole number in the safe range has no fraction.
+
+    @param value (int | float): the number.
+    @return (str): the text, such as 0, 2.5, or 1e+16.
+    """
+    try:
+        number = float(value)
+    except OverflowError:
+        return "inf" if value > 0 else "-inf"
+    if number.is_integer() and abs(number) <= MAX_SAFE_INTEGER and str(number) != "-0.0":
+        return str(int(number))
+    return repr(number)
 
 
 def type_name(value: object) -> str:
@@ -177,7 +211,7 @@ def _require_unit(label: str, value: object, *, finite: bool = False) -> None:
     if finite and not math.isfinite(value):
         raise ValidationError(f"{label} must be a finite number")
     if not 0.0 <= value <= 1.0:
-        raise ValidationError(f"{label} must be between 0 and 1, got {value}")
+        raise ValidationError(f"{label} must be between 0 and 1, got {number_text(value)}")
 
 
 def _require_namespace(value: object) -> None:
@@ -205,8 +239,10 @@ def _require_no_control(label: str, value: str) -> None:
 _WS = re.compile(r"\s+")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARK = re.compile(f"[{MARK_CLASS}]")
-_PUNCT = re.compile(rf"[^\w\s{MARK_CLASS}]+")
-_NON_IDENT = re.compile(rf"[^\w{MARK_CLASS}]+")
+_FORMAT = re.compile(f"[{FORMAT_CLASS}]")
+_PUNCT = re.compile(rf"[^{WORD_CLASS}\s{MARK_CLASS}]+")
+_NON_IDENT = re.compile(rf"[^{WORD_CLASS}{MARK_CLASS}]+")
+_SYMBOL_WORDS = (("+", " plus "), ("#", " sharp "))
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _DIGIT_LETTER = re.compile(r"(?<=[0-9])(?=[A-Z])")
 _ENTITY_SUFFIXES = frozenset(
@@ -301,12 +337,32 @@ def normalize_text(value: str) -> str:
 
 
 def slug(text: str) -> str:
-    """Lowercase ``text`` and turn runs of whitespace into single hyphens.
+    """Lowercase ``text``, turn runs of whitespace into single hyphens, and NFC-normalize the result.
 
     @param text (str): the text to slugify.
     @return (str): the slugified text.
     """
-    return _WS.sub("-", text.strip().lower())
+    return normalize_text(_WS.sub("-", lower(text.strip())))
+
+
+def _is_org_type(type: str) -> bool:
+    """Report whether an entity type gets organisation-style name canonicalisation.
+
+    @param type (str): the entity type.
+    @return (bool): True when the type is organisation-like.
+    """
+    return slug(normalize_text(type)) in _ORG_TYPES
+
+
+def _spell_symbols(text: str) -> str:
+    """Spell out the symbols a derived id keeps as words, so C++, C#, and C stay three names.
+
+    @param text (str): the text to spell out.
+    @return (str): the text with each of those symbols replaced by its word, set apart by spaces.
+    """
+    for symbol, word in _SYMBOL_WORDS:
+        text = text.replace(symbol, word)
+    return text
 
 
 def _canonical_name(type: str, name: str) -> str:
@@ -316,9 +372,8 @@ def _canonical_name(type: str, name: str) -> str:
     @param name (str): the raw entity name.
     @return (str): the canonical hyphenated form.
     """
-    name = normalize_text(name)
-    words = _PUNCT.sub(" ", name.strip().lower()).split()
-    if slug(type) in _ORG_TYPES:
+    words = _PUNCT.sub(" ", _spell_symbols(normalize_text(lower(_FORMAT.sub("", name).strip())))).split()
+    if _is_org_type(type):
         if words and words[0] == "the":
             words = words[1:]
         while len(words) > 1 and words[-1] in _ENTITY_SUFFIXES:
@@ -357,7 +412,7 @@ def _canonical_id(eid: Any) -> Any:
     if not isinstance(eid, str) or ":" not in eid:
         return eid
     prefix, name = eid.split(":", 1)
-    return f"{slug(normalize_text(prefix))}:{slug(normalize_text(name))}"
+    return f"{slug(prefix)}:{slug(name)}"
 
 
 def _require_entity_shape(eid: str) -> None:
@@ -396,7 +451,7 @@ def normalize_rel_type(type: str) -> str:
     @return (str): the canonical relation type.
     """
     _require_str("relation type", type)
-    normalized = _NON_IDENT.sub("_", _CAMEL.sub("_", normalize_text(type).strip()).lower()).strip("_").upper()
+    normalized = upper(_NON_IDENT.sub("_", lower(_CAMEL.sub("_", normalize_text(type).strip()))).strip("_"))
     normalized = normalize_text(_DIGIT_LETTER.sub("_", normalized))
     if not normalized:
         raise ValidationError("relation type cannot be empty; use a verb phrase, e.g. 'works at' or 'WORKS_AT'")
@@ -581,7 +636,7 @@ def quote_label(name: str) -> str:
     """
     if not name or not name.strip():
         raise ValidationError("label / type names cannot be empty")
-    if _IDENT.match(name):
+    if _IDENT.fullmatch(name):
         return name
     escaped = name.replace("`", "``")
     return f"`{escaped}`"

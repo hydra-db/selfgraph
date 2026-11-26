@@ -9,15 +9,16 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, Literal
 
-from pydantic import BeforeValidator, NonNegativeInt, PositiveInt, StrictBool, create_model
+from pydantic import BeforeValidator, Field, StrictBool, create_model
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import core_schema
 
 from .._cypher_guard import _BLANK, blank_lexical_tokens, check_cypher_limits
 from ..client import SelfGraph
 from ..errors import WARNING_HINTS, SelfGraphError, ValidationError, internal_error, surface_hint
-from ..ids import type_name
+from ..ids import MAX_SAFE_INTEGER, type_name
 from ..models import Stance, Status, check_options, validation_error
+from ..resolution import ResolverMode
 from ..resources._common import DEFAULT_PAGE_LIMIT
 from ..runtime import (
     _PARAM_REF,
@@ -184,9 +185,9 @@ def _json_number(value: Any) -> Any:
 
 Number = Annotated[float, BeforeValidator(_json_number)]
 OptNumber = Annotated[float | None, BeforeValidator(lambda v: v if v is None else _json_number(v))]
-Integer = Annotated[int, BeforeValidator(_json_number)]
-PositiveInteger = Annotated[PositiveInt, BeforeValidator(_json_number)]
-NonNegativeInteger = Annotated[NonNegativeInt, BeforeValidator(_json_number)]
+Integer = Annotated[int, Field(ge=-MAX_SAFE_INTEGER, le=MAX_SAFE_INTEGER), BeforeValidator(_json_number)]
+PositiveInteger = Annotated[int, Field(ge=1, le=MAX_SAFE_INTEGER), BeforeValidator(_json_number)]
+NonNegativeInteger = Annotated[int, Field(ge=0, le=MAX_SAFE_INTEGER), BeforeValidator(_json_number)]
 
 
 async def configure(settings: GraphSettings | None = None) -> None:
@@ -317,7 +318,7 @@ async def insert_text(
     source_id: str | None = None,
     event_time: str | None = None,
     metadata: dict | None = None,
-    resolver: str | None = None,
+    resolver: ResolverMode | None = None,
     contradiction: ContradictionMode | None = None,
     schema: dict | None = None,
     schema_mode: SchemaMode | None = None,
@@ -362,7 +363,7 @@ async def insert_facts(
     facts: dict,
     source_id: str | None = None,
     event_time: str | None = None,
-    resolver: str | None = None,
+    resolver: ResolverMode | None = None,
     contradiction: ContradictionMode | None = None,
     schema: dict | None = None,
     schema_mode: SchemaMode | None = None,
@@ -1029,6 +1030,23 @@ def _check_arguments(server: Any, name: str, hinted: set[str]) -> None:
     object.__setattr__(tool, "run", checked_run)
 
 
+def _check_tool_name(server: Any, hinted: set[str]) -> None:
+    """Make the server answer a call to an unregistered tool with a structured invalid_argument error result.
+
+    @param server (Any): the MCP server holding the tools.
+    @param hinted (set[str]): the codes the server's session has seen.
+    @return (None): nothing; the server's call_tool is replaced in place.
+    """
+    call_tool = server.call_tool
+
+    async def checked_call_tool(name: str, arguments: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        if server._tool_manager.get_tool(name) is None:
+            return _error_result(ValidationError(f"unknown tool {name!r}"), name, hinted)
+        return await call_tool(name, arguments, *args, **kwargs)
+
+    server.call_tool = checked_call_tool
+
+
 def build_server(name: str = "selfgraph"):
     """Create an MCP server with every tool registered. Requires selfgraph[mcp].
 
@@ -1054,6 +1072,7 @@ def build_server(name: str = "selfgraph"):
             kwargs["annotations"] = ToolAnnotations(**_annotations(fn.__name__))
         server.tool(**kwargs)(_tool(fn, hinted))
         _check_arguments(server, fn.__name__, hinted)
+    _check_tool_name(server, hinted)
     return server
 
 

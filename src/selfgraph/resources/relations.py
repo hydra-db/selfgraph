@@ -90,6 +90,7 @@ class Relations(Resource):
         check_options(
             "relations.list", options, ["from_entity", "type", "to_entity", "cursor", "limit", "include_invalidated"]
         )
+        _ops._require_bool("include_invalidated", include_invalidated)
         rtype = canonical_relation_type(type, self._c.schema) if isinstance(type, str) and type.strip() else type
         return await self._page(
             _ops.list_relations,
@@ -195,6 +196,7 @@ class Relations(Resource):
         @return (list[Relation]): the versions; raises NotFoundError when the id has none.
         """
         check_options("relations.versions", options, ["newest_first"])
+        _ops._require_bool("newest_first", newest_first)
         _ops._validate_own_id("relation", id)
         reader = await self._c._reader()
         versions = await _ops.list_relation_versions(reader, self._c.namespace, id, newest_first=newest_first)

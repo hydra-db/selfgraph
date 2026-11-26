@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 
-from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph
+from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph, runtime
 from selfgraph._serde import LABELS
 from selfgraph.errors import (
     StoreError,
@@ -155,6 +156,77 @@ def test_check_settings_needs_no_store():
         SelfGraph.from_env(stor="kuzu")
 
 
+def _fail_after_the_store(**options):
+    raise ValidationError("the LLM setup failed", code="invalid_setting")
+
+
+@pytest.mark.parametrize("in_loop", [False, True])
+def test_a_build_that_fails_after_the_store_releases_the_kuzu_lock(tmp_path, monkeypatch, in_loop):
+    pytest.importorskip("kuzu")
+    monkeypatch.setattr(runtime, "SelfGraph", _fail_after_the_store)
+    path = str(tmp_path / "g.kuzu")
+
+    async def build_in_loop():
+        build_graph(GraphSettings(store="kuzu", uri=path))
+
+    with pytest.raises(ValidationError, match="the LLM setup failed"):
+        run(build_in_loop()) if in_loop else build_graph(GraphSettings(store="kuzu", uri=path))
+    opened = subprocess.run(
+        [sys.executable, "-c", f"import kuzu; kuzu.Database({path!r})"], capture_output=True, text=True, timeout=60
+    )
+    assert opened.returncode == 0, opened.stderr
+
+
+def test_a_build_that_fails_does_not_wait_for_a_query_another_graph_runs_on_the_path(tmp_path):
+    pytest.importorskip("kuzu")
+    path = str(tmp_path / "g.kuzu")
+    script = f"""
+import asyncio
+from selfgraph import KuzuStore, runtime
+from selfgraph.errors import ValidationError
+from selfgraph.stores import kuzu
+
+def fail(**options):
+    raise ValidationError("the LLM setup failed", code="invalid_setting")
+
+runtime.SelfGraph = fail
+
+async def main():
+    other = KuzuStore({path!r})
+    async with other._lock:
+        try:
+            runtime.build_graph(runtime.GraphSettings(store="kuzu", uri={path!r}))
+        except ValidationError as exc:
+            print(exc)
+        print(kuzu._OPEN_STORES.get(other._cache_key))
+    await other.close()
+    print(kuzu._OPEN_STORES.get(other._cache_key))
+
+asyncio.run(main())
+"""
+    src = os.path.dirname(os.path.dirname(runtime.__file__))
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src, os.environ.get("PYTHONPATH")]))}
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60, env=env)
+    assert (proc.returncode, proc.stdout.splitlines()) == (0, ["the LLM setup failed", "1", "None"]), proc.stderr
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_a_build_that_fails_after_the_store_closes_it_and_raises_the_build_error(monkeypatch, close_fails):
+    closed = []
+
+    class Store:
+        async def close(self):
+            closed.append(True)
+            if close_fails:
+                raise StoreError("close failed")
+
+    monkeypatch.setattr(runtime, "_build_store", lambda settings: Store())
+    monkeypatch.setattr(runtime, "SelfGraph", _fail_after_the_store)
+    with pytest.raises(ValidationError, match="the LLM setup failed"):
+        build_graph(GraphSettings(store="neo4j", uri=NEO4J_URI))
+    assert closed == [True]
+
+
 def test_jsonable_and_dumps():
     g = build_graph(store_settings())
     run(g.initialize())
@@ -219,6 +291,11 @@ def test_library_errors_name_settings_and_the_cli_rewords_them_to_flags():
         (GraphSettings(store="neo4j"), "pass uri= (or SELFGRAPH_URI)", "pass --uri (or SELFGRAPH_URI)"),
         (GraphSettings(llm_provider="gemini"), "pass llm_model= (or SELFGRAPH_LLM_MODEL)", "pass --llm-model"),
         (GraphSettings(uri=" "), "omit uri= (or SELFGRAPH_URI)", "omit --uri (or SELFGRAPH_URI)"),
+        (
+            GraphSettings(llm_provider="openai", llm_model="anthropic/claude"),
+            "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model",
+            "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model",
+        ),
     )
     for settings, library, surface in cases:
         with pytest.raises(ValidationError) as exc:
@@ -419,6 +496,44 @@ def test_store_uris_with_unencoded_userinfo_are_rejected():
     ):
         check_settings(GraphSettings(store=store, uri=uri))
     run(bolt_driver("bolt://[::1]:7687", None).close())
+
+
+_MEMGRAPH_TOKEN_ERROR = (
+    b"Invalid query. There is a wrong token at position 0 starting with \xf0. "
+    b"Remove that part of the query and try to rerun it."
+)
+
+
+def test_a_non_utf8_server_message_keeps_the_engines_reason(monkeypatch):
+    from neo4j import AsyncSession
+
+    async def undecodable(self, query, parameters=None, **kwargs):
+        raise UnicodeDecodeError("utf-8", _MEMGRAPH_TOKEN_ERROR, 66, 67, "invalid continuation byte")
+
+    monkeypatch.setattr(AsyncSession, "run", undecodable)
+    store = Neo4jStore("bolt://127.0.0.1:1")
+    with pytest.raises(StoreError) as err:
+        run(store.run_cypher("RETURN 1"))
+    assert err.value.code == "query_failed"
+    assert str(err.value) == (
+        "Cypher query failed: Invalid query. There is a wrong token at position 0 starting with \ufffd. "
+        "Remove that part of the query and try to rerun it."
+    )
+    run(store.close())
+
+
+def test_the_driver_log_line_for_an_undecodable_response_is_dropped(caplog):
+    run(bolt_driver("bolt://127.0.0.1:1", None).close())
+    bad = UnicodeDecodeError("utf-8", _MEMGRAPH_TOKEN_ERROR, 66, 67, "invalid continuation byte")
+    driver_log = logging.getLogger("neo4j.io")
+    with caplog.at_level(logging.DEBUG, logger="neo4j.io"):
+        driver_log.error("<CONNECTION> error: %s: %r", "Failed to read from defunct connection", bad)
+        driver_log.debug("Failed to unpack response: %r", bad)
+        driver_log.error("<CONNECTION> error: %s: %r", "Failed to read from defunct connection", OSError("reset"))
+    assert [r.getMessage() for r in caplog.records if r.name == "neo4j.io"] == [
+        f"Failed to unpack response: {bad!r}",
+        "<CONNECTION> error: Failed to read from defunct connection: OSError('reset')",
+    ]
 
 
 def test_falkordb_addresses_urlparse_refuses_are_masked():

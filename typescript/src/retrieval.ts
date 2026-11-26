@@ -4,8 +4,10 @@ import { ValidationError } from "./errors.js";
 import { normalizeText, profileId, wordRuns } from "./ids.js";
 import { casefold } from "./internal/casefold.js";
 import { loads } from "./internal/json.js";
+import { contextPayload } from "./internal/payload.js";
 import { comparePy, cpLen, NON_ASCII, pyFloatRepr, pyRepr, pyStr, pyStrip } from "./internal/py.js";
 import { epochMicros, fromIso } from "./internal/time.js";
+import { WORD_CLASS } from "./internal/unicode.js";
 import {
   L_CHUNK,
   L_ENTITY,
@@ -43,9 +45,11 @@ const STOPWORDS = new Set(
   ).split(" "),
 );
 
-const IRREGULAR = /(?<![\p{L}\p{N}_])(?:won|can)['’ʼ]t(?![\p{L}\p{N}_])/giu;
-const CLITIC =
-  /(?<=[\p{L}\p{N}_])n['’ʼ]t(?![\p{L}\p{N}_])|(?<=[\p{L}\p{N}_])['’ʼ](?:s|ll|re|ve|d|m)(?![\p{L}\p{N}_])/giu;
+const IRREGULAR = new RegExp(`(?<![${WORD_CLASS}])(?:won|can)['’ʼ]t(?![${WORD_CLASS}])`, "gu");
+const CLITIC = new RegExp(
+  `(?<=[${WORD_CLASS}])n['’ʼ]t(?![${WORD_CLASS}])|(?<=[${WORD_CLASS}])['’ʼ](?:s|ll|re|ve|d|m)(?![${WORD_CLASS}])`,
+  "gu",
+);
 const FILLER = new Set(
   (
     "about all any can could describe does explain find give i know list many me much my our please should show " +
@@ -108,6 +112,16 @@ export function tokens(text: string): Set<string> {
 }
 
 /**
+ * Reduce tokens to their singular stems, so a plural word and its singular compare equal.
+ *
+ * @param words (Iterable<string>): casefolded content tokens.
+ * @return (Set<string>): the distinct stems.
+ */
+function stemSet(words: Iterable<string>): Set<string> {
+  return new Set([...words].map(stem));
+}
+
+/**
  * The single-character tokens of a text, stopwords included, for exact matches against entity names.
  *
  * @param text (string): the text to tokenize.
@@ -138,15 +152,18 @@ export function formatProps(props: JsonObject): string {
 }
 
 /**
- * Count each query token's occurrences in a document, in first-occurrence order.
+ * Count each query stem's occurrences among a document's stemmed tokens, in first-occurrence order.
  *
- * @param query (Set<string>): the query content tokens.
+ * @param query (Set<string>): the query stems.
  * @param doc (string[]): the document's tokens.
- * @return (Map<string, number>): the count of each query token the document holds.
+ * @return (Map<string, number>): the count of each query stem the document holds.
  */
 function termCounts(query: Set<string>, doc: string[]): Map<string, number> {
   const tf = new Map<string, number>();
-  for (const token of doc) if (query.has(token)) tf.set(token, (tf.get(token) ?? 0) + 1);
+  for (const word of doc) {
+    const token = stem(word);
+    if (query.has(token)) tf.set(token, (tf.get(token) ?? 0) + 1);
+  }
   return tf;
 }
 
@@ -162,14 +179,15 @@ interface CorpusStats {
  * @param query (Set<string>): the query content tokens.
  * @param docs (Iterable<string[]>): the token list for each document.
  * @param stats (CorpusStats | null): the statistics so far, or null to start.
- * @return (CorpusStats): the document count, total length, and each query token's document frequency.
+ * @return (CorpusStats): the document count, total length, and each query stem's document frequency.
  */
 function corpusStats(query: Set<string>, docs: Iterable<string[]>, stats: CorpusStats | null = null): CorpusStats {
-  const out = stats ?? { n: 0, total: 0, df: new Map([...query].map((t) => [t, 0])) };
+  const terms = stemSet(query);
+  const out = stats ?? { n: 0, total: 0, df: new Map([...terms].map((t) => [t, 0])) };
   for (const doc of docs) {
     out.n += 1;
     out.total += doc.length;
-    for (const token of termCounts(query, doc).keys()) out.df.set(token, (out.df.get(token) ?? 0) + 1);
+    for (const token of termCounts(terms, doc).keys()) out.df.set(token, (out.df.get(token) ?? 0) + 1);
   }
   return out;
 }
@@ -192,14 +210,15 @@ function seedScores(
   const { n, total, df } = stats;
   const avgdl = (n ? total / n : 0) || 1.0;
   const idf = new Map([...df].map(([t, d]) => [t, Math.log(1 + (n - d + 0.5) / (d + 0.5))]));
+  const terms = stemSet(queryTokens);
   const scored: Array<[Entity, number]> = [];
   for (const entity of entities) {
     const text = entityText(entity);
     let bm25 = 0;
-    if (queryTokens.size) {
+    if (terms.size) {
       const doc = tokenList(text);
       const norm = BM25_K1 * (1 - BM25_B + (BM25_B * doc.length) / avgdl);
-      for (const [t, f] of termCounts(queryTokens, doc)) bm25 += ((idf.get(t) ?? 0) * f * (BM25_K1 + 1)) / (f + norm);
+      for (const [t, f] of termCounts(terms, doc)) bm25 += ((idf.get(t) ?? 0) * f * (BM25_K1 + 1)) / (f + norm);
     }
     const named = exact.has(fold(entity.name)) ? 1 : 0;
     const score = bm25 + GREP_WEIGHT * (grepScore(queryTokens, fold(text)) + named);
@@ -724,7 +743,7 @@ async function collectDecisions(
 ): Promise<DecisionTrace[]> {
   if (!relationIds.size) return [];
   const tids = await ops.tracesTouchingRelations(store, ns, [...relationIds].sort(comparePy));
-  const traces = await ops.getTraces(store, ns, [...tids].sort(comparePy));
+  const traces = await ops.getTraces(store, ns, [...tids.keys()].sort(comparePy));
   return traces.filter(
     (t) =>
       asOf === null ||
@@ -811,6 +830,7 @@ async function collectPassages(
   asOf: ops.AsOf | null = null,
 ): Promise<string[]> {
   const distOf = distanceIn(dist);
+  const terms = stemSet(queryTokens);
   const svDist = new Map<string, number>();
   const usable = new Map<string, boolean>();
   for (const e of [...entities].sort((a, b) => distOf(a.id) - distOf(b.id))) {
@@ -840,7 +860,7 @@ async function collectPassages(
     for (const [sv, texts] of await chunkTexts(store, ns, batch)) {
       for (const text of texts) {
         let score = 0;
-        for (const t of tokens(text)) if (queryTokens.has(t)) score++;
+        for (const t of stemSet(tokens(text))) if (terms.has(t)) score++;
         if (score > 0 && !best.has(text)) best.set(text, [-score, svDist.get(sv)!, order++]);
       }
     }
@@ -872,33 +892,6 @@ async function collectPreferences(
   return prefs
     .filter((p) => order.has(p.subject_entity))
     .sort((a, b) => (order.get(a.subject_entity) ?? 0) - (order.get(b.subject_entity) ?? 0));
-}
-
-/**
- * Contain stored content before admitting it to the context's SDK-owned headers.
- *
- * @param text (string): a source passage or assembled graph record, never its trust header.
- * @param source (boolean): preserve passage lines and label each as source data.
- * @return (string): display-safe content with no unlabelled physical lines.
- */
-function contextPayload(text: string, source = false): string {
-  const normalized = text.replaceAll("\r\n", "\n");
-  const rows: string[] = [""];
-  for (const c of normalized) {
-    const n = c.codePointAt(0)!;
-    if ([10, 13, 11, 12, 28, 29, 30, 133, 8232, 8233].includes(n)) {
-      rows.push("");
-    } else {
-      const control =
-        (n < 32 && n !== 9) ||
-        (n >= 127 && n <= 159) ||
-        [0x061c, 0x200e, 0x200f].includes(n) ||
-        (n >= 0x202a && n <= 0x202e) ||
-        (n >= 0x2066 && n <= 0x2069);
-      rows[rows.length - 1] += control ? `\\u${n.toString(16).padStart(4, "0")}` : c;
-    }
-  }
-  return source ? rows.map((row) => `SOURCE | ${row}`).join("\n") : rows.join("\\n");
 }
 
 /**
@@ -1221,14 +1214,15 @@ async function run(
  * @return (string[]): the content tokens, repeats kept.
  */
 function termWords(text: string): string[] {
+  const folded = fold(text);
   const words: string[] = [];
   let last = 0;
-  for (const m of text.matchAll(IRREGULAR)) {
-    words.push(...tokenList(text.slice(last, m.index).replace(CLITIC, "")));
-    words.push(m[0].toLowerCase().replace(/[’ʼ]/g, "'"));
+  for (const m of folded.matchAll(IRREGULAR)) {
+    words.push(...tokenList(folded.slice(last, m.index).replace(CLITIC, "")));
+    words.push(m[0].replace(/[’ʼ]/g, "'"));
     last = m.index + m[0].length;
   }
-  return [...words, ...tokenList(text.slice(last).replace(CLITIC, ""))];
+  return [...words, ...tokenList(folded.slice(last).replace(CLITIC, ""))];
 }
 
 /**

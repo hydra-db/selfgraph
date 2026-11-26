@@ -1,5 +1,6 @@
 import { ValidationError } from "./errors.js";
-import { isPlainObject, PY_WORD_CLASS, pyRepr, pyStr } from "./internal/py.js";
+import { isPlainObject, pyRepr, pyStr } from "./internal/py.js";
+import { ALNUM_CLASS, lower, upper } from "./internal/unicode.js";
 import { asInput } from "./models.js";
 import { type ParsedSchema, Schema } from "./schema.js";
 import { spaced, stem } from "./terms.js";
@@ -13,7 +14,7 @@ const TYPES: ReadonlyArray<readonly [RegExp, string]> = [
   [/(?<![a-z])u?(?:tiny|small|medium|big|huge|byte|var)?int(?:eger|\d*)(?![a-z])|serial/, "integer"],
   [/float|double|real|numeric|decimal|money/, "float"],
 ];
-const WORD = new RegExp(`[${PY_WORD_CLASS.replace("_", "")}]+`, "gu");
+const WORD = new RegExp(`[${ALNUM_CLASS}]+`, "gu");
 
 export interface FromTablesOptions {
   name?: string | null;
@@ -32,7 +33,7 @@ interface DraftRelation {
  * @return (string[]): the words.
  */
 function words(name: string): string[] {
-  return Array.from(spaced(name.slice(name.lastIndexOf(".") + 1)).matchAll(WORD), (m) => m[0].toLowerCase());
+  return Array.from(spaced(name.slice(name.lastIndexOf(".") + 1)).matchAll(WORD), (m) => lower(m[0]));
 }
 
 /**
@@ -48,7 +49,7 @@ function typeNameOf(table: string): string {
   return parts
     .map((w) => {
       const [first = "", ...rest] = Array.from(w);
-      return first.toUpperCase() + rest.join("");
+      return upper(first) + rest.join("");
     })
     .join("");
 }
@@ -116,7 +117,7 @@ export function fromTables(tables: readonly object[], options: FromTablesOptions
           throw new ValidationError(`tables[${i}].columns[${j}].references: unknown table ${pyRepr(target)}`);
         }
         const own = words(column.name).filter((w) => w !== "id");
-        const rtype = `HAS_${(own.length ? own : words(target as string)).join("_").toUpperCase()}`;
+        const rtype = `HAS_${upper((own.length ? own : words(target as string)).join("_"))}`;
         let relation = relations.get(rtype);
         if (relation === undefined) {
           relation = { type: rtype, from: { types: [], max_count: 1 }, to: { types: [] } };

@@ -5,7 +5,14 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { connectionReason, HINTS, internalError, SelfGraphError, WARNING_HINTS } from "../src/errors.js";
+import {
+  connectionReason,
+  escapeControls,
+  HINTS,
+  internalError,
+  SelfGraphError,
+  WARNING_HINTS,
+} from "../src/errors.js";
 import {
   Extraction,
   FalkorDBStore,
@@ -193,6 +200,7 @@ describe("error codes", () => {
         new SelfGraph(g.store, { prompts: { entities: { version: "v1", system: "s", user: "no placeholder" } } }),
       invalid_stored_data: () => decodeEntity({ id: "person:broken", ns: "codes" }),
       query_failed: () => g.runCypher("RETURN ("),
+      inexact_value: () => g.runCypher("RETURN cast('-0.05' AS DECIMAL(5,2))"),
       graph_closed: () => closedGraph.entities.list(),
       store_closed: () => new SelfGraph(closedStore).entities.list(),
       store_unreachable: () => new SelfGraph(new Neo4jStore(CLOSED_PORT, { auth: ["neo4j", "pw"] })).entities.list(),
@@ -215,6 +223,29 @@ describe("error codes", () => {
       connectionReason(bolt("getaddrinfo ENOTFOUND nohost.invalid")),
       connectionReason(bolt("connect ECONNREFUSED 127.0.0.1:1")),
     ]).toEqual(["host not found", "connection refused"]);
+  });
+
+  it("escapes control characters in a failed query", async () => {
+    expect(escapeControls("a\x1b[2Jb\nc\td\x00\x7f\x85e")).toBe("a\\x1b[2Jb\\nc\\td\\x00\\x7f\\x85e");
+    expect(escapeControls("a\u202eb")).toBe("a\\u202eb");
+    expect(escapeControls("a\u200bb\u200cc\u200dd\ufeffe")).toBe("a\\u200bb\\u200cc\\u200dd\\ufeffe");
+    expect(escapeControls("a\u2066b\u2069c")).toBe("a\\u2066b\\u2069c");
+    expect(escapeControls("hello world")).toBe("hello world");
+    const detail = kuzuError(new Error("a\tb  c\x85d\u202ee"), "Kuzu query failed");
+    expect(detail.message).toBe("Kuzu query failed: a\\tb c\\x85d\\u202ee");
+    expect(detail.message).not.toContain("\t");
+    expect(detail.message).not.toContain("\x85");
+    expect(detail.message).not.toContain("\u202e");
+    const g = open();
+    try {
+      await g.runCypher("RETURN (\x1b[2J");
+      expect.unreachable();
+    } catch (exc) {
+      const err = exc as SelfGraphError;
+      expect(err.code).toBe("query_failed");
+      expect(err.message).not.toContain("\x1b");
+      expect(err.message).toContain("\\x1b");
+    }
   });
 
   it("carries the code, hint, retryability, and both docs links", () => {

@@ -5,6 +5,7 @@ import * as ids from "../ids.js";
 import { log } from "../internal/log.js";
 import { pyRepr, pySplit, pyStrip, utf8 } from "../internal/py.js";
 import { parseIso, toIso } from "../internal/time.js";
+import { LETTER_CLASS, lower } from "../internal/unicode.js";
 import { EDGE_TYPES, preferenceStanceOf } from "../labels.js";
 import { summarizeError } from "../llm/index.js";
 import {
@@ -33,6 +34,7 @@ import {
   requireJsonMapping,
   requireNoControl,
   requireOptionalText,
+  requireStr,
 } from "../validate.js";
 import { checkPrompts, effectiveInstruction, effectivePrompt, type ObjectType, render } from "./prompts.js";
 
@@ -151,10 +153,10 @@ export interface RawDecision {
   evidence?: ChunkEvidence | null;
 }
 
-const HAS_LETTER = /\p{L}/u;
+const HAS_LETTER = new RegExp(`[${LETTER_CLASS}]`, "u");
 export const FALLBACK_TYPE = "Thing";
 
-const norm = (name: string): string => pyStrip(name).toLowerCase();
+const norm = (name: string): string => lower(pyStrip(name));
 
 /**
  * Report whether a name is a bare quantity or phrase fragment (empty, over six words, or without a letter) rather than an entity.
@@ -244,26 +246,82 @@ export function assembleExtraction(
   schema: ParsedSchema | null = null,
 ): ParsedExtraction {
   const registry = new Map<string, RawEntity>();
+  const canonical = new Map<boolean, { type: string; names: Map<string, RawEntity[]> }>();
   const rejected = new Set<string>();
+  const journal: Array<[string, RawEntity]> = [];
   const admit = (ent: RawEntity): boolean =>
     admitted(warnings, "entity", () => validateEntityIdentity(ids.entityId(ent.type, ent.name), ent.type, ent.name));
+  /**
+   * Add an entity to the registry and to the index of canonical names.
+   *
+   * @param key (string): the entity id the registry stores it under.
+   * @param ent (RawEntity): the entity to register.
+   * @return (void): nothing.
+   */
+  const register = (key: string, ent: RawEntity): void => {
+    const org = ids.isOrgType(ent.type);
+    if (!canonical.has(org)) canonical.set(org, { type: ent.type, names: new Map() });
+    const { names } = canonical.get(org)!;
+    const name = ids.canonicalName(ent.type, ent.name);
+    if (!names.has(name)) names.set(name, []);
+    names.get(name)!.push(ent);
+    registry.set(key, ent);
+    journal.push([key, ent]);
+  };
+  /**
+   * Unregister the entities added since a journal position, so a dropped item leaves none behind.
+   *
+   * @param mark (number): the journal length taken before the item resolved its names.
+   * @return (void): nothing.
+   */
+  const rollback = (mark: number): void => {
+    while (journal.length > mark) {
+      const [key, ent] = journal.pop()!;
+      registry.delete(key);
+      const org = ids.isOrgType(ent.type);
+      const { names } = canonical.get(org)!;
+      const name = ids.canonicalName(ent.type, ent.name);
+      const bucket = names.get(name)!;
+      bucket.pop();
+      if (!bucket.length) names.delete(name);
+      if (!names.size) canonical.delete(org);
+    }
+  };
+  /**
+   * List the registered entities whose canonical name equals the canonical form of a name.
+   *
+   * @param name (string): the extracted name to look up.
+   * @return (RawEntity[]): every registered entity that matches, across entity types.
+   */
+  const matching = (name: string): RawEntity[] => {
+    if (registry.size === 0) return [];
+    requireStr("entity name", name);
+    return [...canonical.values()].flatMap(({ type, names }) => names.get(ids.canonicalName(type, name)) ?? []);
+  };
   for (const ent of rawEntities) {
-    if (isNoiseName(ent.name) || !admit(ent)) continue;
+    if (!admit(ent) || isNoiseName(ent.name)) continue;
     const key = ids.entityId(ent.type, ent.name);
     const cleanAliases = (ent.aliases ?? []).filter((alias) =>
       admitted(warnings, "alias", () => requireNoControl("entity alias", alias)),
     );
-    if (!registry.has(key)) registry.set(key, { ...ent, aliases: [] });
+    if (!registry.has(key)) register(key, { ...ent, aliases: [] });
     const kept = registry.get(key)!;
     kept.aliases = [...new Set([...(kept.aliases ?? []), ...cleanAliases])];
   }
 
+  /**
+   * Resolve an extracted name to the id of one registered entity, registering a fallback entity when none match.
+   *
+   * @param name (string | null | undefined): the extracted name.
+   * @param types (string[]): the endpoint types that narrow several matches to one.
+   * @return (string | null): the entity id, or null when the name is blank, invalid, or matches several types.
+   */
   const resolve = (name: string | null | undefined, types: string[] = []): string | null => {
     if (name == null || !pyStrip(name)) return null;
     const key = norm(name);
     let matches: RawEntity[];
     try {
-      matches = [...registry.values()].filter((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
+      matches = matching(name);
       if (matches.length > 1 && types.length) {
         const typed = matches.filter((e) => types.some((t) => norm(t) === norm(e.type)));
         if (typed.length) matches = typed;
@@ -293,7 +351,7 @@ export function assembleExtraction(
         rejected.add(key);
         return null;
       }
-      registry.set(ids.entityId(ent.type, ent.name), ent);
+      register(ids.entityId(ent.type, ent.name), ent);
     }
     return ids.entityId(ent.type, ent.name);
   };
@@ -361,7 +419,7 @@ export function assembleExtraction(
             promoted.push({
               subject_name: rel.from_name,
               stance,
-              key: canonicalEntityType(value.type, schema).toLowerCase(),
+              key: lower(canonicalEntityType(value.type, schema)),
               value_name: rel.to_name,
             });
           } else {
@@ -376,18 +434,26 @@ export function assembleExtraction(
   const preferences = new Map<string, Record<string, unknown>>();
   const stated = new Set<string>();
   for (const [index, pref] of [...rawPreferences, ...promoted].entries()) {
+    const mark = journal.length;
     const subjectId = resolve(pref.subject_name);
     const valueId = resolve(pref.value_name);
-    if (!(subjectId && valueId)) continue;
+    if (!(subjectId && valueId)) {
+      rollback(mark);
+      continue;
+    }
     const triple = JSON.stringify([subjectId, pref.stance, valueId]);
     if (index >= rawPreferences.length && stated.has(triple)) continue;
-    stated.add(triple);
     let pid = "";
     const valid = admitted(warnings, "preference", () => {
       validateStrength(pref.strength);
       pid = ids.preferenceId(subjectId, pref.stance, pref.key, valueId);
     });
-    if (valid && !preferences.has(pid)) {
+    if (!valid) {
+      rollback(mark);
+      continue;
+    }
+    stated.add(triple);
+    if (!preferences.has(pid)) {
       preferences.set(pid, {
         subject_entity: subjectId,
         stance: pref.stance,
@@ -401,7 +467,18 @@ export function assembleExtraction(
 
   const decisions = new Map<string, Record<string, unknown>>();
   for (const dec of rawDecisions) {
+    const mark = journal.length;
     const actorId = resolve(dec.actor_name);
+    let tid = "";
+    const valid = admitted(warnings, "decision", () => {
+      requireOptionalText("decision summary", dec.summary);
+      requireOptionalText("decision rationale", dec.rationale);
+      tid = ids.decisionId(actorId, dec.title);
+    });
+    if (!valid) {
+      rollback(mark);
+      continue;
+    }
     const stepIds: string[] = [];
     for (const step of dec.steps ?? []) {
       const fromId = resolve(step.from_name, endpointTypes(step.type, "from"));
@@ -415,13 +492,7 @@ export function assembleExtraction(
         );
       }
     }
-    let tid = "";
-    const valid = admitted(warnings, "decision", () => {
-      requireOptionalText("decision summary", dec.summary);
-      requireOptionalText("decision rationale", dec.rationale);
-      tid = ids.decisionId(actorId, dec.title);
-    });
-    if (valid && !decisions.has(tid)) {
+    if (!decisions.has(tid)) {
       decisions.set(tid, {
         title: dec.title,
         steps: stepIds,
