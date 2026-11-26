@@ -1,10 +1,21 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { maskUri, ValidationError } from "./errors.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
 import { parseJson } from "./runtime.js";
 
 const SERVER = "selfgraph";
+const SKILL = ".claude/skills/selfgraph/SKILL.md";
 const SECRETS = ["auth", "llm_api_key"];
 
 type Scope = "project" | "user";
@@ -31,18 +42,31 @@ export const AGENTS = Object.keys(AGENT_SPECS);
 export const SERVER_COMMAND = "npx";
 export const SERVER_ARGS = ["-y", "-p", "@hydradb/selfgraph", "-p", "@modelcontextprotocol/sdk", "selfgraph", "mcp"];
 
-export type Change = { agent: string; path: string; shown: string; text: string; changed: boolean };
+export type Change = { agent: string; path: string; shown: string; text: string | null; changed: boolean };
 
 /**
- * Set the selfgraph server in a JSON config, keeping every other key.
+ * Read the SKILL.md shipped with the package, or the repository copy in a source checkout.
+ *
+ * @return (string): the skill text.
+ */
+function skillText(): string {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const path of [join(root, "SKILL.md"), join(root, "..", "SKILL.md")]) {
+    if (existsSync(path)) return readFileSync(path, "utf8");
+  }
+  throw new ValidationError("SKILL.md is missing from this install; reinstall @hydradb/selfgraph");
+}
+
+/**
+ * Set or remove the selfgraph server in a JSON config, keeping every other key.
  *
  * @param text (string | null): the file's text, or null when it does not exist.
  * @param key (string): the object that holds the servers, such as mcpServers.
- * @param entry (Record<string, unknown>): the server entry.
+ * @param entry (Record<string, unknown> | null): the server entry, or null to remove it.
  * @param shown (string): the file as shown to the user.
- * @return (string): the new text.
+ * @return (string | null): the new text, or the old one when nothing changes.
  */
-function merge(text: string | null, key: string, entry: Record<string, unknown>, shown: string): string {
+function merge(text: string | null, key: string, entry: Record<string, unknown> | null, shown: string): string | null {
   let data: Record<string, unknown> = {};
   if (text?.trim()) {
     let parsed: unknown;
@@ -57,7 +81,12 @@ function merge(text: string | null, key: string, entry: Record<string, unknown>,
   const servers = data[key] ?? null;
   if (servers !== null && !isPlainObject(servers))
     throw new ValidationError(`cannot update ${pyRepr(shown)}: ${key} is not an object`);
-  data[key] = { ...servers, [SERVER]: { ...entry } };
+  if (entry === null) {
+    if (!servers || !Object.hasOwn(servers, SERVER)) return text;
+    delete servers[SERVER];
+  } else {
+    data[key] = { ...servers, [SERVER]: { ...entry } };
+  }
   return `${JSON.stringify(data, null, 2)}\n`;
 }
 
@@ -104,16 +133,17 @@ function pickAgents(names: string[], user: boolean, roots: Record<Scope, string>
 }
 
 /**
- * Work out every file install would write, reading them all before anything is written.
+ * Work out every file install would write or remove, reading them all before anything is written.
  *
  * @param names (string[]): the agents named on the command line; none means every detected one.
- * @param options ({ user: boolean; command: string; args: string[]; settings: Record<string, string>; cwd: string; home: string }): the scope, the server command, the settings given as flags (written to the env as SELFGRAPH_*), and the project and home folders.
+ * @param options ({ user: boolean; remove: boolean; command: string; args: string[]; settings: Record<string, string>; cwd: string; home: string }): the scope, whether to remove, the server command, the settings given as flags (written to the env as SELFGRAPH_*), and the project and home folders.
  * @return (Change[]): one change per file, in output order.
  */
 export function planInstall(
   names: string[],
   options: {
     user: boolean;
+    remove: boolean;
     command: string;
     args: string[];
     settings: Record<string, string>;
@@ -130,32 +160,38 @@ export function planInstall(
     if (options.user && !agent.files.user)
       throw new ValidationError(`${name} has no user-level config; run install ${name} without --global`);
     const scope: Scope = !options.user && agent.files.project ? "project" : "user";
-    if (secret && scope === "project")
+    if (secret && scope === "project" && !options.remove)
       throw new ValidationError(
         `--${secret.replaceAll("_", "-")} holds a credential and ${agent.files[scope]} may be committed; pass ` +
           `--global to write the user config, or add SELFGRAPH_${secret.toUpperCase()} to the entry's env by hand`,
         { field: secret },
       );
-    const entry = {
-      ...(agent.stdio && { type: "stdio" }),
-      command: options.command,
-      args: [...options.args],
-      ...(settings.length && {
-        env: Object.fromEntries(settings.map(([key, value]) => [`SELFGRAPH_${key.toUpperCase()}`, value])),
-      }),
-    };
-    const rel = agent.files[scope]!;
-    const path = join(roots[scope], rel);
-    const shown = scope === "project" ? rel : `~/${rel}`;
-    const old = read(path, shown);
-    const text = merge(old, agent.key, entry, shown);
-    changes.push({ agent: name, path, shown, text, changed: text !== old });
+    const entry = options.remove
+      ? null
+      : {
+          ...(agent.stdio && { type: "stdio" }),
+          command: options.command,
+          args: [...options.args],
+          ...(settings.length && {
+            env: Object.fromEntries(settings.map(([key, value]) => [`SELFGRAPH_${key.toUpperCase()}`, value])),
+          }),
+        };
+    for (const rel of [agent.files[scope]!, ...(name === "claude" ? [SKILL] : [])]) {
+      const path = join(roots[scope], rel);
+      const shown = scope === "project" ? rel : `~/${rel}`;
+      const old = read(path, shown);
+      let text: string | null;
+      if (rel !== SKILL) text = merge(old, agent.key, entry, shown);
+      else if (options.remove) text = null;
+      else text = skillText();
+      if (old !== null || text !== null) changes.push({ agent: name, path, shown, text, changed: text !== old });
+    }
   }
   return changes;
 }
 
 /**
- * Write each changed file, and describe every file in one line.
+ * Write or remove each changed file, and describe every file in one line.
  *
  * @param changes (Change[]): the planned changes.
  * @param dryRun (boolean): describe the changes without writing anything.
@@ -164,9 +200,14 @@ export function planInstall(
 export function applyChanges(changes: Change[], dryRun: boolean): string[] {
   const lines: string[] = [];
   for (const c of changes) {
-    const verb = !c.changed ? "unchanged" : dryRun ? "would write" : "wrote";
+    let verb = !c.changed ? "unchanged" : c.text === null ? "removed" : "wrote";
+    if (dryRun && c.changed) verb = `would ${c.text === null ? "remove" : "write"}`;
     lines.push(`${c.agent}: ${verb} ${c.shown}`);
-    if (c.changed && !dryRun) {
+    if (dryRun || !c.changed) continue;
+    if (c.text === null) {
+      unlinkSync(c.path);
+      if (!readdirSync(dirname(c.path)).length) rmdirSync(dirname(c.path));
+    } else {
       mkdirSync(dirname(c.path), { recursive: true });
       writeFileSync(c.path, c.text, "utf8");
     }

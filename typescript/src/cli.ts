@@ -824,6 +824,7 @@ export function buildParser(): Command<[], GlobalOptions> {
     .argument("[AGENT...]", `${AGENTS.join(", ")} (default: every agent whose config folder exists)`)
     .option("--global", "write the user-level config")
     .option("--dry-run", "print what would change and write nothing")
+    .option("--remove", "remove the selfgraph server, and the Claude Code skill")
     .configureHelp({ showGlobalOptions: true })
     .action(async (agents: string[], o, cmd) => {
       const given: Record<string, unknown> = cmd.optsWithGlobals();
@@ -833,6 +834,7 @@ export function buildParser(): Command<[], GlobalOptions> {
       );
       const changes = planInstall(agents, {
         user: o.global === true,
+        remove: o.remove === true,
         command: SERVER_COMMAND,
         args: SERVER_ARGS,
         settings: Object.fromEntries(flags.map((key) => [key, given[flag(key)] as string])),

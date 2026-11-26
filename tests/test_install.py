@@ -1,12 +1,15 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
 from selfgraph import _install
 from selfgraph.cli import main
 from selfgraph.runtime import SETTING_KEYS
+
+SKILL = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
 
 
 @pytest.fixture
@@ -45,6 +48,7 @@ def test_writes_each_agents_file_shape(capsys, dirs):
     assert code == 0
     assert out == [
         "claude: wrote .mcp.json",
+        "claude: wrote .claude/skills/selfgraph/SKILL.md",
         "cursor: wrote .cursor/mcp.json",
         "vscode: wrote .vscode/mcp.json",
         "gemini: wrote .gemini/settings.json",
@@ -61,18 +65,19 @@ def test_writes_each_agents_file_shape(capsys, dirs):
         (home / ".codeium/windsurf/mcp_config.json", "mcpServers", plain),
     ]:
         assert path.read_text(encoding="utf-8") == json.dumps({key: {"selfgraph": entry}}, indent=2) + "\n"
+    assert (project / ".claude/skills/selfgraph/SKILL.md").read_text(encoding="utf-8") == SKILL
 
 
 def test_global_writes_user_files(capsys, dirs):
     project, home = dirs
     code, out, _ = install(capsys, "claude", "--global")
     assert code == 0
-    assert out[0] == "claude: wrote ~/.claude.json"
+    assert out[:2] == ["claude: wrote ~/.claude.json", "claude: wrote ~/.claude/skills/selfgraph/SKILL.md"]
     assert json.loads((home / ".claude.json").read_text())["mcpServers"]["selfgraph"]["command"] == "selfgraph"
     assert not list(project.iterdir())
 
 
-def test_merges_with_other_servers_idempotently(capsys, dirs):
+def test_merges_with_other_servers_idempotently_and_removes(capsys, dirs):
     project, _ = dirs
     (project / ".cursor").mkdir()
     cursor = {"theme": "dark", "mcpServers": {"other": {"command": "other", "args": ["x"]}}}
@@ -96,6 +101,23 @@ def test_merges_with_other_servers_idempotently(capsys, dirs):
     assert install(capsys, "--store", "kuzu")[1] == ["cursor: unchanged .cursor/mcp.json"]
     assert snapshot(project) == first
 
+    assert install(capsys, "--remove")[1] == [
+        "cursor: wrote .cursor/mcp.json",
+        "Restart or reload the agent to pick up the change.",
+    ]
+    assert json.loads((project / ".cursor/mcp.json").read_text()) == cursor
+    assert install(capsys, "--remove")[1] == ["cursor: unchanged .cursor/mcp.json"]
+
+
+def test_remove_drops_the_skill(capsys, dirs):
+    project, _ = dirs
+    install(capsys, "claude")
+    code, out, _ = install(capsys, "claude", "--remove")
+    assert code == 0
+    assert out[:2] == ["claude: wrote .mcp.json", "claude: removed .claude/skills/selfgraph/SKILL.md"]
+    assert json.loads((project / ".mcp.json").read_text()) == {"mcpServers": {}}
+    assert not (project / ".claude/skills/selfgraph").exists()
+
 
 def test_dry_run_writes_nothing(capsys, dirs):
     project, home = dirs
@@ -104,6 +126,7 @@ def test_dry_run_writes_nothing(capsys, dirs):
     assert code == 0
     assert out == [
         "claude: would write .mcp.json",
+        "claude: would write .claude/skills/selfgraph/SKILL.md",
         "gemini: would write .gemini/settings.json",
         "Dry run: nothing was written.",
     ]
@@ -120,7 +143,7 @@ def test_detects_agents_by_config_folder(capsys, dirs):
     )
     for folder in (project / ".vscode", project / ".claude", home / ".codeium/windsurf", home / ".gemini"):
         folder.mkdir(parents=True)
-    assert [line.split(":")[0] for line in install(capsys, "--dry-run")[1][:-1]] == ["claude", "vscode"]
+    assert [line.split(":")[0] for line in install(capsys, "--dry-run")[1][:-1]] == ["claude", "claude", "vscode"]
     assert install(capsys, "--dry-run", "--global")[1][:-1] == [
         "gemini: would write ~/.gemini/settings.json",
         "windsurf: would write ~/.codeium/windsurf/mcp_config.json",

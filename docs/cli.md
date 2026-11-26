@@ -95,7 +95,7 @@ rather than library settings ([errors](errors.md#messages)).
 
 ### `install`
 
-`install [AGENT ...] [--global] [--dry-run]` writes the `selfgraph`
+`install [AGENT ...] [--global] [--dry-run] [--remove]` writes the `selfgraph`
 server entry into each agent's MCP config.
 
 | Argument | Meaning |
@@ -103,6 +103,7 @@ server entry into each agent's MCP config.
 | `AGENT` | `claude`, `cursor`, `vscode`, `gemini`, or `windsurf`. Default: every agent whose config folder exists in the scope. |
 | `--global` | Write the user-level file instead of the project's. `vscode` has none. |
 | `--dry-run` | Print what would change and write nothing. |
+| `--remove` | Delete the `selfgraph` entry, and the Claude Code skill, keeping the rest. |
 
 The connection flags you pass go into the entry's `env` as `SELFGRAPH_*`
 variables. It prints one line per file, such as `claude: wrote .mcp.json`, then

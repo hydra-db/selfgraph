@@ -6,6 +6,7 @@ import sys
 import sysconfig
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from .runtime import parse_json
 __all__ = ["AGENTS", "Change", "apply_changes", "plan_install", "server_command"]
 
 _SERVER = "selfgraph"
+_SKILL = ".claude/skills/selfgraph/SKILL.md"
 _SECRETS = ("auth", "llm_api_key")
 
 
@@ -41,7 +43,7 @@ class Change:
     agent: str
     path: Path
     shown: str
-    text: str
+    text: str | None
     changed: bool
 
 
@@ -58,14 +60,25 @@ def server_command() -> tuple[str, list[str]]:
     return sys.executable, ["-m", "selfgraph", "mcp"]
 
 
-def _merge(text: str | None, key: str, entry: Mapping[str, Any], shown: str) -> str:
-    """Set the selfgraph server in a JSON config, keeping every other key.
+def _skill_text() -> str:
+    """Read the SKILL.md shipped with the package, or the repository copy in a source checkout.
+
+    @return (str): the skill text.
+    """
+    for path in (resources.files("selfgraph") / "SKILL.md", Path(__file__).resolve().parents[2] / "SKILL.md"):
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    raise ValidationError("SKILL.md is missing from this install; reinstall selfgraph")
+
+
+def _merge(text: str | None, key: str, entry: Mapping[str, Any] | None, shown: str) -> str | None:
+    """Set or remove the selfgraph server in a JSON config, keeping every other key.
 
     @param text (str | None): the file's text, or None when it does not exist.
     @param key (str): the object that holds the servers, such as mcpServers.
-    @param entry (Mapping[str, Any]): the server entry.
+    @param entry (Mapping[str, Any] | None): the server entry, or None to remove it.
     @param shown (str): the file as shown to the user.
-    @return (str): the new text.
+    @return (str | None): the new text, or the old one when nothing changes.
     """
     data: Any = {}
     if text and text.strip():
@@ -78,7 +91,12 @@ def _merge(text: str | None, key: str, entry: Mapping[str, Any], shown: str) -> 
     servers = data.get(key)
     if servers is not None and not isinstance(servers, dict):
         raise ValidationError(f"cannot update {shown!r}: {key} is not an object")
-    data[key] = {**(servers or {}), _SERVER: dict(entry)}
+    if entry is None:
+        if not servers or _SERVER not in servers:
+            return text
+        del servers[_SERVER]
+    else:
+        data[key] = {**(servers or {}), _SERVER: dict(entry)}
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
@@ -122,16 +140,18 @@ def plan_install(
     names: Sequence[str],
     *,
     user: bool,
+    remove: bool,
     command: str,
     args: Sequence[str],
     settings: Mapping[str, str],
     cwd: Path,
     home: Path,
 ) -> list[Change]:
-    """Work out every file install would write, reading them all before anything is written.
+    """Work out every file install would write or remove, reading them all before anything is written.
 
     @param names (Sequence[str]): the agents named on the command line; none means every detected one.
     @param user (bool): write the user-level files instead of the project's.
+    @param remove (bool): remove the selfgraph server instead of adding it.
     @param command (str): the command that starts the MCP server.
     @param args (Sequence[str]): its arguments.
     @param settings (Mapping[str, str]): the settings given as flags, written to the entry's env as SELFGRAPH_*.
@@ -147,27 +167,35 @@ def plan_install(
         if user and "user" not in agent.files:
             raise ValidationError(f"{name} has no user-level config; run install {name} without --global")
         scope = "project" if not user and "project" in agent.files else "user"
-        if secret and scope == "project":
+        if secret and scope == "project" and not remove:
             raise ValidationError(
                 f"--{secret.replace('_', '-')} holds a credential and {agent.files[scope]} may be committed; pass "
                 f"--global to write the user config, or add SELFGRAPH_{secret.upper()} to the entry's env by hand",
                 field=secret,
             )
-        entry: dict[str, Any] = {"type": "stdio"} if agent.stdio else {}
-        entry.update(command=command, args=list(args))
-        if settings:
-            entry["env"] = {f"SELFGRAPH_{key.upper()}": value for key, value in settings.items()}
-        rel = agent.files[scope]
-        path = roots[scope] / rel
-        shown = rel if scope == "project" else f"~/{rel}"
-        old = _read(path, shown)
-        new = _merge(old, agent.key, entry, shown)
-        changes.append(Change(name, path, shown, new, new != old))
+        entry: dict[str, Any] | None = None
+        if not remove:
+            entry = {"type": "stdio"} if agent.stdio else {}
+            entry.update(command=command, args=list(args))
+            if settings:
+                entry["env"] = {f"SELFGRAPH_{key.upper()}": value for key, value in settings.items()}
+        for rel in [agent.files[scope], *([_SKILL] if name == "claude" else [])]:
+            path = roots[scope] / rel
+            shown = rel if scope == "project" else f"~/{rel}"
+            old = _read(path, shown)
+            if rel != _SKILL:
+                new = _merge(old, agent.key, entry, shown)
+            elif remove:
+                new = None
+            else:
+                new = _skill_text()
+            if old is not None or new is not None:
+                changes.append(Change(name, path, shown, new, new != old))
     return changes
 
 
 def apply_changes(changes: Sequence[Change], *, dry_run: bool) -> list[str]:
-    """Write each changed file, and describe every file in one line.
+    """Write or remove each changed file, and describe every file in one line.
 
     @param changes (Sequence[Change]): the planned changes.
     @param dry_run (bool): describe the changes without writing anything.
@@ -175,9 +203,17 @@ def apply_changes(changes: Sequence[Change], *, dry_run: bool) -> list[str]:
     """
     lines = []
     for c in changes:
-        verb = "unchanged" if not c.changed else "would write" if dry_run else "wrote"
+        verb = "unchanged" if not c.changed else "removed" if c.text is None else "wrote"
+        if dry_run and c.changed:
+            verb = f"would {'remove' if c.text is None else 'write'}"
         lines.append(f"{c.agent}: {verb} {c.shown}")
-        if c.changed and not dry_run:
+        if dry_run or not c.changed:
+            continue
+        if c.text is None:
+            c.path.unlink()
+            if not any(c.path.parent.iterdir()):
+                c.path.parent.rmdir()
+        else:
             c.path.parent.mkdir(parents=True, exist_ok=True)
             c.path.write_bytes(c.text.encode("utf-8"))
     if dry_run:

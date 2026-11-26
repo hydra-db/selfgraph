@@ -31,6 +31,8 @@ selfgraph --store kuzu --uri ./graph.kuzu install --global
   `.cursor/`, and so on) already exists in the project, or in your home folder
   with `--global`. An agent with one scope uses it, so `windsurf` always writes
   the user file, and `vscode --global` fails.
+- For `claude`, it also copies the SelfGraph skill to
+  `.claude/skills/selfgraph/SKILL.md`, or under `~/.claude/` with `--global`.
 - Connection flags you pass, such as `--store`, `--uri`, `--namespace`, and
   `--schema`, go into the entry's `env` as `SELFGRAPH_*` variables, as written.
   Variables set only in your shell are not copied.
@@ -40,7 +42,8 @@ selfgraph --store kuzu --uri ./graph.kuzu install --global
 - Other servers and keys in the file are kept, and running it again changes
   nothing. A file that does not parse is left alone, and the command fails before
   writing any file.
-- `--dry-run` prints what would change and writes nothing.
+- `--dry-run` prints what would change. `--remove` deletes the `selfgraph` entry
+  and the skill.
 
 The Python command writes `selfgraph mcp`, or `python -m selfgraph mcp` with the
 current interpreter when the `selfgraph` on your path belongs to another

@@ -556,6 +556,7 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("agents", nargs="*", metavar="AGENT", help=agents_help)
     ins.add_argument("--global", dest="user", action="store_true", help="write the user-level config")
     ins.add_argument("--dry-run", action="store_true", help="print what would change and write nothing")
+    ins.add_argument("--remove", action="store_true", help="remove the selfgraph server, and the Claude Code skill")
     _add_globals(ins, nested=True, listed=True)
     ins.set_defaults(func=None)
     sc = sub.add_parser(
@@ -1053,7 +1054,7 @@ def error_text(exc: SelfGraphError, command: str) -> str:
 
 
 def _install(args: argparse.Namespace, settings: dict[str, str]) -> int:
-    """Add the MCP server to each agent's config and print one line per file.
+    """Add or remove the MCP server in each agent's config and print one line per file.
 
     @param args (argparse.Namespace): the parsed install command.
     @param settings (dict[str, str]): the settings given as flags that the store does not ignore.
@@ -1063,6 +1064,7 @@ def _install(args: argparse.Namespace, settings: dict[str, str]) -> int:
     changes = plan_install(
         args.agents,
         user=args.user,
+        remove=args.remove,
         command=command,
         args=server_args,
         settings=settings,

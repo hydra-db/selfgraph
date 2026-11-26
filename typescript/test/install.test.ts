@@ -1,5 +1,15 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -7,6 +17,7 @@ import { SERVER_ARGS, SERVER_COMMAND } from "../src/install.js";
 import { SETTING_KEYS } from "../src/runtime.js";
 import { buildCli, runCli, tempDir } from "./helpers.js";
 
+const SKILL = readFileSync(fileURLToPath(new URL("../../SKILL.md", import.meta.url)), "utf8");
 const base = tempDir("sg-install-");
 const NO_SETTINGS = Object.fromEntries(SETTING_KEYS.map((key) => [`SELFGRAPH_${key.toUpperCase()}`, undefined]));
 const entry = { command: SERVER_COMMAND, args: SERVER_ARGS };
@@ -70,6 +81,7 @@ describe("selfgraph install", () => {
     expect(res.code).toBe(0);
     expect(res.out).toEqual([
       "claude: wrote .mcp.json",
+      "claude: wrote .claude/skills/selfgraph/SKILL.md",
       "cursor: wrote .cursor/mcp.json",
       "vscode: wrote .vscode/mcp.json",
       "gemini: wrote .gemini/settings.json",
@@ -86,17 +98,21 @@ describe("selfgraph install", () => {
     ] as const) {
       expect(readFileSync(path, "utf8")).toBe(`${JSON.stringify({ [key]: { selfgraph: value } }, null, 2)}\n`);
     }
+    expect(readFileSync(join(where.project, ".claude/skills/selfgraph/SKILL.md"), "utf8")).toBe(SKILL);
   });
 
   it("writes the user files with --global", () => {
     const where = dirs();
     const res = install(where, ["claude", "--global"]);
-    expect(res.out[0]).toBe("claude: wrote ~/.claude.json");
+    expect(res.out.slice(0, 2)).toEqual([
+      "claude: wrote ~/.claude.json",
+      "claude: wrote ~/.claude/skills/selfgraph/SKILL.md",
+    ]);
     expect(json(join(where.home, ".claude.json"))).toEqual({ mcpServers: { selfgraph: { type: "stdio", ...entry } } });
     expect(readdirSync(where.project)).toEqual([]);
   });
 
-  it("merges with other servers and is idempotent", () => {
+  it("merges with other servers, is idempotent, and removes only its own entry", () => {
     const where = dirs();
     mkdirSync(join(where.project, ".cursor"));
     const cursor = { theme: "dark", mcpServers: { other: { command: "other", args: ["x"] } } };
@@ -113,6 +129,25 @@ describe("selfgraph install", () => {
     });
     expect(install(where, ["--store", "kuzu"]).out).toEqual(["cursor: unchanged .cursor/mcp.json"]);
     expect(snapshot(where.project)).toEqual(first);
+
+    expect(install(where, ["--remove"]).out).toEqual([
+      "cursor: wrote .cursor/mcp.json",
+      "Restart or reload the agent to pick up the change.",
+    ]);
+    expect(json(join(where.project, ".cursor/mcp.json"))).toEqual(cursor);
+    expect(install(where, ["--remove"]).out).toEqual(["cursor: unchanged .cursor/mcp.json"]);
+  });
+
+  it("removes the Claude Code skill", () => {
+    const where = dirs();
+    install(where, ["claude"]);
+    const res = install(where, ["claude", "--remove"]);
+    expect(res.out.slice(0, 2)).toEqual([
+      "claude: wrote .mcp.json",
+      "claude: removed .claude/skills/selfgraph/SKILL.md",
+    ]);
+    expect(json(join(where.project, ".mcp.json"))).toEqual({ mcpServers: {} });
+    expect(existsSync(join(where.project, ".claude/skills/selfgraph"))).toBe(false);
   });
 
   it("writes nothing on --dry-run", () => {
@@ -120,6 +155,7 @@ describe("selfgraph install", () => {
     mkdirSync(join(where.project, ".gemini"));
     expect(install(where, ["--dry-run", "claude", "gemini"]).out).toEqual([
       "claude: would write .mcp.json",
+      "claude: would write .claude/skills/selfgraph/SKILL.md",
       "gemini: would write .gemini/settings.json",
       "Dry run: nothing was written.",
     ]);
@@ -144,7 +180,7 @@ describe("selfgraph install", () => {
       install(where, ["--dry-run"])
         .out.slice(0, -1)
         .map((line) => line.split(":")[0]),
-    ).toEqual(["claude", "vscode"]);
+    ).toEqual(["claude", "claude", "vscode"]);
     expect(install(where, ["--dry-run", "--global"]).out.slice(0, -1)).toEqual([
       "gemini: would write ~/.gemini/settings.json",
       "windsurf: would write ~/.codeium/windsurf/mcp_config.json",
