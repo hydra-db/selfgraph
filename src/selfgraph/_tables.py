@@ -83,7 +83,12 @@ def from_tables(tables: Sequence[Mapping[str, Any]], name: str | None = None) ->
         etype = names[table["name"]]
         phrase = " ".join(_words(table["name"]))
         properties = []
-        for j, column in enumerate(table.get("columns") or ()):
+        columns = table.get("columns")
+        if columns is not None and (isinstance(columns, str | Mapping) or not isinstance(columns, Sequence)):
+            raise ValidationError(
+                f"tables[{i}].columns must be a list of column mappings, got {type_name(columns)}", field="columns"
+            )
+        for j, column in enumerate(columns or ()):
             if not isinstance(column, Mapping) or not isinstance(column.get("name"), str):
                 raise ValidationError(f"tables[{i}].columns[{j}]: each column needs a name")
             target = column.get("references")

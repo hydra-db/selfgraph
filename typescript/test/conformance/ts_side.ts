@@ -561,7 +561,7 @@ function jsonConstants(): { flags: unknown[]; documents: unknown[] } {
  * @return (string[]): one message per reference, including unhashable ones.
  */
 function tablesReferenceErrors(): string[] {
-  return [{ table: "users" }, ["users"], 5].map((reference) => {
+  const messages = [{ table: "users" }, ["users"], 5].map((reference) => {
     try {
       fromTables([{ name: "orders", columns: [{ name: "user_id", references: reference }] }]);
       return "accepted";
@@ -570,6 +570,16 @@ function tablesReferenceErrors(): string[] {
       return exc.message;
     }
   });
+  for (const columns of [5, true, "abc"]) {
+    try {
+      fromTables([{ name: "orders", columns: columns as never }]);
+      messages.push("accepted");
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      messages.push(exc.message);
+    }
+  }
+  return messages;
 }
 
 /**

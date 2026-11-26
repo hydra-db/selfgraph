@@ -31,6 +31,25 @@ it("306 rejects schema relation types that normalize to empty", async () => {
   expect(parseOrThrow(Schema, { relations: [{ type: "works at" }] }, "schema").relations[0]!.type).toBe("works at");
 });
 
+it("307 rejects a non-list columns value", () => {
+  for (const [value, name] of [
+    [5, "number"],
+    [true, "boolean"],
+    [1.5, "number"],
+    ["abc", "string"],
+  ] as const) {
+    let err: ValidationError | undefined;
+    try {
+      fromTables([{ name: "orders", columns: value as never }]);
+    } catch (exc) {
+      err = exc as ValidationError;
+    }
+    expect(err).toBeInstanceOf(ValidationError);
+    expect([err?.code, err?.field]).toEqual(["invalid_argument", "columns"]);
+    expect(err?.message).toBe(`tables[0].columns must be a list of column mappings, got ${name}`);
+  }
+});
+
 it("309 distinguishes schema-qualified table names", async () => {
   const schema = fromTables([
     { name: "sales.users", columns: [{ name: "support_id", references: "support.users" }] },
