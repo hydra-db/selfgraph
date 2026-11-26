@@ -23,10 +23,27 @@ from ..errors import (
     split_scheme,
 )
 from ..ids import quote_label, quote_reltype, require_identifier
-from ..models import CypherResult, JsonValue
+from ..models import CypherResult, JsonValue, check_options
 
 BOLT_CONNECT_TIMEOUT = 10.0
 _WRITE_BATCH = 500
+_BOLT_DRIVER_OPTIONS = (
+    "auth",
+    "database",
+    "user_agent",
+    "connection_timeout",
+    "connection_acquisition_timeout",
+    "max_connection_lifetime",
+    "max_connection_pool_size",
+    "keep_alive",
+    "encrypted",
+    "trusted_certificates",
+    "resolver",
+    "fetch_size",
+    "max_transaction_retry_time",
+    "notifications_min_severity",
+)
+_SELFGRAPH_BOLT_KEYS = frozenset({"connection_timeout", "connection_acquisition_timeout", "notifications_min_severity"})
 _AUTH_MARKERS = ("security.unauthorized", "security.unauthenticated", "autherror", "authentication failure")
 _MISSING_DB_MARKERS = (
     "databasenotfound",
@@ -89,14 +106,31 @@ def bolt_auth(auth: Any) -> Any:
     return parse_auth(auth)
 
 
-def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
+def _rejected_options(exc: BaseException) -> list[str]:
+    """The option names a Bolt driver rejected as unexpected, dropping the ones selfgraph sets itself.
+
+    @param exc (BaseException): the driver error.
+    @return (list[str]): the caller's unrecognized option names, in the order the driver reported them.
+    """
+    marker = "Unexpected config keys:"
+    text = str(exc)
+    at = text.find(marker)
+    if at < 0:
+        return []
+    names = (part.strip() for part in text[at + len(marker) :].split(","))
+    return [name for name in names if name and name not in _SELFGRAPH_BOLT_KEYS]
+
+
+def bolt_driver(uri: str, auth: Any, *, store: str = "the store", **kwargs: Any) -> Any:
     """Open an async Bolt driver with bounded connect timeouts.
 
-    Raises ValidationError on an unencoded user or password and StoreError on a bad URI or driver config. The driver's
-    own error quotes the raw URI, so the StoreError is raised after its except block, leaving it out of the traceback.
+    Raises ValidationError on an unencoded user or password or an unknown driver option, and StoreError on a bad URI
+    or driver config. The driver's own error quotes the raw URI, so the StoreError is raised after its except block,
+    leaving it out of the traceback.
 
     @param uri (str): the Bolt URI.
     @param auth (Any): the auth, as bolt_auth takes it.
+    @param store (str): the store class name, for an unknown-option message.
     @param kwargs (Any): extra driver config; connection_timeout and connection_acquisition_timeout default to 10 s.
     @return (Any): the driver.
     """
@@ -117,6 +151,7 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
     try:
         return AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
     except Exception as exc:  # noqa: BLE001
+        check_options(store, _rejected_options(exc), _BOLT_DRIVER_OPTIONS)
         reason = redact_uri(str(exc), uri)
     raise StoreError(f"cannot open a Bolt driver for {mask_uri(uri)!r}: {reason}", code="invalid_setting", field="uri")
 
