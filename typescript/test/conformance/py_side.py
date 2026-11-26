@@ -2959,6 +2959,10 @@ async def vault_names(graph):
         "\u5317" * 150,
         "z" * 210 + "a",
         "z" * 210 + "b",
+        ". .NET",
+        "Acme. .",
+        "v1. .",
+        "D" * 199 + ". .",
     ]
     for name in names:
         await g.entities.create(name, "Thing")

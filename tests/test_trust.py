@@ -427,6 +427,14 @@ def test_obsidian_vault_cuts_long_names_without_splitting_a_character():
     assert "\u00e9" * 100 + ".md" in notes
 
 
+def test_obsidian_vault_strips_leading_and_trailing_dots():
+    names = [". .NET", "Acme. .", "v1. ."]
+    g = fresh_graph("vault_dots")
+    run(g.insert.facts({"entities": [{"type": "Product", "name": name} for name in names]}))
+    notes = sorted(path for path in run(g.export_obsidian()) if "/" not in path)
+    assert notes == ["Acme.md", "NET.md", "v1.md"]
+
+
 def test_obsidian_vault_numbers_names_that_collide_after_the_cut():
     g = fresh_graph("vault_clash")
     prefix = "z" * 300
