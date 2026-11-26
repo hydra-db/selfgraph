@@ -31,6 +31,7 @@ import { checkSettings, settingsFromEnv } from "../src/runtime.js";
 import { decodeEntity } from "../src/serde.js";
 import { kuzuError } from "../src/stores/kuzu.js";
 import { errorLinks, freshGraphs, KUZU_SPEC } from "./helpers.js";
+import { callProviderMessage } from "./llmServer.js";
 
 const DOCS = readFileSync(new URL("../../docs/errors.md", import.meta.url), "utf8");
 const CLOSED_PORT = "bolt://127.0.0.1:1";
@@ -68,23 +69,9 @@ function raise(exc: unknown): never {
   throw exc;
 }
 
-/**
- * Call an LLM provider through a local server that answers every request with one HTTP status.
- *
- * @param status (number): the status.
- * @return (Promise<void>): resolves when the call returns; rejects with its error.
- */
 async function callProvider(status: number): Promise<void> {
-  const server = createServer((_req, res) => res.writeHead(status, { "Content-Type": "application/json" }).end("{}"));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  try {
-    const { port } = server.address() as AddressInfo;
-    const base_url = `http://127.0.0.1:${port}`;
-    const llm = buildLlmClient({ provider: "openai", model: "m", api_key: "k", base_url, max_retries: 0 });
-    await llm.generate({ system: "", user: "x", output: z.object({ ok: z.boolean() }) });
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
+  const { error } = await callProviderMessage(status);
+  raise(error);
 }
 
 /**

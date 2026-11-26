@@ -82,6 +82,25 @@ def test_llm_model_not_found_masks_base_url_credentials():
     assert "was not found for provider openai at https://***@llm.example/v1" in text
 
 
+def test_llm_error_text_matches_the_typescript_sdk_exactly():
+    config = LLMConfig(provider="openai", model="m", base_url="http://127.0.0.1:9")
+
+    class Forbidden(Exception):
+        status_code = 403
+
+    class Missing(Exception):
+        status_code = 404
+
+    assert str(_fatal(Forbidden("no"), config, "openai/m")) == (
+        "LLM access denied for provider openai and model 'm': check the API key, set by "
+        "api_key in the llm config (or SELFGRAPH_LLM_API_KEY)"
+    )
+    assert str(_fatal(Missing("no"), config, "openai/m")) == (
+        "LLM model 'm' was not found for provider openai at http://127.0.0.1:9: check the "
+        "llm_model option (or SELFGRAPH_LLM_MODEL) and the provider"
+    )
+
+
 def test_summarize_error_masks_a_base_url_the_provider_quotes():
     exc = RuntimeError("APIConnectionError: request to https://u:secret@llm.example/v1/chat failed")
     summary = summarize_error(exc, "https://u:secret@llm.example/v1")
@@ -403,7 +422,7 @@ def test_a_provider_prefix_conflict_from_settings_names_llm_provider(monkeypatch
 
     message = (
         "llm_provider 'openai' conflicts with model prefix 'anthropic'; "
-        "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model"
+        "pass the llm_provider option (or SELFGRAPH_LLM_PROVIDER) matching the model"
     )
     with pytest.raises(ValidationError) as built:
         _build_llm(GraphSettings(llm_provider="openai", llm_model="anthropic/claude"))

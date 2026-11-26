@@ -4,7 +4,6 @@ import { APICallError, LoadAPIKeyError } from "@ai-sdk/provider";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-
 import { loadTokenizer } from "../src/chunking.js";
 import { assembleExtraction, LLMExtractor, type RawEntity } from "../src/extraction/extractor.js";
 import { render } from "../src/extraction/prompts.js";
@@ -24,6 +23,7 @@ import type { InsertWarning } from "../src/models.js";
 import type { LLMClient } from "../src/protocols.js";
 import { Schema } from "../src/schema.js";
 import { captureLog, freshGraphs, KUZU_SPEC } from "./helpers.js";
+import { callProviderMessage } from "./llmServer.js";
 
 type Kind = "entities" | "relations" | "preferences" | "decisions";
 
@@ -1224,7 +1224,7 @@ describe("LLM extraction through the AI SDK", () => {
       model: "m",
       base_url: "https://proxyuser:hunter2@llm.example/v1",
     });
-    expect(err?.message).toContain('LLM model "m" was not found for provider openai at https://***@llm.example/v1');
+    expect(err?.message).toContain("LLM model 'm' was not found for provider openai at https://***@llm.example/v1");
     expect(err?.message).not.toContain("hunter2");
     expect(err?.code).toBe("llm_model_not_found");
   });
@@ -1251,13 +1251,28 @@ describe("LLM extraction through the AI SDK", () => {
         .catch((e: unknown) => e);
     try {
       expect(String(await call({ max_retries: 0 }))).toContain(
-        `LLM model "m" was not found for provider openai at ${base}`,
+        `LLM model 'm' was not found for provider openai at ${base}`,
       );
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
     expect(paths).toEqual(["/v1/chat/completions"]);
     expect(summarizeError(await call({ timeout: 0.5 }))).toBe(`connection refused 127.0.0.1:${port}`);
+  });
+
+  it.each([
+    [
+      403,
+      "LLM access denied for provider openai and model 'm': check the API key, set by api_key in the llm config (or SELFGRAPH_LLM_API_KEY)",
+    ],
+    [404, "LLM model 'm' was not found for provider openai"],
+  ])("quotes the model like Python on HTTP %i", async (status, expected) => {
+    const { base_url, message } = await callProviderMessage(status);
+    expect(message).toBe(
+      status === 404
+        ? `${expected} at ${base_url}: check the llm_model option (or SELFGRAPH_LLM_MODEL) and the provider`
+        : expected,
+    );
   });
 });
 it.each([false, true])("does not classify a reply quoting invalid API key as authentication: wrapped=%s", (wrapped) => {

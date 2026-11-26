@@ -170,14 +170,14 @@ export function fatalError(exc: unknown, config: ErrorContext): ExtractionError 
   }
   if (name === "GatewayForbiddenError" || status === 403) {
     return new ExtractionError(
-      `LLM access denied for provider ${provider} and model ${JSON.stringify(config.model)}: ${KEY_HINT}`,
+      `LLM access denied for provider ${provider} and model ${pyRepr(config.model)}: ${KEY_HINT}`,
       { cause: exc, code: "llm_auth_failed" },
     );
   }
   if (["AI_NoSuchModelError", "GatewayModelNotFoundError", "GatewayNotFoundError"].includes(name) || status === 404) {
     const where = config.base_url ? ` at ${maskUri(config.base_url)}` : "";
     return new ExtractionError(
-      `LLM model ${JSON.stringify(config.model)} was not found for provider ${provider}${where}: ` +
+      `LLM model ${pyRepr(config.model)} was not found for provider ${provider}${where}: ` +
         `check ${settingHint("llm_model")} and the provider`,
       { cause: exc, code: "llm_model_not_found" },
     );

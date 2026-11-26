@@ -289,12 +289,16 @@ def test_falkordb_settings_pass_credentials_and_graph():
 def test_library_errors_name_settings_and_the_cli_rewords_them_to_flags():
     cases = (
         (GraphSettings(store="neo4j", uri="g.kuzu"), 'pass store="kuzu"', "pass --store kuzu"),
-        (GraphSettings(store="neo4j"), "pass uri= (or SELFGRAPH_URI)", "pass --uri (or SELFGRAPH_URI)"),
-        (GraphSettings(llm_provider="gemini"), "pass llm_model= (or SELFGRAPH_LLM_MODEL)", "pass --llm-model"),
-        (GraphSettings(uri=" "), "omit uri= (or SELFGRAPH_URI)", "omit --uri (or SELFGRAPH_URI)"),
+        (GraphSettings(store="neo4j"), "pass the uri option (or SELFGRAPH_URI)", "pass --uri (or SELFGRAPH_URI)"),
+        (
+            GraphSettings(llm_provider="gemini"),
+            "pass the llm_model option (or SELFGRAPH_LLM_MODEL)",
+            "pass --llm-model",
+        ),
+        (GraphSettings(uri=" "), "omit the uri option (or SELFGRAPH_URI)", "omit --uri (or SELFGRAPH_URI)"),
         (
             GraphSettings(llm_provider="openai", llm_model="anthropic/claude"),
-            "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model",
+            "pass the llm_provider option (or SELFGRAPH_LLM_PROVIDER) matching the model",
             "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model",
         ),
     )

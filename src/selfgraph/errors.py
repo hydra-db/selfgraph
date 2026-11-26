@@ -449,9 +449,9 @@ def setting_hint(key: str) -> str:
     """Name a connect or from_env setting with its environment variable, as library messages do.
 
     @param key (str): the setting name, such as "llm_model".
-    @return (str): the hint, such as "llm_model= (or SELFGRAPH_LLM_MODEL)", which the CLI rewords to its flag.
+    @return (str): the hint, such as "the llm_model option (or SELFGRAPH_LLM_MODEL)", which the CLI rewords to its flag.
     """
-    return f"{key}= (or SELFGRAPH_{key.upper()})"
+    return f"the {key} option (or SELFGRAPH_{key.upper()})"
 
 
 _SURFACE_HINTS = (
